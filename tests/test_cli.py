@@ -1,0 +1,398 @@
+"""CLI integration tests for pbdiff."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from click.testing import CliRunner
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+from proto_differ.cli import main
+
+
+# ---------------------------------------------------------------------------
+# Test helpers: create descriptor sets and binary message files on disk
+# ---------------------------------------------------------------------------
+
+T = descriptor_pb2.FieldDescriptorProto
+
+
+def _make_descriptor_set(
+    package: str,
+    msg_name: str,
+    fields: dict[str, tuple[int, int]],
+    *,
+    syntax: str = "proto3",
+) -> bytes:
+    """Build a FileDescriptorSet with a single message type."""
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name=f"{msg_name.lower()}.proto",
+        package=package,
+        syntax=syntax,
+    )
+    msg_proto = file_proto.message_type.add()
+    msg_proto.name = msg_name
+    for fname, (ftype, fnum) in fields.items():
+        fp = msg_proto.field.add()
+        fp.name = fname
+        fp.type = ftype
+        fp.number = fnum
+        fp.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.file.append(file_proto)
+    return fds.SerializeToString()
+
+
+def _build_message(desc_set_bytes: bytes, full_name: str, **kwargs: Any) -> bytes:
+    """Parse a descriptor set, build a message, and serialize to binary."""
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.ParseFromString(desc_set_bytes)
+    pool = descriptor_pool.DescriptorPool()
+    for fd in fds.file:
+        pool.Add(fd)
+    desc = pool.FindMessageTypeByName(full_name)
+    cls = message_factory.GetMessageClass(desc)
+    return cls(**kwargs).SerializeToString()
+
+
+@pytest.fixture()
+def runner() -> CliRunner:
+    return CliRunner()
+
+
+@pytest.fixture()
+def simple_setup(tmp_path: Path) -> dict[str, Path]:
+    """Create a descriptor set and two binary message files for same-schema mode."""
+    desc_bytes = _make_descriptor_set("test", "Msg", {
+        "name": (T.TYPE_STRING, 1),
+        "value": (T.TYPE_INT32, 2),
+    })
+    desc_file = tmp_path / "test.descriptor_set"
+    desc_file.write_bytes(desc_bytes)
+
+    left = tmp_path / "left.pb"
+    left.write_bytes(_build_message(desc_bytes, "test.Msg", name="Alice", value=42))
+
+    right_same = tmp_path / "right_same.pb"
+    right_same.write_bytes(_build_message(desc_bytes, "test.Msg", name="Alice", value=42))
+
+    right_diff = tmp_path / "right_diff.pb"
+    right_diff.write_bytes(_build_message(desc_bytes, "test.Msg", name="Bob", value=99))
+
+    return {
+        "desc": desc_file,
+        "left": left,
+        "right_same": right_same,
+        "right_diff": right_diff,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Flag group validation
+# ---------------------------------------------------------------------------
+
+
+class TestFlagValidation:
+    def test_no_descriptor_source(self, runner: CliRunner, tmp_path: Path) -> None:
+        f1 = tmp_path / "a.pb"
+        f2 = tmp_path / "b.pb"
+        f1.write_bytes(b"")
+        f2.write_bytes(b"")
+        result = runner.invoke(main, [str(f1), str(f2)])
+        assert result.exit_code == 2
+        assert "No descriptor source" in result.output
+
+    def test_desc_without_message_type(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+        ])
+        assert result.exit_code == 2
+        assert "--message-type" in result.output
+
+    def test_partial_cross_schema(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--left-desc", str(simple_setup["desc"]),
+        ])
+        assert result.exit_code == 2
+        assert "Missing" in result.output
+
+    def test_conflicting_groups(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--left-desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+        assert "Conflicting" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Same-schema mode (Group A)
+# ---------------------------------------------------------------------------
+
+
+class TestSameSchemaMode:
+    def test_equal_messages_exit_0(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 0
+        assert "equal" in result.output.lower()
+
+    def test_different_messages_exit_1(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 1
+        assert "difference" in result.output.lower()
+
+    def test_bad_message_type(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "nonexistent.Msg",
+        ])
+        assert result.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# Output formats
+# ---------------------------------------------------------------------------
+
+
+class TestOutputFormats:
+    def test_json_output_equal(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["equal"] is True
+        assert data["differences"] == []
+
+    def test_json_output_different(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["equal"] is False
+        assert len(data["differences"]) == 2
+        paths = {d["path"] for d in data["differences"]}
+        assert paths == {"name", "value"}
+
+    def test_quiet_exit_0(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--quiet",
+        ])
+        assert result.exit_code == 0
+        assert result.output == ""
+
+    def test_quiet_exit_1(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--quiet",
+        ])
+        assert result.exit_code == 1
+        assert result.output == ""
+
+    def test_human_output_shows_paths(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ], color=False)
+        assert result.exit_code == 1
+        assert "name" in result.output
+        assert "value" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Input formats
+# ---------------------------------------------------------------------------
+
+
+class TestInputFormats:
+    def test_text_format_input(self, runner: CliRunner, tmp_path: Path) -> None:
+        desc_bytes = _make_descriptor_set("test", "Msg", {
+            "name": (T.TYPE_STRING, 1),
+        })
+        desc_file = tmp_path / "test.descriptor_set"
+        desc_file.write_bytes(desc_bytes)
+
+        left = tmp_path / "left.textproto"
+        left.write_text('name: "Alice"')
+        right = tmp_path / "right.textproto"
+        right.write_text('name: "Bob"')
+
+        result = runner.invoke(main, [
+            str(left), str(right),
+            "--desc", str(desc_file),
+            "--message-type", "test.Msg",
+            "--text-format",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["differences"][0]["old_value"] == "Alice"
+
+    def test_json_input(self, runner: CliRunner, tmp_path: Path) -> None:
+        desc_bytes = _make_descriptor_set("test", "Msg", {
+            "name": (T.TYPE_STRING, 1),
+            "value": (T.TYPE_INT32, 2),
+        })
+        desc_file = tmp_path / "test.descriptor_set"
+        desc_file.write_bytes(desc_bytes)
+
+        left = tmp_path / "left.json"
+        left.write_text('{"name": "Alice", "value": 1}')
+        right = tmp_path / "right.json"
+        right.write_text('{"name": "Alice", "value": 2}')
+
+        result = runner.invoke(main, [
+            str(left), str(right),
+            "--desc", str(desc_file),
+            "--message-type", "test.Msg",
+            "--json",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert len(data["differences"]) == 1
+        assert data["differences"][0]["path"] == "value"
+
+
+# ---------------------------------------------------------------------------
+# Filter and diff options
+# ---------------------------------------------------------------------------
+
+
+class TestDiffOptions:
+    def test_filter_path(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--filter", "name",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert len(data["differences"]) == 1
+        assert data["differences"][0]["path"] == "name"
+
+    def test_ignore_field(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--ignore", "name",
+            "--ignore", "value",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["equal"] is True
+
+
+# ---------------------------------------------------------------------------
+# Cross-schema mode (Group B)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSchemaMode:
+    def test_cross_schema_same_values(self, runner: CliRunner, tmp_path: Path) -> None:
+        left_desc_bytes = _make_descriptor_set("v1", "Msg", {
+            "name": (T.TYPE_STRING, 1),
+        })
+        right_desc_bytes = _make_descriptor_set("v2", "Msg", {
+            "name": (T.TYPE_STRING, 1),
+        })
+
+        left_desc_file = tmp_path / "left.descriptor_set"
+        left_desc_file.write_bytes(left_desc_bytes)
+        right_desc_file = tmp_path / "right.descriptor_set"
+        right_desc_file.write_bytes(right_desc_bytes)
+
+        left = tmp_path / "left.pb"
+        left.write_bytes(_build_message(left_desc_bytes, "v1.Msg", name="Alice"))
+        right = tmp_path / "right.pb"
+        right.write_bytes(_build_message(right_desc_bytes, "v2.Msg", name="Alice"))
+
+        result = runner.invoke(main, [
+            str(left), str(right),
+            "--left-desc", str(left_desc_file),
+            "--right-desc", str(right_desc_file),
+            "--left-type", "v1.Msg",
+            "--right-type", "v2.Msg",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["equal"] is True
+
+    def test_cross_schema_field_number_change(self, runner: CliRunner, tmp_path: Path) -> None:
+        left_desc_bytes = _make_descriptor_set("v1", "Msg", {
+            "name": (T.TYPE_STRING, 1),
+        })
+        right_desc_bytes = _make_descriptor_set("v2", "Msg", {
+            "name": (T.TYPE_STRING, 2),  # field number changed
+        })
+
+        left_desc_file = tmp_path / "left.descriptor_set"
+        left_desc_file.write_bytes(left_desc_bytes)
+        right_desc_file = tmp_path / "right.descriptor_set"
+        right_desc_file.write_bytes(right_desc_bytes)
+
+        left = tmp_path / "left.pb"
+        left.write_bytes(_build_message(left_desc_bytes, "v1.Msg", name="Alice"))
+        right = tmp_path / "right.pb"
+        right.write_bytes(_build_message(right_desc_bytes, "v2.Msg", name="Alice"))
+
+        result = runner.invoke(main, [
+            str(left), str(right),
+            "--left-desc", str(left_desc_file),
+            "--right-desc", str(right_desc_file),
+            "--left-type", "v1.Msg",
+            "--right-type", "v2.Msg",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        fn_changes = [d for d in data["differences"] if d["change_type"] == "FIELD_NUMBER_CHANGED"]
+        assert len(fn_changes) == 1

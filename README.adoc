@@ -1,0 +1,260 @@
+= proto-differ
+:toc:
+:toc-placement!:
+
+Python equivalent of Google's C++ `MessageDifferencer` for Protocol Buffers.
+
+Structured, filterable diff output. Cross-descriptor-pool comparison. Schema evolution detection. Beautiful CLI.
+
+toc::[]
+
+== Installation
+
+[source,bash]
+----
+pip install proto-differ
+----
+
+== Quick Start
+
+=== Library
+
+[source,python]
+----
+from proto_differ import diff_messages, ChangeType
+
+result = diff_messages(msg1, msg2)
+
+if result.has_changes():
+    for diff in result:
+        print(f"{diff.path}: {diff.old_value} -> {diff.new_value}")
+
+# Filter by path prefix
+user_changes = result.filter(path="user.address")
+
+# Filter by change type
+additions = result.filter(change_type=ChangeType.ADDED)
+
+# Combine filters
+new_address_fields = result.filter(path="user.address", change_type=ChangeType.ADDED)
+----
+
+=== CLI
+
+Compare two binary protobuf messages:
+
+[source,bash]
+----
+# Same-schema mode
+pbdiff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User
+
+# Cross-schema mode (schema evolution)
+pbdiff left.pb right.pb \
+  --left-desc v1.descriptor_set --right-desc v2.descriptor_set \
+  --left-type v1.User --right-type v2.User
+
+# JSON input
+pbdiff left.json right.json --desc schema.descriptor_set --message-type myapp.User --json
+
+# Text format input
+pbdiff left.textproto right.textproto --desc schema.descriptor_set --message-type myapp.User --text-format
+
+# From .proto files (requires protoc on PATH)
+pbdiff left.pb right.pb --proto schema.proto --message-type myapp.User
+----
+
+Example output:
+
+----
+Found 3 differences:
+
+  ~ user.name: 'Alice' -> 'Bob'
+  + user.address.city: 'New York'
+  - user.phone: '+1-555-0100'
+----
+
+JSON output for scripting:
+
+[source,bash]
+----
+pbdiff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --format json
+----
+
+[source,json]
+----
+{
+  "equal": false,
+  "differences": [
+    {
+      "path": "user.name",
+      "change_type": "MODIFIED",
+      "old_value": "Alice",
+      "new_value": "Bob",
+      "field_type": "TYPE_STRING"
+    }
+  ],
+  "warnings": []
+}
+----
+
+Quiet mode for CI (exit code only):
+
+[source,bash]
+----
+pbdiff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --quiet
+echo $?  # 0 = equal, 1 = different, 2 = error
+----
+
+=== pytest Integration
+
+Add the hook to your `conftest.py`:
+
+[source,python]
+----
+from proto_differ.pytest_plugin import pytest_assertrepr_compare  # noqa: F401
+----
+
+Now `assert msg1 == msg2` shows a structured diff on failure:
+
+----
+assert msg1 == msg2
+E     myapp.User != myapp.User
+E       2 difference(s):
+E       ~ name: 'Alice' -> 'Bob'
+E       ~ address.city: 'SF' -> 'NYC'
+----
+
+== Features
+
+Cross-descriptor-pool comparison::
+Compare messages from different `.descriptor_set` files. Field matching is name-based, not descriptor-identity-based.
+
+Schema evolution detection::
+Detects field number changes, type changes, and cardinality changes across schema versions. Reported as first-class diff entries.
+
+Queryable diff objects::
+`DiffResult` is immutable and filterable. Filter by path prefix, exact path, or change type. Chain filters freely.
+
+`treat_as_map`::
+Match repeated message fields by a key field instead of index, ignoring order.
+
+[source,python]
+----
+from proto_differ import MessageDifferencer
+
+differ = MessageDifferencer()
+differ.treat_as_map("items", key="id")
+result = differ.compare(msg1, msg2)
+# Paths use key notation: items[id="abc"].name
+----
+
+Float comparison::
+Exact (IEEE 754) or approximate (fraction + margin) modes.
+
+[source,python]
+----
+from proto_differ import MessageDifferencer, FloatComparison
+
+differ = MessageDifferencer()
+differ.set_float_comparison(FloatComparison.APPROXIMATE, fraction=1e-6, margin=1e-9)
+----
+
+Ignore fields::
+[source,python]
+----
+differ = MessageDifferencer()
+differ.ignore_fields("timestamp", "request_id")  # bare name = global
+differ.ignore_fields("user.internal_id")          # dotted path = scoped
+----
+
+Max depth::
+[source,python]
+----
+differ = MessageDifferencer()
+differ.max_depth = 3
+result = differ.compare(msg1, msg2)
+assert not result.is_complete  # truncated subtrees exist
+----
+
+== CLI Options
+
+[cols="1,3"]
+|===
+| Flag | Description
+
+| `--desc FILE`
+| Descriptor set file (same-schema mode)
+
+| `--message-type NAME`
+| Fully-qualified message type name
+
+| `--left-desc FILE`
+| Left descriptor set (cross-schema mode)
+
+| `--right-desc FILE`
+| Right descriptor set (cross-schema mode)
+
+| `--left-type NAME`
+| Left message type (cross-schema mode)
+
+| `--right-type NAME`
+| Right message type (cross-schema mode)
+
+| `--proto FILE`
+| .proto file (requires `protoc` on PATH)
+
+| `--proto-path DIR`
+| Import path for protoc. Repeatable.
+
+| `--text-format`
+| Parse input as protobuf text format
+
+| `--json`
+| Parse input as JSON-encoded protobuf
+
+| `--format human\|json`
+| Output format (default: human)
+
+| `--quiet`
+| Suppress output, exit code only
+
+| `--verbose`
+| Show warnings even when equal
+
+| `--filter PATH`
+| Filter diffs by path prefix
+
+| `--ignore FIELD`
+| Ignore field. Repeatable.
+
+| `--treat-as-map FIELD KEY`
+| Treat repeated field as map with key
+
+| `--float-mode exact\|approximate`
+| Float comparison mode
+
+| `--max-depth N`
+| Maximum comparison depth
+
+| `--strict-schema`
+| Warn on message type name changes
+|===
+
+== Supported Field Types
+
+* Scalars (int32/64, uint32/64, sint32/64, fixed32/64, sfixed32/64, float, double, bool, string, bytes)
+* Nested messages (arbitrary depth)
+* Repeated fields (index-based or key-based via `treat_as_map`)
+* Map fields (native protobuf maps)
+* Oneof fields
+* Enum fields (same-pool and cross-pool with wire-compatibility)
+
+== Requirements
+
+* Python 3.10+
+* `protobuf` >= 4.21.0
+* `click` >= 8.0
+
+== License
+
+MIT
