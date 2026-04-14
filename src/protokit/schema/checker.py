@@ -34,6 +34,7 @@ Profile filtering and ``CompatibilityPolicy`` live in
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace as _dataclass_replace
 from types import ModuleType
 from typing import Iterable
 
@@ -83,6 +84,12 @@ class SchemaChecker:
             before calling ``check()`` to switch profiles. The
             attribute is also set into the resulting
             ``CompatibilityReport.level``.
+        dedupe_by_type: When False (default), findings on a shared
+            nested type are emitted at **every** path where the type
+            pair appears (path-complete reporting). When True, each
+            type pair is processed once and only the first path's
+            findings surface — the original "compatibility is a
+            property of the type, not its position" behavior.
     """
 
     def __init__(
@@ -90,6 +97,7 @@ class SchemaChecker:
         *,
         level: CompatibilityLevel = CompatibilityLevel.STRICT,
         include_builtin: bool = True,
+        dedupe_by_type: bool = False,
     ) -> None:
         """Construct a checker with the given profile and rule set.
 
@@ -102,8 +110,17 @@ class SchemaChecker:
                 rules from ``protokit.schema.rules`` are pre-registered.
                 Pass False to start with an empty rule set — useful
                 when you want only custom rules to fire.
+            dedupe_by_type: When False (default), findings for a
+                shared nested type are replayed at every path that
+                references it — the path-complete behavior. When
+                True, each type pair is processed once and only the
+                first-encountered path gets findings, matching the
+                original design-doc behavior where compatibility is
+                treated as a property of the type definition, not
+                its position in the tree.
         """
         self.level = level
+        self.dedupe_by_type = dedupe_by_type
         # Return-style rules: built-ins seeded here; raw register methods
         # extend the lists in place.
         self._field_rules: list[tuple[str, FieldRuleFn]] = (
@@ -359,20 +376,84 @@ class SchemaChecker:
         new_pool: descriptor_pool.DescriptorPool,
         warnings_sink: list[Warning],
     ) -> list[Finding]:
+        """Walk the descriptor tree and collect findings.
+
+        Cycle detection uses an ``in_progress`` set (type pairs
+        currently on the DFS path) — re-entering an in-progress pair
+        is a cycle and gets skipped.
+
+        Sharing is handled differently depending on
+        ``self.dedupe_by_type``:
+
+        - False (default, path-complete): process each type pair
+          once, cache the resulting findings keyed by type pair with
+          paths stored relative to the entry point, and replay the
+          cached findings with the new prefix whenever the same
+          pair appears under a different path.
+        - True: use a flat visited set and skip every repeat visit
+          after the first, matching the original design-doc
+          behavior.
+
+        The stack carries two kinds of entries in path-complete mode:
+        ``("visit", old_m, new_m, path)`` to process a pair, and
+        ``("post", key, entry_path, start_idx)`` as a sentinel that
+        fires when the pair's subtree is fully processed so we can
+        snapshot and cache the emitted findings.
+        """
         findings: list[Finding] = []
-        stack: list[tuple[
-            proto_descriptor.Descriptor,
-            proto_descriptor.Descriptor,
-            FieldPath,
-        ]] = [(root_old, root_new, FieldPath(segments=()))]
-        visited: set[tuple[str, str]] = set()
+        stack: list = [("visit", root_old, root_new, FieldPath(segments=()))]
+        in_progress: set[tuple[str, str]] = set()
+        dedupe_visited: set[tuple[str, str]] = set()
+        # Per-pair cache: relative-path + finding pairs captured on
+        # the first visit. Replayed with a new prefix on later visits.
+        cache: dict[
+            tuple[str, str], list[tuple[FieldPath, Finding]]
+        ] = {}
 
         while stack:
-            old_m, new_m, path = stack.pop()
-            key = (old_m.full_name, new_m.full_name)
-            if key in visited:
+            entry = stack.pop()
+            tag = entry[0]
+
+            if tag == "post":
+                _, key, entry_path, start_idx = entry
+                in_progress.discard(key)
+                # Snapshot everything emitted since we pushed this
+                # sentinel and store each finding with a path
+                # relative to this visit's entry so it can be
+                # replayed at other paths.
+                subtree = findings[start_idx:]
+                cache[key] = [
+                    (self._strip_path_prefix(f.path, entry_path), f)
+                    for f in subtree
+                ]
                 continue
-            visited.add(key)
+
+            _, old_m, new_m, path = entry
+            key = (old_m.full_name, new_m.full_name)
+
+            if key in in_progress:
+                # Cycle — already traversing this type pair deeper
+                # up the stack. Don't recurse.
+                continue
+
+            if self.dedupe_by_type:
+                if key in dedupe_visited:
+                    continue
+                dedupe_visited.add(key)
+            else:
+                if key in cache:
+                    # Replay the type pair's findings at this path.
+                    for rel, finding in cache[key]:
+                        new_path = self._join_paths(path, rel)
+                        findings.append(
+                            _dataclass_replace(finding, path=new_path)
+                        )
+                    continue
+
+            in_progress.add(key)
+            if not self.dedupe_by_type:
+                # Sentinel fires after this pair's subtree completes.
+                stack.append(("post", key, path, len(findings)))
 
             for _, rule_fn in self._message_rules:
                 findings.extend(rule_fn(old_m, new_m, path))
@@ -388,7 +469,36 @@ class SchemaChecker:
                 findings, warnings_sink, stack,
             )
 
+            if self.dedupe_by_type:
+                # No sentinel in dedupe mode; flush in_progress now
+                # that we've queued all descendants. Cycles are
+                # still detected because repeat pops in the same
+                # subtree get caught by dedupe_visited.
+                in_progress.discard(key)
+
         return findings
+
+    @staticmethod
+    def _strip_path_prefix(absolute: FieldPath, prefix: FieldPath) -> FieldPath:
+        """Return ``absolute`` with ``prefix`` removed from the front.
+
+        ``absolute`` is expected to start with ``prefix`` (which is
+        the case for findings emitted under a subtree entry). If it
+        doesn't (defensive fallback), return ``absolute`` unchanged.
+        """
+        pref_segs = prefix.segments
+        abs_segs = absolute.segments
+        if len(abs_segs) < len(pref_segs):
+            return absolute
+        for i, seg in enumerate(pref_segs):
+            if abs_segs[i] != seg:
+                return absolute
+        return FieldPath(segments=abs_segs[len(pref_segs):])
+
+    @staticmethod
+    def _join_paths(prefix: FieldPath, suffix: FieldPath) -> FieldPath:
+        """Concatenate two ``FieldPath`` objects."""
+        return FieldPath(segments=prefix.segments + suffix.segments)
 
     def _compare_fields(
         self,
@@ -445,7 +555,9 @@ class SchemaChecker:
                 )
                 continue
 
-            stack.append((old_fd.message_type, new_fd.message_type, field_path))
+            stack.append(
+                ("visit", old_fd.message_type, new_fd.message_type, field_path)
+            )
 
     def _compare_map_value(
         self,
@@ -501,6 +613,7 @@ class SchemaChecker:
         if (old_value.type == FD.TYPE_MESSAGE
                 and new_value.type == FD.TYPE_MESSAGE):
             stack.append((
+                "visit",
                 old_value.message_type, new_value.message_type, value_path,
             ))
 

@@ -198,6 +198,56 @@ class TestCycles:
         assert len(added) == 1
         assert added[0].path == FieldPath.parse("tag")
 
+    def test_shared_nested_type_findings_appear_at_every_path(self) -> None:
+        """Two different fields referencing the same shared nested
+        type both receive findings (path-complete default).
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Shared", fields=[
+            {"name": "secret", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.Shared", fields=[])  # secret removed
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.Outer", fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+                {"name": "b", "number": 2, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+            ], file_name=f"outer_{label}.proto")
+
+        report = check_compatibility(old, "t.Outer", new, "t.Outer")
+        removed = [f for f in report.findings if f.rule_id == "field_removed"]
+        # Both paths must report the removal so ignoring one doesn't
+        # hide the other.
+        paths = sorted(str(f.path) for f in removed)
+        assert paths == ["a.secret", "b.secret"]
+
+    def test_shared_nested_type_dedupe_opt_in(self) -> None:
+        """``dedupe_by_type=True`` preserves the original behavior:
+        findings for a shared type appear only at the first path.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Shared", fields=[
+            {"name": "secret", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.Shared", fields=[])
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.Outer", fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+                {"name": "b", "number": 2, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+            ], file_name=f"outer_dedupe_{label}.proto")
+
+        checker = SchemaChecker(dedupe_by_type=True)
+        report = checker.check(old, "t.Outer", new, "t.Outer")
+        removed = [f for f in report.findings if f.rule_id == "field_removed"]
+        # Only the first-encountered path surfaces; the other is
+        # suppressed by the visited set.
+        assert len(removed) == 1
+
     def test_mutual_recursion(self) -> None:
         # A.b -> B; B.a -> A — pair (A,A) visited once; (B,B) visited once
         # Mutual references must live in the same FileDescriptorProto.

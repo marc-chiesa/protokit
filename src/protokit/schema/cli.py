@@ -379,6 +379,14 @@ def _render_json(report: CompatibilityReport) -> str:
     help="Suppress findings at this dotted path prefix (repeatable).",
 )
 @click.option(
+    "--dedupe-by-type",
+    is_flag=True,
+    default=False,
+    help="Emit findings for each shared nested type only once (original "
+         "behavior). Default is path-complete: findings appear at every "
+         "path where the type is referenced.",
+)
+@click.option(
     "--quiet",
     is_flag=True,
     default=False,
@@ -396,6 +404,7 @@ def main(
     output_format: str,
     rule_packs: tuple[str, ...],
     ignore_paths: tuple[str, ...],
+    dedupe_by_type: bool,
     quiet: bool,
 ) -> None:
     """Check schema compatibility between two protobuf schemas.
@@ -420,7 +429,7 @@ def main(
         old_pool = _safe_load_pool(old_input, label="OLD_INPUT")
         new_pool = _safe_load_pool(new_input, label="NEW_INPUT")
 
-    checker = SchemaChecker(level=level)
+    checker = SchemaChecker(level=level, dedupe_by_type=dedupe_by_type)
     _load_rule_packs(checker, rule_packs)
     for path in ignore_paths:
         try:

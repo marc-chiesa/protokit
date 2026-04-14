@@ -13,21 +13,6 @@ Gaps surfaced during Phase 1 adversarial review that were deferred
 out of scope. Close these on the next branch after merging
 `schema-checker` to main — the diff is small and each is independent.
 
-### Emit findings at every path for shared nested types (visited-set rework)
-
-**What:** The traversal keeps a `visited: set[(old_full_name, new_full_name)]` and skips any type pair it has already visited. When the same nested type is embedded at multiple paths (e.g., `Outer.a: Shared` and `Outer.b: Shared`), findings for `Shared` are emitted only at the first path popped off the stack. The second path inherits the dedupe and produces no findings under itself.
-
-**Why:** Consistent with the original design ("compatibility is a property of the type definition, not its position"), but creates a path-completeness gap: a user ignoring `a.secret_field` may not realize that `b.secret_field` is broken too. Surfaced during the Phase-1 adversarial review (codex challenge, 2026-04-13).
-
-**Fix approach:** Decouple "run rules on this type pair" from "emit findings at this path". Cache rule results per type pair, then re-emit at every path where the pair appears. Keeps O(n) rule-evaluation cost but produces path-complete findings.
-
-**Effort:** M (CC: ~30 min)
-**Priority:** P2
-**Depends on:** Phase 1 traversal is stable. Would also want `--dedupe-by-type` flag so users who prefer the current behavior can opt in.
-**Discovered:** 2026-04-13 codex adversarial review
-
----
-
 ## Phase 1.5 — Differ hook system
 
 The schema checker (Phase 1) detects that an option *changed* between

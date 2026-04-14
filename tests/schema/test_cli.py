@@ -242,6 +242,57 @@ class TestIgnore:
 # ---------------------------------------------------------------------------
 
 
+class TestDedupeByType:
+    """``--dedupe-by-type`` opts back into the original single-path behavior."""
+
+    def _build_shared_pair(
+        self, tmp_path: Path,
+    ) -> tuple[Path, Path]:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        from tests.schema.helpers import build_message as _build
+        _build(old, "t.Shared", fields=[
+            {"name": "secret", "number": 1, "type": T.TYPE_STRING},
+        ])
+        _build(new, "t.Shared", fields=[])
+        for p, label in ((old, "old"), (new, "new")):
+            _build(p, "t.Outer", fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+                {"name": "b", "number": 2, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+            ], file_name=f"cli_outer_{label}.proto")
+        # Include both types so the emitted descriptor set carries
+        # the Shared file alongside Outer (build_message doesn't
+        # auto-wire dependency edges between sibling files).
+        return (
+            _write_desc(tmp_path, "old_shared", old, ["t.Outer", "t.Shared"]),
+            _write_desc(tmp_path, "new_shared", new, ["t.Outer", "t.Shared"]),
+        )
+
+    def test_default_is_path_complete(self, tmp_path: Path) -> None:
+        old_path, new_path = self._build_shared_pair(tmp_path)
+        result = CliRunner().invoke(main, [
+            str(old_path), str(new_path), "--type", "t.Outer",
+            "--level", "strict",
+        ])
+        assert result.exit_code == 1
+        # Both paths surface.
+        assert "a.secret" in result.output
+        assert "b.secret" in result.output
+
+    def test_dedupe_flag_collapses_to_first_path(self, tmp_path: Path) -> None:
+        old_path, new_path = self._build_shared_pair(tmp_path)
+        result = CliRunner().invoke(main, [
+            str(old_path), str(new_path), "--type", "t.Outer",
+            "--level", "strict",
+            "--dedupe-by-type",
+        ])
+        assert result.exit_code == 1
+        # Exactly one of the two paths surfaces (first popped off the stack).
+        assert ("a.secret" in result.output) != ("b.secret" in result.output)
+
+
 class TestQuiet:
     def test_quiet_no_output_exit_0(self, tmp_path: Path) -> None:
         old, new = _simple_pair(

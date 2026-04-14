@@ -502,6 +502,9 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | `--ignore PATH`
 | Suppress findings at this dotted path prefix. Repeatable.
 
+| `--dedupe-by-type`
+| Emit findings for each shared nested type only once (original behavior). Default is path-complete: findings appear at every path where the type is referenced.
+
 | `--quiet`
 | Suppress output; return exit code only.
 |===
