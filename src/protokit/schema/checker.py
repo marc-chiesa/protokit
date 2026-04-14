@@ -439,26 +439,70 @@ class SchemaChecker:
                 continue
 
             if old_is_map and new_is_map:
-                self._maybe_push_map_value(old_fd, new_fd, field_path, stack)
+                self._compare_map_value(
+                    old_fd, new_fd, field_path,
+                    old_pool, new_pool, findings, warnings_sink, stack,
+                )
                 continue
 
             stack.append((old_fd.message_type, new_fd.message_type, field_path))
 
-    @staticmethod
-    def _maybe_push_map_value(
+    def _compare_map_value(
+        self,
         old_fd: proto_descriptor.FieldDescriptor,
         new_fd: proto_descriptor.FieldDescriptor,
         path: FieldPath,
+        old_pool: descriptor_pool.DescriptorPool,
+        new_pool: descriptor_pool.DescriptorPool,
+        findings: list[Finding],
+        warnings_sink: list[Warning],
         stack: list,
     ) -> None:
-        """If the map's value is a message on both sides, push it for recursion."""
+        """Dispatch field rules + push recursion for a map's value sub-field.
+
+        The synthetic ``MapEntry`` message has ``key`` and ``value``
+        fields. ``key`` is always a scalar and not user-visible, but
+        ``value`` carries the user's declared map value type — so we
+        treat it like any other field for rule dispatch. If the
+        value is itself a message, we also push its message_type
+        onto the stack so the engine recurses into it.
+
+        Path: findings on the value sub-field use
+        ``path.child("value")`` — the map field itself stays at
+        ``path`` and any value-type concern appears nested under
+        it.
+        """
         old_value = old_fd.message_type.fields_by_name.get("value")
         new_value = new_fd.message_type.fields_by_name.get("value")
         if old_value is None or new_value is None:
             return
-        if old_value.type != FD.TYPE_MESSAGE or new_value.type != FD.TYPE_MESSAGE:
-            return
-        stack.append((old_value.message_type, new_value.message_type, path))
+        value_path = path.child("value")
+
+        # Run all registered field rules + plugins on the value pair.
+        # Rules that guard on is_map_field won't fire here (the value
+        # isn't a map); all the type / cardinality / option rules do.
+        for _, rule_fn in self._field_rules:
+            findings.extend(rule_fn(old_value, new_value, value_path))
+        for rule_id, plugin_fn in self._field_plugins:
+            self._dispatch_field_plugin(
+                rule_id, plugin_fn, old_value, new_value, value_path,
+                old_pool, new_pool, findings, warnings_sink,
+            )
+
+        # Enum-rule dispatch for TYPE_ENUM values, mirroring the
+        # non-map enum path in _compare_fields.
+        if old_value.type == FD.TYPE_ENUM and new_value.type == FD.TYPE_ENUM:
+            for _, rule_fn in self._enum_rules:
+                findings.extend(rule_fn(
+                    old_value.enum_type, new_value.enum_type, value_path,
+                ))
+
+        # If the value is a message on both sides, recurse into it.
+        if (old_value.type == FD.TYPE_MESSAGE
+                and new_value.type == FD.TYPE_MESSAGE):
+            stack.append((
+                old_value.message_type, new_value.message_type, value_path,
+            ))
 
     # ------------------------------------------------------------------
     # Plugin dispatch (with exception safety)

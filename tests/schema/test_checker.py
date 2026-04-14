@@ -289,6 +289,9 @@ class TestMaps:
 
     def test_map_value_message_recursion(self) -> None:
         # map<string, Inner> on both sides; Inner gains a field.
+        # With map-value dispatch, the recursion enters Inner via
+        # ``items.value`` (the synthetic map-entry value sub-field),
+        # so the added field surfaces at ``items.value.extra``.
         old = descriptor_pool.DescriptorPool()
         new = descriptor_pool.DescriptorPool()
         build_message(old, "t.Inner", fields=[
@@ -304,7 +307,122 @@ class TestMaps:
                              key_type=T.TYPE_STRING, value_type_name="t.Inner")
         report = check_compatibility(old, "t.M", new, "t.M")
         f = next(f for f in report.findings if f.rule_id == "field_added")
-        assert f.path == FieldPath.parse("items.extra")
+        assert f.path == FieldPath.parse("items.value.extra")
+
+    def test_map_value_type_rename_fires_field_type_name_changed(self) -> None:
+        """map<K, OldMsg> → map<K, NewMsg>: the rule fires on the
+        value sub-field (``items.value``) now that the engine
+        dispatches field rules on the map-entry value.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.OldVal", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.NewVal", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        _build_map_msg_value(old, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.OldVal")
+        _build_map_msg_value(new, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.NewVal")
+        report = check_compatibility(old, "t.M", new, "t.M")
+        hits = [f for f in report.findings if f.rule_id == "field_type_name_changed"]
+        assert len(hits) == 1
+        assert hits[0].path == FieldPath.parse("items.value")
+        assert "t.OldVal" in hits[0].message
+        assert "t.NewVal" in hits[0].message
+
+    def test_map_value_scalar_type_change_fires(self) -> None:
+        """map<K, string> → map<K, bytes> now fires
+        ``field_type_semantic_change`` at the value sub-field —
+        pre-dispatch this was silent.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        from tests.proto_builder import ProtoBuilder
+        pb_old = ProtoBuilder(old)
+        pb_old.map_message(
+            "t.M", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_STRING, 1)},
+        )
+        pb_new = ProtoBuilder(new)
+        pb_new.map_message(
+            "t.M", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_BYTES, 1)},
+        )
+        report = check_compatibility(old, "t.M", new, "t.M")
+        hits = [f for f in report.findings
+                if f.rule_id == "field_type_semantic_change"]
+        assert len(hits) == 1
+        assert hits[0].path == FieldPath.parse("items.value")
+
+    def test_map_value_kind_change_fires_wire_incompatible(self) -> None:
+        """map<K, Msg> → map<K, Enum>: different wire groups, so
+        ``field_type_wire_incompatible`` fires at ``items.value``.
+        Pre-dispatch this was silent — exactly the round-5 gap.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.ValMsg", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_enum(new, "t.ValEnum", {"ZERO": 0})
+        _build_map_msg_value(old, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.ValMsg")
+        # Build a map<string, t.ValEnum> on the new side manually.
+        from google.protobuf import descriptor_pb2 as dpb
+        fp = dpb.FileDescriptorProto(
+            name="new_enum_map.proto", package="t", syntax="proto3",
+        )
+        mp = fp.message_type.add()
+        mp.name = "M"
+        entry = mp.nested_type.add()
+        entry.name = "ItemsEntry"
+        entry.options.map_entry = True
+        k = entry.field.add()
+        k.name, k.number, k.type = "key", 1, T.TYPE_STRING
+        k.label = T.LABEL_OPTIONAL
+        v = entry.field.add()
+        v.name, v.number, v.type = "value", 2, T.TYPE_ENUM
+        v.type_name = "t.ValEnum"
+        v.label = T.LABEL_OPTIONAL
+        f = mp.field.add()
+        f.name, f.number, f.type = "items", 1, T.TYPE_MESSAGE
+        f.type_name = ".t.M.ItemsEntry"
+        f.label = T.LABEL_REPEATED
+        new.Add(fp)
+        report = check_compatibility(old, "t.M", new, "t.M")
+        hits = [f for f in report.findings
+                if f.rule_id == "field_type_wire_incompatible"]
+        assert len(hits) == 1
+        assert hits[0].path == FieldPath.parse("items.value")
+
+    def test_map_outer_rename_stays_silent_on_value(self) -> None:
+        """Renaming the outer container (UserV1 → UserV2) must NOT
+        fire value-level findings when the map contents are
+        byte-identical — the synthetic MapEntry name rotates but
+        the value-field's declared type doesn't.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        from tests.proto_builder import ProtoBuilder
+        ProtoBuilder(old).map_message(
+            "t.UserV1", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
+        )
+        ProtoBuilder(new).map_message(
+            "t.UserV2", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
+        )
+        report = check_compatibility(
+            old, "t.UserV1", new, "t.UserV2",
+            level=CompatibilityLevel.STRICT,
+        )
+        # No value-level findings — everything inside is unchanged.
+        value_findings = [f for f in report.findings
+                          if str(f.path).startswith("items.value")]
+        assert value_findings == []
 
 
 def _build_map_msg_value(

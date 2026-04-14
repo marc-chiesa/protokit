@@ -208,50 +208,23 @@ class TestFieldTypeNameChanged:
         new_fd = new_pool.FindMessageTypeByName("t.UserV2").fields_by_name["items"]
         assert field_type_name_changed(old_fd, new_fd, ROOT) == []
 
-    def test_fires_for_map_value_message_type_rename(self) -> None:
-        """Rename the MESSAGE TYPE the map value points at — should fire."""
-        from google.protobuf import descriptor_pb2 as dpb
-
-        def _build_map_of_msg(pool, container: str, value_type_name: str) -> None:
-            fp = dpb.FileDescriptorProto(
-                name=f"map_{id(pool):x}.proto", package="t", syntax="proto3",
-            )
-            # Value-message stub.
-            vm = fp.message_type.add()
-            vm.name = value_type_name.split(".")[-1]
-            vf = vm.field.add()
-            vf.name, vf.number, vf.type = "v", 1, T.TYPE_INT32
-            vf.label = T.LABEL_OPTIONAL
-            # Container with map<string, Msg>.
-            mp = fp.message_type.add()
-            mp.name = container
-            entry = mp.nested_type.add()
-            entry.name = "ItemsEntry"
-            entry.options.map_entry = True
-            k = entry.field.add()
-            k.name, k.number, k.type = "key", 1, T.TYPE_STRING
-            k.label = T.LABEL_OPTIONAL
-            v = entry.field.add()
-            v.name, v.number, v.type = "value", 2, T.TYPE_MESSAGE
-            v.type_name = value_type_name
-            v.label = T.LABEL_OPTIONAL
-            f = mp.field.add()
-            f.name, f.number, f.type = "items", 1, T.TYPE_MESSAGE
-            f.type_name = f".t.{container}.ItemsEntry"
-            f.label = T.LABEL_REPEATED
-            pool.Add(fp)
-
-        old_pool = descriptor_pool.DescriptorPool()
-        new_pool = descriptor_pool.DescriptorPool()
-        _build_map_of_msg(old_pool, "Outer", "t.OldVal")
-        _build_map_of_msg(new_pool, "Outer", "t.NewVal")
-        old_fd = old_pool.FindMessageTypeByName("t.Outer").fields_by_name["items"]
-        new_fd = new_pool.FindMessageTypeByName("t.Outer").fields_by_name["items"]
-        findings = field_type_name_changed(old_fd, new_fd, ROOT)
-        assert len(findings) == 1
-        assert "t.OldVal" in findings[0].message
-        assert "t.NewVal" in findings[0].message
-        assert "map value" in findings[0].message.lower()
+    def test_silent_on_map_field_itself(self) -> None:
+        """The rule skips the map field itself — value-type rotation
+        is flagged when the engine dispatches field rules against the
+        synthetic MapEntry.value sub-field instead. The checker-level
+        test in test_checker.py verifies the end-to-end path.
+        """
+        # No-op sanity: field_type_name_changed on a map field
+        # returns []. The real value-type test lives in test_checker.
+        from tests.proto_builder import ProtoBuilder
+        pool = descriptor_pool.DescriptorPool()
+        pb = ProtoBuilder(pool)
+        pb.map_message(
+            "t.M", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_STRING, 1)},
+        )
+        fd = pool.FindMessageTypeByName("t.M").fields_by_name["items"]
+        assert field_type_name_changed(fd, fd, ROOT) == []
 
     def test_silent_when_type_category_changes(self) -> None:
         """message -> enum (or any category change) is handled by

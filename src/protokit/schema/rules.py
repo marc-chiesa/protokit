@@ -675,21 +675,16 @@ def field_type_name_changed(
     if old_fd.type != new_fd.type:
         return []
 
-    # Maps are backed by a synthetic ``XxxEntry`` message whose
-    # full_name is ``<container>.<field>Entry``. Renaming the
-    # containing message rotates every nested entry's full_name
-    # even when the map itself is byte-identical, so we can't
-    # compare the map field's own message_type.full_name. Instead,
-    # look through to the ``value`` sub-field — that's the
-    # user-authored type whose identity actually matters.
-    old_is_map = is_map_field(old_fd)
-    new_is_map = is_map_field(new_fd)
-    if old_is_map != new_is_map:
-        # Map ↔ repeated is a cardinality change, not a type-name
-        # rotation; ``map_to_repeated`` handles it.
+    # Map fields point at a synthetic ``XxxEntry`` message whose
+    # full_name is tied to the containing message's name — renaming
+    # ``UserV1`` → ``UserV2`` rotates every ``UserV1.ItemsEntry`` →
+    # ``UserV2.ItemsEntry`` synthetically, not because the user
+    # changed the map's value type. We skip the map field itself
+    # here; the checker dispatches field rules on the map's
+    # ``value`` sub-field so any real value-type rotation fires
+    # against the user-authored type directly.
+    if is_map_field(old_fd) or is_map_field(new_fd):
         return []
-    if old_is_map and new_is_map:
-        return _map_value_type_name_finding(old_fd, new_fd, path)
 
     if old_fd.type == FD.TYPE_MESSAGE:
         old_name = old_fd.message_type.full_name
@@ -710,51 +705,6 @@ def field_type_name_changed(
         message=(
             f"{kind} type changed: '{old_name}' -> '{new_name}' "
             f"(shape-level differences are reported separately)"
-        ),
-        old_descriptor=old_fd,
-        new_descriptor=new_fd,
-    )]
-
-
-def _map_value_type_name_finding(
-    old_fd: proto_descriptor.FieldDescriptor,
-    new_fd: proto_descriptor.FieldDescriptor,
-    path: FieldPath,
-) -> list[Finding]:
-    """Emit a ``field_type_name_changed`` finding for a map value-type rotation.
-
-    Only fires when the map's value field is a message or enum and
-    its full_name differs. Scalar-valued maps and rotations where
-    only the synthetic MapEntry's name changed (because the
-    containing message was renamed) produce no finding.
-    """
-    old_val = old_fd.message_type.fields_by_name.get("value")
-    new_val = new_fd.message_type.fields_by_name.get("value")
-    if old_val is None or new_val is None:
-        return []
-    if old_val.type != new_val.type:
-        return []
-    if old_val.type == FD.TYPE_MESSAGE:
-        old_name = old_val.message_type.full_name
-        new_name = new_val.message_type.full_name
-        kind = "message"
-    elif old_val.type == FD.TYPE_ENUM:
-        old_name = old_val.enum_type.full_name
-        new_name = new_val.enum_type.full_name
-        kind = "enum"
-    else:
-        return []
-    if old_name == new_name:
-        return []
-    return [Finding(
-        path=path,
-        rule_id="field_type_name_changed",
-        severity=Severity.POLICY,
-        direction=Direction.BOTH,
-        message=(
-            f"map value {kind} type changed: '{old_name}' -> "
-            f"'{new_name}' (shape-level differences are reported "
-            f"separately)"
         ),
         old_descriptor=old_fd,
         new_descriptor=new_fd,

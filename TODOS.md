@@ -13,24 +13,6 @@ Gaps surfaced during Phase 1 adversarial review that were deferred
 out of scope. Close these on the next branch after merging
 `schema-checker` to main — the diff is small and each is independent.
 
-### Run field rules on map-entry value sub-fields
-
-**What:** When both sides of a comparison are map fields, the checker pushes the value's message_type onto the stack for recursion but never runs *field rules* against the synthetic ``MapEntry.value`` sub-field itself. That means changes like ``map<K, Msg> → map<K, Enum>`` (category change) or ``map<K, string> → map<K, bytes>`` (semantic change within length-delimited) slip past every rule. ``field_type_name_changed`` has a narrow helper that catches the same-category rename case, but the broader gap remains.
-
-**Why:** Real but niche. Map value kind changes are unusual schema edits, and the existing engine still catches the outer wire/cardinality changes. Flagged during round-5 adversarial review (codex challenge, 2026-04-13) but deferred because the fix is a user-visible surface change (findings get paths like ``items.value``) that deserves its own design pass.
-
-**Fix approach:**
-1. In ``SchemaChecker._compare_fields``, when both ``old_fd`` and ``new_fd`` are map fields and both have a ``value`` sub-field, dispatch all registered field rules and plugins against that pair with path ``field_path.child("value")``.
-2. Remove the special-case ``_map_value_type_name_finding`` helper — the same rule now runs directly on the map value.
-3. Add tests covering value kind changes (message ↔ enum, scalar type changes) and confirm the existing outer-rename case stays silent.
-
-**Effort:** M (~30 min CC)
-**Priority:** P2
-**Depends on:** Phase 1 traversal is stable. Interacts with the visited-set work below if both land in the same cycle.
-**Discovered:** 2026-04-13 codex round-5 review.
-
----
-
 ### Emit findings at every path for shared nested types (visited-set rework)
 
 **What:** The traversal keeps a `visited: set[(old_full_name, new_full_name)]` and skips any type pair it has already visited. When the same nested type is embedded at multiple paths (e.g., `Outer.a: Shared` and `Outer.b: Shared`), findings for `Shared` are emitted only at the first path popped off the stack. The second path inherits the dedupe and produces no findings under itself.
