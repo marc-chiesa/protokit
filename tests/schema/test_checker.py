@@ -474,6 +474,72 @@ class TestMaps:
                           if str(f.path).startswith("items.value")]
         assert value_findings == []
 
+    def test_shared_map_value_findings_at_every_path(self) -> None:
+        """Two map fields sharing the same value message type must
+        both receive path-complete findings when the shared type
+        changes. Guards against a cache-replay regression where
+        only the first map field's findings would surface.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Inner", fields=[
+            {"name": "v", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.Inner", fields=[
+            {"name": "v", "number": 1, "type": T.TYPE_INT32},
+            {"name": "extra", "number": 2, "type": T.TYPE_STRING},
+        ])
+        _build_outer_two_maps_msg_value(
+            old, map_fields=("a", "b"), value_type_name="t.Inner",
+            file_name="outer_two_maps_old.proto",
+        )
+        _build_outer_two_maps_msg_value(
+            new, map_fields=("a", "b"), value_type_name="t.Inner",
+            file_name="outer_two_maps_new.proto",
+        )
+        report = check_compatibility(old, "t.Outer", new, "t.Outer")
+        added = sorted(
+            str(f.path) for f in report.findings
+            if f.rule_id == "field_added"
+        )
+        assert added == ["a.value.extra", "b.value.extra"]
+
+    def test_cycle_through_map_value(self) -> None:
+        """A message that self-references through its own map-value
+        type must terminate and emit findings exactly once, just
+        like a repeated-field self-reference.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        _build_self_map_cycle(old, with_tag=False)
+        _build_self_map_cycle(new, with_tag=True)
+        report = check_compatibility(old, "t.Tree", new, "t.Tree")
+        added = [f for f in report.findings if f.rule_id == "field_added"]
+        assert len(added) == 1
+        assert added[0].path == FieldPath.parse("tag")
+
+    def test_map_value_enum_rename_fires_field_type_name_changed(self) -> None:
+        """``map<K, OldEnum>`` → ``map<K, NewEnum>`` (same values,
+        different enum name) must fire ``field_type_name_changed``
+        at ``items.value`` — dispatching field rules on the value
+        sub-field handles enum renames just like message renames.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.OldEnum", {"ZERO": 0, "ONE": 1})
+        build_enum(new, "t.NewEnum", {"ZERO": 0, "ONE": 1})
+        _build_map_enum_value(old, "t.M", map_field="items",
+                              key_type=T.TYPE_STRING, value_type_name="t.OldEnum")
+        _build_map_enum_value(new, "t.M", map_field="items",
+                              key_type=T.TYPE_STRING, value_type_name="t.NewEnum")
+        report = check_compatibility(old, "t.M", new, "t.M",
+                                     level=CompatibilityLevel.STRICT)
+        hits = [f for f in report.findings if f.rule_id == "field_type_name_changed"]
+        assert len(hits) == 1
+        assert hits[0].path == FieldPath.parse("items.value")
+        assert "t.OldEnum" in hits[0].message
+        assert "t.NewEnum" in hits[0].message
+
 
 def _build_map_msg_value(
     pool: descriptor_pool.DescriptorPool,
@@ -516,6 +582,127 @@ def _build_map_msg_value(
     f.type = T.TYPE_MESSAGE
     f.type_name = f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
     f.label = T.LABEL_REPEATED
+    pool.Add(fp)
+
+
+def _build_map_enum_value(
+    pool: descriptor_pool.DescriptorPool,
+    full_name: str,
+    *,
+    map_field: str,
+    key_type: int,
+    value_type_name: str,
+) -> None:
+    """Build a message with a single map<key, EnumT> field."""
+    from google.protobuf import descriptor_pb2
+    parts = full_name.rsplit(".", 1)
+    package = parts[0] if len(parts) > 1 else ""
+    msg_name = parts[-1]
+    fp = descriptor_pb2.FileDescriptorProto(
+        name=f"mapenum_{msg_name}_{id(pool):x}.proto",
+        package=package,
+        syntax="proto3",
+    )
+    mp = fp.message_type.add()
+    mp.name = msg_name
+    entry_name = f"{map_field.title().replace('_', '')}Entry"
+    entry_msg = mp.nested_type.add()
+    entry_msg.name = entry_name
+    entry_msg.options.map_entry = True
+    k = entry_msg.field.add()
+    k.name = "key"
+    k.number = 1
+    k.type = key_type
+    k.label = T.LABEL_OPTIONAL
+    v = entry_msg.field.add()
+    v.name = "value"
+    v.number = 2
+    v.type = T.TYPE_ENUM
+    v.type_name = value_type_name
+    v.label = T.LABEL_OPTIONAL
+    f = mp.field.add()
+    f.name = map_field
+    f.number = 1
+    f.type = T.TYPE_MESSAGE
+    f.type_name = f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
+    f.label = T.LABEL_REPEATED
+    pool.Add(fp)
+
+
+def _build_outer_two_maps_msg_value(
+    pool: descriptor_pool.DescriptorPool,
+    *,
+    map_fields: tuple[str, str],
+    value_type_name: str,
+    file_name: str,
+) -> None:
+    """Build ``t.Outer { map<string, V> <a>; map<string, V> <b>; }``.
+
+    Two map fields sharing the same user-authored value type, so the
+    traversal sees the same ``(V, V)`` pair under two different
+    paths. Exercises the path-complete cache replay for shared
+    types referenced via maps.
+    """
+    from google.protobuf import descriptor_pb2
+    fp = descriptor_pb2.FileDescriptorProto(
+        name=file_name, package="t", syntax="proto3",
+    )
+    mp = fp.message_type.add()
+    mp.name = "Outer"
+    for idx, map_field in enumerate(map_fields):
+        entry_name = f"{map_field.title().replace('_', '')}Entry"
+        entry_msg = mp.nested_type.add()
+        entry_msg.name = entry_name
+        entry_msg.options.map_entry = True
+        k = entry_msg.field.add()
+        k.name, k.number, k.type = "key", 1, T.TYPE_STRING
+        k.label = T.LABEL_OPTIONAL
+        v = entry_msg.field.add()
+        v.name, v.number, v.type = "value", 2, T.TYPE_MESSAGE
+        v.type_name = value_type_name
+        v.label = T.LABEL_OPTIONAL
+        f = mp.field.add()
+        f.name, f.number, f.type = map_field, idx + 1, T.TYPE_MESSAGE
+        f.type_name = f".t.Outer.{entry_name}"
+        f.label = T.LABEL_REPEATED
+    pool.Add(fp)
+
+
+def _build_self_map_cycle(
+    pool: descriptor_pool.DescriptorPool,
+    *,
+    with_tag: bool,
+) -> None:
+    """Build ``t.Tree { map<string, Tree> children = 1; [int32 tag = 2] }``.
+
+    The map-value type is the containing message itself — exercises
+    cycle detection when the recursion enters via the map-entry
+    ``value`` sub-field.
+    """
+    from google.protobuf import descriptor_pb2
+    fp = descriptor_pb2.FileDescriptorProto(
+        name=f"tree_{id(pool):x}.proto", package="t", syntax="proto3",
+    )
+    mp = fp.message_type.add()
+    mp.name = "Tree"
+    entry_msg = mp.nested_type.add()
+    entry_msg.name = "ChildrenEntry"
+    entry_msg.options.map_entry = True
+    k = entry_msg.field.add()
+    k.name, k.number, k.type = "key", 1, T.TYPE_STRING
+    k.label = T.LABEL_OPTIONAL
+    v = entry_msg.field.add()
+    v.name, v.number, v.type = "value", 2, T.TYPE_MESSAGE
+    v.type_name = "t.Tree"
+    v.label = T.LABEL_OPTIONAL
+    f1 = mp.field.add()
+    f1.name, f1.number, f1.type = "children", 1, T.TYPE_MESSAGE
+    f1.type_name = ".t.Tree.ChildrenEntry"
+    f1.label = T.LABEL_REPEATED
+    if with_tag:
+        f2 = mp.field.add()
+        f2.name, f2.number, f2.type = "tag", 2, T.TYPE_INT32
+        f2.label = T.LABEL_OPTIONAL
     pool.Add(fp)
 
 
@@ -656,6 +843,28 @@ class TestIgnorePaths:
         # debug.secret should be ignored
         assert not any(str(f.path).startswith("debug") for f in report.findings)
 
+    def test_ignore_suppresses_map_value_path(self) -> None:
+        """Ignoring a map field's ``value``-rooted prefix hides both
+        the value sub-field dispatches and the recursion findings
+        under it.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Inner", fields=[
+            {"name": "secret", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.Inner", fields=[])  # secret removed
+        _build_map_msg_value(old, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.Inner")
+        _build_map_msg_value(new, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.Inner")
+        checker = SchemaChecker()
+        checker.ignore("items.value")
+        report = checker.check(old, "t.M", new, "t.M")
+        assert not any(
+            str(f.path).startswith("items.value") for f in report.findings
+        )
+
 
 # ---------------------------------------------------------------------------
 # Error handling
@@ -789,6 +998,88 @@ class TestCustomRules:
         report = checker.check(old, "t.M", new, "t.M")
         # field_removed is built-in and should not fire
         assert all(f.rule_id != "field_removed" for f in report.findings)
+
+    def test_emit_plugin_runs_on_map_value_sub_field(self) -> None:
+        """An emit-style field plugin must receive the synthetic
+        ``MapEntry.value`` descriptor at path ``<map>.value``. Locks
+        in the plugin API contract for map-value dispatch.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Inner", fields=[
+            {"name": "v", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.Inner", fields=[
+            {"name": "v", "number": 1, "type": T.TYPE_INT32},
+        ])
+        _build_map_msg_value(old, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.Inner")
+        _build_map_msg_value(new, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.Inner")
+
+        seen: list[tuple[str, str | None, str | None]] = []
+
+        def probe(ctx) -> None:
+            seen.append((
+                str(ctx.path),
+                ctx.old_field.name if ctx.old_field else None,
+                ctx.new_field.name if ctx.new_field else None,
+            ))
+
+        checker = SchemaChecker(include_builtin=False)
+        checker.register_field_rule("probe", probe)
+        checker.check(old, "t.M", new, "t.M")
+        # The plugin must have been invoked on the value sub-field
+        # with name "value" at path "items.value" — NOT on the
+        # synthetic MapEntry itself, and NOT at "items".
+        assert ("items.value", "value", "value") in seen
+
+    def test_raw_rule_out_of_subtree_path_preserved_on_replay(self) -> None:
+        """Regression lock for ``_strip_path_prefix``: a raw rule that
+        emits at a path unrelated to the current visit's entry path
+        must NOT get that path mangled by cache replay. Before the
+        fallback fix, replaying a shared type at prefix ``a`` would
+        concatenate it onto the finding's original path, producing
+        ``a.global_issue`` instead of the rule's intended
+        ``global_issue``.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Shared", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.Shared", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.Outer", fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+                {"name": "b", "number": 2, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Shared"},
+            ], file_name=f"out_raw_{label}.proto")
+
+        def rogue(old_m, new_m, path):
+            # Emit at an absolute, non-entry-rooted path. A real rule
+            # wouldn't typically do this, but plugin authors can, and
+            # the engine must not corrupt those paths on replay.
+            return [Finding(
+                path=FieldPath.parse("global_issue"),
+                rule_id="rogue",
+                severity=Severity.POLICY,
+                direction=Direction.BOTH,
+                message=f"fired under {path!s}",
+            )]
+
+        checker = SchemaChecker(include_builtin=False)
+        checker.register_raw_message_rule("rogue", rogue)
+        report = checker.check(old, "t.Outer", new, "t.Outer")
+        rogue_paths = [str(f.path) for f in report.findings
+                       if f.rule_id == "rogue"]
+        # Three firings (Outer + Shared-at-a + Shared-at-b-via-cache),
+        # all at the rule's intended path — never ``a.global_issue``
+        # or ``b.global_issue`` from a mangled prefix concat.
+        assert rogue_paths == ["global_issue"] * 3
 
 
 # ---------------------------------------------------------------------------

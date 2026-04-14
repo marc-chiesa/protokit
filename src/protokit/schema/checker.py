@@ -17,15 +17,25 @@ Two registration styles for custom rules:
   Built-in rules use this internally; advanced users can register
   here too.
 
-Cycle handling: the checker tracks visited ``(old_full_name,
-new_full_name)`` pairs and skips any type pair it has already visited.
-Compatibility is a property of the type definition, not its position
-in the tree, so one emission per type pair is correct.
+Sharing and cycle handling: by default (``dedupe_by_type=False``)
+findings on a shared nested type pair are emitted at every path
+where the pair appears — "path-complete" reporting, so ignoring
+one path doesn't silently hide breaks under a sibling. The
+traversal processes each ``(old_full_name, new_full_name)`` pair
+once and caches its findings with paths made relative to the
+entry; later visits replay the cache with the new path prefix.
+Cycle detection uses an in-progress set (DFS-path tracking), so a
+self-referential type like ``TreeNode.children`` still terminates
+in O(n). Pass ``dedupe_by_type=True`` to restore the original
+single-emission-per-type behavior.
 
 Map fields: the synthetic ``map_entry`` message is not descended into
-directly. Instead, if the map's value type is itself a message, the
-checker pushes the value message onto the stack so that intra-map
-message compatibility is still checked.
+directly. Instead, the checker dispatches field rules (and enum
+rules when applicable) on the map-entry ``value`` sub-field at
+``field_path.child("value")``, then pushes the value's
+``message_type`` onto the stack for recursion if the value is a
+message on both sides. This surfaces scalar-type, kind, and
+option changes on map values that would otherwise slip through.
 
 Profile filtering and ``CompatibilityPolicy`` live in
 ``protokit.schema.profiles``.
@@ -404,10 +414,15 @@ class SchemaChecker:
         stack: list = [("visit", root_old, root_new, FieldPath(segments=()))]
         in_progress: set[tuple[str, str]] = set()
         dedupe_visited: set[tuple[str, str]] = set()
-        # Per-pair cache: relative-path + finding pairs captured on
-        # the first visit. Replayed with a new prefix on later visits.
+        # Per-pair cache: each entry is ``(rel_path, finding)`` where
+        # ``rel_path`` is the path made relative to the entry's visit
+        # point, or ``None`` if the finding's path lies outside the
+        # entry subtree (e.g. a raw rule that emitted at an unrelated
+        # path). ``None`` signals "preserve the original path on
+        # replay" so we don't concatenate a new prefix onto a
+        # finding that wasn't entry-rooted to begin with.
         cache: dict[
-            tuple[str, str], list[tuple[FieldPath, Finding]]
+            tuple[str, str], list[tuple[FieldPath | None, Finding]]
         ] = {}
 
         while stack:
@@ -431,27 +446,31 @@ class SchemaChecker:
             _, old_m, new_m, path = entry
             key = (old_m.full_name, new_m.full_name)
 
-            if key in in_progress:
-                # Cycle — already traversing this type pair deeper
-                # up the stack. Don't recurse.
-                continue
-
             if self.dedupe_by_type:
+                # One emission per type pair; also terminates cycles
+                # because any repeat pop hits the visited set.
                 if key in dedupe_visited:
                     continue
                 dedupe_visited.add(key)
             else:
+                if key in in_progress:
+                    # Cycle — already traversing this type pair
+                    # deeper up the stack. Don't recurse.
+                    continue
                 if key in cache:
                     # Replay the type pair's findings at this path.
                     for rel, finding in cache[key]:
-                        new_path = self._join_paths(path, rel)
-                        findings.append(
-                            _dataclass_replace(finding, path=new_path)
-                        )
+                        if rel is None:
+                            # Finding wasn't entry-rooted; preserve
+                            # its original path instead of prefixing.
+                            findings.append(finding)
+                        else:
+                            new_path = self._join_paths(path, rel)
+                            findings.append(
+                                _dataclass_replace(finding, path=new_path)
+                            )
                     continue
-
-            in_progress.add(key)
-            if not self.dedupe_by_type:
+                in_progress.add(key)
                 # Sentinel fires after this pair's subtree completes.
                 stack.append(("post", key, path, len(findings)))
 
@@ -469,30 +488,30 @@ class SchemaChecker:
                 findings, warnings_sink, stack,
             )
 
-            if self.dedupe_by_type:
-                # No sentinel in dedupe mode; flush in_progress now
-                # that we've queued all descendants. Cycles are
-                # still detected because repeat pops in the same
-                # subtree get caught by dedupe_visited.
-                in_progress.discard(key)
-
         return findings
 
     @staticmethod
-    def _strip_path_prefix(absolute: FieldPath, prefix: FieldPath) -> FieldPath:
-        """Return ``absolute`` with ``prefix`` removed from the front.
+    def _strip_path_prefix(
+        absolute: FieldPath, prefix: FieldPath,
+    ) -> FieldPath | None:
+        """Return ``absolute`` made relative to ``prefix``, or ``None``.
 
-        ``absolute`` is expected to start with ``prefix`` (which is
-        the case for findings emitted under a subtree entry). If it
-        doesn't (defensive fallback), return ``absolute`` unchanged.
+        When ``absolute`` starts with ``prefix`` (the normal case —
+        a finding emitted under the current visit's entry path),
+        returns the trailing segments as a new ``FieldPath``. When
+        ``absolute`` does not start with ``prefix`` (e.g. a raw rule
+        emitted at an unrelated path), returns ``None`` — the caller
+        treats this as "preserve the original path on replay" rather
+        than concatenating a new prefix onto a non-entry-rooted
+        path.
         """
         pref_segs = prefix.segments
         abs_segs = absolute.segments
         if len(abs_segs) < len(pref_segs):
-            return absolute
+            return None
         for i, seg in enumerate(pref_segs):
             if abs_segs[i] != seg:
-                return absolute
+                return None
         return FieldPath(segments=abs_segs[len(pref_segs):])
 
     @staticmethod
