@@ -1,0 +1,644 @@
+"""End-to-end tests for SchemaChecker."""
+
+from __future__ import annotations
+
+import pytest
+from google.protobuf import descriptor_pool
+
+from protokit.message.model import FieldPath
+from protokit.schema import (
+    CompatibilityLevel,
+    Direction,
+    Finding,
+    SchemaChecker,
+    Severity,
+    Verdict,
+    check_compatibility,
+)
+from tests.proto_builder import ProtoBuilder
+from tests.schema.helpers import T, build_enum, build_message
+
+
+# ---------------------------------------------------------------------------
+# Basic top-level traversal
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyMessages:
+    def test_no_findings_when_identical_empty(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[])
+        build_message(new, "t.M", fields=[])
+        report = check_compatibility(old, "t.M", new, "t.M")
+        assert report.is_compatible
+        assert report.verdict is Verdict.COMPATIBLE
+        assert report.findings == ()
+
+    def test_no_findings_when_identical_simple(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        for p in (old, new):
+            build_message(
+                p, "t.M",
+                fields=[
+                    {"name": "a", "number": 1, "type": T.TYPE_INT32},
+                    {"name": "b", "number": 2, "type": T.TYPE_STRING},
+                ],
+            )
+        report = check_compatibility(old, "t.M", new, "t.M")
+        assert report.is_compatible
+
+
+class TestSimpleDifferences:
+    def test_field_removed_at_root(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.M", fields=[])
+        report = check_compatibility(old, "t.M", new, "t.M")
+        assert not report.is_compatible
+        rule_ids = {f.rule_id for f in report.findings}
+        assert "field_removed" in rule_ids
+
+    def test_field_added_at_root(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[])
+        build_message(new, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        report = check_compatibility(old, "t.M", new, "t.M")
+        rule_ids = {f.rule_id for f in report.findings}
+        assert "field_added" in rule_ids
+
+    def test_path_set_correctly_on_finding(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.M", fields=[])
+        report = check_compatibility(old, "t.M", new, "t.M")
+        f = next(f for f in report.findings if f.rule_id == "field_removed")
+        assert f.path == FieldPath.parse("x")
+
+
+# ---------------------------------------------------------------------------
+# Recursion into nested messages
+# ---------------------------------------------------------------------------
+
+
+class TestNestedMessages:
+    def _build_pair(
+        self, *, old_inner_field: str | None, new_inner_field: str | None,
+    ) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        # Inner messages
+        old_inner_fields = []
+        if old_inner_field:
+            old_inner_fields.append(
+                {"name": old_inner_field, "number": 1, "type": T.TYPE_STRING}
+            )
+        new_inner_fields = []
+        if new_inner_field:
+            new_inner_fields.append(
+                {"name": new_inner_field, "number": 1, "type": T.TYPE_STRING}
+            )
+        build_message(old, "t.Inner", fields=old_inner_fields)
+        build_message(new, "t.Inner", fields=new_inner_fields)
+        # Outer messages reference inner
+        build_message(old, "t.Outer", fields=[
+            {"name": "inner", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.Inner"},
+        ])
+        build_message(new, "t.Outer", fields=[
+            {"name": "inner", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.Inner"},
+        ])
+        return old, new
+
+    def test_field_change_in_nested_message(self) -> None:
+        old, new = self._build_pair(
+            old_inner_field="foo", new_inner_field=None,
+        )
+        report = check_compatibility(old, "t.Outer", new, "t.Outer")
+        f = next(f for f in report.findings if f.rule_id == "field_removed")
+        assert f.path == FieldPath.parse("inner.foo")
+
+    def test_field_added_in_nested_message(self) -> None:
+        old, new = self._build_pair(
+            old_inner_field=None, new_inner_field="bar",
+        )
+        report = check_compatibility(old, "t.Outer", new, "t.Outer")
+        f = next(f for f in report.findings if f.rule_id == "field_added")
+        assert f.path == FieldPath.parse("inner.bar")
+
+    def test_two_levels_deep(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.A", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.A", fields=[])
+        build_message(old, "t.B", fields=[
+            {"name": "a", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.A"},
+        ])
+        build_message(new, "t.B", fields=[
+            {"name": "a", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.A"},
+        ])
+        build_message(old, "t.C", fields=[
+            {"name": "b", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.B"},
+        ])
+        build_message(new, "t.C", fields=[
+            {"name": "b", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.B"},
+        ])
+        report = check_compatibility(old, "t.C", new, "t.C")
+        f = next(f for f in report.findings if f.rule_id == "field_removed")
+        assert f.path == FieldPath.parse("b.a.x")
+
+
+# ---------------------------------------------------------------------------
+# Cycle handling
+# ---------------------------------------------------------------------------
+
+
+class TestCycles:
+    def _build_self_referential(
+        self, pool: descriptor_pool.DescriptorPool, *, with_extra_field: bool = False,
+    ) -> None:
+        """Build TreeNode with a repeated TreeNode children field."""
+        fields = [
+            {"name": "value", "number": 1, "type": T.TYPE_STRING},
+            {
+                "name": "children", "number": 2, "type": T.TYPE_MESSAGE,
+                "type_name": "t.TreeNode", "label": T.LABEL_REPEATED,
+            },
+        ]
+        if with_extra_field:
+            fields.append({"name": "tag", "number": 3, "type": T.TYPE_INT32})
+        build_message(pool, "t.TreeNode", fields=fields)
+
+    def test_self_reference_does_not_loop(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        self._build_self_referential(old)
+        self._build_self_referential(new)
+        report = check_compatibility(old, "t.TreeNode", new, "t.TreeNode")
+        assert report.is_compatible
+
+    def test_self_reference_findings_emitted_once(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        self._build_self_referential(old, with_extra_field=False)
+        self._build_self_referential(new, with_extra_field=True)
+        report = check_compatibility(old, "t.TreeNode", new, "t.TreeNode")
+        added = [f for f in report.findings if f.rule_id == "field_added"]
+        assert len(added) == 1
+        assert added[0].path == FieldPath.parse("tag")
+
+    def test_mutual_recursion(self) -> None:
+        # A.b -> B; B.a -> A — pair (A,A) visited once; (B,B) visited once
+        # Mutual references must live in the same FileDescriptorProto.
+        from google.protobuf import descriptor_pb2
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        for p in (old, new):
+            fp = descriptor_pb2.FileDescriptorProto(
+                name=f"mutual_{id(p):x}.proto", package="t", syntax="proto3",
+            )
+            ma = fp.message_type.add()
+            ma.name = "A"
+            fa = ma.field.add()
+            fa.name = "b"
+            fa.number = 1
+            fa.type = T.TYPE_MESSAGE
+            fa.type_name = "t.B"
+            fa.label = T.LABEL_OPTIONAL
+            mb = fp.message_type.add()
+            mb.name = "B"
+            fb = mb.field.add()
+            fb.name = "a"
+            fb.number = 1
+            fb.type = T.TYPE_MESSAGE
+            fb.type_name = "t.A"
+            fb.label = T.LABEL_OPTIONAL
+            p.Add(fp)
+        report = check_compatibility(old, "t.A", new, "t.A")
+        assert report.is_compatible
+
+
+# ---------------------------------------------------------------------------
+# Enum recursion via fields
+# ---------------------------------------------------------------------------
+
+
+class TestEnumViaField:
+    def test_enum_value_removed_via_field(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.Color", {"RED": 0, "BLUE": 1})
+        build_enum(new, "t.Color", {"RED": 0})
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.M", fields=[
+                {"name": "color", "number": 1, "type": T.TYPE_ENUM, "type_name": "t.Color"},
+            ], file_name=f"m_{label}.proto")
+        report = check_compatibility(old, "t.M", new, "t.M")
+        f = next(f for f in report.findings if f.rule_id == "enum_value_removed")
+        assert f.path == FieldPath.parse("color")
+        assert "BLUE" in f.message
+
+    def test_enum_in_nested_message(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.Color", {"RED": 0})
+        build_enum(new, "t.Color", {"RED": 0, "BLUE": 1})
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.Inner", fields=[
+                {"name": "c", "number": 1, "type": T.TYPE_ENUM, "type_name": "t.Color"},
+            ], file_name=f"inner_{label}.proto")
+            build_message(p, "t.Outer", fields=[
+                {"name": "inner", "number": 1, "type": T.TYPE_MESSAGE, "type_name": "t.Inner"},
+            ], file_name=f"outer_{label}.proto")
+        report = check_compatibility(old, "t.Outer", new, "t.Outer")
+        # default level STRICT — enum_value_added (FORWARD) is included
+        f = next(f for f in report.findings if f.rule_id == "enum_value_added")
+        assert f.path == FieldPath.parse("inner.c")
+
+
+# ---------------------------------------------------------------------------
+# Map handling
+# ---------------------------------------------------------------------------
+
+
+class TestMaps:
+    def test_map_to_repeated_fires(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        pb = ProtoBuilder(old)
+        pb.map_message(
+            "t.M", fields={},
+            map_fields={"kv": (T.TYPE_STRING, T.TYPE_STRING, 1)},
+        )
+        build_message(new, "t.M", fields=[
+            {"name": "kv", "number": 1, "type": T.TYPE_STRING, "label": T.LABEL_REPEATED},
+        ])
+        report = check_compatibility(old, "t.M", new, "t.M")
+        assert any(f.rule_id == "map_to_repeated" for f in report.findings)
+
+    def test_map_value_message_recursion(self) -> None:
+        # map<string, Inner> on both sides; Inner gains a field.
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Inner", fields=[
+            {"name": "v", "number": 1, "type": T.TYPE_INT32},
+        ])
+        build_message(new, "t.Inner", fields=[
+            {"name": "v", "number": 1, "type": T.TYPE_INT32},
+            {"name": "extra", "number": 2, "type": T.TYPE_STRING},
+        ])
+        _build_map_msg_value(old, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.Inner")
+        _build_map_msg_value(new, "t.M", map_field="items",
+                             key_type=T.TYPE_STRING, value_type_name="t.Inner")
+        report = check_compatibility(old, "t.M", new, "t.M")
+        f = next(f for f in report.findings if f.rule_id == "field_added")
+        assert f.path == FieldPath.parse("items.extra")
+
+
+def _build_map_msg_value(
+    pool: descriptor_pool.DescriptorPool,
+    full_name: str,
+    *,
+    map_field: str,
+    key_type: int,
+    value_type_name: str,
+) -> None:
+    """Build a message with a single map<key, MessageT> field."""
+    from google.protobuf import descriptor_pb2
+    parts = full_name.rsplit(".", 1)
+    package = parts[0] if len(parts) > 1 else ""
+    msg_name = parts[-1]
+    fp = descriptor_pb2.FileDescriptorProto(
+        name=f"map_{msg_name}_{id(pool):x}.proto",
+        package=package,
+        syntax="proto3",
+    )
+    mp = fp.message_type.add()
+    mp.name = msg_name
+    entry_name = f"{map_field.title().replace('_', '')}Entry"
+    entry_msg = mp.nested_type.add()
+    entry_msg.name = entry_name
+    entry_msg.options.map_entry = True
+    k = entry_msg.field.add()
+    k.name = "key"
+    k.number = 1
+    k.type = key_type
+    k.label = T.LABEL_OPTIONAL
+    v = entry_msg.field.add()
+    v.name = "value"
+    v.number = 2
+    v.type = T.TYPE_MESSAGE
+    v.type_name = value_type_name
+    v.label = T.LABEL_OPTIONAL
+    f = mp.field.add()
+    f.name = map_field
+    f.number = 1
+    f.type = T.TYPE_MESSAGE
+    f.type_name = f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
+    f.label = T.LABEL_REPEATED
+    pool.Add(fp)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end profile behavior (filter unit tests live in test_profiles.py)
+# ---------------------------------------------------------------------------
+
+
+class TestEndToEndProfileBehavior:
+    """Worked example: user_v1 -> user_v2 across all four profiles.
+
+    Directions are assigned by compat risk (which reader is at risk)
+    rather than direction of schema change. So CONSUMER_SAFE now
+    surfaces additions that old consumers can't interpret (field_added,
+    enum_value_added) in addition to removals.
+    """
+
+    def _build_user_pair(self) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "acme.PhoneType", {"MOBILE": 0, "HOME": 1, "WORK": 2})
+        build_enum(new, "acme.PhoneType", {"MOBILE": 0, "HOME": 1, "WORK": 2, "FAX": 3})
+        for p, label in ((old, "old"), (new, "new")):
+            file_name = f"user_{label}.proto"
+            if label == "old":
+                fields = [
+                    {"name": "name", "number": 1, "type": T.TYPE_STRING},
+                    {"name": "email", "number": 2, "type": T.TYPE_STRING},
+                    {"name": "phone_type", "number": 3, "type": T.TYPE_ENUM,
+                     "type_name": "acme.PhoneType"},
+                    {"name": "internal_notes", "number": 4, "type": T.TYPE_STRING},
+                ]
+                build_message(p, "acme.User", fields=fields, file_name=file_name)
+            else:
+                fields = [
+                    {"name": "name", "number": 1, "type": T.TYPE_STRING},
+                    {"name": "email", "number": 2, "type": T.TYPE_BYTES},
+                    {"name": "phone_type", "number": 3, "type": T.TYPE_ENUM,
+                     "type_name": "acme.PhoneType"},
+                    {"name": "nickname", "number": 5, "type": T.TYPE_STRING,
+                     "proto3_optional": True, "oneof_index": 0},
+                ]
+                build_message(
+                    p, "acme.User",
+                    fields=fields,
+                    oneofs=["_nickname"],
+                    file_name=file_name,
+                )
+        return old, new
+
+    def test_consumer_safe_surfaces_risks_to_old_consumers(self) -> None:
+        old, new = self._build_user_pair()
+        report = check_compatibility(
+            old, "acme.User", new, "acme.User",
+            level=CompatibilityLevel.CONSUMER_SAFE,
+        )
+        ids = {f.rule_id for f in report.findings}
+        assert "field_type_semantic_change" in ids   # email string -> bytes
+        assert "field_removed" in ids                # internal_notes (BACKWARD)
+        assert "field_added" in ids                  # nickname (BACKWARD — old consumer sees unknown)
+        assert "enum_value_added" in ids             # FAX (BACKWARD — old consumer unknown value)
+        assert not report.is_compatible
+
+    def test_producer_safe_surfaces_risks_to_new_consumers(self) -> None:
+        old, new = self._build_user_pair()
+        report = check_compatibility(
+            old, "acme.User", new, "acme.User",
+            level=CompatibilityLevel.PRODUCER_SAFE,
+        )
+        ids = {f.rule_id for f in report.findings}
+        # The email type change is BOTH — surfaces everywhere.
+        assert "field_type_semantic_change" in ids
+        # Backward-compat concerns (risks to new consumer on old data)
+        # are filtered OUT because this worked example has no such
+        # change — v2 doesn't remove any enum values and doesn't add
+        # a proto2 required field. CONSUMER_SAFE-only findings:
+        assert "field_removed" not in ids
+        assert "field_added" not in ids
+        assert "enum_value_added" not in ids
+
+    def test_strict_includes_all(self) -> None:
+        old, new = self._build_user_pair()
+        report = check_compatibility(
+            old, "acme.User", new, "acme.User",
+            level=CompatibilityLevel.STRICT,
+        )
+        ids = {f.rule_id for f in report.findings}
+        assert {"field_type_semantic_change", "field_removed",
+                "field_added", "enum_value_added"} <= ids
+
+    def test_wire_only_no_findings(self) -> None:
+        old, new = self._build_user_pair()
+        report = check_compatibility(
+            old, "acme.User", new, "acme.User",
+            level=CompatibilityLevel.WIRE,
+        )
+        # No wire-level breaks in this scenario.
+        assert report.is_compatible
+
+
+# ---------------------------------------------------------------------------
+# Ignore paths
+# ---------------------------------------------------------------------------
+
+
+class TestIgnorePaths:
+    def test_ignore_suppresses_exact_path(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+            {"name": "y", "number": 2, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.M", fields=[])
+        checker = SchemaChecker()
+        checker.ignore("x")
+        report = checker.check(old, "t.M", new, "t.M")
+        ids = {(f.rule_id, str(f.path)) for f in report.findings}
+        assert ("field_removed", "y") in ids
+        assert all(str(f.path) != "x" for f in report.findings)
+
+    def test_ignore_suppresses_descendants(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.Inner", fields=[
+            {"name": "secret", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.Inner", fields=[])
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.Outer", fields=[
+                {"name": "debug", "number": 1, "type": T.TYPE_MESSAGE,
+                 "type_name": "t.Inner"},
+                {"name": "data", "number": 2, "type": T.TYPE_STRING},
+            ], file_name=f"outer_{label}.proto")
+        checker = SchemaChecker()
+        checker.ignore("debug")
+        report = checker.check(old, "t.Outer", new, "t.Outer")
+        # debug.secret should be ignored
+        assert not any(str(f.path).startswith("debug") for f in report.findings)
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+
+class TestErrors:
+    def test_missing_old_type(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(new, "t.M", fields=[])
+        with pytest.raises(ValueError, match="old_type"):
+            check_compatibility(old, "t.M", new, "t.M")
+
+    def test_missing_new_type(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[])
+        with pytest.raises(ValueError, match="new_type"):
+            check_compatibility(old, "t.M", new, "t.M")
+
+
+# ---------------------------------------------------------------------------
+# Custom rule registration
+# ---------------------------------------------------------------------------
+
+
+class TestCustomRules:
+    def test_custom_field_rule_invoked(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+        ])
+        seen: list[str] = []
+
+        def my_rule(old_fd, new_fd, path):
+            seen.append(str(path))
+            return []
+
+        checker = SchemaChecker()
+        checker.register_raw_field_rule("seen", my_rule)
+        checker.check(old, "t.M", new, "t.M")
+        assert "x" in seen
+
+    def test_custom_field_rule_emits(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+        ])
+
+        def reject_x(old_fd, new_fd, path):
+            if old_fd is not None and old_fd.name == "x":
+                return [Finding(
+                    path=path, rule_id="custom",
+                    severity=Severity.WIRE,
+                    direction=Direction.BOTH,
+                    message="x is forbidden",
+                )]
+            return []
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        checker.register_raw_field_rule("custom", reject_x)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any(f.rule_id == "custom" for f in report.findings)
+
+    def test_register_raw_enum_rule(self) -> None:
+        """The raw return-style enum rule API is part of the public surface."""
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.Color", {"RED": 0, "BLUE": 1})
+        build_enum(new, "t.Color", {"RED": 0})  # BLUE removed
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.M", fields=[
+                {"name": "c", "number": 1, "type": T.TYPE_ENUM,
+                 "type_name": "t.Color"},
+            ], file_name=f"enum_consumer_{label}.proto")
+
+        seen: list[tuple[str, str]] = []
+
+        def my_enum_rule(old_enum, new_enum, path):
+            if old_enum is None or new_enum is None:
+                return []
+            for v in old_enum.values:
+                seen.append((v.name, str(path)))
+            return []
+
+        checker = SchemaChecker(include_builtin=False)
+        checker.register_raw_enum_rule("record", my_enum_rule)
+        checker.check(old, "t.M", new, "t.M")
+        # The rule saw the old enum's values at the field's path.
+        assert ("RED", "c") in seen
+        assert ("BLUE", "c") in seen
+
+    def test_register_raw_message_rule(self) -> None:
+        """The raw return-style message rule API is part of the public surface."""
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        for p in (old, new):
+            build_message(p, "t.M", fields=[
+                {"name": "x", "number": 1, "type": T.TYPE_STRING},
+            ])
+
+        visits: list[str] = []
+
+        def my_msg_rule(old_desc, new_desc, path):
+            if old_desc is not None:
+                visits.append(old_desc.full_name)
+            return []
+
+        checker = SchemaChecker(include_builtin=False)
+        checker.register_raw_message_rule("visit", my_msg_rule)
+        checker.check(old, "t.M", new, "t.M")
+        assert visits == ["t.M"]
+
+    def test_include_builtin_false_drops_builtins(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.M", fields=[])
+        checker = SchemaChecker(include_builtin=False)
+        report = checker.check(old, "t.M", new, "t.M")
+        # field_removed is built-in and should not fire
+        assert all(f.rule_id != "field_removed" for f in report.findings)
+
+
+# ---------------------------------------------------------------------------
+# Cross-type comparison
+# ---------------------------------------------------------------------------
+
+
+class TestCrossType:
+    def test_different_type_names(self) -> None:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.UserV1", fields=[
+            {"name": "name", "number": 1, "type": T.TYPE_STRING},
+            {"name": "email", "number": 2, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.UserV2", fields=[
+            {"name": "name", "number": 1, "type": T.TYPE_STRING},
+        ])
+        report = check_compatibility(old, "t.UserV1", new, "t.UserV2")
+        assert any(f.rule_id == "field_removed" and str(f.path) == "email"
+                   for f in report.findings)

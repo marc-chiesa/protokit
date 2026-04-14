@@ -12,7 +12,14 @@ from typing import Any
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf.message import Message
 
-from proto_differ.comparators import (
+from protokit._descriptors import (
+    format_key,
+    get_field_map,
+    has_presence,
+    is_map_field,
+    type_name,
+)
+from protokit.message.comparators import (
     FloatComparison,
     FloatConfig,
     compare_enum_cross_pool,
@@ -21,7 +28,7 @@ from proto_differ.comparators import (
     compare_scalar,
     to_enum_value,
 )
-from proto_differ.model import (
+from protokit.message.model import (
     ChangeType,
     Difference,
     DiffResult,
@@ -67,32 +74,6 @@ _INTEGER_TYPES = frozenset({
 })
 _FLOAT_TYPES = frozenset({FD.TYPE_FLOAT, FD.TYPE_DOUBLE})
 
-_TYPE_NAMES = {
-    FD.TYPE_DOUBLE: "TYPE_DOUBLE", FD.TYPE_FLOAT: "TYPE_FLOAT",
-    FD.TYPE_INT64: "TYPE_INT64", FD.TYPE_UINT64: "TYPE_UINT64",
-    FD.TYPE_INT32: "TYPE_INT32", FD.TYPE_FIXED64: "TYPE_FIXED64",
-    FD.TYPE_FIXED32: "TYPE_FIXED32", FD.TYPE_BOOL: "TYPE_BOOL",
-    FD.TYPE_STRING: "TYPE_STRING", FD.TYPE_MESSAGE: "TYPE_MESSAGE",
-    FD.TYPE_BYTES: "TYPE_BYTES", FD.TYPE_UINT32: "TYPE_UINT32",
-    FD.TYPE_ENUM: "TYPE_ENUM", FD.TYPE_SFIXED32: "TYPE_SFIXED32",
-    FD.TYPE_SFIXED64: "TYPE_SFIXED64", FD.TYPE_SINT32: "TYPE_SINT32",
-    FD.TYPE_SINT64: "TYPE_SINT64", FD.TYPE_GROUP: "TYPE_GROUP",
-}
-
-
-def _type_name(field_type: int) -> str:
-    """Return the human-readable name for a protobuf field type constant.
-
-    Args:
-        field_type: An integer field type constant from FieldDescriptor.
-
-    Returns:
-        A string such as ``"TYPE_STRING"`` or ``"TYPE_UNKNOWN_<n>"`` for
-        unrecognised values.
-    """
-    return _TYPE_NAMES.get(field_type, f"TYPE_UNKNOWN_{field_type}")
-
-
 def _types_compatible(left_type: int, right_type: int) -> bool:
     """Check if two protobuf field types are compatible for value comparison.
 
@@ -113,23 +94,6 @@ def _types_compatible(left_type: int, right_type: int) -> bool:
     return False
 
 
-def _is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
-    """Check if a field is a protobuf map field.
-
-    Args:
-        field_desc: A protobuf FieldDescriptor.
-
-    Returns:
-        True if the field is a repeated message whose message type has
-        the ``map_entry`` option set.
-    """
-    return (
-        field_desc.is_repeated
-        and field_desc.type == TYPE_MESSAGE
-        and field_desc.message_type.GetOptions().map_entry
-    )
-
-
 def _same_pool(left_msg: Message, right_msg: Message) -> bool:
     """Check if two messages are from the same descriptor pool.
 
@@ -141,23 +105,6 @@ def _same_pool(left_msg: Message, right_msg: Message) -> bool:
         True if both message descriptors reference the same pool object.
     """
     return left_msg.DESCRIPTOR.file.pool is right_msg.DESCRIPTOR.file.pool
-
-
-def _get_field_map(descriptor: proto_descriptor.Descriptor) -> dict[str, proto_descriptor.FieldDescriptor]:
-    """Get a name -> field descriptor map, excluding extensions.
-
-    Args:
-        descriptor: A protobuf message Descriptor.
-
-    Returns:
-        A dict mapping field name to FieldDescriptor for all non-extension
-        fields.
-    """
-    return {
-        f.name: f
-        for f in descriptor.fields
-        if not f.is_extension
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +130,31 @@ class MessageDifferencer:
     """Configurable protobuf message comparator.
 
     Uses an iterative explicit stack for unbounded depth support.
-    Name-based field matching enables cross-descriptor-pool comparison.
+    Name-based field matching enables cross-descriptor-pool
+    comparison and schema-evolution detection.
+
+    Configure behavior by calling the instance methods
+    (:meth:`ignore_fields`, :meth:`treat_as_map`,
+    :meth:`set_float_comparison`) or by assigning to the public
+    attributes below before calling :meth:`compare`.
+
+    Attributes:
+        max_depth: Maximum recursion depth (``None`` for unlimited,
+            the default). Subtrees below the limit are not compared
+            and their paths appear in ``DiffResult.truncated_paths``.
+        strict_schema: When True (default False), emit a ``Warning``
+            if two compared messages have different fully-qualified
+            type names, even if their field shapes align.
     """
 
     def __init__(self) -> None:
+        """Construct a differencer with default configuration.
+
+        All configuration starts empty — no ignored fields, no
+        ``treat_as_map`` entries, exact float comparison, unlimited
+        depth, lenient schema mode. Use the instance methods below
+        to customize.
+        """
         self._ignore_names: set[str] = set()  # bare names (global match)
         self._ignore_paths: list[FieldPath] = []  # parsed dotted paths
         self._ignore_fields_raw: list[str] = []  # raw selectors for conflict validation
@@ -250,12 +218,25 @@ class MessageDifferencer:
     def treat_as_map(self, field_selector: str, *, key: str) -> None:
         """Configure a repeated message field for key-based matching.
 
-        The key field must be a scalar type (string, int, bool, enum).
+        Instead of pairing repeated-field elements by index, the
+        engine will match elements by the value of the given key
+        sub-field. Paths for matched elements use the
+        ``items[key="abc"].field`` form. Elements with duplicate or
+        missing keys raise ``DuplicateKeyError`` / ``MissingKeyError``.
 
         Args:
-            field_selector: Bare field name or dotted path of the repeated
-                message field to treat as a map.
+            field_selector: Bare field name (``"items"``) for a
+                global match or dotted path (``"parent.items"``) for
+                a scoped match. The field must be a repeated message
+                field on both sides.
             key: Name of the scalar sub-field to use as the map key.
+                Must be a scalar type (string, int, bool, enum).
+
+        Raises:
+            ValueError: If ``field_selector`` or ``key`` conflicts
+                with an existing ignore configuration, or if the
+                same field is already configured with a different
+                key.
         """
         # Check for conflicts with already-configured ignore fields
         for ign in self._ignore_fields_raw:
@@ -288,25 +269,52 @@ class MessageDifferencer:
         fraction: float = 1e-6,
         margin: float = 1e-9,
     ) -> None:
-        """Set the float comparison mode.
+        """Configure how float (and double) fields are compared.
+
+        Default is exact IEEE 754 comparison.
 
         Args:
-            mode: ``FloatComparison.EXACT`` or ``FloatComparison.APPROXIMATE``.
-            fraction: Relative tolerance for approximate mode.
-            margin: Absolute tolerance for approximate mode.
+            mode: ``FloatComparison.EXACT`` for bit-identical
+                comparison (NaN != NaN, ±0 distinguished) or
+                ``FloatComparison.APPROXIMATE`` for tolerance-based
+                comparison using ``fraction`` and ``margin``.
+            fraction: Relative tolerance for approximate mode:
+                values are equal if ``|a - b| <= fraction * max(|a|, |b|)``.
+                Defaults to ``1e-6``. Ignored in EXACT mode.
+            margin: Absolute tolerance for approximate mode: values
+                are equal if ``|a - b| <= margin``. Combined with
+                ``fraction`` as a logical OR. Defaults to ``1e-9``.
+                Ignored in EXACT mode.
         """
         self._float_config = FloatConfig(mode=mode, fraction=fraction, margin=margin)
 
     def compare(self, left: Message, right: Message) -> DiffResult:
-        """Compare two protobuf messages and return a DiffResult.
+        """Compare two protobuf messages and return a structured diff.
+
+        The traversal uses an explicit stack, so recursion depth is
+        bounded by ``max_depth`` (unlimited by default), not by the
+        Python call stack. Name-based field matching lets ``left``
+        and ``right`` come from different descriptor pools.
 
         Args:
-            left: The left (old/expected) protobuf Message.
-            right: The right (new/actual) protobuf Message.
+            left: The left-side protobuf ``Message``. Treated as the
+                "old" or "expected" side for directional semantics
+                like ``ChangeType.REMOVED``.
+            right: The right-side protobuf ``Message``. Treated as
+                the "new" or "actual" side.
 
         Returns:
-            A DiffResult containing all differences, warnings, and any
-            truncated paths (when ``max_depth`` is set).
+            A ``DiffResult`` with every detected ``Difference``,
+            any ``Warning`` diagnostics (schema drift, cardinality
+            change, ``treat_as_map`` fallbacks), and the set of
+            paths where ``max_depth`` cut off traversal. Differences
+            are sorted by path for deterministic output.
+
+        Raises:
+            DuplicateKeyError: A ``treat_as_map``-configured field
+                had duplicate keys in one side's elements.
+            MissingKeyError: A ``treat_as_map``-configured field had
+                an element with the key sub-field unset.
         """
         differences: list[Difference] = []
         warnings: list[Warning] = []
@@ -345,8 +353,8 @@ class MessageDifferencer:
 
             assert item.left_msg is not None and item.right_msg is not None
 
-            left_fields = _get_field_map(item.left_msg.DESCRIPTOR)
-            right_fields = _get_field_map(item.right_msg.DESCRIPTOR)
+            left_fields = get_field_map(item.left_msg.DESCRIPTOR)
+            right_fields = get_field_map(item.right_msg.DESCRIPTOR)
 
             all_names = left_fields.keys() | right_fields.keys()
 
@@ -396,8 +404,8 @@ class MessageDifferencer:
                 # Cardinality change -> no value comparison
                 if left_fd.is_repeated != right_fd.is_repeated:
                     continue
-                left_is_map = _is_map_field(left_fd)
-                right_is_map = _is_map_field(right_fd)
+                left_is_map = is_map_field(left_fd)
+                right_is_map = is_map_field(right_fd)
                 if left_is_map != right_is_map:
                     left_kind = "map" if left_is_map else "repeated"
                     right_kind = "map" if right_is_map else "repeated"
@@ -496,7 +504,7 @@ class MessageDifferencer:
             diffs.append(Difference(
                 path=path,
                 change_type=ChangeType.FIELD_NUMBER_CHANGED,
-                field_type=_type_name(left_fd.type),
+                field_type=type_name(left_fd.type),
                 left_field_number=left_fd.number,
                 right_field_number=right_fd.number,
             ))
@@ -507,8 +515,8 @@ class MessageDifferencer:
                 diffs.append(Difference(
                     path=path,
                     change_type=ChangeType.TYPE_CHANGED,
-                    left_type=_type_name(left_fd.type),
-                    right_type=_type_name(right_fd.type),
+                    left_type=type_name(left_fd.type),
+                    right_type=type_name(right_fd.type),
                 ))
 
         # Cardinality change
@@ -516,7 +524,7 @@ class MessageDifferencer:
             diffs.append(Difference(
                 path=path,
                 change_type=ChangeType.CARDINALITY_CHANGED,
-                field_type=_type_name(left_fd.type),
+                field_type=type_name(left_fd.type),
                 left_label="LABEL_REPEATED" if left_fd.is_repeated else "LABEL_OPTIONAL",
                 right_label="LABEL_REPEATED" if right_fd.is_repeated else "LABEL_OPTIONAL",
             ))
@@ -567,8 +575,8 @@ class MessageDifferencer:
         right_val = getattr(right_msg, right_fd.name)
 
         # Presence check for proto2/proto3 optional
-        left_has = _has_presence(left_fd)
-        right_has = _has_presence(right_fd)
+        left_has = has_presence(left_fd)
+        right_has = has_presence(right_fd)
 
         if left_has and right_has:
             left_present = left_msg.HasField(left_fd.name)
@@ -580,7 +588,7 @@ class MessageDifferencer:
                     path=path,
                     change_type=ChangeType.ADDED,
                     new_value=self._wrap_value(right_val, right_fd),
-                    field_type=_type_name(right_fd.type),
+                    field_type=type_name(right_fd.type),
                 ))
                 return
             if left_present and not right_present:
@@ -588,7 +596,7 @@ class MessageDifferencer:
                     path=path,
                     change_type=ChangeType.REMOVED,
                     old_value=self._wrap_value(left_val, left_fd),
-                    field_type=_type_name(left_fd.type),
+                    field_type=type_name(left_fd.type),
                 ))
                 return
         elif left_has and not right_has:
@@ -605,7 +613,7 @@ class MessageDifferencer:
                 change_type=ChangeType.MODIFIED,
                 old_value=self._wrap_value(left_val, left_fd),
                 new_value=self._wrap_value(right_val, right_fd),
-                field_type=_type_name(left_fd.type),
+                field_type=type_name(left_fd.type),
             ))
 
     def _values_equal(
@@ -688,7 +696,7 @@ class MessageDifferencer:
             change_type=change_type,
             old_value=None if is_new else wrapped,
             new_value=wrapped if is_new else None,
-            field_type=_type_name(fd.type),
+            field_type=type_name(fd.type),
         )
 
     def _compare_message_field(
@@ -734,7 +742,7 @@ class MessageDifferencer:
                 # Empty-but-present message exception
                 diffs.append(Difference(
                     path=path, change_type=ChangeType.ADDED,
-                    field_type=_type_name(right_fd.type),
+                    field_type=type_name(right_fd.type),
                 ))
             return
         if left_present and not right_present:
@@ -744,7 +752,7 @@ class MessageDifferencer:
             else:
                 diffs.append(Difference(
                     path=path, change_type=ChangeType.REMOVED,
-                    field_type=_type_name(left_fd.type),
+                    field_type=type_name(left_fd.type),
                 ))
             return
 
@@ -801,7 +809,7 @@ class MessageDifferencer:
             warnings.append(Warning(
                 path=str(path),
                 message=f"treat_as_map configured but field is not a repeated message "
-                        f"(type={_type_name(left_fd.type)}); falling back to index comparison",
+                        f"(type={type_name(left_fd.type)}); falling back to index comparison",
             ))
 
         left_list = getattr(left_msg, field_name)
@@ -827,7 +835,7 @@ class MessageDifferencer:
                         change_type=ChangeType.MODIFIED,
                         old_value=self._wrap_value(left_val, left_fd),
                         new_value=self._wrap_value(right_val, right_fd),
-                        field_type=_type_name(left_fd.type),
+                        field_type=type_name(left_fd.type),
                     ))
 
         # Extra elements
@@ -839,13 +847,13 @@ class MessageDifferencer:
                 else:
                     diffs.append(Difference(
                         path=idx_path, change_type=ChangeType.ADDED,
-                        field_type=_type_name(right_fd.type),
+                        field_type=type_name(right_fd.type),
                     ))
             else:
                 diffs.append(Difference(
                     path=idx_path, change_type=ChangeType.ADDED,
                     new_value=self._wrap_value(right_list[i], right_fd),
-                    field_type=_type_name(right_fd.type),
+                    field_type=type_name(right_fd.type),
                 ))
 
         for i in range(min_len, len(left_list)):
@@ -856,13 +864,13 @@ class MessageDifferencer:
                 else:
                     diffs.append(Difference(
                         path=idx_path, change_type=ChangeType.REMOVED,
-                        field_type=_type_name(left_fd.type),
+                        field_type=type_name(left_fd.type),
                     ))
             else:
                 diffs.append(Difference(
                     path=idx_path, change_type=ChangeType.REMOVED,
                     old_value=self._wrap_value(left_list[i], left_fd),
-                    field_type=_type_name(left_fd.type),
+                    field_type=type_name(left_fd.type),
                 ))
 
     def _compare_map(
@@ -903,7 +911,7 @@ class MessageDifferencer:
         right_value_fd = right_fd.message_type.fields_by_name["value"]
 
         for key in sorted(all_keys, key=lambda k: (type(k).__name__, k)):
-            key_str = _format_key(key)
+            key_str = format_key(key)
             key_path = _replace_bracket(path, key_str) if path.segments else path
 
             if key not in left_map:
@@ -914,13 +922,13 @@ class MessageDifferencer:
                     else:
                         diffs.append(Difference(
                             path=key_path, change_type=ChangeType.ADDED,
-                            field_type=_type_name(right_value_fd.type),
+                            field_type=type_name(right_value_fd.type),
                         ))
                 else:
                     diffs.append(Difference(
                         path=key_path, change_type=ChangeType.ADDED,
                         new_value=self._wrap_value(right_val, right_value_fd),
-                        field_type=_type_name(right_value_fd.type),
+                        field_type=type_name(right_value_fd.type),
                     ))
             elif key not in right_map:
                 left_val = left_map[key]
@@ -930,13 +938,13 @@ class MessageDifferencer:
                     else:
                         diffs.append(Difference(
                             path=key_path, change_type=ChangeType.REMOVED,
-                            field_type=_type_name(left_value_fd.type),
+                            field_type=type_name(left_value_fd.type),
                         ))
                 else:
                     diffs.append(Difference(
                         path=key_path, change_type=ChangeType.REMOVED,
                         old_value=self._wrap_value(left_val, left_value_fd),
-                        field_type=_type_name(left_value_fd.type),
+                        field_type=type_name(left_value_fd.type),
                     ))
             else:
                 # Both have the key
@@ -956,7 +964,7 @@ class MessageDifferencer:
                             change_type=ChangeType.MODIFIED,
                             old_value=self._wrap_value(left_map[key], left_value_fd),
                             new_value=self._wrap_value(right_map[key], right_value_fd),
-                            field_type=_type_name(left_value_fd.type),
+                            field_type=type_name(left_value_fd.type),
                         ))
 
     def _compare_treat_as_map(
@@ -1000,7 +1008,7 @@ class MessageDifferencer:
         all_keys = left_by_key.keys() | right_by_key.keys()
 
         for key in sorted(all_keys, key=lambda k: (type(k).__name__, str(k))):
-            key_bracket = f"{key_field_name}={_format_key(key)}"
+            key_bracket = f"{key_field_name}={format_key(key)}"
             key_path = _replace_bracket(path, key_bracket) if path.segments else path
 
             if key not in left_by_key:
@@ -1010,7 +1018,7 @@ class MessageDifferencer:
                 else:
                     diffs.append(Difference(
                         path=key_path, change_type=ChangeType.ADDED,
-                        field_type=_type_name(right_fd.type),
+                        field_type=type_name(right_fd.type),
                     ))
             elif key not in right_by_key:
                 left_elem = left_by_key[key]
@@ -1019,7 +1027,7 @@ class MessageDifferencer:
                 else:
                     diffs.append(Difference(
                         path=key_path, change_type=ChangeType.REMOVED,
-                        field_type=_type_name(left_fd.type),
+                        field_type=type_name(left_fd.type),
                     ))
             else:
                 stack.append(_WorkItem(
@@ -1059,7 +1067,7 @@ class MessageDifferencer:
 
         for elem in elements:
             # Check presence for proto2/proto3 optional
-            if _has_presence(key_fd) and not elem.HasField(key_field_name):
+            if has_presence(key_fd) and not elem.HasField(key_field_name):
                 raise MissingKeyError(
                     f"Element in '{str(path)}' is missing key field '{key_field_name}'"
                 )
@@ -1158,11 +1166,11 @@ class MessageDifferencer:
                 if self._is_ignored(fd.name, field_path):
                     continue
 
-                if _is_map_field(fd):
+                if is_map_field(fd):
                     # Native map field: iterate entries
                     value_fd = fd.message_type.fields_by_name["value"]
                     for k, v in value.items():
-                        key_str = _format_key(k)
+                        key_str = format_key(k)
                         key_path = _replace_bracket(field_path, key_str)
                         if value_fd.type == TYPE_MESSAGE:
                             if _has_populated_fields(v):
@@ -1170,7 +1178,7 @@ class MessageDifferencer:
                             else:
                                 diffs.append(Difference(
                                     path=key_path, change_type=change_type,
-                                    field_type=_type_name(value_fd.type),
+                                    field_type=type_name(value_fd.type),
                                 ))
                         else:
                             diffs.append(self._make_leaf_diff(
@@ -1195,9 +1203,9 @@ class MessageDifferencer:
                     for i, elem in enumerate(value):
                         if tam_key_fd and fd.type == TYPE_MESSAGE:
                             # Use presence-aware check consistent with _extract_keys
-                            if not _has_presence(tam_key_fd) or elem.HasField(tam_key):
+                            if not has_presence(tam_key_fd) or elem.HasField(tam_key):
                                 key_val = getattr(elem, tam_key)
-                                key_bracket = f"{tam_key}={_format_key(key_val)}"
+                                key_bracket = f"{tam_key}={format_key(key_val)}"
                             else:
                                 key_bracket = str(i)
                             elem_path = _replace_bracket(field_path, key_bracket)
@@ -1209,7 +1217,7 @@ class MessageDifferencer:
                             else:
                                 diffs.append(Difference(
                                     path=elem_path, change_type=change_type,
-                                    field_type=_type_name(fd.type),
+                                    field_type=type_name(fd.type),
                                 ))
                         else:
                             diffs.append(self._make_leaf_diff(
@@ -1257,13 +1265,13 @@ class MessageDifferencer:
                 else:
                     diffs.append(Difference(
                         path=path, change_type=change_type,
-                        field_type=_type_name(fd.type),
+                        field_type=type_name(fd.type),
                     ))
-        elif _is_map_field(fd):
+        elif is_map_field(fd):
             map_val = getattr(msg, fd.name)
             value_fd = fd.message_type.fields_by_name["value"]
             for k, v in map_val.items():
-                key_str = _format_key(k)
+                key_str = format_key(k)
                 key_path = _replace_bracket(path, key_str) if path.segments else path
                 if value_fd.type == TYPE_MESSAGE:
                     if _has_populated_fields(v):
@@ -1271,7 +1279,7 @@ class MessageDifferencer:
                     else:
                         diffs.append(Difference(
                             path=key_path, change_type=change_type,
-                            field_type=_type_name(value_fd.type),
+                            field_type=type_name(value_fd.type),
                         ))
                 else:
                     diffs.append(self._make_leaf_diff(
@@ -1287,7 +1295,7 @@ class MessageDifferencer:
                     else:
                         diffs.append(Difference(
                             path=idx_path, change_type=change_type,
-                            field_type=_type_name(fd.type),
+                            field_type=type_name(fd.type),
                         ))
                 else:
                     diffs.append(self._make_leaf_diff(
@@ -1297,7 +1305,7 @@ class MessageDifferencer:
             val = getattr(msg, fd.name)
             # Skip unset fields: use HasField for presence-aware fields,
             # default-value check for proto3 implicit-presence fields
-            if _has_presence(fd):
+            if has_presence(fd):
                 if not msg.HasField(fd.name):
                     return
             elif val == fd.default_value:
@@ -1312,21 +1320,6 @@ class MessageDifferencer:
 # ---------------------------------------------------------------------------
 
 
-def _has_presence(fd: proto_descriptor.FieldDescriptor) -> bool:
-    """Check if a field has presence semantics (HasField support).
-
-    Uses the has_presence property available in protobuf v4+ (upb backend).
-
-    Args:
-        fd: A protobuf FieldDescriptor.
-
-    Returns:
-        True if the field supports ``HasField`` (proto2 fields, proto3
-        ``optional`` fields, oneof members, and message fields).
-    """
-    return fd.has_presence
-
-
 def _has_populated_fields(msg: Message) -> bool:
     """Check if a message has any populated fields.
 
@@ -1337,27 +1330,6 @@ def _has_populated_fields(msg: Message) -> bool:
         True if ``msg.ListFields()`` is non-empty.
     """
     return bool(msg.ListFields())
-
-
-def _format_key(key: Any) -> str:
-    """Format a map key value for path bracket display.
-
-    Args:
-        key: The key value (bool, int, or str).
-
-    Returns:
-        A string suitable for bracket notation in a FieldPath, e.g.
-        ``'"foo"'`` for strings, ``"42"`` for ints, ``"true"``/``"false"``
-        for bools.
-    """
-    if isinstance(key, bool):
-        return "true" if key else "false"
-    if isinstance(key, int):
-        return str(key)
-    if isinstance(key, str):
-        escaped = key.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return str(key)
 
 
 # ---------------------------------------------------------------------------
@@ -1377,13 +1349,24 @@ def diff_messages(
     Convenience function that creates a MessageDifferencer with the given options.
 
     Args:
-        left: The left (old/expected) protobuf Message.
-        right: The right (new/actual) protobuf Message.
-        max_depth: Maximum comparison depth (``None`` for unlimited).
-        strict_schema: If True, warn on message type name changes.
+        left: The left-side protobuf ``Message`` (old/expected).
+        right: The right-side protobuf ``Message`` (new/actual).
+        max_depth: Maximum comparison depth. ``None`` (the default)
+            means unlimited; subtrees below the limit are not
+            compared and their paths appear in
+            ``DiffResult.truncated_paths``.
+        strict_schema: When True, emit a ``Warning`` if the two
+            messages have different fully-qualified type names.
+            Defaults to False.
 
     Returns:
-        A DiffResult from comparing the two messages.
+        A ``DiffResult`` with differences, warnings, and truncation
+        markers. Differences are sorted by path.
+
+    Raises:
+        DuplicateKeyError: If ``treat_as_map`` were configured on
+            the differencer (not possible via this convenience
+            function; use ``MessageDifferencer`` directly).
     """
     differ = MessageDifferencer()
     if max_depth is not None:

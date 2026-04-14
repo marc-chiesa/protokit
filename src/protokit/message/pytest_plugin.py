@@ -4,12 +4,12 @@ Provides rich diff output when `assert msg1 == msg2` fails for protobuf messages
 
 Usage — add to your project's conftest.py:
 
-    from proto_differ.pytest_plugin import pytest_assertrepr_compare  # noqa: F401
+    from protokit.message.pytest_plugin import pytest_assertrepr_compare  # noqa: F401
 
 Or register as a pytest plugin in pyproject.toml:
 
     [tool.pytest.ini_options]
-    plugins = ["proto_differ.pytest_plugin"]
+    plugins = ["protokit.message.pytest_plugin"]
 """
 
 from __future__ import annotations
@@ -19,25 +19,40 @@ from typing import Any
 
 from google.protobuf.message import Message
 
-from proto_differ.differ import MessageDifferencer
-from proto_differ.formatting import format_value as _format_value
-from proto_differ.model import ChangeType
+from protokit.message.differ import MessageDifferencer
+from protokit.message.formatting import format_value as _format_value
+from protokit.message.model import ChangeType
 
 
 def pytest_assertrepr_compare(op: str, left: Any, right: Any) -> list[str] | None:
     """Rich diff output for protobuf message assertions.
 
-    Called by pytest when an ``assert left == right`` fails. Only activates
-    when both operands are protobuf ``Message`` instances.
+    Called automatically by pytest when an ``assert left == right``
+    statement fails. Activates only when both operands are protobuf
+    ``Message`` instances and ``op == "=="`` — all other cases fall
+    back to pytest's default representation.
+
+    Comparison is done with a default ``MessageDifferencer`` (no
+    ignore fields, no ``treat_as_map``, exact float comparison,
+    unlimited depth). If the differencer raises for any reason, the
+    exception is caught, a ``UserWarning`` is emitted, and pytest
+    falls back to its default output — so a misconfigured plugin
+    never masks a test failure.
 
     Args:
-        op: The comparison operator (only ``"=="`` is handled).
-        left: The left operand of the assertion.
-        right: The right operand of the assertion.
+        op: The comparison operator pytest caught (e.g. ``"=="``,
+            ``"!="``, ``"<"``). Only ``"=="`` is handled.
+        left: Left operand of the failing assertion.
+        right: Right operand of the failing assertion.
 
     Returns:
-        A list of strings for pytest to display as the failure explanation,
-        or ``None`` to fall back to the default representation.
+        A list of display lines for pytest (header + per-difference
+        rows + optional warning rows), or ``None`` to defer to the
+        default representation. Returning ``None`` happens when:
+        the op isn't ``"=="``; either operand isn't a ``Message``;
+        the differencer raised; or no differences were found (which
+        shouldn't happen since ``==`` failed, but we handle the
+        edge case).
     """
     if op != "==" or not isinstance(left, Message) or not isinstance(right, Message):
         return None
@@ -47,7 +62,7 @@ def pytest_assertrepr_compare(op: str, left: Any, right: Any) -> list[str] | Non
         result = differ.compare(left, right)
     except Exception as exc:
         warnings.warn(
-            f"proto_differ plugin failed ({type(exc).__name__}: {exc}); "
+            f"protokit plugin failed ({type(exc).__name__}: {exc}); "
             "falling back to default assertion output",
             stacklevel=2,
         )

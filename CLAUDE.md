@@ -2,7 +2,7 @@
 
 ## Session settings
 
-Set reasoning effort to high (`/config set reasoning_effort high`). Always use thorough analysis, never cut corners.
+Set reasoning effort to high (`/effort high`). Always use thorough analysis, never cut corners.
 
 ## gstack
 

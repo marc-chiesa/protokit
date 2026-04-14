@@ -1,6 +1,127 @@
 # TODOS
 
-## Proto Source Parser Integration (proto-schema-parser)
+Phase-scoped roadmap for protokit. Each entry has **What / Why / Fix
+approach (when known) / Effort / Priority / Depends-on / Discovered**.
+Items within a phase should generally land before the next phase
+starts, but the groupings are intent, not strict gates.
+
+---
+
+## Phase 1 completeness
+
+Gaps surfaced during Phase 1 adversarial review that were deferred
+out of scope. Close these on the next branch after merging
+`schema-checker` to main — the diff is small and each is independent.
+
+### Run field rules on map-entry value sub-fields
+
+**What:** When both sides of a comparison are map fields, the checker pushes the value's message_type onto the stack for recursion but never runs *field rules* against the synthetic ``MapEntry.value`` sub-field itself. That means changes like ``map<K, Msg> → map<K, Enum>`` (category change) or ``map<K, string> → map<K, bytes>`` (semantic change within length-delimited) slip past every rule. ``field_type_name_changed`` has a narrow helper that catches the same-category rename case, but the broader gap remains.
+
+**Why:** Real but niche. Map value kind changes are unusual schema edits, and the existing engine still catches the outer wire/cardinality changes. Flagged during round-5 adversarial review (codex challenge, 2026-04-13) but deferred because the fix is a user-visible surface change (findings get paths like ``items.value``) that deserves its own design pass.
+
+**Fix approach:**
+1. In ``SchemaChecker._compare_fields``, when both ``old_fd`` and ``new_fd`` are map fields and both have a ``value`` sub-field, dispatch all registered field rules and plugins against that pair with path ``field_path.child("value")``.
+2. Remove the special-case ``_map_value_type_name_finding`` helper — the same rule now runs directly on the map value.
+3. Add tests covering value kind changes (message ↔ enum, scalar type changes) and confirm the existing outer-rename case stays silent.
+
+**Effort:** M (~30 min CC)
+**Priority:** P2
+**Depends on:** Phase 1 traversal is stable. Interacts with the visited-set work below if both land in the same cycle.
+**Discovered:** 2026-04-13 codex round-5 review.
+
+---
+
+### Emit findings at every path for shared nested types (visited-set rework)
+
+**What:** The traversal keeps a `visited: set[(old_full_name, new_full_name)]` and skips any type pair it has already visited. When the same nested type is embedded at multiple paths (e.g., `Outer.a: Shared` and `Outer.b: Shared`), findings for `Shared` are emitted only at the first path popped off the stack. The second path inherits the dedupe and produces no findings under itself.
+
+**Why:** Consistent with the original design ("compatibility is a property of the type definition, not its position"), but creates a path-completeness gap: a user ignoring `a.secret_field` may not realize that `b.secret_field` is broken too. Surfaced during the Phase-1 adversarial review (codex challenge, 2026-04-13).
+
+**Fix approach:** Decouple "run rules on this type pair" from "emit findings at this path". Cache rule results per type pair, then re-emit at every path where the pair appears. Keeps O(n) rule-evaluation cost but produces path-complete findings.
+
+**Effort:** M (CC: ~30 min)
+**Priority:** P2
+**Depends on:** Phase 1 traversal is stable. Would also want `--dedupe-by-type` flag so users who prefer the current behavior can opt in.
+**Discovered:** 2026-04-13 codex adversarial review
+
+---
+
+## Phase 1.5 — Differ hook system
+
+The schema checker (Phase 1) detects that an option *changed* between
+schema versions. This phase adds per-value hooks to the runtime
+differ so custom option metadata can drive comparison logic itself.
+Full design lives in the approved design doc's "Phase 1.5" section;
+the following is a planning summary.
+
+### Implement MessageDifferencer hook pipeline
+
+**What:** Three-stage hook pipeline on ``MessageDifferencer``:
+
+- ``HookStage.VALIDATE`` — pre-compare, flag constraint violations on either side.
+- ``HookStage.COMPARE`` — override equality for specific fields.
+- ``HookStage.REPORT`` — post-compare, annotate diffs with option-aware context.
+
+Registration API:
+
+```python
+differ.register_validate_hook(constraint_checker)
+differ.register_compare_hook(custom_equality_override)
+differ.register_report_hook(diff_annotator)
+differ.register_message_validate_hook(schema_drift_checker)
+```
+
+Context objects (``FieldHookContext`` / ``MessageHookContext``) carry both descriptors, both values, both parent messages, both pools, plus ``warn()`` / ``override_equal()`` / ``annotate()`` methods. Engine wires everything through one new ``_compare_field_with_hooks()`` helper; the zero-hooks fast path preserves current performance for all 228 differ tests.
+
+**Why:** Enables option-aware runtime behavior (validate ``validate.rules`` constraints, cross-schema option drift detection, annotation of diffs that cross custom-option boundaries). Complements the schema checker's static option detection.
+
+**Fix approach:** Follow the design doc's "Phase 1.5 Implementation Integration" section verbatim — single new private method, three integration points in ``_compare_leaf`` / ``_compare_repeated`` / ``_compare_map``, optional ``annotations`` field on ``Difference``. Wrap every hook invocation in ``try/except Exception`` with a ``Warning`` on failure (same pattern as schema plugin dispatch).
+
+**Effort:** L (CC: ~90 min including tests)
+**Priority:** P1 (this is the committed next-phase work)
+**Depends on:** Phase 1 schema checker landed. Benefits from a shared ``protokit.options.get_option_value`` helper (see below).
+**Discovered:** 2026-04-06 original design doc
+
+---
+
+### Shared `protokit.options` module for plugin/hook option access
+
+**What:** A small shared module housing ``get_option_value(fd, option_path, pool=None)`` with tiered fallback: ``Extensions[]`` first (protoc-compiled descriptor sets), then ``uninterpreted_option`` parsing (always available), then ``None``.
+
+**Why:** Both schema plugins and differ hooks need to read custom options from descriptors. Today the schema checker has no helper and plugin authors reinvent it; Phase 1.5 hooks will need the same thing. Putting it in one place avoids drift.
+
+**Effort:** S (CC: ~15 min)
+**Priority:** P2
+**Depends on:** Nothing. Could even land before Phase 1.5 starts.
+**Discovered:** 2026-04-06 design doc
+
+---
+
+## Phase 2 — Git-integrated schema evolution
+
+Makes the checker git-aware: discover schema versions from commit
+history, compare consecutive revisions, bisect for the first
+breaking commit, gate CI on merge-base.
+
+### Protoc replacement via protoxy (Rust bindings)
+
+**What:** Use [protoxy](https://pypi.org/project/protoxy/) (`pip install protoxy`) as an optional protoc replacement. Python bindings for the Rust `protox` compiler. Compiles `.proto` files to `FileDescriptorSet` without requiring protoc on PATH.
+
+**Why:** Removes the external `protoc` dependency for `.proto` compilation. Faster than protoc, no scalability issues. Makes Phase 2 git integration work without any external tools. Could be an optional dependency: `pip install protokit[compiler]`.
+
+**Effort:** S (CC: ~15 min to add as optional backend in `_cli_utils.compile_proto`)
+**Priority:** P2 — should land at the *start* of Phase 2 so downstream git-mode code never depends on `protoc` on PATH.
+**Depends on:** Phase 1 CLI (reuses `compile_proto` path).
+**Discovered:** 2026-04-12 CEO review, web search
+
+---
+
+## Phase 3 — Ecosystem plays
+
+Each is independent and can parallelize. Priority ordering within
+Phase 3 depends on which ecosystem pain the builder hits first.
+
+### Proto source parser integration (proto-schema-parser)
 
 **What:** Integrate [proto-schema-parser](https://github.com/criccomini/proto-schema-parser) (`pip install proto-schema-parser`) for `.proto` source-level manipulation. Pure Python, ANTLR-based, uses buf's grammar. Parses `.proto` → AST and generates AST → `.proto` text (round-trip).
 
@@ -8,25 +129,25 @@
 
 **Effort:** M (CC: ~30 min to integrate + build fix-apply pipeline)
 **Priority:** P2
-**Depends on:** Phase 1 linting must exist first
+**Depends on:** Phase 1 linting must exist first (not yet scoped — separate effort).
 **Discovered:** 2026-04-12 CEO review, web search
 
 ---
 
-## Protoc Replacement via protoxy (Rust bindings)
+### Inline rule suppression via `protokit:ignore` comments
 
-**What:** Use [protoxy](https://pypi.org/project/protoxy/) (`pip install protoxy`) as an optional protoc replacement. Python bindings for the Rust `protox` compiler. Compiles `.proto` files to `FileDescriptorSet` without requiring protoc on PATH.
+**What:** Parse proto source comments for `protokit:ignore <rule_id>` directives. Suppress specific rules on specific fields/messages. Requires `--include_source_info` on descriptor compilation. Alternative: use proto-schema-parser to read comments directly from `.proto` source.
 
-**Why:** Removes the external `protoc` dependency for `.proto` compilation. Faster than protoc, no scalability issues. Makes Phase 2 git integration work without any external tools. Could be an optional dependency: `pip install proto-differ[compiler]`.
+**Why:** The `# noqa` equivalent for proto schemas. Users want to silence specific warnings on specific fields without disabling rules globally.
 
-**Effort:** S (CC: ~15 min to add as optional backend in `_compile_proto`)
+**Effort:** M (CC: ~30 min)
 **Priority:** P2
-**Depends on:** Phase 1 CLI (reuses `_compile_proto` path)
-**Discovered:** 2026-04-12 CEO review, web search
+**Depends on:** Phase 1 linting (core lint must exist first). May benefit from proto-schema-parser integration (alternative to source_code_info).
+**Discovered:** 2026-04-12 CEO review, descoped per outside voice
 
 ---
 
-## Proto Documentation Generator (Phase 3)
+### Proto documentation generator
 
 **What:** Generate human-readable docs from proto descriptors. Versioned docs per git tag. Changelogs between schema versions. Custom filters (hide deprecated, hide internal). `doc-diff` and `doc-history` commands.
 
@@ -39,26 +160,100 @@
 
 ---
 
-## Inline Rule Suppression via source_code_info
+## Developer experience
 
-**What:** Parse proto source comments for `proto-differ:ignore <rule_id>` directives. Suppress specific rules on specific fields/messages. Requires `--include_source_info` on descriptor compilation. Alternative: use proto-schema-parser to read comments directly from `.proto` source.
+Orthogonal polish items. Schedule when they're painful enough to
+matter; none block other phases.
 
-**Why:** The `# noqa` equivalent for proto schemas. Users want to silence specific warnings on specific fields without disabling rules globally.
-
-**Effort:** M (CC: ~30 min)
-**Priority:** P2
-**Depends on:** Phase 1 linting (core lint must exist first). May benefit from proto-schema-parser integration (alternative to source_code_info).
-**Discovered:** 2026-04-12 CEO review, descoped per outside voice
-
----
-
-## pytest Integration for Schema Compatibility Checks
+### pytest integration for schema compatibility checks
 
 **What:** pytest marker (`@pytest.mark.schema_compat`) + fixture (`schema_checker`) for running compatibility checks in test suites. Supports cross-type comparison (old_type != new_type for renamed/moved messages).
 
-**Why:** Same pytest-first developer experience as the existing message differ plugin.
+**Why:** Same pytest-first developer experience as the existing message differ plugin (`protokit.message.pytest_plugin`).
 
 **Effort:** S (CC: ~15 min)
 **Priority:** P2
-**Depends on:** Phase 1 core API must be stable first
+**Depends on:** Phase 1 core API stable. Independent of everything else.
 **Discovered:** 2026-04-12 CEO review, deferred per outside voice
+
+---
+
+### CompatibilityPolicy supporting message plugins
+
+**What:** ``CompatibilityPolicy.custom_rules`` is field-only today. Extend with a parallel ``message_rules: Sequence[tuple[str, MessagePlugin]] = ()`` so bundled policies can register message-level plugins too.
+
+**Why:** Users who want to distribute a policy that includes message-level rules (e.g., require-docs, cross-field invariants) currently can't use ``CompatibilityPolicy`` and must construct ``SchemaChecker`` by hand. Small asymmetry in the public API.
+
+**Fix approach:** Add ``message_rules`` field to the dataclass with tuple-freeze in ``__post_init__``. Loop in ``check()`` calls ``register_message_rule`` for each. Update docstring and add tests mirroring the existing field-plugin tests.
+
+**Effort:** S (CC: ~10 min)
+**Priority:** P3
+**Depends on:** Nothing. Trivial additive change.
+**Discovered:** 2026-04-13 codex round-2 review, deferred as nice-to-have.
+
+---
+
+### Async plugin support via `check_async()`
+
+**What:** Add an ``async def check_async(...)`` alongside the sync ``check()`` that awaits async-def plugins natively instead of rejecting them. Library users running inside an event loop (FastAPI, Jupyter, pytest-asyncio) could then run I/O-bound rules directly without the pre-fetch / post-process dance.
+
+**Why:** The pre-fetch pattern covers the 95% case and the rejection-at-registration keeps the sync path honest, but a first-class async entry point is the clean answer for users doing schema registry lookups, LLM-classified rules, or async telemetry in-plugin.
+
+**Fix approach:** Separate code path that mirrors ``_traverse`` / ``_compare_fields`` / ``_dispatch_*_plugin`` in async form. Shared rule-evaluation logic factored out. Does not change sync ``check()`` behavior.
+
+**Effort:** L (CC: ~60 min — doubling the engine's traversal surface)
+**Priority:** P3 — ship only if real user demand appears, not on speculation.
+**Depends on:** Phase 1 stable. Could ride on a broader async-first refactor if one is planned.
+**Discovered:** 2026-04-13 user question during round-3 review.
+
+---
+
+## Design Decision Log
+
+Records irreversible design calls made during Phase 1 so we don't re-litigate them.
+
+### 2026-04-13 — Resolve design-doc Open Question #1: type-name changes
+
+**Decision:** Add a 17th built-in rule `field_type_name_changed` at POLICY / BOTH. Fires when a `TYPE_MESSAGE` or `TYPE_ENUM` field points at a differently-named type on each side, *regardless* of whether the two types have the same shape.
+
+**Why:** Without this rule, `status: OldStatus → NewStatus` reports clean when both enums share the same names/numbers — but downstream code that imports `OldStatus` breaks immediately. The design doc called this out as Open Question #1 and never answered it.
+
+**Severity/direction rationale:**
+- POLICY because wire format and value semantics are unaffected when the replacement type has the same shape; this is a source-level identity concern.
+- BOTH because both producers and consumers may have code paths that depend on the type name.
+- Only surfaces under STRICT by default, so teams that intentionally rename their types don't get noise at lower profiles.
+
+---
+
+### 2026-04-13 — Direction semantics: compat-risk framing
+
+**Decision:** `Direction.FORWARD` and `Direction.BACKWARD` describe **which reader is at risk**, not which side of the schema changed.
+
+- `BACKWARD` = old consumer fails / misinterprets **new** data (breaks forward compatibility).
+- `FORWARD` = new consumer fails / misinterprets **old** data (breaks backward compatibility).
+- `BOTH` = affects both readers (typically wire-format breaks).
+
+**Why:** Aligns profile names with what they filter. `CONSUMER_SAFE` = BACKWARD + BOTH truly protects old consumers, and `PRODUCER_SAFE` = FORWARD + BOTH truly protects against old producers. The prior "direction of change" framing had `CONSUMER_SAFE` filtering out `enum_value_added` and `oneof_field_added` — exactly the kinds of additions that break exhaustive-match code in old consumers.
+
+**Reclassified from the original design doc:**
+- `field_added`: FORWARD → **BACKWARD**
+- `oneof_field_added`: FORWARD → **BACKWARD**
+- `enum_value_added`: FORWARD → **BACKWARD**
+- `enum_value_removed`: BACKWARD → **FORWARD**
+- `required_field_added`: BACKWARD → **FORWARD** (already corrected earlier in review)
+
+`field_removed` stays BACKWARD (old consumer misses it in new data). All `BOTH` rules are unchanged.
+
+**Source:** Codex adversarial review flagged the inconsistency. Design doc's own terminology mapping (`"Forward compatible" = no BACKWARD findings`) already implied compat-risk framing; the rule table was the bug.
+
+---
+
+### 2026-04-13 — Plugin failures fail-closed via `report.warnings`
+
+**Decision:** Plugin exceptions, emit-validation errors, and async-plugin misuse are captured into ``CompatibilityReport.warnings`` — a ``tuple[Warning, ...]`` on the report. ``warnings.warn()`` is NOT called. The ``protokit compat`` CLI exits with code 2 when any warnings are present, even if the filtered report is technically COMPATIBLE.
+
+**Why:** A broken custom policy that should have caught a break must not silently pass CI. The initial implementation emitted both a Python ``UserWarning`` and a report entry, which double-printed on the CLI and had confused stacklevel attribution. Single source of truth keeps output clean and makes the fail-closed guarantee explicit.
+
+**Bridge for library users:** If you want Python's warnings subsystem integration after ``check()`` returns, iterate ``report.warnings`` and call ``warnings.warn(w.message)`` yourself.
+
+**Source:** Codex round-1 flagged fail-open; round-2 fixed it but added double-output; round-3 consolidated to the single-source-of-truth design.

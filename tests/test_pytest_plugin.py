@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 from google.protobuf import descriptor_pb2
 
-from proto_differ.formatting import format_value as _format_value
-from proto_differ.model import EnumValue
-from proto_differ.pytest_plugin import pytest_assertrepr_compare
+from protokit.message.formatting import format_value as _format_value
+from protokit.message.model import EnumValue
+from protokit.message.pytest_plugin import pytest_assertrepr_compare
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -91,7 +91,7 @@ class TestPytestPlugin:
         msg1 = b.build("test.Msg", name="Alice")
         msg2 = b.build("test.Msg", name="Bob")
         with patch(
-            "proto_differ.pytest_plugin.MessageDifferencer.compare",
+            "protokit.message.pytest_plugin.MessageDifferencer.compare",
             side_effect=RuntimeError("boom"),
         ):
             with warnings.catch_warnings(record=True) as w:
@@ -99,7 +99,7 @@ class TestPytestPlugin:
                 result = pytest_assertrepr_compare("==", msg1, msg2)
                 assert result is None
                 assert len(w) == 1
-                assert "proto_differ plugin failed" in str(w[0].message)
+                assert "protokit plugin failed" in str(w[0].message)
                 assert "RuntimeError" in str(w[0].message)
 
 

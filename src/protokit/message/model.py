@@ -7,13 +7,31 @@ lives in differ.py.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Iterator
 
 
 class ChangeType(Enum):
-    """Type of difference between two protobuf messages."""
+    """Classification of a single difference between two messages.
+
+    Members:
+        ADDED: A field is set on the right side and unset on the left.
+            ``Difference.new_value`` carries the value.
+        REMOVED: A field is set on the left side and unset on the
+            right. ``Difference.old_value`` carries the value.
+        MODIFIED: Both sides have the field but the values differ.
+            Both ``old_value`` and ``new_value`` are populated.
+        TYPE_CHANGED: Same field name on both sides but the field
+            type differs. ``left_type`` and ``right_type`` are
+            populated; only fires under cross-pool comparison.
+        FIELD_NUMBER_CHANGED: Same field name on both sides but
+            different field numbers. ``left_field_number`` and
+            ``right_field_number`` are populated.
+        CARDINALITY_CHANGED: Same field name on both sides but the
+            label flipped (e.g. singular -> repeated). ``left_label``
+            and ``right_label`` are populated.
+    """
 
     ADDED = "ADDED"
     REMOVED = "REMOVED"
@@ -25,34 +43,79 @@ class ChangeType(Enum):
 
 @dataclass(frozen=True)
 class EnumValue:
-    """Represents a protobuf enum value with both name and number."""
+    """A protobuf enum value carrying both its name and its number.
+
+    Used in ``Difference.old_value`` / ``Difference.new_value`` for
+    enum fields so consumers can render either or both without
+    re-resolving from the descriptor pool.
+
+    Attributes:
+        name: The enum value's identifier as written in the
+            ``.proto`` (e.g. ``"ACTIVE"``).
+        number: The enum value's wire number (e.g. ``1``).
+    """
 
     name: str
     number: int
 
     def __str__(self) -> str:
+        """Render as ``NAME(number)`` for human display.
+
+        Returns:
+            A string like ``"ACTIVE(1)"``.
+        """
         return f"{self.name}({self.number})"
 
 
 @dataclass(frozen=True)
 class Warning:
-    """A non-diff diagnostic message."""
+    """A non-diff diagnostic surfaced alongside a ``DiffResult``.
+
+    Warnings are used for situations the engine wants to flag but
+    that are not themselves differences — e.g., a fallback to
+    index-based comparison when ``treat_as_map`` is configured but
+    the key field has unsupported type, or a synthetic-oneof edge
+    case during cross-pool comparison.
+
+    Attributes:
+        path: Dotted-path string identifying where the warning
+            applies, or ``None`` for warnings about the message as a
+            whole.
+        message: Human-readable explanation.
+    """
 
     path: str | None
     message: str
 
     def __str__(self) -> str:
+        """Render as ``path: message`` (or just ``message`` when path is None).
+
+        Returns:
+            A formatted single-line string.
+        """
         if self.path:
             return f"{self.path}: {self.message}"
         return self.message
 
 
 class DuplicateKeyError(ValueError):
-    """Raised when treat_as_map encounters duplicate keys in a repeated field."""
+    """Raised when ``treat_as_map`` encounters duplicate keys.
+
+    A repeated field configured with ``treat_as_map`` must have
+    unique key values on each side; duplicates make matching
+    ambiguous. The exception message includes the duplicated key
+    value and the field path.
+    """
 
 
 class MissingKeyError(ValueError):
-    """Raised when treat_as_map encounters a missing key field (proto2/proto3 optional)."""
+    """Raised when ``treat_as_map`` encounters an element missing the key field.
+
+    Fires when an entry in a ``treat_as_map``-configured repeated
+    field has its designated key field unset (e.g. proto2 optional
+    not populated). The exception message includes the field path
+    and the offending element index.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -75,12 +138,31 @@ _NAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
 
 @dataclass(frozen=True)
 class PathSegment:
-    """A single segment of a field path: name + optional bracket."""
+    """One element of a parsed ``FieldPath``: a name plus optional bracket.
+
+    Brackets carry runtime detail that descriptor-only paths never
+    use — repeated indices, map keys, ``treat_as_map`` keyed lookups.
+    Plain field names have ``bracket == None``.
+
+    Attributes:
+        name: The field's identifier (matches ``[a-zA-Z_][a-zA-Z0-9_]*``).
+        bracket: Raw bracket content as it appeared in the source
+            string. Examples: ``"2"`` (repeated index), ``'"env"'``
+            (quoted string map key), ``"true"`` (bool map key),
+            ``"id=42"`` (key-equals-value form for ``treat_as_map``).
+            ``None`` when the segment has no bracket.
+    """
 
     name: str
-    bracket: str | None = None  # raw bracket content, e.g. '2', '"env"', 'id=42'
+    bracket: str | None = None
 
     def __str__(self) -> str:
+        """Render the segment back to its source form.
+
+        Returns:
+            ``"name"`` or ``"name[bracket]"`` depending on whether
+            ``bracket`` is set.
+        """
         if self.bracket is not None:
             return f"{self.name}[{self.bracket}]"
         return self.name
@@ -114,7 +196,17 @@ class PathSegment:
 
 @dataclass(frozen=True)
 class FieldPath:
-    """A parsed protobuf field path."""
+    """A parsed, immutable protobuf field path.
+
+    Used both by message diffing (which produces paths with bracket
+    indices and map keys) and by schema checking (which uses pure
+    dotted names). The empty path (``segments == ()``) refers to the
+    root message and renders as ``""``.
+
+    Attributes:
+        segments: Tuple of ``PathSegment`` objects, in source order.
+            The empty tuple represents the root path.
+    """
 
     segments: tuple[PathSegment, ...]
 
@@ -227,9 +319,20 @@ class FieldPath:
         return True
 
     def __str__(self) -> str:
+        """Render the path back to its dotted source form.
+
+        Returns:
+            Dot-joined segment string (e.g. ``"user.address[0].city"``).
+            The empty path returns the empty string.
+        """
         return ".".join(str(seg) for seg in self.segments)
 
     def __bool__(self) -> bool:
+        """Truthiness reflects whether the path has any segments.
+
+        Returns:
+            False for the root path (no segments), True otherwise.
+        """
         return bool(self.segments)
 
 
@@ -273,7 +376,44 @@ def _find_closing_bracket(s: str, open_pos: int) -> int:
 
 @dataclass(frozen=True)
 class Difference:
-    """A single difference between two protobuf messages."""
+    """A single difference between two protobuf messages.
+
+    Which of the optional fields are populated depends on
+    ``change_type``:
+
+    - ``ADDED``: ``new_value`` set; ``field_type`` describes the
+      field's type.
+    - ``REMOVED``: ``old_value`` set; ``field_type`` describes it.
+    - ``MODIFIED``: both ``old_value`` and ``new_value`` set.
+    - ``TYPE_CHANGED``: ``left_type`` / ``right_type`` set.
+    - ``FIELD_NUMBER_CHANGED``: ``left_field_number`` /
+      ``right_field_number`` set.
+    - ``CARDINALITY_CHANGED``: ``left_label`` / ``right_label`` set.
+
+    Attributes:
+        path: ``FieldPath`` to the field that differs. The empty
+            path means the difference is at the root message.
+        change_type: One of ``ChangeType`` — controls which optional
+            attributes carry meaningful values.
+        old_value: Value on the left/old side. Set for ``REMOVED``
+            and ``MODIFIED``; ``None`` otherwise.
+        new_value: Value on the right/new side. Set for ``ADDED``
+            and ``MODIFIED``; ``None`` otherwise.
+        field_type: Human-readable protobuf type name (e.g.
+            ``"TYPE_STRING"``) for ``ADDED`` / ``REMOVED`` /
+            ``MODIFIED``. ``None`` for schema-evolution change types.
+        left_field_number: Old-side field number, set for
+            ``FIELD_NUMBER_CHANGED``.
+        right_field_number: New-side field number, set for
+            ``FIELD_NUMBER_CHANGED``.
+        left_type: Old-side type name, set for ``TYPE_CHANGED``.
+        right_type: New-side type name, set for ``TYPE_CHANGED``.
+        left_label: Old-side cardinality label (``"singular"`` /
+            ``"repeated"`` / ``"map"``), set for
+            ``CARDINALITY_CHANGED``.
+        right_label: New-side cardinality label, set for
+            ``CARDINALITY_CHANGED``.
+    """
 
     path: FieldPath
     change_type: ChangeType
@@ -290,6 +430,16 @@ class Difference:
     right_label: str | None = None
 
     def __str__(self) -> str:
+        """Render a single-line summary using a per-change-type prefix.
+
+        Prefix legend: ``+`` added, ``-`` removed, ``~`` modified,
+        ``T`` type changed, ``#`` field number changed,
+        ``C`` cardinality changed.
+
+        Returns:
+            A single-line string suitable for CLI output. Empty
+            paths render as ``(root)``.
+        """
         path_str = str(self.path) if self.path else "(root)"
         match self.change_type:
             case ChangeType.ADDED:
@@ -312,7 +462,19 @@ class Difference:
 class DiffResult:
     """Immutable, filterable collection of differences.
 
-    All filter methods return a new DiffResult instance.
+    Returned by ``MessageDifferencer.compare()`` /
+    ``diff_messages()``. All filter methods return new instances —
+    the original is never mutated, so the same ``DiffResult`` can be
+    passed around freely and filtered multiple ways.
+
+    Attributes:
+        differences: Tuple of ``Difference`` objects in traversal
+            order. Empty tuple means the messages compared equal.
+        warnings: Tuple of ``Warning`` diagnostics emitted during
+            comparison. Defaults to empty.
+        truncated_paths: Tuple of paths where ``max_depth`` cut off
+            the traversal. Empty when the comparison ran to the
+            leaves. See ``is_complete``.
     """
 
     differences: tuple[Difference, ...]
@@ -321,22 +483,29 @@ class DiffResult:
 
     @property
     def is_complete(self) -> bool:
-        """True if no subtrees were truncated by max_depth."""
+        """Whether the comparison ran to completion without truncation.
+
+        Returns:
+            True iff ``truncated_paths`` is empty. False indicates
+            ``MessageDifferencer.max_depth`` cut off one or more
+            subtrees before reaching the leaves.
+        """
         return not self.truncated_paths
 
     def has_changes(self) -> bool:
-        """True if any differences were found.
+        """Report whether any differences were found.
 
         Returns:
-            True when the result contains at least one Difference.
+            True when ``differences`` is non-empty.
         """
         return bool(self.differences)
 
     def field_paths(self) -> list[FieldPath]:
-        """List of all changed field paths.
+        """Return the path of every difference, in traversal order.
 
         Returns:
-            A list of FieldPath objects, one per difference.
+            A new list of ``FieldPath`` objects, one per difference,
+            preserving the order of ``differences``.
         """
         return [d.path for d in self.differences]
 
@@ -391,10 +560,25 @@ class DiffResult:
         )
 
     def __len__(self) -> int:
+        """Return the number of differences.
+
+        Returns:
+            ``len(self.differences)``.
+        """
         return len(self.differences)
 
     def __iter__(self) -> Iterator[Difference]:
+        """Iterate over differences in traversal order.
+
+        Returns:
+            An iterator over ``self.differences``.
+        """
         return iter(self.differences)
 
     def __bool__(self) -> bool:
+        """Truthiness reflects presence of differences.
+
+        Returns:
+            True iff at least one difference was found.
+        """
         return self.has_changes()

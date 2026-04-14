@@ -1,6 +1,6 @@
 """Tests for DiffResult filtering and querying."""
 
-from proto_differ.model import (
+from protokit.message.model import (
     ChangeType,
     Difference,
     DiffResult,

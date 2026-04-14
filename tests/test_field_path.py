@@ -2,7 +2,7 @@
 
 import pytest
 
-from proto_differ.model import FieldPath, PathSegment
+from protokit.message.model import FieldPath, PathSegment
 
 
 class TestFieldPathParsing:

@@ -2,7 +2,7 @@
 
 from google.protobuf import descriptor_pb2
 
-from proto_differ import ChangeType, diff_messages
+from protokit.message import ChangeType, diff_messages
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto

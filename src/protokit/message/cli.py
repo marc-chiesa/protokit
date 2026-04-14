@@ -1,4 +1,4 @@
-"""Click CLI entry point for pbdiff.
+"""Click CLI for ``protokit diff``.
 
 Supports three mutually exclusive flag groups:
   A) Same-schema:  --desc + --message-type
@@ -15,15 +15,12 @@ from __future__ import annotations
 import base64
 import json
 import math
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import click
 from google.protobuf import (
-    descriptor_pb2,
     descriptor_pool,
     json_format,
     message_factory,
@@ -31,77 +28,14 @@ from google.protobuf import (
 )
 from google.protobuf.message import DecodeError, Message
 
-from proto_differ.differ import MessageDifferencer
-from proto_differ.formatting import format_value as _format_value
-from proto_differ.model import ChangeType, Difference, DiffResult, EnumValue, FieldPath
-
-
-def _error(message: str) -> NoReturn:
-    """Print an error message to stderr and exit with code 2.
-
-    Args:
-        message: The error text to display.
-    """
-    click.echo(f"Error: {message}", err=True)
-    sys.exit(2)
-
-
-# ---------------------------------------------------------------------------
-# Descriptor loading
-# ---------------------------------------------------------------------------
-
-
-def _load_descriptor_pool(desc_path: Path) -> descriptor_pool.DescriptorPool:
-    """Load a .descriptor_set file into a new DescriptorPool.
-
-    Args:
-        desc_path: Path to a compiled ``.descriptor_set`` file.
-
-    Returns:
-        A DescriptorPool populated with all file descriptors from the set.
-    """
-    data = desc_path.read_bytes()
-    fds = descriptor_pb2.FileDescriptorSet()
-    fds.ParseFromString(data)
-    pool = descriptor_pool.DescriptorPool()
-    for fd in fds.file:
-        pool.Add(fd)
-    return pool
-
-
-def _compile_proto(proto_path: Path, proto_paths: tuple[str, ...]) -> descriptor_pool.DescriptorPool:
-    """Compile a .proto file via protoc and return a DescriptorPool.
-
-    Args:
-        proto_path: Path to the ``.proto`` source file.
-        proto_paths: Additional import paths passed to protoc via ``-I``.
-
-    Returns:
-        A DescriptorPool built from the compiled descriptor set.
-    """
-    with tempfile.NamedTemporaryFile(suffix=".descriptor_set", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-
-    try:
-        cmd = ["protoc", "--descriptor_set_out", str(tmp_path), "--include_imports"]
-        for pp in proto_paths:
-            cmd.extend(["-I", pp])
-        # Always include the proto file's parent directory
-        cmd.extend(["-I", str(proto_path.parent)])
-        cmd.append(str(proto_path))
-
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except FileNotFoundError:
-            _error(
-                "protoc not found. Use --desc with a pre-compiled descriptor set instead."
-            )
-        except subprocess.CalledProcessError as e:
-            _error(f"protoc failed:\n{e.stderr.strip()}")
-
-        return _load_descriptor_pool(tmp_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+from protokit._cli_utils import (
+    compile_proto as _compile_proto,
+    error_exit as _error,
+    load_descriptor_pool as _load_descriptor_pool,
+)
+from protokit.message.differ import MessageDifferencer
+from protokit.message.formatting import format_value as _format_value
+from protokit.message.model import ChangeType, Difference, DiffResult, EnumValue, FieldPath
 
 
 def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> type:
@@ -521,7 +455,7 @@ def main(
         differ.treat_as_map(field, key=key)
 
     if float_mode == "approximate":
-        from proto_differ.comparators import FloatComparison
+        from protokit.message.comparators import FloatComparison
         differ.set_float_comparison(FloatComparison.APPROXIMATE)
 
     if max_depth is not None:

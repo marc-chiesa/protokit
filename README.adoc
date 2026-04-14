@@ -1,10 +1,12 @@
-= proto-differ
+= protokit
 :toc:
 :toc-placement!:
 
-Python equivalent of Google's C++ `MessageDifferencer` for Protocol Buffers.
+Python toolkit for Protocol Buffers: message diffing and schema compatibility checking.
 
-Structured, filterable diff output. Cross-descriptor-pool comparison. Schema evolution detection. Beautiful CLI.
+`protokit diff` — structural, filterable message diffs with cross-descriptor-pool comparison, schema evolution detection, and a pytest hook.
+
+`protokit compat` — descriptor-level schema compatibility checks with 17 built-in rules, four profiles, and a pluggable rule API.
 
 toc::[]
 
@@ -12,16 +14,16 @@ toc::[]
 
 [source,bash]
 ----
-pip install proto-differ
+pip install protokit
 ----
 
-== Quick Start
+== Message Diffing
 
 === Library
 
 [source,python]
 ----
-from proto_differ import diff_messages, ChangeType
+from protokit.message import diff_messages, ChangeType
 
 result = diff_messages(msg1, msg2)
 
@@ -46,21 +48,21 @@ Compare two binary protobuf messages:
 [source,bash]
 ----
 # Same-schema mode
-pbdiff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User
+protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User
 
 # Cross-schema mode (schema evolution)
-pbdiff left.pb right.pb \
+protokit diff left.pb right.pb \
   --left-desc v1.descriptor_set --right-desc v2.descriptor_set \
   --left-type v1.User --right-type v2.User
 
 # JSON input
-pbdiff left.json right.json --desc schema.descriptor_set --message-type myapp.User --json
+protokit diff left.json right.json --desc schema.descriptor_set --message-type myapp.User --json
 
 # Text format input
-pbdiff left.textproto right.textproto --desc schema.descriptor_set --message-type myapp.User --text-format
+protokit diff left.textproto right.textproto --desc schema.descriptor_set --message-type myapp.User --text-format
 
 # From .proto files (requires protoc on PATH)
-pbdiff left.pb right.pb --proto schema.proto --message-type myapp.User
+protokit diff left.pb right.pb --proto schema.proto --message-type myapp.User
 ----
 
 Example output:
@@ -77,7 +79,7 @@ JSON output for scripting:
 
 [source,bash]
 ----
-pbdiff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --format json
+protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --format json
 ----
 
 [source,json]
@@ -101,7 +103,7 @@ Quiet mode for CI (exit code only):
 
 [source,bash]
 ----
-pbdiff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --quiet
+protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --quiet
 echo $?  # 0 = equal, 1 = different, 2 = error
 ----
 
@@ -111,7 +113,7 @@ Add the hook to your `conftest.py`:
 
 [source,python]
 ----
-from proto_differ.pytest_plugin import pytest_assertrepr_compare  # noqa: F401
+from protokit.message.pytest_plugin import pytest_assertrepr_compare  # noqa: F401
 ----
 
 Now `assert msg1 == msg2` shows a structured diff on failure:
@@ -124,7 +126,7 @@ E       ~ name: 'Alice' -> 'Bob'
 E       ~ address.city: 'SF' -> 'NYC'
 ----
 
-== Features
+=== Features
 
 Cross-descriptor-pool comparison::
 Compare messages from different `.descriptor_set` files. Field matching is name-based, not descriptor-identity-based.
@@ -140,7 +142,7 @@ Match repeated message fields by a key field instead of index, ignoring order.
 
 [source,python]
 ----
-from proto_differ import MessageDifferencer
+from protokit.message import MessageDifferencer
 
 differ = MessageDifferencer()
 differ.treat_as_map("items", key="id")
@@ -153,7 +155,7 @@ Exact (IEEE 754) or approximate (fraction + margin) modes.
 
 [source,python]
 ----
-from proto_differ import MessageDifferencer, FloatComparison
+from protokit.message import MessageDifferencer, FloatComparison
 
 differ = MessageDifferencer()
 differ.set_float_comparison(FloatComparison.APPROXIMATE, fraction=1e-6, margin=1e-9)
@@ -176,7 +178,7 @@ result = differ.compare(msg1, msg2)
 assert not result.is_complete  # truncated subtrees exist
 ----
 
-== CLI Options
+=== CLI Options (`protokit diff`)
 
 [cols="1,3"]
 |===
@@ -240,13 +242,277 @@ assert not result.is_complete  # truncated subtrees exist
 | Warn on message type name changes
 |===
 
+== Schema Compatibility
+
+Check whether a `.proto` schema change is safe before you merge it. Catches three kinds of breakage:
+
+* *Wire breaks* — field-number reuse, cardinality flips, incompatible encodings.
+* *Semantic breaks* — removed fields, added enum values, presence-semantics changes.
+* *Policy breaks* — custom-option changes and org-specific rules (via plugins).
+
+=== Library
+
+[source,python]
+----
+from protokit.schema import check_compatibility, CompatibilityLevel
+
+report = check_compatibility(
+    old_pool, "acme.User",
+    new_pool, "acme.User",
+    level=CompatibilityLevel.CONSUMER_SAFE,
+)
+
+if not report.is_compatible:
+    for f in report.findings:
+        print(f"{f.severity.value}/{f.direction.value} {f.path}: {f.message}")
+
+# Per-severity buckets
+print(len(report.wire_breaks), len(report.semantic_breaks), len(report.policy_breaks))
+----
+
+Cross-type comparisons (renamed messages) pass different type names for each side:
+
+[source,python]
+----
+report = check_compatibility(old_pool, "acme.UserV1", new_pool, "acme.UserV2")
+----
+
+=== CLI
+
+Compare two descriptor sets:
+
+[source,bash]
+----
+protokit compat old.descriptor_set new.descriptor_set \
+  --type acme.User \
+  --level consumer-safe
+----
+
+From `.proto` sources:
+
+[source,bash]
+----
+protokit compat old.proto new.proto --proto --type acme.User
+----
+
+Cross-type comparison:
+
+[source,bash]
+----
+protokit compat old.descriptor_set new.descriptor_set \
+  --old-type acme.UserV1 --new-type acme.UserV2
+----
+
+JSON output for CI:
+
+[source,bash]
+----
+protokit compat old.descriptor_set new.descriptor_set --type acme.User --format json --quiet
+echo $?  # 0 = compatible, 1 = incompatible, 2 = error
+----
+
+=== Compatibility Profiles
+
+Four profiles control which findings surface. Each is a pair of filters: a severity threshold and a direction filter.
+
+[cols="1,2,3"]
+|===
+| Profile | Question Answered | Surfaces
+
+| `WIRE`
+| Will deserialization crash?
+| Wire-level breaks only, any direction.
+
+| `CONSUMER_SAFE`
+| Can old consumers safely read new messages?
+| Wire + semantic with BACKWARD or BOTH direction. Excludes FORWARD-only findings like new-field-added.
+
+| `PRODUCER_SAFE`
+| Can new consumers safely read old messages?
+| Wire + semantic with FORWARD or BOTH direction. Excludes BACKWARD-only findings like field-removed.
+
+| `STRICT`
+| Any compatibility concern at all?
+| All severities (including POLICY) in all directions.
+|===
+
+=== Built-in Rules
+
+[cols="2,1,1,3"]
+|===
+| Rule | Severity | Direction | Detects
+
+| `field_removed`            | SEMANTIC | BACKWARD | Field present in old, absent in new.
+| `field_added`              | SEMANTIC | BACKWARD | New field (non-required, not in a oneof). Old consumer sees unknown data.
+| `field_number_changed`     | WIRE     | BOTH     | Same name, different number.
+| `field_type_wire_incompatible` | WIRE | BOTH     | Scalar type change across wire groups (e.g. int32 ↔ sint32).
+| `field_type_semantic_change`   | SEMANTIC | BOTH | Type change within a wire group (e.g. string ↔ bytes).
+| `field_type_name_changed`  | POLICY   | BOTH     | Message/enum field points at a renamed type (shape may still match).
+| `repeated_to_singular`     | WIRE     | BOTH     | Cardinality flip between singular and repeated.
+| `map_to_repeated`          | WIRE     | BOTH     | Map ↔ repeated conversion.
+| `oneof_membership_changed` | SEMANTIC | BOTH     | Field moved in/out of a real oneof.
+| `oneof_field_added`        | SEMANTIC | BACKWARD | New alternative in a real oneof — old exhaustive switches break.
+| `required_field_added`     | WIRE     | FORWARD  | New proto2 `required` field — old producers can't satisfy.
+| `options_changed`          | POLICY   | BOTH     | Any serialized-options change.
+| `presence_changed`         | SEMANTIC | BOTH     | `has_presence` differs across schemas.
+| `enum_value_removed`       | SEMANTIC | FORWARD  | Enum value deleted — new consumer sees unknown number in old data.
+| `enum_value_added`         | SEMANTIC | BACKWARD | Enum value added — old consumer sees unknown number in new data.
+| `enum_number_reused`       | WIRE     | BOTH     | Enum number now binds a different name.
+| `reserved_field_reused`    | WIRE / SEMANTIC | BOTH | Reserved number reused → WIRE; reserved name reused → SEMANTIC.
+|===
+
+NOTE: Directions indicate **which reader is at risk**, not which side
+of the schema changed. ``BACKWARD`` = old consumer fails on new data
+(breaks forward compatibility); ``FORWARD`` = new consumer fails on
+old data (breaks backward compatibility). This keeps profile names
+aligned with what they filter: ``CONSUMER_SAFE`` = BACKWARD + BOTH
+protects old consumers; ``PRODUCER_SAFE`` = FORWARD + BOTH protects
+against old producers.
+
+=== Custom Rules (Plugins)
+
+Plugins inspect descriptors and call `ctx.emit(...)` to record findings. Register on a `SchemaChecker`:
+
+[source,python]
+----
+from protokit.schema import (
+    CompatibilityLevel,
+    FieldRuleContext,
+    SchemaChecker,
+    Severity,
+)
+
+def no_newly_deprecated_fields(ctx: FieldRuleContext) -> None:
+    """Flag fields that gained a `deprecated = true` option."""
+    if ctx.old_field is None or ctx.new_field is None:
+        return
+    old_dep = ctx.old_field.GetOptions().deprecated
+    new_dep = ctx.new_field.GetOptions().deprecated
+    if not old_dep and new_dep:
+        ctx.emit(
+            severity=Severity.POLICY,
+            message="field newly marked deprecated",
+        )
+
+checker = SchemaChecker(level=CompatibilityLevel.STRICT)
+checker.register_field_rule("no_newly_deprecated", no_newly_deprecated_fields)
+report = checker.check(old_pool, "acme.User", new_pool, "acme.User")
+----
+
+Message-level plugins fire once per visited message:
+
+[source,python]
+----
+from protokit.schema import MessageRuleContext
+
+def require_docs(ctx: MessageRuleContext) -> None:
+    # Example: enforce that new messages carry docstring comments.
+    ...
+
+checker.register_message_rule("require_docs", require_docs)
+----
+
+Plugin exceptions (and misuse like returning an awaitable) are caught — the engine records a `Warning` entry in `report.warnings` and continues with subsequent plugins. No single bad plugin can take down a compatibility check. When any `report.warnings` are present, `protokit compat` exits with code 2 so CI never silently passes a broken custom policy.
+
+=== Rule Packs
+
+A rule pack is any Python module exposing a `RULES` list of `(rule_id, plugin_fn)` pairs:
+
+[source,python]
+----
+# myorg/proto_rules.py
+RULES = [
+    ("no_newly_deprecated", no_newly_deprecated_fields),
+    ("require_docs", require_docs_on_messages),
+]
+----
+
+Load via CLI:
+
+[source,bash]
+----
+protokit compat old.descriptor_set new.descriptor_set \
+  --type acme.User \
+  --rule-pack myorg.proto_rules
+----
+
+Or programmatically:
+
+[source,python]
+----
+import myorg.proto_rules
+checker.load_rule_pack(myorg.proto_rules)
+----
+
+NOTE: Rule packs are ordinary Python modules. `load_rule_pack` runs
+`importlib.import_module(...)`, which executes the module's top-level
+code. Only load rule packs from sources you trust — the same bar you'd
+apply to `pip install`.
+
+=== Composing a `CompatibilityPolicy`
+
+Bundle a profile with custom rules and ignore paths for reuse across type pairs:
+
+[source,python]
+----
+from protokit.schema import CompatibilityPolicy, CompatibilityLevel
+
+policy = CompatibilityPolicy(
+    base=CompatibilityLevel.CONSUMER_SAFE,
+    custom_rules=(("no_newly_deprecated", no_newly_deprecated_fields),),
+    ignore_paths=("internal_debug",),
+)
+
+report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
+----
+
+=== CLI Options (`protokit compat`)
+
+[cols="1,3"]
+|===
+| Flag | Description
+
+| positional `OLD_INPUT NEW_INPUT`
+| Two descriptor sets, or two `.proto` files with `--proto`.
+
+| `--type NAME`
+| Fully-qualified type name (same on both sides).
+
+| `--old-type NAME`
+| Old-side type name (cross-type mode).
+
+| `--new-type NAME`
+| New-side type name (cross-type mode).
+
+| `--proto`
+| Treat OLD_INPUT / NEW_INPUT as `.proto` source. Requires `protoc`.
+
+| `-I`, `--proto-path DIR`
+| Import path for `protoc` (repeatable, with `--proto`).
+
+| `--level LEVEL`
+| `wire` \| `consumer-safe` (default) \| `producer-safe` \| `strict`.
+
+| `--format FMT`
+| `human` (default) or `json`.
+
+| `--rule-pack MODULE`
+| Dotted module name exposing a `RULES` list. Repeatable.
+
+| `--ignore PATH`
+| Suppress findings at this dotted path prefix. Repeatable.
+
+| `--quiet`
+| Suppress output; return exit code only.
+|===
+
 == Supported Field Types
 
 * Scalars (int32/64, uint32/64, sint32/64, fixed32/64, sfixed32/64, float, double, bool, string, bytes)
 * Nested messages (arbitrary depth)
 * Repeated fields (index-based or key-based via `treat_as_map`)
 * Map fields (native protobuf maps)
-* Oneof fields
+* Oneof fields (including proto3 `optional`)
 * Enum fields (same-pool and cross-pool with wire-compatibility)
 
 == Requirements

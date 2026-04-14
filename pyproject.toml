@@ -3,16 +3,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "proto-differ"
+name = "protokit"
 version = "0.1.0"
-description = "Python equivalent of Google's C++ MessageDifferencer for Protocol Buffers"
-readme = {file = "README.adoc", content-type = "text/x-asciidoc"}
+description = "Python toolkit for Protocol Buffers: structural message diffing and schema compatibility checking."
+readme = {file = "README.adoc", content-type = "text/plain"}
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
     { name = "Marc" },
 ]
-keywords = ["protobuf", "diff", "grpc", "protocol-buffers"]
+keywords = ["protobuf", "diff", "schema", "compatibility", "protocol-buffers"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -31,13 +31,13 @@ dependencies = [
 ]
 
 [project.scripts]
-pbdiff = "proto_differ.cli:main"
+protokit = "protokit.cli:main"
 
 [project.urls]
-Repository = "https://github.com/marc/proto-differ"
+Repository = "https://github.com/marc/protokit"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/proto_differ"]
+packages = ["src/protokit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

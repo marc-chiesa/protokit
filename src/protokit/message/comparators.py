@@ -13,11 +13,24 @@ from enum import Enum
 
 from google.protobuf import descriptor as proto_descriptor
 
-from proto_differ.model import EnumValue
+from protokit.message.model import EnumValue
 
 
 class FloatComparison(Enum):
-    """Float comparison mode."""
+    """Float comparison mode for ``MessageDifferencer``.
+
+    Pass to :meth:`MessageDifferencer.set_float_comparison` to select
+    between bit-exact and tolerance-based float comparison.
+
+    Members:
+        EXACT: Python ``==`` semantics: bit-identical. ``NaN != NaN``,
+            ``+0.0 == -0.0``. The default mode.
+        APPROXIMATE: Tolerance-based via ``fraction`` (relative) or
+            ``margin`` (absolute) — combined as a logical OR.
+            Under this mode, ``NaN == NaN`` and same-sign infinities
+            are equal, so float diffs don't spuriously fire on
+            representational noise.
+    """
 
     EXACT = "EXACT"
     APPROXIMATE = "APPROXIMATE"
@@ -25,7 +38,23 @@ class FloatComparison(Enum):
 
 @dataclass
 class FloatConfig:
-    """Configuration for approximate float comparison."""
+    """Configuration for float comparison.
+
+    Internal holder used by ``MessageDifferencer`` to bundle mode +
+    tolerances. Prefer configuring via
+    :meth:`MessageDifferencer.set_float_comparison` rather than
+    constructing directly.
+
+    Attributes:
+        mode: Which ``FloatComparison`` mode to use. Defaults to
+            ``EXACT``.
+        fraction: Relative tolerance for ``APPROXIMATE`` mode:
+            values are equal if
+            ``|a - b| <= fraction * max(|a|, |b|)``.
+        margin: Absolute tolerance for ``APPROXIMATE`` mode: values
+            are equal if ``|a - b| <= margin``. Combined with
+            ``fraction`` as logical OR.
+    """
 
     mode: FloatComparison = FloatComparison.EXACT
     fraction: float = 1e-6

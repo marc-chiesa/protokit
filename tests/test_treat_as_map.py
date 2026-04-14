@@ -3,7 +3,7 @@
 import pytest
 from google.protobuf import descriptor_pb2
 
-from proto_differ import (
+from protokit.message import (
     ChangeType,
     DuplicateKeyError,
     MessageDifferencer,

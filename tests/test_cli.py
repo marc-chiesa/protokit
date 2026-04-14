@@ -1,4 +1,4 @@
-"""CLI integration tests for pbdiff."""
+"""CLI integration tests for protokit diff."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from proto_differ.cli import main
+from protokit.message.cli import main
 
 
 # ---------------------------------------------------------------------------
