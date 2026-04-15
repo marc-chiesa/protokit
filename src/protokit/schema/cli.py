@@ -1,22 +1,22 @@
-"""Click CLI for ``protokit compat``.
+"""Click CLI group for ``protokit compat``.
 
-Runs a schema compatibility check between two descriptor sets (or
-two ``.proto`` files compiled on the fly) and reports findings under
-a chosen compatibility profile.
+Subcommands:
 
-Invocation shape (from the design doc)::
+- ``check`` — compatibility check between two descriptor sets,
+  two ``.proto`` files, or two git refs (via ``--since`` /
+  ``--against-base``).
+- ``history`` — walk a git range and emit per-commit
+  compatibility findings.
+- ``bisect`` — find the earliest commit in a range that broke
+  compatibility for a given type.
+- ``ci`` — thin wrapper around ``check --against-base`` with
+  CI-friendly defaults.
 
-    protokit compat old.descriptor_set new.descriptor_set \
-        --type mypackage.Message \
-        --level consumer-safe \
-        --format human|json \
-        --rule-pack myorg.proto_rules \
-        --ignore internal_debug_field
-
-Exit codes:
+Exit codes (uniform across subcommands):
     0 — compatible (no findings survived the profile filter)
     1 — incompatible (at least one finding survived)
-    2 — error (bad flags, missing type, protoc failure, rule-pack load failure)
+    2 — error (bad flags, missing type, protoc/git failure,
+        rule-pack load failure, or any plugin-emitted Warning)
 """
 
 from __future__ import annotations
@@ -36,6 +36,16 @@ from protokit._cli_utils import (
     load_descriptor_pool,
 )
 from protokit.schema.checker import SchemaChecker
+from protokit.schema.git import (
+    GitRefNotFoundError,
+    ProtoImportError,
+    ShallowRepoError,
+    commits_in_range,
+    extract_pool_from_ref,
+    merge_base,
+    resolve_default_base,
+    verify_ref,
+)
 from protokit.schema.model import (
     CompatibilityLevel,
     CompatibilityReport,
@@ -299,18 +309,214 @@ def _render_json(report: CompatibilityReport) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Click command
+# Pool loaders (per mode)
 # ---------------------------------------------------------------------------
 
 
-@click.command()
+def _load_pools_local(
+    old_input: Path | None,
+    new_input: Path | None,
+    *,
+    use_proto: bool,
+    proto_paths: tuple[str, ...],
+) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]:
+    """Load two pools from local files (descriptor sets or .proto)."""
+    if old_input is None or new_input is None:
+        error_exit(
+            "OLD_INPUT and NEW_INPUT are required without --since or "
+            "--against-base."
+        )
+    if use_proto:
+        return (
+            compile_proto(old_input, proto_paths),
+            compile_proto(new_input, proto_paths),
+        )
+    if proto_paths:
+        error_exit("--proto-path only applies with --proto.")
+    return (
+        _safe_load_pool(old_input, label="OLD_INPUT"),
+        _safe_load_pool(new_input, label="NEW_INPUT"),
+    )
+
+
+def _load_pools_git(
+    *,
+    since: str | None,
+    against_base: str | None,
+    proto_file: str | None,
+    proto_roots: tuple[str, ...],
+    cwd: Path | None = None,
+) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool, str, str]:
+    """Resolve a (old_ref, new_ref) pair from git flags and extract pools.
+
+    Returns ``(old_pool, new_pool, old_ref, new_ref)`` so callers
+    can include the resolved refs in user-facing output.
+    """
+    if since is not None and against_base is not None:
+        error_exit(
+            "--since and --against-base are mutually exclusive."
+        )
+    if proto_file is None:
+        error_exit(
+            "--since / --against-base require --proto-file PATH."
+        )
+
+    if since is not None:
+        if not verify_ref(since, cwd=cwd):
+            error_exit(f"unknown git ref: {since!r}")
+        old_ref, new_ref = since, "HEAD"
+    else:
+        # against_base mode. Empty string sentinel = auto-resolve.
+        if against_base == "":
+            try:
+                base = resolve_default_base(cwd=cwd)
+            except GitRefNotFoundError as exc:
+                error_exit(str(exc))
+        else:
+            assert against_base is not None
+            if not verify_ref(against_base, cwd=cwd):
+                error_exit(f"unknown git ref: {against_base!r}")
+            base = against_base
+        try:
+            old_ref = merge_base("HEAD", base, cwd=cwd)
+        except (GitRefNotFoundError, ShallowRepoError) as exc:
+            error_exit(str(exc))
+        new_ref = "HEAD"
+
+    try:
+        old_pool = extract_pool_from_ref(
+            old_ref, proto_file, proto_roots=proto_roots, cwd=cwd,
+        )
+        new_pool = extract_pool_from_ref(
+            new_ref, proto_file, proto_roots=proto_roots, cwd=cwd,
+        )
+    except (GitRefNotFoundError, ProtoImportError) as exc:
+        error_exit(str(exc))
+    return old_pool, new_pool, old_ref, new_ref
+
+
+# ---------------------------------------------------------------------------
+# Check pipeline (shared by check / ci)
+# ---------------------------------------------------------------------------
+
+
+def _run_check_pipeline(
+    *,
+    old_pool: descriptor_pool.DescriptorPool,
+    new_pool: descriptor_pool.DescriptorPool,
+    old_type: str,
+    new_type: str,
+    level: CompatibilityLevel,
+    rule_packs: tuple[str, ...],
+    ignore_paths: tuple[str, ...],
+    dedupe_by_type: bool,
+    output_format: str,
+    quiet: bool,
+    header: str | None = None,
+) -> CompatibilityReport:
+    """Run the configured checker, render output, and ``sys.exit``.
+
+    Used by ``check`` and ``ci``. Returns the report (so subcommands
+    that need it for further work can read it before the exit), but
+    always calls ``sys.exit`` at the end with the conventional
+    code (0/1/2).
+    """
+    checker = SchemaChecker(level=level, dedupe_by_type=dedupe_by_type)
+    _load_rule_packs(checker, rule_packs)
+    for path in ignore_paths:
+        try:
+            checker.ignore(path)
+        except ValueError as exc:
+            error_exit(f"invalid --ignore path {path!r}: {exc}")
+
+    try:
+        report = checker.check(old_pool, old_type, new_pool, new_type)
+    except ValueError as exc:
+        error_exit(str(exc))
+
+    if report.warnings:
+        for w in report.warnings:
+            click.echo(f"Warning: {w}", err=True)
+
+    if not quiet:
+        if header:
+            click.echo(header)
+        if output_format.lower() == "json":
+            click.echo(_render_json(report))
+        else:
+            click.echo(_render_human(report))
+
+    if report.warnings:
+        sys.exit(2)
+    sys.exit(0 if report.is_compatible else 1)
+
+
+# ---------------------------------------------------------------------------
+# Click group
+# ---------------------------------------------------------------------------
+
+
+@click.group()
+def main() -> None:
+    """Schema compatibility checks across descriptor sets, .proto sources, or git refs.
+
+    EXIT CODES (uniform across subcommands):
+        0 = compatible, 1 = incompatible, 2 = error.
+    """
+
+
+# ---------------------------------------------------------------------------
+# `check` subcommand
+# ---------------------------------------------------------------------------
+
+
+@main.command("check")
 @click.argument(
     "old_input",
+    required=False,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
 @click.argument(
     "new_input",
+    required=False,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--since",
+    default=None,
+    metavar="REF",
+    help="Compare current HEAD against this git ref. Mutually "
+         "exclusive with positional inputs and with --against-base. "
+         "Requires --proto-file.",
+)
+@click.option(
+    "--against-base",
+    is_flag=False,
+    flag_value="",
+    default=None,
+    metavar="[BRANCH]",
+    help="Compare HEAD against the merge-base with BRANCH. With no "
+         "argument, resolves @{upstream} → origin/main → "
+         "origin/master in order. Mutually exclusive with --since "
+         "and positional inputs. Requires --proto-file.",
+)
+@click.option(
+    "--proto-file",
+    default=None,
+    metavar="PATH",
+    help="Import-relative path of the root .proto file. Required "
+         "with --since / --against-base; ignored otherwise.",
+)
+@click.option(
+    "--proto-root",
+    "proto_roots",
+    multiple=True,
+    default=(".",),
+    show_default=True,
+    metavar="DIR",
+    help="Repository prefix for .proto import resolution "
+         "(repeatable). Analogous to protoc -I. Only applies to "
+         "--since / --against-base.",
 )
 @click.option(
     "--type",
@@ -337,7 +543,7 @@ def _render_json(report: CompatibilityReport) -> str:
     is_flag=True,
     default=False,
     help="Treat OLD_INPUT and NEW_INPUT as .proto source files "
-         "(compiled via protoc on PATH).",
+         "(compiled via protoxy / protoc).",
 )
 @click.option(
     "--proto-path",
@@ -345,7 +551,8 @@ def _render_json(report: CompatibilityReport) -> str:
     "proto_paths",
     multiple=True,
     metavar="DIR",
-    help="Import path for protoc (repeatable). Only used with --proto.",
+    help="Import path for the local --proto compilation "
+         "(repeatable). Only applies with --proto.",
 )
 @click.option(
     "--level",
@@ -382,9 +589,9 @@ def _render_json(report: CompatibilityReport) -> str:
     "--dedupe-by-type",
     is_flag=True,
     default=False,
-    help="Emit findings for each shared nested type only once (original "
-         "behavior). Default is path-complete: findings appear at every "
-         "path where the type is referenced.",
+    help="Emit findings for each shared nested type only once "
+         "(original behavior). Default is path-complete: findings "
+         "appear at every path where the type is referenced.",
 )
 @click.option(
     "--quiet",
@@ -392,9 +599,13 @@ def _render_json(report: CompatibilityReport) -> str:
     default=False,
     help="Suppress output; return exit code only.",
 )
-def main(
-    old_input: Path,
-    new_input: Path,
+def check(
+    old_input: Path | None,
+    new_input: Path | None,
+    since: str | None,
+    against_base: str | None,
+    proto_file: str | None,
+    proto_roots: tuple[str, ...],
     type_flag: str | None,
     old_type: str | None,
     new_type: str | None,
@@ -409,54 +620,483 @@ def main(
 ) -> None:
     """Check schema compatibility between two protobuf schemas.
 
-    OLD_INPUT and NEW_INPUT are ``.descriptor_set`` files by default,
-    or ``.proto`` source files when --proto is given. A single
-    ``--type`` checks the same-named message on both sides; use
-    ``--old-type`` with ``--new-type`` to compare messages with
-    different fully-qualified names.
+    Three modes:
 
-    EXIT CODES: 0 = compatible, 1 = incompatible, 2 = error.
+    \b
+    1. Local files (default):
+        protokit compat check OLD.descriptor_set NEW.descriptor_set --type X
+        protokit compat check OLD.proto NEW.proto --proto -I dir/ --type X
+
+    \b
+    2. Git --since:
+        protokit compat check --since HEAD~5 --proto-file acme/user.proto --type X
+
+    \b
+    3. Git --against-base:
+        protokit compat check --against-base origin/main --proto-file acme/user.proto --type X
+        protokit compat check --against-base --proto-file acme/user.proto --type X
+            # auto-resolves @{upstream} → origin/main → origin/master
+    """
+    git_mode = since is not None or against_base is not None
+    if git_mode and (old_input is not None or new_input is not None):
+        error_exit(
+            "Positional inputs cannot be combined with --since / "
+            "--against-base."
+        )
+
+    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
+    level = _resolve_level(level_flag.lower())
+
+    if git_mode:
+        old_pool, new_pool, old_ref, new_ref = _load_pools_git(
+            since=since, against_base=against_base,
+            proto_file=proto_file, proto_roots=proto_roots,
+        )
+        header = (
+            f"# protokit compat check: {old_ref} -> {new_ref} "
+            f"({proto_file})"
+        ) if not quiet and output_format.lower() != "json" else None
+    else:
+        old_pool, new_pool = _load_pools_local(
+            old_input, new_input,
+            use_proto=use_proto, proto_paths=proto_paths,
+        )
+        header = None
+
+    _run_check_pipeline(
+        old_pool=old_pool, new_pool=new_pool,
+        old_type=old_type_name, new_type=new_type_name,
+        level=level,
+        rule_packs=rule_packs, ignore_paths=ignore_paths,
+        dedupe_by_type=dedupe_by_type,
+        output_format=output_format, quiet=quiet,
+        header=header,
+    )
+
+
+# ---------------------------------------------------------------------------
+# `history` subcommand
+# ---------------------------------------------------------------------------
+
+
+@main.command("history")
+@click.option(
+    "--range",
+    "range_spec",
+    required=True,
+    metavar="OLD..NEW",
+    help="Git revision range (e.g. ``HEAD~20..HEAD``).",
+)
+@click.option(
+    "--proto-file",
+    required=True,
+    metavar="PATH",
+    help="Import-relative path of the .proto file to track.",
+)
+@click.option(
+    "--proto-root",
+    "proto_roots",
+    multiple=True,
+    default=(".",),
+    show_default=True,
+    metavar="DIR",
+    help="Repository prefix for .proto import resolution (repeatable).",
+)
+@click.option(
+    "--type",
+    "type_flag",
+    default=None,
+    metavar="NAME",
+    help="Message type to track (same name on both sides).",
+)
+@click.option(
+    "--old-type",
+    default=None,
+    metavar="NAME",
+    help="Type name on the OLD side of each pair (cross-type mode).",
+)
+@click.option(
+    "--new-type",
+    default=None,
+    metavar="NAME",
+    help="Type name on the NEW side of each pair (cross-type mode).",
+)
+@click.option(
+    "--level",
+    "level_flag",
+    type=click.Choice(_LEVEL_CHOICES, case_sensitive=False),
+    default="consumer-safe",
+    show_default=True,
+    help="Compatibility profile.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(("human", "json"), case_sensitive=False),
+    default="human",
+    show_default=True,
+    help="Output format.",
+)
+def history(
+    range_spec: str,
+    proto_file: str,
+    proto_roots: tuple[str, ...],
+    type_flag: str | None,
+    old_type: str | None,
+    new_type: str | None,
+    level_flag: str,
+    output_format: str,
+) -> None:
+    """Walk commits in OLD..NEW that touch the .proto and report findings per pair.
+
+    For each consecutive (parent, child) pair of commits in the
+    range that touched ``--proto-file``, runs a compatibility
+    check and emits the findings tagged with the child SHA.
+
+    Exits 0 if no commit in the range produced a finding under
+    the chosen profile; 1 if any did; 2 on a hard error
+    (unknown ref, missing import, plugin warning).
     """
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
 
-    if use_proto:
-        old_pool = compile_proto(old_input, proto_paths)
-        new_pool = compile_proto(new_input, proto_paths)
-    else:
-        if proto_paths:
-            error_exit("--proto-path only applies with --proto.")
-        old_pool = _safe_load_pool(old_input, label="OLD_INPUT")
-        new_pool = _safe_load_pool(new_input, label="NEW_INPUT")
-
-    checker = SchemaChecker(level=level, dedupe_by_type=dedupe_by_type)
-    _load_rule_packs(checker, rule_packs)
-    for path in ignore_paths:
-        try:
-            checker.ignore(path)
-        except ValueError as exc:
-            error_exit(f"invalid --ignore path {path!r}: {exc}")
-
     try:
-        report = checker.check(old_pool, old_type_name, new_pool, new_type_name)
-    except ValueError as exc:
+        commits = commits_in_range(range_spec, paths=[proto_file])
+    except GitRefNotFoundError as exc:
         error_exit(str(exc))
 
-    # Plugin failures are fail-closed at the CLI layer: a broken
-    # custom rule that was supposed to surface a finding must not
-    # silently pass CI. Warnings always go to stderr; when any are
-    # present the CLI exits with code 2 even if the filtered report
-    # is empty.
-    if report.warnings:
-        for w in report.warnings:
-            click.echo(f"Warning: {w}", err=True)
-
-    if not quiet:
+    if not commits:
         if output_format.lower() == "json":
-            click.echo(_render_json(report))
+            click.echo(json.dumps({"range": range_spec, "entries": []}, indent=2))
         else:
-            click.echo(_render_human(report))
+            click.echo(f"# {range_spec}: no commits touch {proto_file}")
+        sys.exit(0)
 
-    if report.warnings:
+    # Anchor: the parent of the oldest commit in the range. Without it
+    # the first entry would have nothing to compare against.
+    anchor = f"{commits[0]}^"
+    if not verify_ref(anchor):
+        error_exit(
+            f"could not resolve parent of {commits[0]} — the range "
+            "may include the repository root"
+        )
+
+    pairs: list[tuple[str, str]] = []
+    prev = anchor
+    for sha in commits:
+        pairs.append((prev, sha))
+        prev = sha
+
+    entries: list[dict[str, Any]] = []
+    any_findings = False
+    any_warnings = False
+    for old_ref, new_ref in pairs:
+        try:
+            old_pool = extract_pool_from_ref(
+                old_ref, proto_file, proto_roots=proto_roots,
+            )
+            new_pool = extract_pool_from_ref(
+                new_ref, proto_file, proto_roots=proto_roots,
+            )
+        except (GitRefNotFoundError, ProtoImportError) as exc:
+            error_exit(str(exc))
+
+        checker = SchemaChecker(level=level)
+        try:
+            report = checker.check(
+                old_pool, old_type_name, new_pool, new_type_name,
+            )
+        except ValueError as exc:
+            error_exit(str(exc))
+
+        if report.warnings:
+            any_warnings = True
+            for w in report.warnings:
+                click.echo(f"Warning ({new_ref[:12]}): {w}", err=True)
+        if report.findings:
+            any_findings = True
+
+        entries.append({
+            "old": old_ref,
+            "new": new_ref,
+            "compatible": report.is_compatible,
+            "findings": [
+                {
+                    "path": str(f.path),
+                    "rule_id": f.rule_id,
+                    "severity": f.severity.value,
+                    "direction": f.direction.value,
+                    "message": f.message,
+                }
+                for f in report.findings
+            ],
+        })
+
+    if output_format.lower() == "json":
+        click.echo(json.dumps({"range": range_spec, "entries": entries}, indent=2))
+    else:
+        for entry in entries:
+            short = entry["new"][:12]
+            verdict = "OK" if entry["compatible"] else "BROKEN"
+            click.echo(f"{short} {verdict} ({len(entry['findings'])} finding(s))")
+            for f in entry["findings"]:
+                click.echo(
+                    f"    [{f['severity']}/{f['direction']}] "
+                    f"{f['path']}: {f['message']} ({f['rule_id']})"
+                )
+
+    if any_warnings:
         sys.exit(2)
-    sys.exit(0 if report.is_compatible else 1)
+    sys.exit(1 if any_findings else 0)
+
+
+# ---------------------------------------------------------------------------
+# `bisect` subcommand
+# ---------------------------------------------------------------------------
+
+
+@main.command("bisect")
+@click.option(
+    "--old",
+    "old_ref",
+    required=True,
+    metavar="REF",
+    help="Old (compatible) endpoint of the bisect range.",
+)
+@click.option(
+    "--new",
+    "new_ref",
+    required=True,
+    metavar="REF",
+    help="New (broken) endpoint of the bisect range.",
+)
+@click.option(
+    "--proto-file",
+    required=True,
+    metavar="PATH",
+    help="Import-relative path of the .proto file to track.",
+)
+@click.option(
+    "--proto-root",
+    "proto_roots",
+    multiple=True,
+    default=(".",),
+    show_default=True,
+    metavar="DIR",
+    help="Repository prefix for .proto import resolution (repeatable).",
+)
+@click.option(
+    "--type",
+    "type_flag",
+    default=None,
+    metavar="NAME",
+    help="Message type to bisect against (same name on both sides).",
+)
+@click.option(
+    "--old-type",
+    default=None,
+    metavar="NAME",
+    help="Type name on the OLD side (cross-type mode).",
+)
+@click.option(
+    "--new-type",
+    default=None,
+    metavar="NAME",
+    help="Type name on the NEW side (cross-type mode).",
+)
+@click.option(
+    "--level",
+    "level_flag",
+    type=click.Choice(_LEVEL_CHOICES, case_sensitive=False),
+    default="consumer-safe",
+    show_default=True,
+    help="Compatibility profile.",
+)
+def bisect(
+    old_ref: str,
+    new_ref: str,
+    proto_file: str,
+    proto_roots: tuple[str, ...],
+    type_flag: str | None,
+    old_type: str | None,
+    new_type: str | None,
+    level_flag: str,
+) -> None:
+    """Find the earliest commit in OLD..NEW that broke compatibility.
+
+    Linearly walks the .proto-touching commits in the range and
+    reports the first one whose pool produces a finding against
+    the OLD ref's pool. Linear (not binary) because the engine
+    is fast and the user-visible cost of a misclassification at
+    the wrong commit is high — exact attribution beats latency.
+
+    Exit codes:
+        0 = no break found in the range (--old and --new are both compatible).
+        1 = found the breaking commit; SHA printed to stdout.
+        2 = hard error (unknown ref, missing import, plugin warning).
+    """
+    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
+    level = _resolve_level(level_flag.lower())
+
+    if not verify_ref(old_ref):
+        error_exit(f"unknown git ref: {old_ref!r}")
+    if not verify_ref(new_ref):
+        error_exit(f"unknown git ref: {new_ref!r}")
+
+    try:
+        commits = commits_in_range(
+            f"{old_ref}..{new_ref}", paths=[proto_file],
+        )
+    except GitRefNotFoundError as exc:
+        error_exit(str(exc))
+
+    if not commits:
+        click.echo(
+            f"# {old_ref}..{new_ref}: no commits touch {proto_file}"
+        )
+        sys.exit(0)
+
+    try:
+        anchor_pool = extract_pool_from_ref(
+            old_ref, proto_file, proto_roots=proto_roots,
+        )
+    except (GitRefNotFoundError, ProtoImportError) as exc:
+        error_exit(str(exc))
+
+    for sha in commits:
+        try:
+            new_pool = extract_pool_from_ref(
+                sha, proto_file, proto_roots=proto_roots,
+            )
+        except (GitRefNotFoundError, ProtoImportError) as exc:
+            error_exit(str(exc))
+        checker = SchemaChecker(level=level)
+        try:
+            report = checker.check(
+                anchor_pool, old_type_name, new_pool, new_type_name,
+            )
+        except ValueError as exc:
+            error_exit(str(exc))
+        if report.warnings:
+            for w in report.warnings:
+                click.echo(f"Warning ({sha[:12]}): {w}", err=True)
+            sys.exit(2)
+        if report.findings:
+            click.echo(f"first breaking commit: {sha}")
+            for f in report.findings:
+                click.echo(f"  {f}")
+            sys.exit(1)
+
+    click.echo(
+        f"# {old_ref}..{new_ref}: no break found across "
+        f"{len(commits)} commit(s)"
+    )
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# `ci` subcommand
+# ---------------------------------------------------------------------------
+
+
+@main.command("ci")
+@click.option(
+    "--base",
+    "base_ref",
+    default=None,
+    metavar="BRANCH",
+    help="Base branch to compare HEAD's merge-base against. Default "
+         "auto-resolves @{upstream} → origin/main → origin/master.",
+)
+@click.option(
+    "--proto-file",
+    required=True,
+    metavar="PATH",
+    help="Import-relative path of the root .proto file.",
+)
+@click.option(
+    "--proto-root",
+    "proto_roots",
+    multiple=True,
+    default=(".",),
+    show_default=True,
+    metavar="DIR",
+    help="Repository prefix for .proto import resolution (repeatable).",
+)
+@click.option(
+    "--type",
+    "type_flag",
+    default=None,
+    metavar="NAME",
+    help="Message type (same on both sides).",
+)
+@click.option(
+    "--old-type",
+    default=None,
+    metavar="NAME",
+    help="Type name on the BASE side (cross-type mode).",
+)
+@click.option(
+    "--new-type",
+    default=None,
+    metavar="NAME",
+    help="Type name on the HEAD side (cross-type mode).",
+)
+@click.option(
+    "--level",
+    "level_flag",
+    type=click.Choice(_LEVEL_CHOICES, case_sensitive=False),
+    default="consumer-safe",
+    show_default=True,
+    help="Compatibility profile.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(("human", "json"), case_sensitive=False),
+    default="human",
+    show_default=True,
+    help="Output format.",
+)
+def ci(
+    base_ref: str | None,
+    proto_file: str,
+    proto_roots: tuple[str, ...],
+    type_flag: str | None,
+    old_type: str | None,
+    new_type: str | None,
+    level_flag: str,
+    output_format: str,
+) -> None:
+    """CI gate: compare HEAD against a base branch's merge-base.
+
+    Equivalent to ``check --against-base BRANCH --proto-file
+    PATH``, with required ``--proto-file`` and the same exit
+    codes (0/1/2). Distinct subcommand because CI configs
+    benefit from an unambiguous, non-overloaded entry point —
+    no positional-arg shape, no mode-detection ambiguity, and
+    a name that signals intent in pipeline yaml.
+    """
+    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
+    level = _resolve_level(level_flag.lower())
+
+    # The CI subcommand always uses --against-base semantics. Reuse
+    # the shared loader so the resolution rules stay identical.
+    against = "" if base_ref is None else base_ref
+    old_pool, new_pool, old_ref, new_ref = _load_pools_git(
+        since=None, against_base=against,
+        proto_file=proto_file, proto_roots=proto_roots,
+    )
+    header = (
+        f"# protokit compat ci: {old_ref} -> {new_ref} ({proto_file})"
+        if output_format.lower() != "json" else None
+    )
+    _run_check_pipeline(
+        old_pool=old_pool, new_pool=new_pool,
+        old_type=old_type_name, new_type=new_type_name,
+        level=level,
+        rule_packs=(), ignore_paths=(),
+        dedupe_by_type=False,
+        output_format=output_format, quiet=False,
+        header=header,
+    )

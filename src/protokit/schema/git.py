@@ -135,6 +135,118 @@ def is_shallow_repository(cwd: Path | None = None) -> bool:
     return str(out).strip() == "true"
 
 
+def verify_ref(ref: str, *, cwd: Path | None = None) -> bool:
+    """Return True iff ``ref`` resolves to a valid git revision."""
+    try:
+        _run_git(
+            ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=cwd, text=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def merge_base(
+    ref_a: str, ref_b: str, *, cwd: Path | None = None,
+) -> str:
+    """Return the merge-base SHA of two refs.
+
+    Raises:
+        GitRefNotFoundError: Either ref doesn't resolve, or no
+            merge-base exists in the local history (common in
+            shallow clones — the fix is to fetch more history).
+    """
+    try:
+        out = _run_git(
+            ["merge-base", ref_a, ref_b], cwd=cwd, text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        if is_shallow_repository(cwd=cwd):
+            raise ShallowRepoError(
+                f"could not find merge-base of {ref_a!r} and {ref_b!r} in "
+                "shallow clone — run `git fetch --unshallow` or "
+                "`git fetch --deepen N` to widen the available history"
+            ) from exc
+        raise GitRefNotFoundError(
+            f"no merge-base for {ref_a!r} and {ref_b!r}: {stderr}"
+        ) from exc
+    return str(out).strip()
+
+
+def resolve_default_base(*, cwd: Path | None = None) -> str:
+    """Pick a sensible default base branch when the user passes
+    ``--against-base`` without an argument.
+
+    Resolution order matches the design doc:
+
+    1. The current branch's tracked upstream (``@{upstream}``).
+    2. ``origin/main`` if it resolves.
+    3. ``origin/master`` if it resolves.
+
+    Raises:
+        GitRefNotFoundError: When none of the candidates resolve —
+            the user must pass ``--against-base BRANCH`` explicitly.
+    """
+    # 1. @{upstream} of the current branch
+    try:
+        upstream = _run_git(
+            ["rev-parse", "--abbrev-ref", "@{upstream}"],
+            cwd=cwd, text=True,
+        )
+        upstream = str(upstream).strip()
+        if upstream:
+            return upstream
+    except subprocess.CalledProcessError:
+        pass
+
+    # 2. origin/main
+    if verify_ref("origin/main", cwd=cwd):
+        return "origin/main"
+
+    # 3. origin/master
+    if verify_ref("origin/master", cwd=cwd):
+        return "origin/master"
+
+    raise GitRefNotFoundError(
+        "no default base branch found — tracked upstream is unset "
+        "and neither origin/main nor origin/master resolves. Pass "
+        "--against-base BRANCH explicitly."
+    )
+
+
+def commits_in_range(
+    range_spec: str,
+    *,
+    paths: Sequence[str] = (),
+    cwd: Path | None = None,
+) -> list[str]:
+    """Return commit SHAs in ``range_spec`` (e.g. ``"old..new"``).
+
+    Order is oldest → newest (reverse of git's default). Restricts
+    to commits that touch ``paths`` (typically a glob like
+    ``"*.proto"``) when given, so history walks ignore unrelated
+    commits.
+
+    Raises:
+        GitRefNotFoundError: When either endpoint of the range
+            doesn't resolve.
+    """
+    args = ["log", "--reverse", "--format=%H", range_spec]
+    if paths:
+        args.append("--")
+        args.extend(paths)
+    try:
+        out = _run_git(args, cwd=cwd, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise GitRefNotFoundError(
+            f"could not enumerate commits in {range_spec!r}: {stderr}"
+        ) from exc
+    return [line for line in str(out).splitlines() if line]
+
+
 def _git_show(ref: str, path: str, *, cwd: Path | None = None) -> bytes:
     """Return the raw bytes of ``path`` at ``ref`` via ``git show``.
 
