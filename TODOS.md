@@ -70,16 +70,12 @@ Makes the checker git-aware: discover schema versions from commit
 history, compare consecutive revisions, bisect for the first
 breaking commit, gate CI on merge-base.
 
-### Protoc replacement via protoxy (Rust bindings)
+### Protoc replacement via protoxy (Rust bindings) — ✅ landed 2026-04-14
 
-**What:** Use [protoxy](https://pypi.org/project/protoxy/) (`pip install protoxy`) as an optional protoc replacement. Python bindings for the Rust `protox` compiler. Compiles `.proto` files to `FileDescriptorSet` without requiring protoc on PATH.
-
-**Why:** Removes the external `protoc` dependency for `.proto` compilation. Faster than protoc, no scalability issues. Makes Phase 2 git integration work without any external tools. Could be an optional dependency: `pip install protokit[compiler]`.
-
-**Effort:** S (CC: ~15 min to add as optional backend in `_cli_utils.compile_proto`)
-**Priority:** P2 — should land at the *start* of Phase 2 so downstream git-mode code never depends on `protoc` on PATH.
-**Depends on:** Phase 1 CLI (reuses `compile_proto` path).
-**Discovered:** 2026-04-12 CEO review, web search
+Shipped as an optional backend in ``_cli_utils.compile_proto`` via
+``pip install protokit[compiler]``. Also required a protobuf 5.x
+compatibility pass (added ``is_repeated`` / ``is_required``
+helpers in ``protokit._descriptors``).
 
 ---
 
@@ -132,31 +128,23 @@ Phase 3 depends on which ecosystem pain the builder hits first.
 Orthogonal polish items. Schedule when they're painful enough to
 matter; none block other phases.
 
-### pytest integration for schema compatibility checks
+### pytest integration for schema compatibility checks — ✅ landed 2026-04-14
 
-**What:** pytest marker (`@pytest.mark.schema_compat`) + fixture (`schema_checker`) for running compatibility checks in test suites. Supports cross-type comparison (old_type != new_type for renamed/moved messages).
-
-**Why:** Same pytest-first developer experience as the existing message differ plugin (`protokit.message.pytest_plugin`).
-
-**Effort:** S (CC: ~15 min)
-**Priority:** P2
-**Depends on:** Phase 1 core API stable. Independent of everything else.
-**Discovered:** 2026-04-12 CEO review, deferred per outside voice
+Shipped as ``protokit.schema.pytest_plugin`` with ``schema_checker``
+/ ``schema_policy`` fixtures and ``assert_compatible`` helper.
+Users opt in by importing the plugin in ``conftest.py`` (matches
+the ``protokit.message.pytest_plugin`` pattern). Cross-type
+comparison works since the fixture returns a fresh
+``SchemaChecker`` the user calls directly.
 
 ---
 
-### CompatibilityPolicy supporting message plugins
+### CompatibilityPolicy supporting message plugins — ✅ landed 2026-04-14
 
-**What:** ``CompatibilityPolicy.custom_rules`` is field-only today. Extend with a parallel ``message_rules: Sequence[tuple[str, MessagePlugin]] = ()`` so bundled policies can register message-level plugins too.
-
-**Why:** Users who want to distribute a policy that includes message-level rules (e.g., require-docs, cross-field invariants) currently can't use ``CompatibilityPolicy`` and must construct ``SchemaChecker`` by hand. Small asymmetry in the public API.
-
-**Fix approach:** Add ``message_rules`` field to the dataclass with tuple-freeze in ``__post_init__``. Loop in ``check()`` calls ``register_message_rule`` for each. Update docstring and add tests mirroring the existing field-plugin tests.
-
-**Effort:** S (CC: ~10 min)
-**Priority:** P3
-**Depends on:** Nothing. Trivial additive change.
-**Discovered:** 2026-04-13 codex round-2 review, deferred as nice-to-have.
+Shipped as ``CompatibilityPolicy.message_rules``. Tuple-frozen
+in ``__post_init__`` alongside ``custom_rules`` /
+``ignore_paths``; ``check()`` loops and calls
+``register_message_rule`` on the fresh ``SchemaChecker``.
 
 ---
 
