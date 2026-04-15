@@ -7,9 +7,14 @@ lives in differ.py.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
+
+if TYPE_CHECKING:  # pragma: no cover — typing-only imports
+    from google.protobuf import descriptor as proto_descriptor
+    from google.protobuf import descriptor_pool
+    from google.protobuf.message import Message
 
 
 class ChangeType(Enum):
@@ -429,12 +434,17 @@ class Difference:
     left_label: str | None = None
     right_label: str | None = None
 
+    # Phase 1.5 differ hook annotations
+    annotations: tuple[str, ...] = ()
+
     def __str__(self) -> str:
         """Render a single-line summary using a per-change-type prefix.
 
         Prefix legend: ``+`` added, ``-`` removed, ``~`` modified,
         ``T`` type changed, ``#`` field number changed,
-        ``C`` cardinality changed.
+        ``C`` cardinality changed. When ``annotations`` is
+        non-empty, annotations are appended in brackets separated
+        by ``; ``.
 
         Returns:
             A single-line string suitable for CLI output. Empty
@@ -443,19 +453,22 @@ class Difference:
         path_str = str(self.path) if self.path else "(root)"
         match self.change_type:
             case ChangeType.ADDED:
-                return f"+ {path_str}: {self.new_value}"
+                base = f"+ {path_str}: {self.new_value}"
             case ChangeType.REMOVED:
-                return f"- {path_str}: {self.old_value}"
+                base = f"- {path_str}: {self.old_value}"
             case ChangeType.MODIFIED:
-                return f"~ {path_str}: {self.old_value} -> {self.new_value}"
+                base = f"~ {path_str}: {self.old_value} -> {self.new_value}"
             case ChangeType.TYPE_CHANGED:
-                return f"T {path_str}: {self.left_type} -> {self.right_type}"
+                base = f"T {path_str}: {self.left_type} -> {self.right_type}"
             case ChangeType.FIELD_NUMBER_CHANGED:
-                return f"# {path_str}: field {self.left_field_number} -> {self.right_field_number}"
+                base = f"# {path_str}: field {self.left_field_number} -> {self.right_field_number}"
             case ChangeType.CARDINALITY_CHANGED:
-                return f"C {path_str}: {self.left_label} -> {self.right_label}"
+                base = f"C {path_str}: {self.left_label} -> {self.right_label}"
             case _:
-                return f"? {path_str}: {self.change_type.value}"
+                base = f"? {path_str}: {self.change_type.value}"
+        if self.annotations:
+            return f"{base} [{'; '.join(self.annotations)}]"
+        return base
 
 
 @dataclass(frozen=True)
@@ -582,3 +595,234 @@ class DiffResult:
             True iff at least one difference was found.
         """
         return self.has_changes()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5 — Differ hook pipeline types
+# ---------------------------------------------------------------------------
+
+
+class HookStage(Enum):
+    """Which stage of the comparison pipeline a hook is firing in.
+
+    The engine fires stages in fixed order per field:
+    ``VALIDATE`` → ``COMPARE`` → ``REPORT``. Each stage has its own
+    list of hooks on the ``MessageDifferencer``. Hooks receive the
+    same ``FieldHookContext`` object across stages (``_state.stage``
+    tells them which stage they're in) but the context's
+    ``override_equal()`` / ``annotate()`` methods only take effect
+    at their corresponding stages.
+
+    Members:
+        VALIDATE: Pre-compare. Hooks call ``ctx.warn(...)`` to flag
+            constraint violations on either side. Fires on every
+            leaf evaluation — including presence-gated early
+            returns (both-unset, one-sided add/remove).
+        COMPARE: During compare. Hooks call ``ctx.override_equal()``
+            to treat the two values as equal regardless of what
+            ``_values_equal`` would say. Only fires when both
+            values are present (not on presence-gated paths —
+            presence is structural, not overridable).
+        REPORT: Post-compare. Hooks call ``ctx.annotate(...)`` to
+            attach an annotation string to the ``Difference`` about
+            to be emitted. Only fires when a diff is being emitted
+            (values not equal, or presence-gated add/remove).
+    """
+
+    VALIDATE = "VALIDATE"
+    COMPARE = "COMPARE"
+    REPORT = "REPORT"
+
+
+class _FieldHookState:
+    """Engine-internal mutable scratch space for a ``FieldHookContext``.
+
+    The context dataclass is frozen; hook state (current stage,
+    whether a diff is being produced, warnings emitted, override
+    and annotation requests) lives on this companion object that
+    the engine mutates between stages. Hook code never touches
+    ``_FieldHookState`` directly — it calls methods on the context
+    which delegate here.
+    """
+
+    __slots__ = (
+        "stage", "has_diff", "warnings", "override_equal", "annotations",
+    )
+
+    def __init__(self) -> None:
+        self.stage: HookStage | None = None
+        self.has_diff: bool = False
+        self.warnings: list[str] = []
+        self.override_equal: bool = False
+        self.annotations: list[str] = []
+
+    def reset_for_stage(self, stage: HookStage, *, has_diff: bool) -> None:
+        """Advance to the given stage; keep accumulated warnings.
+
+        Warnings accumulate across stages (a VALIDATE warn and a
+        REPORT warn both end up in ``DiffResult.warnings``).
+        ``override_equal`` and ``annotations`` are per-stage scratch
+        — the engine reads them after the stage completes and does
+        not re-use the values in a later stage.
+        """
+        self.stage = stage
+        self.has_diff = has_diff
+        self.override_equal = False
+        self.annotations = []
+
+
+@dataclass(frozen=True)
+class FieldHookContext:
+    """Argument passed to a field-level hook.
+
+    Either ``left_fd`` or ``right_fd`` may be ``None`` for
+    one-sided visits (field only on the new or only on the old
+    side). Likewise ``left_value`` / ``right_value`` may be
+    ``None`` when the corresponding field is unset or absent.
+
+    Attributes:
+        path: ``FieldPath`` to the field being compared.
+        left_fd: Left-side ``FieldDescriptor``, or ``None`` if the
+            field exists only on the right.
+        right_fd: Right-side ``FieldDescriptor``, or ``None`` if
+            the field exists only on the left.
+        left_value: Left-side value. ``None`` when the field is
+            absent or unset on the left.
+        right_value: Right-side value. ``None`` when absent or
+            unset on the right.
+        left_msg: Left-side parent message (the one that contains
+            this field). ``None`` for one-sided visits where the
+            left subtree is absent.
+        right_msg: Right-side parent message. ``None`` for
+            one-sided visits where the right subtree is absent.
+        left_pool: Descriptor pool the left message was resolved
+            from. Useful for looking up custom-option extensions
+            via :func:`protokit.options.get_option_value`.
+        right_pool: Descriptor pool the right message was resolved
+            from. Differs from ``left_pool`` for cross-pool
+            comparisons.
+    """
+
+    path: FieldPath
+    left_fd: "proto_descriptor.FieldDescriptor | None"
+    right_fd: "proto_descriptor.FieldDescriptor | None"
+    left_value: object | None
+    right_value: object | None
+    left_msg: "Message | None"
+    right_msg: "Message | None"
+    left_pool: "descriptor_pool.DescriptorPool"
+    right_pool: "descriptor_pool.DescriptorPool"
+    # Engine-managed scratch; hook code touches this via methods only.
+    _state: _FieldHookState = field(
+        default_factory=_FieldHookState, compare=False, repr=False,
+    )
+
+    @property
+    def stage(self) -> HookStage | None:
+        """The pipeline stage the hook is currently firing in."""
+        return self._state.stage
+
+    @property
+    def has_diff(self) -> bool:
+        """True when the engine is about to emit a ``Difference``.
+
+        Meaningful only during ``HookStage.REPORT``. Always False
+        during ``VALIDATE`` and ``COMPARE``. Hooks typically guard
+        ``ctx.annotate(...)`` on this flag, but ``annotate()``
+        itself is also a no-op outside REPORT.
+        """
+        return self._state.has_diff
+
+    def warn(self, message: str) -> None:
+        """Record a warning. Appears in ``DiffResult.warnings``.
+
+        Works in every stage — VALIDATE is the typical caller, but
+        COMPARE and REPORT hooks can warn too (e.g. "comparison
+        took longer than expected"). The warning's path is always
+        the context's field path.
+        """
+        self._state.warnings.append(message)
+
+    def override_equal(self) -> None:
+        """Mark these two values as equal for the purpose of diffing.
+
+        Only effective during ``HookStage.COMPARE``; no-op
+        otherwise. When called, ``_values_equal`` is not invoked
+        (or its result is discarded) and no ``MODIFIED``
+        ``Difference`` is produced for this leaf.
+
+        Has no effect on ``treat_as_map`` key matching — only on
+        value comparison.
+        """
+        if self._state.stage is HookStage.COMPARE:
+            self._state.override_equal = True
+
+    def annotate(self, message: str) -> None:
+        """Attach an annotation string to the ``Difference``.
+
+        Only effective during ``HookStage.REPORT`` when
+        ``has_diff`` is True; no-op otherwise. Multiple hooks can
+        annotate a single ``Difference`` — the strings accumulate
+        into the ``Difference.annotations`` tuple in registration
+        order.
+        """
+        if self._state.stage is HookStage.REPORT and self._state.has_diff:
+            self._state.annotations.append(message)
+
+
+class _MessageHookState:
+    """Engine-internal mutable scratch space for a ``MessageHookContext``."""
+
+    __slots__ = ("warnings",)
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+
+@dataclass(frozen=True)
+class MessageHookContext:
+    """Argument passed to a message-level hook.
+
+    Fires once per visited message — at the top of the iterative
+    traversal loop, before the message's fields are compared.
+    Message hooks can only ``warn()``; they cannot override
+    comparison or annotate diffs (which are per-field concerns).
+
+    For one-sided visits (added or removed subtree) exactly one of
+    ``left_msg`` / ``right_msg`` is ``None``. The hook must guard
+    on this if it reads message state.
+
+    Attributes:
+        path: ``FieldPath`` to the message. Empty path for the
+            top-level message passed to ``compare()``.
+        left_msg: Left-side ``Message`` instance, or ``None`` for
+            one-sided visits where the subtree is only on the
+            right.
+        right_msg: Right-side ``Message`` instance, or ``None`` for
+            one-sided visits where the subtree is only on the left.
+        left_pool: Descriptor pool the left message was resolved
+            from. When ``left_msg`` is None, this is the same
+            ``left_pool`` as ``right_pool`` (there is no distinct
+            left pool for a purely-added subtree).
+        right_pool: Descriptor pool the right message was resolved
+            from. When ``right_msg`` is None, same as
+            ``left_pool`` (purely-removed subtree).
+    """
+
+    path: FieldPath
+    left_msg: "Message | None"
+    right_msg: "Message | None"
+    left_pool: "descriptor_pool.DescriptorPool"
+    right_pool: "descriptor_pool.DescriptorPool"
+    _state: _MessageHookState = field(
+        default_factory=_MessageHookState, compare=False, repr=False,
+    )
+
+    def warn(self, message: str) -> None:
+        """Record a warning. Appears in ``DiffResult.warnings`` with the context path."""
+        self._state.warnings.append(message)
+
+
+# Type aliases for registration.
+FieldHook = Callable[[FieldHookContext], None]
+MessageValidateHook = Callable[[MessageHookContext], None]

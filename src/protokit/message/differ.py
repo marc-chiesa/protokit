@@ -6,6 +6,7 @@ for cross-descriptor-pool comparison and schema evolution detection.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,10 +34,17 @@ from protokit.message.model import (
     Difference,
     DiffResult,
     DuplicateKeyError,
+    FieldHook,
+    FieldHookContext,
     FieldPath,
+    HookStage,
+    MessageHookContext,
+    MessageValidateHook,
     MissingKeyError,
     PathSegment,
     Warning,
+    _FieldHookState,
+    _MessageHookState,
 )
 
 # Protobuf field type constants
@@ -49,6 +57,13 @@ TYPE_BYTES = FD.TYPE_BYTES
 TYPE_BOOL = FD.TYPE_BOOL
 TYPE_STRING = FD.TYPE_STRING
 LABEL_REPEATED = FD.LABEL_REPEATED
+
+def _hook_name(hook: object) -> str:
+    """Best-effort display name for a hook in warning messages."""
+    return getattr(hook, "__qualname__", None) or getattr(
+        hook, "__name__", repr(hook),
+    )
+
 
 def _replace_bracket(path: FieldPath, bracket: str) -> FieldPath:
     """Return a new FieldPath with the last segment's bracket replaced.
@@ -152,8 +167,8 @@ class MessageDifferencer:
 
         All configuration starts empty — no ignored fields, no
         ``treat_as_map`` entries, exact float comparison, unlimited
-        depth, lenient schema mode. Use the instance methods below
-        to customize.
+        depth, lenient schema mode, no hooks. Use the instance
+        methods below to customize.
         """
         self._ignore_names: set[str] = set()  # bare names (global match)
         self._ignore_paths: list[FieldPath] = []  # parsed dotted paths
@@ -163,6 +178,220 @@ class MessageDifferencer:
         self._float_config = FloatConfig()
         self.max_depth: int | None = None
         self.strict_schema: bool = False
+        # Phase 1.5 hook pipeline. Per-stage lists; empty = fast path.
+        self._validate_hooks: list[FieldHook] = []
+        self._compare_hooks: list[FieldHook] = []
+        self._report_hooks: list[FieldHook] = []
+        self._message_validate_hooks: list[MessageValidateHook] = []
+        # Pools captured at ``compare()`` entry and cleared on exit.
+        self._left_pool: Any = None
+        self._right_pool: Any = None
+
+    # ------------------------------------------------------------------
+    # Phase 1.5 hook registration
+    # ------------------------------------------------------------------
+
+    def register_validate_hook(self, hook: FieldHook) -> None:
+        """Register a VALIDATE-stage field hook.
+
+        VALIDATE hooks fire before value comparison on every leaf
+        evaluation — including presence-gated paths (both-unset,
+        one-sided add/remove). Use for flagging constraint
+        violations (e.g. ``validate.rules``) via ``ctx.warn()``.
+
+        Args:
+            hook: Callable matching ``FieldHook``: takes a
+                ``FieldHookContext``, returns ``None``. Should be
+                synchronous — exceptions are captured into
+                ``DiffResult.warnings`` and comparison continues.
+        """
+        self._validate_hooks.append(hook)
+
+    def register_compare_hook(self, hook: FieldHook) -> None:
+        """Register a COMPARE-stage field hook.
+
+        COMPARE hooks can call ``ctx.override_equal()`` to force
+        two leaf values to compare as equal, skipping the engine's
+        default ``_values_equal``. Fires only when both sides have
+        values (presence-gated paths are structural and skip
+        COMPARE).
+
+        Args:
+            hook: Callable matching ``FieldHook``. Exceptions are
+                captured into warnings and the engine falls back to
+                the default comparison for that field.
+        """
+        self._compare_hooks.append(hook)
+
+    def register_report_hook(self, hook: FieldHook) -> None:
+        """Register a REPORT-stage field hook.
+
+        REPORT hooks fire after a ``Difference`` is about to be
+        emitted (values not equal or presence changed, and not
+        overridden). Use ``ctx.annotate(...)`` to attach strings
+        that show up on ``Difference.annotations``. Multiple hooks
+        can annotate one diff; strings accumulate in registration
+        order.
+
+        Args:
+            hook: Callable matching ``FieldHook``. Exceptions
+                become warnings; the diff is still emitted with
+                whatever annotations had already been collected.
+        """
+        self._report_hooks.append(hook)
+
+    def register_message_validate_hook(self, hook: MessageValidateHook) -> None:
+        """Register a message-level VALIDATE hook.
+
+        Fires once per visited message (including one-sided visits
+        where one side of the subtree is absent) before field
+        iteration. Message hooks can only ``warn()`` — they can't
+        override comparison or annotate diffs, since those are
+        per-field concerns.
+
+        Args:
+            hook: Callable matching ``MessageValidateHook``.
+                Exceptions become warnings and comparison of the
+                message continues.
+        """
+        self._message_validate_hooks.append(hook)
+
+    # ------------------------------------------------------------------
+    # Hook dispatch helpers
+    # ------------------------------------------------------------------
+
+    def _has_field_hooks(self) -> bool:
+        """Whether any field-level hook is registered (any stage)."""
+        return bool(
+            self._validate_hooks or self._compare_hooks or self._report_hooks
+        )
+
+    def _fire_field_stage(
+        self,
+        stage: HookStage,
+        hooks: list[FieldHook],
+        ctx_state: _FieldHookState,
+        ctx: FieldHookContext,
+        warnings: list[Warning],
+        *,
+        has_diff: bool = False,
+    ) -> None:
+        """Run every hook registered for ``stage`` on ``ctx``.
+
+        Hooks are wrapped in ``try/except Exception`` — a raising
+        hook becomes a ``Warning`` and comparison continues.
+        """
+        if not hooks:
+            ctx_state.reset_for_stage(stage, has_diff=has_diff)
+            return
+        ctx_state.reset_for_stage(stage, has_diff=has_diff)
+        for hook in hooks:
+            try:
+                hook(ctx)
+            except Exception as exc:
+                warnings.append(Warning(
+                    path=str(ctx.path) if ctx.path else None,
+                    message=(
+                        f"hook {_hook_name(hook)!r} raised "
+                        f"{type(exc).__name__} during {stage.value}: {exc}"
+                    ),
+                ))
+
+    def _drain_field_ctx_warnings(
+        self,
+        ctx_state: _FieldHookState,
+        path: FieldPath,
+        warnings: list[Warning],
+    ) -> None:
+        """Move ``ctx.warn()`` messages onto the caller's warnings list."""
+        if not ctx_state.warnings:
+            return
+        path_str = str(path) if path else None
+        for msg in ctx_state.warnings:
+            warnings.append(Warning(path=path_str, message=msg))
+        ctx_state.warnings = []
+
+    def _run_validate_compare(
+        self,
+        ctx_state: _FieldHookState,
+        ctx: FieldHookContext,
+        left_val: Any, right_val: Any,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        same_pool: bool,
+        warnings: list[Warning],
+        path: FieldPath,
+    ) -> bool:
+        """Run VALIDATE → COMPARE → ``_values_equal`` for a both-present leaf.
+
+        Returns whether the two values should be treated as equal.
+        Honors ``override_equal()`` calls from COMPARE hooks.
+        """
+        self._fire_field_stage(
+            HookStage.VALIDATE, self._validate_hooks, ctx_state, ctx, warnings,
+        )
+        self._fire_field_stage(
+            HookStage.COMPARE, self._compare_hooks, ctx_state, ctx, warnings,
+        )
+        if ctx_state.override_equal:
+            return True
+        return self._values_equal(
+            left_val, right_val, left_fd, right_fd, same_pool, warnings, path,
+        )
+
+    def _emit_with_report(
+        self,
+        diff: Difference,
+        ctx_state: _FieldHookState,
+        ctx: FieldHookContext,
+        diffs: list[Difference],
+        warnings: list[Warning],
+        path: FieldPath,
+    ) -> None:
+        """Fire REPORT hooks, attach annotations, append to ``diffs``."""
+        self._fire_field_stage(
+            HookStage.REPORT, self._report_hooks, ctx_state, ctx, warnings,
+            has_diff=True,
+        )
+        if ctx_state.annotations:
+            diff = dataclasses.replace(
+                diff, annotations=tuple(ctx_state.annotations),
+            )
+        diffs.append(diff)
+        self._drain_field_ctx_warnings(ctx_state, path, warnings)
+
+    def _fire_message_validate(
+        self,
+        item: _WorkItem,
+        warnings: list[Warning],
+    ) -> None:
+        """Fire message-level VALIDATE hooks for the current stack item."""
+        if not self._message_validate_hooks:
+            return
+        state = _MessageHookState()
+        ctx = MessageHookContext(
+            path=item.path,
+            left_msg=item.left_msg,
+            right_msg=item.right_msg,
+            left_pool=self._left_pool,
+            right_pool=self._right_pool,
+            _state=state,
+        )
+        for hook in self._message_validate_hooks:
+            try:
+                hook(ctx)
+            except Exception as exc:
+                warnings.append(Warning(
+                    path=str(item.path) if item.path else None,
+                    message=(
+                        f"hook {_hook_name(hook)!r} raised "
+                        f"{type(exc).__name__} during message VALIDATE: {exc}"
+                    ),
+                ))
+        if state.warnings:
+            path_str = str(item.path) if item.path else None
+            for msg in state.warnings:
+                warnings.append(Warning(path=path_str, message=msg))
 
     def ignore_fields(self, *selectors: str) -> None:
         """Add field name selectors to the ignore list.
@@ -321,129 +550,146 @@ class MessageDifferencer:
         truncated_paths: list[FieldPath] = []
         same_pool = _same_pool(left, right)
 
+        # Capture pools for the duration of this call so hooks can
+        # use them for custom-option lookups via
+        # ``protokit.options.get_option_value``. Cleared in the
+        # ``finally`` below so the differ is safe to re-use.
+        self._left_pool = left.DESCRIPTOR.file.pool
+        self._right_pool = right.DESCRIPTOR.file.pool
+
         stack: list[_WorkItem] = [_WorkItem(left, right, FieldPath(segments=()), 0)]
 
-        while stack:
-            item = stack.pop()
+        try:
+            while stack:
+                item = stack.pop()
 
-            # Max depth check
-            if self.max_depth is not None and item.depth > self.max_depth:
-                truncated_paths.append(item.path)
-                warnings.append(Warning(
-                    path=str(item.path) if item.path else None,
-                    message=f"comparison truncated at depth {self.max_depth}; "
-                            "differences below this path are not reported",
-                ))
-                continue
-
-            if item.left_msg is None and item.right_msg is None:
-                continue
-
-            # Unset -> set (or vice versa) for message fields
-            if item.left_msg is None and item.right_msg is not None:
-                self._emit_all_fields(item.right_msg, item.path, ChangeType.ADDED,
-                                      differences, is_new=True, depth=item.depth,
-                                      warnings=warnings, truncated_paths=truncated_paths)
-                continue
-            if item.left_msg is not None and item.right_msg is None:
-                self._emit_all_fields(item.left_msg, item.path, ChangeType.REMOVED,
-                                      differences, is_new=False, depth=item.depth,
-                                      warnings=warnings, truncated_paths=truncated_paths)
-                continue
-
-            assert item.left_msg is not None and item.right_msg is not None
-
-            left_fields = get_field_map(item.left_msg.DESCRIPTOR)
-            right_fields = get_field_map(item.right_msg.DESCRIPTOR)
-
-            all_names = left_fields.keys() | right_fields.keys()
-
-            # Sort by left-side field number for deterministic ordering
-            def _sort_key(name: str) -> tuple[int, int, str]:
-                if name in left_fields:
-                    return (0, left_fields[name].number, name)
-                return (1, right_fields[name].number, name)
-
-            # Process in reverse order since we're using a stack (LIFO)
-            sorted_names = sorted(all_names, key=_sort_key, reverse=True)
-
-            for field_name in sorted_names:
-                # Fast path: check bare-name ignore before allocating FieldPath
-                if field_name in self._ignore_names:
-                    continue
-                field_path = item.path.child(field_name)
-
-                # Check path-scoped ignores
-                if self._ignore_paths and self._is_ignored(field_name, field_path):
-                    continue
-
-                left_fd = left_fields.get(field_name)
-                right_fd = right_fields.get(field_name)
-
-                # Field only on one side
-                if left_fd is None and right_fd is not None:
-                    self._emit_one_sided(
-                        item.right_msg, right_fd, field_path,
-                        differences, stack, item.depth, is_new=True,
-                    )
-                    continue
-                if left_fd is not None and right_fd is None:
-                    self._emit_one_sided(
-                        item.left_msg, left_fd, field_path,
-                        differences, stack, item.depth, is_new=False,
-                    )
-                    continue
-
-                assert left_fd is not None and right_fd is not None
-
-                # Schema evolution checks
-                self._check_schema_evolution(
-                    left_fd, right_fd, field_path, differences, warnings
-                )
-
-                # Cardinality change -> no value comparison
-                if left_fd.is_repeated != right_fd.is_repeated:
-                    continue
-                left_is_map = is_map_field(left_fd)
-                right_is_map = is_map_field(right_fd)
-                if left_is_map != right_is_map:
-                    left_kind = "map" if left_is_map else "repeated"
-                    right_kind = "map" if right_is_map else "repeated"
+                # Max depth check
+                if self.max_depth is not None and item.depth > self.max_depth:
+                    truncated_paths.append(item.path)
                     warnings.append(Warning(
-                        path=str(field_path),
-                        message=f"field changed from {left_kind} to {right_kind}; "
-                                "values not compared",
+                        path=str(item.path) if item.path else None,
+                        message=f"comparison truncated at depth {self.max_depth}; "
+                                "differences below this path are not reported",
                     ))
                     continue
 
-                # Type compatibility
-                if not _types_compatible(left_fd.type, right_fd.type):
+                if item.left_msg is None and item.right_msg is None:
                     continue
 
-                # Compare values based on field type
-                if left_is_map:
-                    self._compare_map(
-                        item.left_msg, item.right_msg, left_fd, right_fd,
-                        field_path, differences, stack, item.depth,
-                        warnings, same_pool,
+                # Message-level VALIDATE fires for every message visit —
+                # including one-sided (added/removed) subtrees. Zero-hooks
+                # fast path inside the helper.
+                self._fire_message_validate(item, warnings)
+
+                # Unset -> set (or vice versa) for message fields
+                if item.left_msg is None and item.right_msg is not None:
+                    self._emit_all_fields(item.right_msg, item.path, ChangeType.ADDED,
+                                          differences, is_new=True, depth=item.depth,
+                                          warnings=warnings, truncated_paths=truncated_paths)
+                    continue
+                if item.left_msg is not None and item.right_msg is None:
+                    self._emit_all_fields(item.left_msg, item.path, ChangeType.REMOVED,
+                                          differences, is_new=False, depth=item.depth,
+                                          warnings=warnings, truncated_paths=truncated_paths)
+                    continue
+
+                assert item.left_msg is not None and item.right_msg is not None
+
+                left_fields = get_field_map(item.left_msg.DESCRIPTOR)
+                right_fields = get_field_map(item.right_msg.DESCRIPTOR)
+
+                all_names = left_fields.keys() | right_fields.keys()
+
+                # Sort by left-side field number for deterministic ordering
+                def _sort_key(name: str) -> tuple[int, int, str]:
+                    if name in left_fields:
+                        return (0, left_fields[name].number, name)
+                    return (1, right_fields[name].number, name)
+
+                # Process in reverse order since we're using a stack (LIFO)
+                sorted_names = sorted(all_names, key=_sort_key, reverse=True)
+
+                for field_name in sorted_names:
+                    # Fast path: check bare-name ignore before allocating FieldPath
+                    if field_name in self._ignore_names:
+                        continue
+                    field_path = item.path.child(field_name)
+
+                    # Check path-scoped ignores
+                    if self._ignore_paths and self._is_ignored(field_name, field_path):
+                        continue
+
+                    left_fd = left_fields.get(field_name)
+                    right_fd = right_fields.get(field_name)
+
+                    # Field only on one side
+                    if left_fd is None and right_fd is not None:
+                        self._emit_one_sided(
+                            item.right_msg, right_fd, field_path,
+                            differences, stack, item.depth, is_new=True,
+                        )
+                        continue
+                    if left_fd is not None and right_fd is None:
+                        self._emit_one_sided(
+                            item.left_msg, left_fd, field_path,
+                            differences, stack, item.depth, is_new=False,
+                        )
+                        continue
+
+                    assert left_fd is not None and right_fd is not None
+
+                    # Schema evolution checks
+                    self._check_schema_evolution(
+                        left_fd, right_fd, field_path, differences, warnings
                     )
-                elif left_fd.is_repeated:
-                    self._compare_repeated(
-                        item.left_msg, item.right_msg, left_fd, right_fd,
-                        field_path, differences, stack, item.depth,
-                        warnings, same_pool,
-                    )
-                elif left_fd.type == TYPE_MESSAGE:
-                    self._compare_message_field(
-                        item.left_msg, item.right_msg, left_fd, right_fd,
-                        field_path, stack, item.depth, differences,
-                        warnings, same_pool,
-                    )
-                else:
-                    self._compare_leaf(
-                        item.left_msg, item.right_msg, left_fd, right_fd,
-                        field_path, differences, warnings, same_pool,
-                    )
+
+                    # Cardinality change -> no value comparison
+                    if left_fd.is_repeated != right_fd.is_repeated:
+                        continue
+                    left_is_map = is_map_field(left_fd)
+                    right_is_map = is_map_field(right_fd)
+                    if left_is_map != right_is_map:
+                        left_kind = "map" if left_is_map else "repeated"
+                        right_kind = "map" if right_is_map else "repeated"
+                        warnings.append(Warning(
+                            path=str(field_path),
+                            message=f"field changed from {left_kind} to {right_kind}; "
+                                    "values not compared",
+                        ))
+                        continue
+
+                    # Type compatibility
+                    if not _types_compatible(left_fd.type, right_fd.type):
+                        continue
+
+                    # Compare values based on field type
+                    if left_is_map:
+                        self._compare_map(
+                            item.left_msg, item.right_msg, left_fd, right_fd,
+                            field_path, differences, stack, item.depth,
+                            warnings, same_pool,
+                        )
+                    elif left_fd.is_repeated:
+                        self._compare_repeated(
+                            item.left_msg, item.right_msg, left_fd, right_fd,
+                            field_path, differences, stack, item.depth,
+                            warnings, same_pool,
+                        )
+                    elif left_fd.type == TYPE_MESSAGE:
+                        self._compare_message_field(
+                            item.left_msg, item.right_msg, left_fd, right_fd,
+                            field_path, stack, item.depth, differences,
+                            warnings, same_pool,
+                        )
+                    else:
+                        self._compare_leaf(
+                            item.left_msg, item.right_msg, left_fd, right_fd,
+                            field_path, differences, warnings, same_pool,
+                        )
+        finally:
+            # Clear pool refs so the differ is safe to re-use.
+            self._left_pool = None
+            self._right_pool = None
 
         # Sort results by path for deterministic output
         differences.sort(key=lambda d: str(d.path))
@@ -558,8 +804,10 @@ class MessageDifferencer:
     ) -> None:
         """Compare a leaf (scalar/enum/bytes/float) field.
 
-        Handles presence semantics for proto2/proto3 optional fields and
-        delegates value comparison to ``_values_equal``.
+        Handles presence semantics for proto2/proto3 optional fields
+        and dispatches hooks around value comparison when any are
+        registered. The zero-hooks path is an inline fast-path that
+        calls ``_values_equal`` directly.
 
         Args:
             left_msg: The left parent message.
@@ -578,43 +826,193 @@ class MessageDifferencer:
         left_has = has_presence(left_fd)
         right_has = has_presence(right_fd)
 
+        left_present = True
+        right_present = True
         if left_has and right_has:
             left_present = left_msg.HasField(left_fd.name)
             right_present = right_msg.HasField(right_fd.name)
-            if not left_present and not right_present:
-                return  # both unset
-            if not left_present and right_present:
+
+        has_field_hooks = self._has_field_hooks()
+
+        # Fast path: no hooks → original behavior inlined.
+        if not has_field_hooks:
+            if left_has and right_has:
+                if not left_present and not right_present:
+                    return
+                if not left_present and right_present:
+                    diffs.append(Difference(
+                        path=path,
+                        change_type=ChangeType.ADDED,
+                        new_value=self._wrap_value(right_val, right_fd),
+                        field_type=type_name(right_fd.type),
+                    ))
+                    return
+                if left_present and not right_present:
+                    diffs.append(Difference(
+                        path=path,
+                        change_type=ChangeType.REMOVED,
+                        old_value=self._wrap_value(left_val, left_fd),
+                        field_type=type_name(left_fd.type),
+                    ))
+                    return
+            equal = self._values_equal(
+                left_val, right_val, left_fd, right_fd,
+                same_pool, warnings, path,
+            )
+            if not equal:
                 diffs.append(Difference(
+                    path=path,
+                    change_type=ChangeType.MODIFIED,
+                    old_value=self._wrap_value(left_val, left_fd),
+                    new_value=self._wrap_value(right_val, right_fd),
+                    field_type=type_name(left_fd.type),
+                ))
+            return
+
+        # Hook path — build context once, re-use across stages.
+        ctx_state = _FieldHookState()
+        ctx = FieldHookContext(
+            path=path,
+            left_fd=left_fd,
+            right_fd=right_fd,
+            left_value=left_val if left_present else None,
+            right_value=right_val if right_present else None,
+            left_msg=left_msg,
+            right_msg=right_msg,
+            left_pool=self._left_pool,
+            right_pool=self._right_pool,
+            _state=ctx_state,
+        )
+
+        # VALIDATE fires on every leaf evaluation, including
+        # presence-gated paths (both-unset, one-sided add/remove).
+        self._fire_field_stage(
+            HookStage.VALIDATE, self._validate_hooks, ctx_state, ctx, warnings,
+        )
+
+        if left_has and right_has:
+            if not left_present and not right_present:
+                self._drain_field_ctx_warnings(ctx_state, path, warnings)
+                return
+            if not left_present and right_present:
+                diff = Difference(
                     path=path,
                     change_type=ChangeType.ADDED,
                     new_value=self._wrap_value(right_val, right_fd),
                     field_type=type_name(right_fd.type),
-                ))
+                )
+                self._emit_with_report(
+                    diff, ctx_state, ctx, diffs, warnings, path,
+                )
                 return
             if left_present and not right_present:
-                diffs.append(Difference(
+                diff = Difference(
                     path=path,
                     change_type=ChangeType.REMOVED,
                     old_value=self._wrap_value(left_val, left_fd),
                     field_type=type_name(left_fd.type),
-                ))
+                )
+                self._emit_with_report(
+                    diff, ctx_state, ctx, diffs, warnings, path,
+                )
                 return
-        elif left_has and not right_has:
-            # Cross-schema: optional vs non-optional -> value comparison (less restrictive)
-            pass
-        elif not left_has and right_has:
-            pass
 
-        # Value comparison
-        equal = self._values_equal(left_val, right_val, left_fd, right_fd, same_pool, warnings, path)
-        if not equal:
-            diffs.append(Difference(
-                path=path,
-                change_type=ChangeType.MODIFIED,
-                old_value=self._wrap_value(left_val, left_fd),
-                new_value=self._wrap_value(right_val, right_fd),
-                field_type=type_name(left_fd.type),
-            ))
+        # Both present (or cross-schema presence asymmetry): run COMPARE.
+        self._fire_field_stage(
+            HookStage.COMPARE, self._compare_hooks, ctx_state, ctx, warnings,
+        )
+        if ctx_state.override_equal:
+            equal = True
+        else:
+            equal = self._values_equal(
+                left_val, right_val, left_fd, right_fd,
+                same_pool, warnings, path,
+            )
+        if equal:
+            self._drain_field_ctx_warnings(ctx_state, path, warnings)
+            return
+
+        diff = Difference(
+            path=path,
+            change_type=ChangeType.MODIFIED,
+            old_value=self._wrap_value(left_val, left_fd),
+            new_value=self._wrap_value(right_val, right_fd),
+            field_type=type_name(left_fd.type),
+        )
+        self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
+
+    def _compare_scalar_pair_with_hooks(
+        self,
+        left_val: Any,
+        right_val: Any,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+        left_msg: Message,
+        right_msg: Message,
+        same_pool: bool,
+        diffs: list[Difference],
+        warnings: list[Warning],
+    ) -> None:
+        """Compare a scalar-valued pair from a repeated or map field.
+
+        Runs VALIDATE → COMPARE → ``_values_equal`` → REPORT when
+        any field hooks are registered. Fast path inlines the
+        original ``_values_equal`` + diff-append behavior. Used by
+        both ``_compare_repeated`` (pairwise) and ``_compare_map``
+        (native map) at their scalar-value call sites.
+
+        ``left_msg`` / ``right_msg`` are the outer messages holding
+        the repeated/map field — hooks that want the parent scope
+        read these from the context. For map values the parent is
+        the outer map's containing message, not the synthetic
+        MapEntry.
+        """
+        if not self._has_field_hooks():
+            equal = self._values_equal(
+                left_val, right_val, left_fd, right_fd,
+                same_pool, warnings, path,
+            )
+            if not equal:
+                diffs.append(Difference(
+                    path=path,
+                    change_type=ChangeType.MODIFIED,
+                    old_value=self._wrap_value(left_val, left_fd),
+                    new_value=self._wrap_value(right_val, right_fd),
+                    field_type=type_name(left_fd.type),
+                ))
+            return
+
+        ctx_state = _FieldHookState()
+        ctx = FieldHookContext(
+            path=path,
+            left_fd=left_fd,
+            right_fd=right_fd,
+            left_value=left_val,
+            right_value=right_val,
+            left_msg=left_msg,
+            right_msg=right_msg,
+            left_pool=self._left_pool,
+            right_pool=self._right_pool,
+            _state=ctx_state,
+        )
+        equal = self._run_validate_compare(
+            ctx_state, ctx,
+            left_val, right_val, left_fd, right_fd,
+            same_pool, warnings, path,
+        )
+        if equal:
+            self._drain_field_ctx_warnings(ctx_state, path, warnings)
+            return
+
+        diff = Difference(
+            path=path,
+            change_type=ChangeType.MODIFIED,
+            old_value=self._wrap_value(left_val, left_fd),
+            new_value=self._wrap_value(right_val, right_fd),
+            field_type=type_name(left_fd.type),
+        )
+        self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
 
     def _values_equal(
         self,
@@ -826,17 +1224,14 @@ class MessageDifferencer:
             else:
                 left_val = left_list[i]
                 right_val = right_list[i]
-                equal = self._values_equal(
-                    left_val, right_val, left_fd, right_fd, same_pool, warnings, idx_path
+                self._compare_scalar_pair_with_hooks(
+                    left_val, right_val,
+                    left_fd, right_fd,
+                    idx_path,
+                    left_msg, right_msg,
+                    same_pool,
+                    diffs, warnings,
                 )
-                if not equal:
-                    diffs.append(Difference(
-                        path=idx_path,
-                        change_type=ChangeType.MODIFIED,
-                        old_value=self._wrap_value(left_val, left_fd),
-                        new_value=self._wrap_value(right_val, right_fd),
-                        field_type=type_name(left_fd.type),
-                    ))
 
         # Extra elements
         for i in range(min_len, len(right_list)):
@@ -953,19 +1348,14 @@ class MessageDifferencer:
                         left_map[key], right_map[key], key_path, depth + 1,
                     ))
                 else:
-                    equal = self._values_equal(
+                    self._compare_scalar_pair_with_hooks(
                         left_map[key], right_map[key],
                         left_value_fd, right_value_fd,
-                        same_pool, warnings, key_path,
+                        key_path,
+                        left_msg, right_msg,
+                        same_pool,
+                        diffs, warnings,
                     )
-                    if not equal:
-                        diffs.append(Difference(
-                            path=key_path,
-                            change_type=ChangeType.MODIFIED,
-                            old_value=self._wrap_value(left_map[key], left_value_fd),
-                            new_value=self._wrap_value(right_map[key], right_value_fd),
-                            field_type=type_name(left_value_fd.type),
-                        ))
 
     def _compare_treat_as_map(
         self,
