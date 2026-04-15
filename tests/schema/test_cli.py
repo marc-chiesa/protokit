@@ -604,6 +604,33 @@ class TestCheckSince:
         assert result.exit_code == 2
         assert "Positional inputs cannot be combined" in result.output
 
+    def test_proto_path_in_git_mode_exits_2(self, git_repo: Path) -> None:
+        """``--proto-path`` is a local-mode flag. Combining with
+        ``--since`` previously silently ignored the path; must
+        now error with a clear message.
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--proto-path", "/custom/include",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto-path" in result.output
+        assert "--proto-root" in result.output
+
+    def test_proto_flag_in_git_mode_exits_2(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto only applies in local-file mode" in result.output
+
 
 class TestCheckAgainstBase:
     def test_explicit_base_branch(self, git_repo: Path) -> None:
@@ -792,3 +819,24 @@ class TestCi:
         ])
         # Click rejects missing required option → exit 2.
         assert result.exit_code == 2
+
+    def test_auto_base_error_message_names_base_flag(
+        self, git_repo: Path,
+    ) -> None:
+        """Regression lock: when ``ci`` auto-resolution fails, the
+        error message must reference ``--base`` (the ci flag), not
+        ``--against-base`` (the check flag). Before the fix the
+        shared ``resolve_default_base`` always said
+        ``--against-base``, which was wrong when invoked via ``ci``.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # No --base, no upstream, no origin/main, no origin/master.
+        result = _invoke_in_repo(git_repo, [
+            "ci",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--base BRANCH" in result.output
+        # And must NOT mention the check flag.
+        assert "--against-base BRANCH" not in result.output

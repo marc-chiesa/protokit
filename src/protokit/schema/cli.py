@@ -346,11 +346,17 @@ def _load_pools_git(
     proto_file: str | None,
     proto_roots: tuple[str, ...],
     cwd: Path | None = None,
+    base_flag_hint: str = "--against-base",
 ) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool, str, str]:
     """Resolve a (old_ref, new_ref) pair from git flags and extract pools.
 
     Returns ``(old_pool, new_pool, old_ref, new_ref)`` so callers
     can include the resolved refs in user-facing output.
+
+    ``base_flag_hint`` is the CLI flag name the caller exposes for
+    the base branch — spliced into the auto-resolve failure
+    message so ``ci`` users see ``--base`` and ``check`` users see
+    ``--against-base``.
     """
     if since is not None and against_base is not None:
         error_exit(
@@ -369,7 +375,9 @@ def _load_pools_git(
         # against_base mode. Empty string sentinel = auto-resolve.
         if against_base == "":
             try:
-                base = resolve_default_base(cwd=cwd)
+                base = resolve_default_base(
+                    cwd=cwd, flag_hint=base_flag_hint,
+                )
             except GitRefNotFoundError as exc:
                 error_exit(str(exc))
         else:
@@ -642,6 +650,15 @@ def check(
         error_exit(
             "Positional inputs cannot be combined with --since / "
             "--against-base."
+        )
+    # --proto / --proto-path are local-mode flags. Reject early in
+    # git mode so a silent no-op doesn't confuse users.
+    if git_mode and use_proto:
+        error_exit("--proto only applies in local-file mode.")
+    if git_mode and proto_paths:
+        error_exit(
+            "--proto-path / -I only applies in local-file mode; "
+            "use --proto-root for git-mode import search."
         )
 
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
@@ -1082,10 +1099,14 @@ def ci(
 
     # The CI subcommand always uses --against-base semantics. Reuse
     # the shared loader so the resolution rules stay identical.
+    # Flag-hint tells the auto-resolver to mention ``--base`` (the
+    # CI command's flag) in the failure message, not
+    # ``--against-base``.
     against = "" if base_ref is None else base_ref
     old_pool, new_pool, old_ref, new_ref = _load_pools_git(
         since=None, against_base=against,
         proto_file=proto_file, proto_roots=proto_roots,
+        base_flag_hint="--base",
     )
     header = (
         f"# protokit compat ci: {old_ref} -> {new_ref} ({proto_file})"

@@ -24,6 +24,7 @@ Public surface:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tempfile
@@ -45,13 +46,37 @@ _WELL_KNOWN_PREFIXES: tuple[str, ...] = ("google/protobuf/",)
 #   import "path";
 #   import public "path";
 #   import weak "path";
-# Whitespace tolerant; ignores in-line // comments by anchoring to
-# the start of a logical statement (we keep it simple — block
-# comments around imports are vanishingly rare in real .proto).
+# Whitespace tolerant. We pre-strip block comments (``/* ... */``)
+# before applying this regex so ``import`` statements inside block
+# comments aren't matched. Line comments (``// ...``) don't need
+# special handling: they don't start with ``import``, and the
+# ``^\s*`` anchor keeps the match to statement-level imports.
 _IMPORT_RE = re.compile(
     r'^\s*import\s+(?:(public|weak)\s+)?"([^"]+)"\s*;',
     re.MULTILINE,
 )
+
+# Matches any ``/* ... */`` block, including multi-line. Replaced
+# with an equal-length run of spaces so line/column offsets for any
+# subsequent error reporting stay accurate.
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+# Strip characters not legal in a protobuf identifier when building
+# a synthetic package name for weak-import stubs. Protobuf
+# identifiers are ``[A-Za-z_][A-Za-z0-9_]*``.
+_NOT_IDENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+# Force English stderr so our error-classification string matches
+# stay portable across user locales. ``_run_git`` / ``_git_show``
+# inject this into every subprocess env.
+_C_LOCALE_ENV: dict[str, str] = {"LC_ALL": "C", "LANG": "C"}
+
+
+def _git_env() -> dict[str, str]:
+    """Return a process env dict forcing C locale for git subprocesses."""
+    env = dict(os.environ)
+    env.update(_C_LOCALE_ENV)
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +124,10 @@ def _run_git(
 
     Centralises the ``FileNotFoundError`` translation (no git on
     PATH) and the ``CalledProcessError`` path (so callers handle
-    classification of stderr in one place).
+    classification of stderr in one place). Forces a C locale on
+    the child process so stderr text stays English — ref-error
+    classification later relies on literal string matching that
+    would otherwise break under ``LANG=es_ES`` and friends.
     """
     try:
         result = subprocess.run(
@@ -108,6 +136,7 @@ def _run_git(
             check=True,
             capture_output=True,
             text=text,
+            env=_git_env(),
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
@@ -175,9 +204,13 @@ def merge_base(
     return str(out).strip()
 
 
-def resolve_default_base(*, cwd: Path | None = None) -> str:
-    """Pick a sensible default base branch when the user passes
-    ``--against-base`` without an argument.
+def resolve_default_base(
+    *,
+    cwd: Path | None = None,
+    flag_hint: str = "--against-base",
+) -> str:
+    """Pick a sensible default base branch when the user invokes
+    the auto-resolve form of a base-comparing command.
 
     Resolution order matches the design doc:
 
@@ -185,9 +218,15 @@ def resolve_default_base(*, cwd: Path | None = None) -> str:
     2. ``origin/main`` if it resolves.
     3. ``origin/master`` if it resolves.
 
+    Args:
+        cwd: Working directory for git invocations.
+        flag_hint: Name of the CLI flag the caller surfaces for
+            manual override. Spliced into the error message so
+            ``ci`` users see "Pass --base BRANCH" while ``check``
+            users see "Pass --against-base BRANCH".
+
     Raises:
-        GitRefNotFoundError: When none of the candidates resolve —
-            the user must pass ``--against-base BRANCH`` explicitly.
+        GitRefNotFoundError: When none of the candidates resolve.
     """
     # 1. @{upstream} of the current branch
     try:
@@ -211,8 +250,8 @@ def resolve_default_base(*, cwd: Path | None = None) -> str:
 
     raise GitRefNotFoundError(
         "no default base branch found — tracked upstream is unset "
-        "and neither origin/main nor origin/master resolves. Pass "
-        "--against-base BRANCH explicitly."
+        f"and neither origin/main nor origin/master resolves. Pass "
+        f"{flag_hint} BRANCH explicitly."
     )
 
 
@@ -251,7 +290,9 @@ def _git_show(ref: str, path: str, *, cwd: Path | None = None) -> bytes:
     """Return the raw bytes of ``path`` at ``ref`` via ``git show``.
 
     Translates the most common failure modes into typed errors so
-    callers don't have to grep stderr themselves.
+    callers don't have to grep stderr themselves. Subprocess env
+    is forced to a C locale for portability of the error-text
+    classification below.
     """
     try:
         out = subprocess.run(
@@ -259,6 +300,7 @@ def _git_show(ref: str, path: str, *, cwd: Path | None = None) -> bytes:
             cwd=cwd,
             check=True,
             capture_output=True,
+            env=_git_env(),
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
@@ -303,11 +345,23 @@ def _parse_imports(proto_bytes: bytes) -> list[tuple[str, str]]:
     ``kind`` is ``""`` for a plain ``import``, ``"public"`` for
     ``import public``, or ``"weak"`` for ``import weak``.
 
+    Block comments (``/* ... */``) are blanked out before matching
+    so ``import`` statements inside comments aren't collected.
+    Line comments don't need special handling — the ``^\\s*``
+    anchor on the import regex keeps the match to statement-level
+    imports, and a ``//`` prefix never starts with ``import``.
+
     Decodes UTF-8 with replacement so a non-UTF-8 ``.proto`` file
     (rare but possible) doesn't crash the walker — the regex still
     finds ASCII import statements regardless.
     """
     text = proto_bytes.decode("utf-8", errors="replace")
+    # Replace block comments with equal-length space runs so line
+    # offsets stay stable for any future diagnostic reporting.
+    text = _BLOCK_COMMENT_RE.sub(
+        lambda m: " " * (m.end() - m.start()),
+        text,
+    )
     return [(m.group(1) or "", m.group(2)) for m in _IMPORT_RE.finditer(text)]
 
 
@@ -325,8 +379,16 @@ def _write_weak_stub(dest: Path, import_path: str) -> None:
     referenced the missing import would fail downstream — which
     matches ``import weak`` semantics ("tolerate the dep being
     absent at compile time, fail loudly if you actually use it").
+
+    The synthetic package name is sanitised to the protobuf
+    identifier grammar (``[A-Za-z_][A-Za-z0-9_]*``) so paths with
+    hyphens, spaces, or other non-identifier chars don't produce
+    a compile error in the stub itself.
     """
-    safe_id = import_path.replace("/", "_").replace(".", "_")
+    safe_id = _NOT_IDENT_RE.sub("_", import_path)
+    # Identifiers can't start with a digit. Prefix if necessary.
+    if safe_id and safe_id[0].isdigit():
+        safe_id = "_" + safe_id
     stub_path = dest / import_path
     stub_path.parent.mkdir(parents=True, exist_ok=True)
     stub_path.write_text(

@@ -18,9 +18,96 @@ import pytest
 from protokit.schema.git import (
     GitRefNotFoundError,
     ProtoImportError,
+    _parse_imports,
+    _write_weak_stub,
     extract_pool_from_ref,
     is_shallow_repository,
 )
+
+
+class TestImportParser:
+    """Unit tests for ``_parse_imports``. Centralises regex
+    correctness so a future syntax the parser must tolerate
+    surfaces here instead of at extraction time.
+    """
+
+    def test_plain_imports(self) -> None:
+        """One import per line (the protobuf convention); the
+        regex's ``^\\s*`` anchor wouldn't match a second import on
+        the same line anyway.
+        """
+        assert _parse_imports(
+            b'import "a.proto";\nimport "b.proto";\n'
+        ) == [("", "a.proto"), ("", "b.proto")]
+
+    def test_import_kinds(self) -> None:
+        src = (
+            b'import "std.proto";\n'
+            b'import public "pub.proto";\n'
+            b'import weak "weak.proto";\n'
+        )
+        assert _parse_imports(src) == [
+            ("", "std.proto"),
+            ("public", "pub.proto"),
+            ("weak", "weak.proto"),
+        ]
+
+    def test_block_comment_imports_skipped(self) -> None:
+        """Regression lock: imports inside ``/* ... */`` blocks
+        must NOT be collected. Before the fix, the parser walked
+        straight over block comments and collected dead imports,
+        which then failed extraction at a confusing stage.
+        """
+        src = (
+            b'syntax = "proto3";\n'
+            b'/*\n'
+            b'  import "should_skip.proto";\n'
+            b'*/\n'
+            b'import "real.proto";\n'
+        )
+        imports = _parse_imports(src)
+        assert ("", "real.proto") in imports
+        assert ("", "should_skip.proto") not in imports
+
+    def test_line_comment_imports_skipped(self) -> None:
+        """``// import "x";`` on its own line shouldn't match —
+        the regex's ``^\\s*`` anchor plus the ``//`` prefix keeps
+        the line out."""
+        src = b'// import "skip.proto";\nimport "real.proto";\n'
+        imports = _parse_imports(src)
+        assert ("", "real.proto") in imports
+        assert ("", "skip.proto") not in imports
+
+
+class TestWeakStubSanitisation:
+    def test_hyphen_in_path_sanitised(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            _write_weak_stub(dest, "acme/my-dep.proto")
+            content = (dest / "acme" / "my-dep.proto").read_text()
+        # Hyphen must NOT appear in the synthetic package name.
+        assert "my-dep" not in content
+        # The underscore-sanitised form should be present.
+        assert "my_dep" in content
+
+    def test_digit_prefix_path_is_escaped(self) -> None:
+        """Protobuf identifiers can't start with a digit — prepend
+        an underscore when the sanitised path would start with one.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            _write_weak_stub(dest, "9weird.proto")
+            content = (dest / "9weird.proto").read_text()
+        # Sanitised name must start with _ or a letter, never a digit.
+        import re
+        m = re.search(r"package\s+protokit_weak_stub\.([^;]+);", content)
+        assert m is not None
+        pkg_tail = m.group(1).strip()
+        assert not pkg_tail[0].isdigit(), (
+            f"sanitised package tail starts with digit: {pkg_tail!r}"
+        )
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -232,6 +319,25 @@ class TestWeakImports:
         )
         # The User type still resolves; the missing weak import was
         # skipped, not raised.
+        assert pool.FindMessageTypeByName("acme.User")
+
+    def test_missing_weak_import_with_hyphen_in_path(self, repo: Path) -> None:
+        """Regression lock: a weak import whose path contains
+        characters not legal in protobuf identifiers (``-``, etc.)
+        must still compile — the synthetic stub sanitises its
+        ``package`` name before emitting.
+        """
+        _commit_proto(
+            repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'import weak "acme/my-dep.proto";\n'  # hyphen in path
+            'message User { string name = 1; }\n',
+            msg="weak import with hyphenated path",
+        )
+        pool = extract_pool_from_ref(
+            "HEAD", "acme/user.proto", cwd=repo,
+        )
         assert pool.FindMessageTypeByName("acme.User")
 
 
