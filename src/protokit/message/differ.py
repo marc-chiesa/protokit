@@ -19,6 +19,7 @@ from protokit._descriptors import (
     has_presence,
     is_map_field,
     is_repeated,
+    label_name,
     type_name,
 )
 from protokit.message.comparators import (
@@ -801,8 +802,8 @@ class MessageDifferencer:
                 path=path,
                 change_type=ChangeType.CARDINALITY_CHANGED,
                 field_type=type_name(left_fd.type),
-                left_label="LABEL_REPEATED" if is_repeated(left_fd) else "LABEL_OPTIONAL",
-                right_label="LABEL_REPEATED" if is_repeated(right_fd) else "LABEL_OPTIONAL",
+                left_label=label_name(left_fd),
+                right_label=label_name(right_fd),
             ))
 
         # Strict schema: message type name mismatch warning

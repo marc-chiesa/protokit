@@ -72,8 +72,49 @@ class TestCardinalityChange:
         result = diff_messages(msg1, msg2)
         card_changes = [d for d in result if d.change_type == ChangeType.CARDINALITY_CHANGED]
         assert len(card_changes) == 1
-        assert "OPTIONAL" in str(card_changes[0].left_label)
-        assert "REPEATED" in str(card_changes[0].right_label)
+        assert card_changes[0].left_label == "LABEL_OPTIONAL"
+        assert card_changes[0].right_label == "LABEL_REPEATED"
+
+    def test_required_to_repeated_reports_required_label(self) -> None:
+        """proto2 ``required`` → ``repeated`` must report
+        ``LABEL_REQUIRED`` on the left, not the previous hard-coded
+        ``LABEL_OPTIONAL`` placeholder.
+        """
+        from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+        old_pool = descriptor_pool.DescriptorPool()
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="proto2_required.proto", package="t", syntax="proto2",
+        )
+        mp = fdp.message_type.add()
+        mp.name = "M"
+        f = mp.field.add()
+        f.name, f.number, f.type = "x", 1, T.TYPE_INT32
+        f.label = T.LABEL_REQUIRED
+        old_pool.Add(fdp)
+
+        new_pool = descriptor_pool.DescriptorPool()
+        fdp2 = descriptor_pb2.FileDescriptorProto(
+            name="proto3_repeated.proto", package="t", syntax="proto3",
+        )
+        mp2 = fdp2.message_type.add()
+        mp2.name = "M"
+        f2 = mp2.field.add()
+        f2.name, f2.number, f2.type = "x", 1, T.TYPE_INT32
+        f2.label = T.LABEL_REPEATED
+        new_pool.Add(fdp2)
+
+        Left = message_factory.GetMessageClass(
+            old_pool.FindMessageTypeByName("t.M"),
+        )
+        Right = message_factory.GetMessageClass(
+            new_pool.FindMessageTypeByName("t.M"),
+        )
+        result = diff_messages(Left(x=5), Right(x=[1, 2, 3]))
+        card = next(
+            d for d in result if d.change_type == ChangeType.CARDINALITY_CHANGED
+        )
+        assert card.left_label == "LABEL_REQUIRED"
+        assert card.right_label == "LABEL_REPEATED"
 
 
 class TestStrictSchemaMode:

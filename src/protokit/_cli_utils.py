@@ -118,6 +118,10 @@ def _compile_with_protoxy(
             files=[str(proto_path)],
             includes=includes,
             include_imports=True,
+            # Match the protoc path — neither backend carries source
+            # location info into the pool, so keep the in-memory
+            # FileDescriptorSet byte-equivalent between backends.
+            include_source_info=False,
         )
     except (protoxy.ProtoxyError, ValueError) as exc:
         error_exit(f"protoxy failed:\n{exc}")

@@ -13,6 +13,9 @@ from protokit._descriptors import (
     get_field_map,
     has_presence,
     is_map_field,
+    is_repeated,
+    is_required,
+    label_name,
     type_name,
 )
 from tests.proto_builder import ProtoBuilder
@@ -161,3 +164,72 @@ class TestTypeName:
 
     def test_unknown_type_gets_fallback(self) -> None:
         assert type_name(999) == "TYPE_UNKNOWN_999"
+
+
+def _build_with_label(label: int, *, syntax: str = "proto3") -> object:
+    """Construct a single-field FieldDescriptor with the given label."""
+    from google.protobuf import descriptor_pool
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(
+        name=f"label_{label}_{syntax}.proto", package="t", syntax=syntax,
+    )
+    mp = fdp.message_type.add()
+    mp.name = "M"
+    f = mp.field.add()
+    f.name, f.number, f.type, f.label = "x", 1, T.TYPE_INT32, label
+    pool.Add(fdp)
+    return pool.FindMessageTypeByName("t.M").fields_by_name["x"]
+
+
+class TestIsRepeated:
+    """``is_repeated`` is the protobuf-5-portable replacement for the
+    dropped ``fd.is_repeated`` attribute. Direct unit coverage so a
+    future protobuf API shift surfaces here, not via call-site
+    breakage."""
+
+    def test_label_repeated_is_repeated(self) -> None:
+        fd = _build_with_label(T.LABEL_REPEATED)
+        assert is_repeated(fd) is True
+
+    def test_label_optional_is_not_repeated(self) -> None:
+        fd = _build_with_label(T.LABEL_OPTIONAL)
+        assert is_repeated(fd) is False
+
+    def test_label_required_is_not_repeated(self) -> None:
+        fd = _build_with_label(T.LABEL_REQUIRED, syntax="proto2")
+        assert is_repeated(fd) is False
+
+
+class TestIsRequired:
+    """``is_required`` is the proto2-only mirror of ``is_repeated``."""
+
+    def test_label_required_is_required(self) -> None:
+        fd = _build_with_label(T.LABEL_REQUIRED, syntax="proto2")
+        assert is_required(fd) is True
+
+    def test_label_optional_is_not_required(self) -> None:
+        fd = _build_with_label(T.LABEL_OPTIONAL)
+        assert is_required(fd) is False
+
+    def test_label_repeated_is_not_required(self) -> None:
+        fd = _build_with_label(T.LABEL_REPEATED)
+        assert is_required(fd) is False
+
+
+class TestLabelName:
+    """``label_name`` returns the canonical ``LABEL_*`` string and is
+    used in ``Difference.left_label`` / ``right_label`` for
+    cardinality changes — getting it wrong misreports proto2
+    ``required`` as ``optional`` in user-visible output."""
+
+    def test_repeated(self) -> None:
+        fd = _build_with_label(T.LABEL_REPEATED)
+        assert label_name(fd) == "LABEL_REPEATED"
+
+    def test_required(self) -> None:
+        fd = _build_with_label(T.LABEL_REQUIRED, syntax="proto2")
+        assert label_name(fd) == "LABEL_REQUIRED"
+
+    def test_optional(self) -> None:
+        fd = _build_with_label(T.LABEL_OPTIONAL)
+        assert label_name(fd) == "LABEL_OPTIONAL"

@@ -53,12 +53,23 @@ from protokit.schema.profiles import CompatibilityPolicy
 def schema_checker() -> SchemaChecker:
     """Fresh :class:`SchemaChecker` for a single test.
 
-    The checker carries the default ``CompatibilityLevel.STRICT``
-    profile and all 17 built-in rules. Tests can mutate ``level``,
-    call ``register_field_rule`` / ``register_message_rule`` /
+    The checker carries the library default
+    ``CompatibilityLevel.STRICT`` profile (surface every finding)
+    and all 17 built-in rules. Tests can mutate ``level``, call
+    ``register_field_rule`` / ``register_message_rule`` /
     ``load_rule_pack``, or invoke ``ignore`` before running
     ``check()``. Each test gets its own instance so registrations
     don't leak across tests.
+
+    .. note::
+
+        The ``schema_checker`` fixture defaults to ``STRICT`` while
+        :func:`schema_policy` defaults to ``CONSUMER_SAFE``. The
+        difference mirrors the underlying classes — ``SchemaChecker``
+        is the engine and surfaces everything by default, while
+        ``CompatibilityPolicy`` matches the CLI-facing default. If
+        a test depends on which findings come back, set ``level``
+        explicitly rather than relying on the fixture default.
 
     Returns:
         A new ``SchemaChecker`` with default configuration.
@@ -75,6 +86,9 @@ def schema_policy() -> CompatibilityPolicy:
     specific bundled policy should construct their own
     ``CompatibilityPolicy`` rather than relying on this fixture,
     which is primarily a convenience for the default-path case.
+
+    See :func:`schema_checker` for a note on the intentional
+    default-level difference between the two fixtures.
 
     Returns:
         A new ``CompatibilityPolicy`` with default configuration.

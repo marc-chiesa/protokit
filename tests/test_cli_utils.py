@@ -150,7 +150,10 @@ class TestBackendDispatch:
         assert calls == {"protoxy": 0, "protoc": 1}
 
     def test_protoc_fallback_error_mentions_both_options(
-        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        demo_proto_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """When protoxy isn't installed AND protoc isn't on PATH, the
         error message tells the user how to get either.
@@ -160,7 +163,6 @@ class TestBackendDispatch:
         # Simulate protoc missing: pretend subprocess.run raises
         # FileNotFoundError (same as a truly absent binary).
         import subprocess
-        real_run = subprocess.run
 
         def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise FileNotFoundError("protoc not found")
@@ -170,5 +172,11 @@ class TestBackendDispatch:
         with pytest.raises(SystemExit) as exc:
             _cli_utils.compile_proto(demo_proto_file, ())
         assert exc.value.code == 2
-        # Restore to not interfere with other tests.
-        monkeypatch.setattr(subprocess, "run", real_run)
+        # Both install routes should be named so the user knows their
+        # options. Without this assertion a regression that drops
+        # one route would slip through.
+        captured = capsys.readouterr()
+        msg = captured.err
+        assert "protoxy" in msg
+        assert "protokit[compiler]" in msg
+        assert "protoc" in msg

@@ -62,6 +62,23 @@ def is_required(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     return field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED
 
 
+def label_name(field_desc: proto_descriptor.FieldDescriptor) -> str:
+    """Return the canonical ``LABEL_*`` string for a field's label.
+
+    Maps the integer ``field_desc.label`` to the string form used
+    in descriptor diagnostics — ``"LABEL_REPEATED"``,
+    ``"LABEL_REQUIRED"``, or ``"LABEL_OPTIONAL"``. Used when a
+    ``Difference`` reports a cardinality change so the output
+    carries the actual label, not a hard-coded guess.
+    """
+    FD = proto_descriptor.FieldDescriptor
+    if field_desc.label == FD.LABEL_REPEATED:
+        return "LABEL_REPEATED"
+    if field_desc.label == FD.LABEL_REQUIRED:
+        return "LABEL_REQUIRED"
+    return "LABEL_OPTIONAL"
+
+
 def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     """Check if a field is a protobuf map field.
 
