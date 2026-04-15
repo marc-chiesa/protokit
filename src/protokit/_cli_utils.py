@@ -55,31 +55,83 @@ def load_descriptor_pool(desc_path: Path) -> descriptor_pool.DescriptorPool:
     return pool
 
 
+def _has_protoxy() -> bool:
+    """Return True when the optional ``protoxy`` backend is importable.
+
+    Kept out of module scope so tests can monkeypatch the import
+    surface without leaking state, and so the main import cost is
+    pay-on-first-use.
+    """
+    import importlib.util
+    return importlib.util.find_spec("protoxy") is not None
+
+
 def compile_proto(
     proto_path: Path,
     proto_paths: tuple[str, ...],
 ) -> descriptor_pool.DescriptorPool:
-    """Compile a ``.proto`` source file via ``protoc`` and return a pool.
+    """Compile a ``.proto`` source file and return a ``DescriptorPool``.
 
-    Shells out to ``protoc`` with ``--include_imports`` so the returned
-    pool has every transitive dependency resolved. The ``.proto``
-    file's parent directory is always included as an implicit ``-I``
-    root in addition to any the caller provides.
+    Compiler backend selection:
+
+    - ``protoxy`` (Rust ``protox`` bindings) when the package is
+      importable. Preferred — no external ``protoc`` on PATH
+      required. Install with ``pip install protokit[compiler]``.
+    - Shelling out to ``protoc`` otherwise. Matches the pre-1.5
+      behavior; users who already have ``protoc`` on PATH don't
+      need to install anything extra.
+
+    Both backends request ``--include_imports`` equivalent so the
+    returned pool has every transitive dependency resolved. The
+    ``.proto`` file's parent directory is always added to the
+    include path in addition to any the caller provides.
 
     Args:
         proto_path: Path to the ``.proto`` source file.
-        proto_paths: Additional import path strings passed to
-            ``protoc`` via ``-I``. Empty tuple means only the source
-            file's parent directory is on the import path.
+        proto_paths: Additional import path strings. Empty tuple
+            means only the source file's parent directory is on
+            the include path.
 
     Returns:
         A ``DescriptorPool`` built from the compiled descriptor set.
 
     Raises:
-        SystemExit: Via :func:`error_exit` if ``protoc`` is not on
-            PATH or if compilation fails. The exception exits with
-            code 2.
+        SystemExit: Via :func:`error_exit` if neither ``protoxy``
+            is importable nor ``protoc`` is on PATH, or if
+            compilation fails. Exits with code 2.
     """
+    if _has_protoxy():
+        return _compile_with_protoxy(proto_path, proto_paths)
+    return _compile_with_protoc(proto_path, proto_paths)
+
+
+def _compile_with_protoxy(
+    proto_path: Path,
+    proto_paths: tuple[str, ...],
+) -> descriptor_pool.DescriptorPool:
+    """Compile via the in-process ``protoxy`` (Rust) backend."""
+    import protoxy  # type: ignore[import-not-found]
+    includes: list[str] = list(proto_paths)
+    includes.append(str(proto_path.parent))
+    try:
+        fds = protoxy.compile(
+            files=[str(proto_path)],
+            includes=includes,
+            include_imports=True,
+        )
+    except (protoxy.ProtoxyError, ValueError) as exc:
+        error_exit(f"protoxy failed:\n{exc}")
+    pool = descriptor_pool.DescriptorPool()
+    for fd in fds.file:
+        pool.Add(fd)
+    return pool
+
+
+def _compile_with_protoc(
+    proto_path: Path,
+    proto_paths: tuple[str, ...],
+) -> descriptor_pool.DescriptorPool:
+    """Compile by shelling out to ``protoc`` on PATH."""
     with tempfile.NamedTemporaryFile(suffix=".descriptor_set", delete=False) as tmp:
         tmp_path = Path(tmp.name)
 
@@ -95,7 +147,10 @@ def compile_proto(
             subprocess.run(cmd, check=True, capture_output=True, text=True)
         except FileNotFoundError:
             error_exit(
-                "protoc not found. Use a pre-compiled .descriptor_set instead."
+                "Neither protoxy nor protoc is available. Install the "
+                "optional compiler backend with `pip install "
+                "protokit[compiler]`, or put protoc on PATH, or use a "
+                "pre-compiled .descriptor_set instead."
             )
         except subprocess.CalledProcessError as e:
             error_exit(f"protoc failed:\n{e.stderr.strip()}")

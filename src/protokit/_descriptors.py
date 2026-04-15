@@ -40,6 +40,28 @@ def type_name(field_type: int) -> str:
     return _TYPE_NAMES.get(field_type, f"TYPE_UNKNOWN_{field_type}")
 
 
+def is_repeated(field_desc: proto_descriptor.FieldDescriptor) -> bool:
+    """Return True when ``field_desc.label`` is ``LABEL_REPEATED``.
+
+    Protobuf 5.x removed the convenience ``is_repeated`` attribute
+    from the upb ``FieldDescriptor`` binding; the label comparison
+    is the only form that works uniformly across protobuf 4 and 5.
+    This helper keeps the call sites readable and gives a single
+    place to revisit if the API shifts again.
+    """
+    return field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REPEATED
+
+
+def is_required(field_desc: proto_descriptor.FieldDescriptor) -> bool:
+    """Return True when ``field_desc.label`` is ``LABEL_REQUIRED``.
+
+    Mirror of :func:`is_repeated` for the proto2 ``required`` case.
+    Protobuf 5.x dropped ``fd.is_required`` from the upb binding so
+    the label comparison is the portable form.
+    """
+    return field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED
+
+
 def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     """Check if a field is a protobuf map field.
 
@@ -51,7 +73,7 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
         the ``map_entry`` option set.
     """
     return (
-        field_desc.is_repeated
+        is_repeated(field_desc)
         and field_desc.type == proto_descriptor.FieldDescriptor.TYPE_MESSAGE
         and field_desc.message_type.GetOptions().map_entry
     )

@@ -30,6 +30,15 @@ dependencies = [
     "click>=8.0",
 ]
 
+[project.optional-dependencies]
+# In-process .proto → FileDescriptorSet compiler via Rust bindings.
+# When installed, protokit's CLI prefers it over shelling out to
+# protoc on PATH. Users who already have protoc installed don't need
+# this extra; users who want a zero-external-dependency toolchain do.
+compiler = [
+    "protoxy>=0.7",
+]
+
 [project.scripts]
 protokit = "protokit.cli:main"
 

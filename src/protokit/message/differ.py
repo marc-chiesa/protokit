@@ -18,6 +18,7 @@ from protokit._descriptors import (
     get_field_map,
     has_presence,
     is_map_field,
+    is_repeated,
     type_name,
 )
 from protokit.message.comparators import (
@@ -673,7 +674,7 @@ class MessageDifferencer:
                     )
 
                     # Cardinality change -> no value comparison
-                    if left_fd.is_repeated != right_fd.is_repeated:
+                    if is_repeated(left_fd) != is_repeated(right_fd):
                         continue
                     left_is_map = is_map_field(left_fd)
                     right_is_map = is_map_field(right_fd)
@@ -698,7 +699,7 @@ class MessageDifferencer:
                             field_path, differences, stack, item.depth,
                             warnings, same_pool,
                         )
-                    elif left_fd.is_repeated:
+                    elif is_repeated(left_fd):
                         self._compare_repeated(
                             item.left_msg, item.right_msg, left_fd, right_fd,
                             field_path, differences, stack, item.depth,
@@ -795,13 +796,13 @@ class MessageDifferencer:
                 ))
 
         # Cardinality change
-        if left_fd.is_repeated != right_fd.is_repeated:
+        if is_repeated(left_fd) != is_repeated(right_fd):
             diffs.append(Difference(
                 path=path,
                 change_type=ChangeType.CARDINALITY_CHANGED,
                 field_type=type_name(left_fd.type),
-                left_label="LABEL_REPEATED" if left_fd.is_repeated else "LABEL_OPTIONAL",
-                right_label="LABEL_REPEATED" if right_fd.is_repeated else "LABEL_OPTIONAL",
+                left_label="LABEL_REPEATED" if is_repeated(left_fd) else "LABEL_OPTIONAL",
+                right_label="LABEL_REPEATED" if is_repeated(right_fd) else "LABEL_OPTIONAL",
             ))
 
         # Strict schema: message type name mismatch warning
@@ -1673,10 +1674,10 @@ class MessageDifferencer:
                             diffs.append(self._make_leaf_diff(
                                 key_path, change_type, v, value_fd, is_new=is_new,
                             ))
-                elif fd.type == TYPE_MESSAGE and not fd.is_repeated:
+                elif fd.type == TYPE_MESSAGE and not is_repeated(fd):
                     # Singular sub-message: push for full recursion
                     emit_stack.append((value, field_path, cur_depth + 1))
-                elif fd.is_repeated:
+                elif is_repeated(fd):
                     # Check treat_as_map for key-based path formatting
                     tam_key = (
                         self._get_treat_as_map_key(fd.name, field_path)
@@ -1746,7 +1747,7 @@ class MessageDifferencer:
                 return _WorkItem(None, child, p, depth + 1)
             return _WorkItem(child, None, p, depth + 1)
 
-        if fd.type == TYPE_MESSAGE and not fd.is_repeated:
+        if fd.type == TYPE_MESSAGE and not is_repeated(fd):
             if msg.HasField(fd.name):
                 child = getattr(msg, fd.name)
                 if _has_populated_fields(child):
@@ -1774,7 +1775,7 @@ class MessageDifferencer:
                     diffs.append(self._make_leaf_diff(
                         key_path, change_type, v, value_fd, is_new=is_new,
                     ))
-        elif fd.is_repeated:
+        elif is_repeated(fd):
             vals = getattr(msg, fd.name)
             for i, elem in enumerate(vals):
                 idx_path = _replace_bracket(path, str(i)) if path.segments else path

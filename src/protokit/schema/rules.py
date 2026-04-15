@@ -25,7 +25,13 @@ from typing import Callable, Iterable
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pb2
 
-from protokit._descriptors import has_presence, is_map_field, type_name
+from protokit._descriptors import (
+    has_presence,
+    is_map_field,
+    is_repeated,
+    is_required,
+    type_name,
+)
 from protokit.message.model import FieldPath
 from protokit.schema.model import Direction, Finding, Severity
 
@@ -265,7 +271,7 @@ def field_added(
     """
     if old_fd is not None or new_fd is None:
         return []
-    if new_fd.is_required:
+    if is_required(new_fd):
         return []
     if _real_containing_oneof(new_fd) is not None:
         return []
@@ -399,7 +405,7 @@ def field_type_semantic_change(
 def _cardinality_label(fd: proto_descriptor.FieldDescriptor) -> str:
     if is_map_field(fd):
         return "map"
-    if fd.is_repeated:
+    if is_repeated(fd):
         return "repeated"
     return "singular"
 
@@ -427,7 +433,7 @@ def repeated_to_singular(
         return []
     if is_map_field(old_fd) or is_map_field(new_fd):
         return []
-    if old_fd.is_repeated == new_fd.is_repeated:
+    if is_repeated(old_fd) == is_repeated(new_fd):
         return []
     return [Finding(
         path=path,
@@ -587,7 +593,7 @@ def required_field_added(
     """
     if old_fd is not None or new_fd is None:
         return []
-    if not new_fd.is_required:
+    if not is_required(new_fd):
         return []
     return [Finding(
         path=path,
