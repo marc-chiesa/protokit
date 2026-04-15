@@ -100,22 +100,28 @@ class TestCompatibilityPolicyDefaults:
         # Default matches the CLI: protect old consumers out of the box.
         assert policy.base is CompatibilityLevel.CONSUMER_SAFE
         assert tuple(policy.custom_rules) == ()
+        assert tuple(policy.message_rules) == ()
         assert tuple(policy.ignore_paths) == ()
 
     def test_list_inputs_are_frozen_to_tuples(self) -> None:
         """Pass mutable lists at construction; policy must snapshot them."""
         rules = [("rule1", lambda ctx: None)]
+        msg_rules = [("msg1", lambda ctx: None)]
         ignores = ["debug"]
         policy = CompatibilityPolicy(
             custom_rules=rules,
+            message_rules=msg_rules,
             ignore_paths=ignores,
         )
         assert isinstance(policy.custom_rules, tuple)
+        assert isinstance(policy.message_rules, tuple)
         assert isinstance(policy.ignore_paths, tuple)
         # Mutating the caller's list must not affect the policy.
         rules.append(("sneaky", lambda ctx: None))
+        msg_rules.append(("sneaky_msg", lambda ctx: None))
         ignores.append("x")
         assert len(policy.custom_rules) == 1
+        assert len(policy.message_rules) == 1
         assert len(policy.ignore_paths) == 1
 
 
@@ -170,6 +176,43 @@ class TestCompatibilityPolicyCheck:
         )
         report = policy.check(old, "t.M", new, "t.M")
         assert any(f.rule_id == "reject_x" for f in report.findings)
+
+    def test_message_plugin_invoked(self) -> None:
+        """Message-level plugins from ``message_rules`` fire during check()."""
+        old, new = _make_pair(old_field_name="x", new_field_name="x")
+        visited: list[str] = []
+
+        def visit(ctx) -> None:
+            # Message-level context exposes the descriptor directly.
+            if ctx.old_descriptor is not None:
+                visited.append(ctx.old_descriptor.full_name)
+
+        policy = CompatibilityPolicy(
+            base=CompatibilityLevel.STRICT,
+            message_rules=(("visit_msg", visit),),
+        )
+        policy.check(old, "t.M", new, "t.M")
+        assert "t.M" in visited
+
+    def test_message_plugin_emits_through_filter(self) -> None:
+        """A message-level plugin emitting at the right severity surfaces
+        on the report — confirms end-to-end wiring of message_rules.
+        """
+        old, new = _make_pair(old_field_name="x", new_field_name="x")
+
+        def require_docs(ctx) -> None:
+            # Pretend every message must carry a doc comment; always fire.
+            ctx.emit(
+                severity=Severity.POLICY,
+                message="message requires documentation",
+            )
+
+        policy = CompatibilityPolicy(
+            base=CompatibilityLevel.STRICT,
+            message_rules=(("require_docs", require_docs),),
+        )
+        report = policy.check(old, "t.M", new, "t.M")
+        assert any(f.rule_id == "require_docs" for f in report.findings)
 
     def test_policy_is_frozen(self) -> None:
         import pytest

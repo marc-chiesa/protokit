@@ -26,7 +26,7 @@ from protokit.schema.model import (
 )
 
 if TYPE_CHECKING:
-    from protokit.schema.plugins import FieldPlugin
+    from protokit.schema.plugins import FieldPlugin, MessagePlugin
 
 
 # ---------------------------------------------------------------------------
@@ -99,19 +99,20 @@ def filter_for_level(
 
 @dataclass(frozen=True)
 class CompatibilityPolicy:
-    """Immutable bundle: profile + custom field plugins + ignore paths.
+    """Immutable bundle: profile + custom plugins + ignore paths.
 
     Construct once, use on multiple type pairs::
 
         policy = CompatibilityPolicy(
             base=CompatibilityLevel.CONSUMER_SAFE,
             custom_rules=[("acme_meta", acme_metadata_checker)],
+            message_rules=[("require_docs", require_docs_checker)],
             ignore_paths=("debug",),
         )
         report = policy.check(old_pool, "pkg.User", new_pool, "pkg.User")
 
-    For dynamic configuration (registering rules at runtime, mixing in
-    message-level plugins or rule packs), use ``SchemaChecker`` directly.
+    For dynamic configuration (registering rules at runtime or mixing
+    in rule packs), use ``SchemaChecker`` directly.
 
     Attributes:
         base: The ``CompatibilityLevel`` profile applied to the
@@ -121,6 +122,13 @@ class CompatibilityPolicy:
             register as emit-style field plugins. Empty by default.
             Each ``plugin_fn`` must satisfy the ``FieldPlugin``
             protocol: ``(FieldRuleContext) -> None``.
+        message_rules: Sequence of ``(rule_id, plugin_fn)`` pairs to
+            register as emit-style message-level plugins. Empty by
+            default. Each ``plugin_fn`` must satisfy the
+            ``MessagePlugin`` protocol:
+            ``(MessageRuleContext) -> None``. Use for cross-field
+            invariants, require-docs rules, or other concerns that
+            span a message rather than targeting one field.
         ignore_paths: Sequence of dotted prefix strings whose findings
             are suppressed. ``"debug"`` matches both ``debug`` and any
             descendant such as ``debug.inner.value``. Empty by default.
@@ -128,17 +136,20 @@ class CompatibilityPolicy:
 
     base: CompatibilityLevel = CompatibilityLevel.CONSUMER_SAFE
     custom_rules: Sequence[tuple[str, "FieldPlugin"]] = field(default_factory=tuple)
+    message_rules: Sequence[tuple[str, "MessagePlugin"]] = field(default_factory=tuple)
     ignore_paths: Sequence[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         """Freeze caller-supplied sequences into immutable tuples.
 
         The dataclass is ``frozen=True``, but callers can still pass
-        a ``list`` for ``custom_rules`` / ``ignore_paths`` and mutate
-        it later to change policy behavior after construction. We
-        snapshot into tuples here so the frozen guarantee is real.
+        a ``list`` for ``custom_rules`` / ``message_rules`` /
+        ``ignore_paths`` and mutate it later to change policy
+        behavior after construction. We snapshot into tuples here so
+        the frozen guarantee is real.
         """
         object.__setattr__(self, "custom_rules", tuple(self.custom_rules))
+        object.__setattr__(self, "message_rules", tuple(self.message_rules))
         object.__setattr__(self, "ignore_paths", tuple(self.ignore_paths))
 
     def check(
@@ -176,6 +187,8 @@ class CompatibilityPolicy:
         checker = SchemaChecker(level=self.base)
         for rule_id, plugin_fn in self.custom_rules:
             checker.register_field_rule(rule_id, plugin_fn)
+        for rule_id, plugin_fn in self.message_rules:
+            checker.register_message_rule(rule_id, plugin_fn)
         for path in self.ignore_paths:
             checker.ignore(path)
         return checker.check(old_pool, old_type, new_pool, new_type)
