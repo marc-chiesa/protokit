@@ -680,6 +680,31 @@ class FieldHookContext:
     side). Likewise ``left_value`` / ``right_value`` may be
     ``None`` when the corresponding field is unset or absent.
 
+    Repeated / map granularity: hooks fire **per element/entry**,
+    not once per repeated/map field. ``ctx.left_value`` /
+    ``ctx.right_value`` hold the individual scalar; the field
+    descriptor (with ``is_repeated=True`` for repeated or a map
+    entry's synthetic ``value`` sub-field for maps) is still in
+    ``ctx.left_fd`` / ``ctx.right_fd``. Field-wide constraints
+    that span the whole list (e.g. "max items") belong on a
+    message-level hook registered against the parent message
+    rather than a field hook. For a map field, ``ctx.left_fd``
+    is the synthetic ``MapEntry.value`` descriptor, so
+    ``ctx.left_fd.containing_type`` is the MapEntry message, not
+    the user's outer container — use ``ctx.left_msg`` to reach
+    the container.
+
+    Cross-schema presence asymmetry: when one side has
+    ``has_presence == True`` and the other doesn't (e.g. proto2
+    optional on one side, proto3 implicit on the other), the
+    engine cannot tell unambiguously whether a proto2 side is
+    unset because the other side has no presence to match. In
+    that case both ``left_value`` and ``right_value`` reflect the
+    actual protobuf values (defaults when unset). Hooks that need
+    strict presence should read
+    ``ctx.left_msg.HasField(ctx.left_fd.name)`` (or the right-side
+    equivalent) themselves.
+
     Attributes:
         path: ``FieldPath`` to the field being compared.
         left_fd: Left-side ``FieldDescriptor``, or ``None`` if the
@@ -687,7 +712,9 @@ class FieldHookContext:
         right_fd: Right-side ``FieldDescriptor``, or ``None`` if
             the field exists only on the left.
         left_value: Left-side value. ``None`` when the field is
-            absent or unset on the left.
+            absent or unset on the left (including repeated/map
+            extras where the left side has fewer elements or
+            lacks the key).
         right_value: Right-side value. ``None`` when absent or
             unset on the right.
         left_msg: Left-side parent message (the one that contains

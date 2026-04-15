@@ -150,8 +150,18 @@ class MessageDifferencer:
 
     Configure behavior by calling the instance methods
     (:meth:`ignore_fields`, :meth:`treat_as_map`,
-    :meth:`set_float_comparison`) or by assigning to the public
-    attributes below before calling :meth:`compare`.
+    :meth:`set_float_comparison`, and the ``register_*_hook``
+    methods) or by assigning to the public attributes below before
+    calling :meth:`compare`.
+
+    Thread safety: an instance is **not** thread-safe. :meth:`compare`
+    stores descriptor pools on ``self`` during the call
+    (``self._left_pool`` / ``self._right_pool``) so hooks can read
+    them, and clears them in a ``finally``. Two concurrent
+    :meth:`compare` calls on the same instance will race on those
+    attributes and hooks may see the wrong pools. Use a distinct
+    ``MessageDifferencer`` per thread, or serialize calls
+    externally.
 
     Attributes:
         max_depth: Maximum recursion depth (``None`` for unlimited,
@@ -196,14 +206,28 @@ class MessageDifferencer:
 
         VALIDATE hooks fire before value comparison on every leaf
         evaluation — including presence-gated paths (both-unset,
-        one-sided add/remove). Use for flagging constraint
-        violations (e.g. ``validate.rules``) via ``ctx.warn()``.
+        one-sided add/remove, repeated/map extras, map one-sided
+        keys). Use for flagging constraint violations (e.g.
+        ``validate.rules``) via ``ctx.warn()``.
+
+        Firing granularity for aggregate fields: repeated and map
+        fields fire hooks **per element/entry**, not once per
+        field. ``ctx.left_value`` / ``ctx.right_value`` carry the
+        individual scalar value; the field descriptor (with
+        ``is_repeated=True``) is still in ``ctx.left_fd`` /
+        ``ctx.right_fd``. Field-level constraints that span the
+        whole list (e.g., "max_items") belong on a message-level
+        hook registered against the parent message.
 
         Args:
             hook: Callable matching ``FieldHook``: takes a
                 ``FieldHookContext``, returns ``None``. Should be
-                synchronous — exceptions are captured into
-                ``DiffResult.warnings`` and comparison continues.
+                synchronous. ``Exception`` subclasses raised by the
+                hook are captured into ``DiffResult.warnings`` and
+                comparison continues. ``BaseException`` (including
+                ``KeyboardInterrupt`` and ``SystemExit``)
+                propagates uncaught — by design, so users can still
+                interrupt a long-running comparison.
         """
         self._validate_hooks.append(hook)
 
@@ -213,13 +237,15 @@ class MessageDifferencer:
         COMPARE hooks can call ``ctx.override_equal()`` to force
         two leaf values to compare as equal, skipping the engine's
         default ``_values_equal``. Fires only when both sides have
-        values (presence-gated paths are structural and skip
-        COMPARE).
+        values — presence-gated paths (both-unset, one-sided
+        add/remove, repeated/map extras, map one-sided keys) are
+        structural and skip COMPARE.
 
         Args:
-            hook: Callable matching ``FieldHook``. Exceptions are
-                captured into warnings and the engine falls back to
-                the default comparison for that field.
+            hook: Callable matching ``FieldHook``. ``Exception``
+                subclasses are captured into warnings and the
+                engine falls back to the default comparison for
+                that field. ``BaseException`` propagates uncaught.
         """
         self._compare_hooks.append(hook)
 
@@ -227,16 +253,19 @@ class MessageDifferencer:
         """Register a REPORT-stage field hook.
 
         REPORT hooks fire after a ``Difference`` is about to be
-        emitted (values not equal or presence changed, and not
-        overridden). Use ``ctx.annotate(...)`` to attach strings
-        that show up on ``Difference.annotations``. Multiple hooks
-        can annotate one diff; strings accumulate in registration
+        emitted — MODIFIED (values differ), ADDED / REMOVED
+        (presence change or repeated/map extra or one-sided map
+        key). Use ``ctx.annotate(...)`` to attach strings that
+        show up on ``Difference.annotations``. Multiple hooks can
+        annotate one diff; strings accumulate in registration
         order.
 
         Args:
-            hook: Callable matching ``FieldHook``. Exceptions
-                become warnings; the diff is still emitted with
-                whatever annotations had already been collected.
+            hook: Callable matching ``FieldHook``. ``Exception``
+                subclasses become warnings; the diff is still
+                emitted with whatever annotations had already been
+                collected before the hook raised. ``BaseException``
+                propagates uncaught.
         """
         self._report_hooks.append(hook)
 
@@ -941,6 +970,76 @@ class MessageDifferencer:
         )
         self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
 
+    def _compare_one_sided_scalar_with_hooks(
+        self,
+        value: Any,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+        left_msg: Message,
+        right_msg: Message,
+        *,
+        is_new: bool,
+        diffs: list[Difference],
+        warnings: list[Warning],
+    ) -> None:
+        """Emit a one-sided scalar ADDED/REMOVED through the hook pipeline.
+
+        Used by ``_compare_repeated`` extra elements and
+        ``_compare_map`` one-sided keys so hooks see EVERY scalar
+        leaf in a repeated/map field, not just the pairwise
+        matches. VALIDATE fires with the absent side's value set
+        to ``None`` in the context; COMPARE is skipped (presence
+        change is structural, not overridable); REPORT fires on the
+        diff.
+
+        ``left_fd`` / ``right_fd`` are both the full field
+        descriptors (the repeated field or the map's synthetic
+        value sub-field) — the field itself exists on both sides,
+        only this particular element/key is one-sided.
+        """
+        value_fd = right_fd if is_new else left_fd
+        if is_new:
+            diff = Difference(
+                path=path, change_type=ChangeType.ADDED,
+                new_value=self._wrap_value(value, value_fd),
+                field_type=type_name(value_fd.type),
+            )
+            ctx_left_value: Any = None
+            ctx_right_value: Any = value
+        else:
+            diff = Difference(
+                path=path, change_type=ChangeType.REMOVED,
+                old_value=self._wrap_value(value, value_fd),
+                field_type=type_name(value_fd.type),
+            )
+            ctx_left_value = value
+            ctx_right_value = None
+
+        if not self._has_field_hooks():
+            diffs.append(diff)
+            return
+
+        ctx_state = _FieldHookState()
+        ctx = FieldHookContext(
+            path=path,
+            left_fd=left_fd,
+            right_fd=right_fd,
+            left_value=ctx_left_value,
+            right_value=ctx_right_value,
+            left_msg=left_msg,
+            right_msg=right_msg,
+            left_pool=self._left_pool,
+            right_pool=self._right_pool,
+            _state=ctx_state,
+        )
+        self._fire_field_stage(
+            HookStage.VALIDATE, self._validate_hooks, ctx_state, ctx, warnings,
+        )
+        # COMPARE is skipped: a missing element is a structural
+        # change, not something an equality override should rewrite.
+        self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
+
     def _compare_scalar_pair_with_hooks(
         self,
         left_val: Any,
@@ -1245,11 +1344,11 @@ class MessageDifferencer:
                         field_type=type_name(right_fd.type),
                     ))
             else:
-                diffs.append(Difference(
-                    path=idx_path, change_type=ChangeType.ADDED,
-                    new_value=self._wrap_value(right_list[i], right_fd),
-                    field_type=type_name(right_fd.type),
-                ))
+                self._compare_one_sided_scalar_with_hooks(
+                    right_list[i], left_fd, right_fd, idx_path,
+                    left_msg, right_msg, is_new=True,
+                    diffs=diffs, warnings=warnings,
+                )
 
         for i in range(min_len, len(left_list)):
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
@@ -1262,11 +1361,11 @@ class MessageDifferencer:
                         field_type=type_name(left_fd.type),
                     ))
             else:
-                diffs.append(Difference(
-                    path=idx_path, change_type=ChangeType.REMOVED,
-                    old_value=self._wrap_value(left_list[i], left_fd),
-                    field_type=type_name(left_fd.type),
-                ))
+                self._compare_one_sided_scalar_with_hooks(
+                    left_list[i], left_fd, right_fd, idx_path,
+                    left_msg, right_msg, is_new=False,
+                    diffs=diffs, warnings=warnings,
+                )
 
     def _compare_map(
         self,
@@ -1320,11 +1419,11 @@ class MessageDifferencer:
                             field_type=type_name(right_value_fd.type),
                         ))
                 else:
-                    diffs.append(Difference(
-                        path=key_path, change_type=ChangeType.ADDED,
-                        new_value=self._wrap_value(right_val, right_value_fd),
-                        field_type=type_name(right_value_fd.type),
-                    ))
+                    self._compare_one_sided_scalar_with_hooks(
+                        right_val, left_value_fd, right_value_fd, key_path,
+                        left_msg, right_msg, is_new=True,
+                        diffs=diffs, warnings=warnings,
+                    )
             elif key not in right_map:
                 left_val = left_map[key]
                 if left_value_fd.type == TYPE_MESSAGE:
@@ -1336,11 +1435,11 @@ class MessageDifferencer:
                             field_type=type_name(left_value_fd.type),
                         ))
                 else:
-                    diffs.append(Difference(
-                        path=key_path, change_type=ChangeType.REMOVED,
-                        old_value=self._wrap_value(left_val, left_value_fd),
-                        field_type=type_name(left_value_fd.type),
-                    ))
+                    self._compare_one_sided_scalar_with_hooks(
+                        left_val, left_value_fd, right_value_fd, key_path,
+                        left_msg, right_msg, is_new=False,
+                        diffs=diffs, warnings=warnings,
+                    )
             else:
                 # Both have the key
                 if left_value_fd.type == TYPE_MESSAGE:

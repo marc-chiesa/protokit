@@ -344,6 +344,155 @@ class TestRepeatedAndMapIntegration:
         assert saw_override == [True]
         assert not result.has_changes()
 
+    def test_hooks_fire_on_repeated_extra_elements(self) -> None:
+        """Added/removed repeated scalar elements must fire VALIDATE +
+        REPORT (COMPARE is skipped — presence change is structural).
+        """
+        builder = ProtoBuilder()
+        builder.message(
+            "t.M", {"tags": (T.TYPE_STRING, 1)},
+            repeated_fields={"tags"},
+        )
+        left = builder.build("t.M", tags=["a", "b"])
+        right = builder.build("t.M", tags=["a", "b", "c", "d"])
+
+        seen: list[tuple[str, str, object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            seen.append((
+                "VALIDATE", str(ctx.path), ctx.left_value, ctx.right_value,
+            ))
+
+        def rhook(ctx: FieldHookContext) -> None:
+            seen.append((
+                "REPORT", str(ctx.path), ctx.left_value, ctx.right_value,
+            ))
+            ctx.annotate("extra-element")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.register_report_hook(rhook)
+        result = differ.compare(left, right)
+
+        # VALIDATE + REPORT both fire for each extra element with
+        # left_value=None and right_value=the extra element.
+        extras = [s for s in seen if s[1] in ("tags[2]", "tags[3]")]
+        assert ("VALIDATE", "tags[2]", None, "c") in extras
+        assert ("REPORT", "tags[2]", None, "c") in extras
+        assert ("VALIDATE", "tags[3]", None, "d") in extras
+        assert ("REPORT", "tags[3]", None, "d") in extras
+
+        # Diffs carry the REPORT annotation.
+        extras_diffs = [d for d in result if str(d.path).startswith("tags[2]") or str(d.path).startswith("tags[3]")]
+        assert len(extras_diffs) == 2
+        for d in extras_diffs:
+            assert d.change_type == ChangeType.ADDED
+            assert d.annotations == ("extra-element",)
+
+    def test_hooks_fire_on_repeated_removed_elements(self) -> None:
+        """Removed elements (left has more than right) fire with
+        left_value set and right_value=None.
+        """
+        builder = ProtoBuilder()
+        builder.message(
+            "t.M", {"tags": (T.TYPE_STRING, 1)},
+            repeated_fields={"tags"},
+        )
+        left = builder.build("t.M", tags=["a", "b", "c"])
+        right = builder.build("t.M", tags=["a"])
+
+        observed: list[tuple[object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            if str(ctx.path) in ("tags[1]", "tags[2]"):
+                observed.append((ctx.left_value, ctx.right_value))
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.compare(left, right)
+        assert ("b", None) in observed
+        assert ("c", None) in observed
+
+    def test_hooks_fire_on_map_added_keys(self) -> None:
+        """Map keys only on the right fire VALIDATE + REPORT with
+        left_value=None and right_value=<entry>.
+        """
+        builder = ProtoBuilder()
+        builder.map_message(
+            "t.M", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
+        )
+        MsgCls = builder.get_message_class("t.M")
+        left = MsgCls(items={"a": 1})
+        right = MsgCls(items={"a": 1, "b": 42})
+
+        seen: list[tuple[str, object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            if 'items["b"]' in str(ctx.path):
+                seen.append(("VALIDATE", ctx.left_value, ctx.right_value))
+
+        def rhook(ctx: FieldHookContext) -> None:
+            if 'items["b"]' in str(ctx.path):
+                seen.append(("REPORT", ctx.left_value, ctx.right_value))
+                ctx.annotate("added-key")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.register_report_hook(rhook)
+        result = differ.compare(left, right)
+        assert ("VALIDATE", None, 42) in seen
+        assert ("REPORT", None, 42) in seen
+        added = [d for d in result if d.change_type == ChangeType.ADDED]
+        assert len(added) == 1
+        assert added[0].annotations == ("added-key",)
+
+    def test_hooks_fire_on_map_removed_keys(self) -> None:
+        """Map keys only on the left fire with left_value=<entry>
+        and right_value=None.
+        """
+        builder = ProtoBuilder()
+        builder.map_message(
+            "t.M", fields={},
+            map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
+        )
+        MsgCls = builder.get_message_class("t.M")
+        left = MsgCls(items={"a": 1, "b": 2})
+        right = MsgCls(items={"a": 1})
+
+        seen: list[tuple[object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            if 'items["b"]' in str(ctx.path):
+                seen.append((ctx.left_value, ctx.right_value))
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.compare(left, right)
+        assert (2, None) in seen
+
+    def test_compare_hook_skipped_on_repeated_extras(self) -> None:
+        """COMPARE does NOT fire for added/removed scalar extras —
+        presence changes are structural, not overridable.
+        """
+        builder = ProtoBuilder()
+        builder.message(
+            "t.M", {"tags": (T.TYPE_STRING, 1)},
+            repeated_fields={"tags"},
+        )
+        left = builder.build("t.M", tags=["a"])
+        right = builder.build("t.M", tags=["a", "b"])
+
+        compare_paths: list[str] = []
+
+        def chook(ctx: FieldHookContext) -> None:
+            compare_paths.append(str(ctx.path))
+
+        differ = MessageDifferencer()
+        differ.register_compare_hook(chook)
+        differ.compare(left, right)
+        assert "tags[1]" not in compare_paths
+
 
 # ---------------------------------------------------------------------------
 # Message-level VALIDATE
@@ -489,6 +638,33 @@ class TestZeroHooksFastPath:
 
         differ = MessageDifferencer()
         differ.compare(left, right)
+        assert differ._left_pool is None
+        assert differ._right_pool is None
+
+    def test_pool_refs_cleared_after_exception(self) -> None:
+        """try/finally in ``compare()`` clears pool refs even when
+        the comparison raises (e.g. ``DuplicateKeyError`` from
+        ``treat_as_map``).
+        """
+        import pytest
+        from protokit.message import DuplicateKeyError
+        builder = ProtoBuilder()
+        builder.message("t.Item", {"id": (T.TYPE_STRING, 1)})
+        builder.message(
+            "t.M",
+            {"items": (T.TYPE_MESSAGE, 1, "t.Item")},
+            repeated_fields={"items"},
+        )
+        Item = builder.get_message_class("t.Item")
+        M = builder.get_message_class("t.M")
+        # Two elements with duplicate key will raise in treat_as_map.
+        left = M(items=[Item(id="x"), Item(id="x")])
+        right = M(items=[Item(id="x")])
+
+        differ = MessageDifferencer()
+        differ.treat_as_map("items", key="id")
+        with pytest.raises(DuplicateKeyError):
+            differ.compare(left, right)
         assert differ._left_pool is None
         assert differ._right_pool is None
 
