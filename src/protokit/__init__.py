@@ -7,7 +7,8 @@ The package is split into two cohesive subpackages:
   pytest assertion hook).
 - ``protokit.schema`` — descriptor-level schema compatibility
   checking (``SchemaChecker``, ``check_compatibility``, built-in rules,
-  the forthcoming ``pbcompat`` CLI).
+  the ``protokit compat`` CLI with ``check`` / ``history`` /
+  ``bisect`` / ``ci`` subcommands).
 
 Import directly from those subpackages — there are intentionally no
 top-level re-exports, to keep the namespace explicit.
