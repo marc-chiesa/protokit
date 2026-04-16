@@ -740,6 +740,45 @@ class TestHistory:
         rule_ids = [f["rule_id"] for f in entry["findings"]]
         assert "field_removed" in rule_ids
 
+    def test_json_has_resolved_shas_and_walk_count(
+        self, git_repo: Path,
+    ) -> None:
+        """Gap 3: JSON payload includes top-level ``old`` / ``new``
+        (resolved SHAs), ``commits_walked``, and aggregated
+        ``diagnostics`` alongside the existing entries array.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        payload = json.loads(result.output)
+        assert "old" in payload and len(payload["old"]) == 40  # full SHA
+        assert "new" in payload and len(payload["new"]) == 40
+        assert payload["commits_walked"] == 1
+        assert payload["diagnostics"] == []  # no plugins registered
+
+    def test_empty_range_json_shape_matches(
+        self, git_repo: Path,
+    ) -> None:
+        """Empty-range JSON still carries the full top-level keys."""
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        payload = json.loads(result.output)
+        assert payload["range"] == "HEAD..HEAD"
+        assert payload["commits_walked"] == 0
+        assert payload["entries"] == []
+        assert payload["diagnostics"] == []
+        assert "old" in payload and "new" in payload
+
 
 class TestBisect:
     def test_finds_first_breaking_commit(self, git_repo: Path) -> None:
@@ -915,6 +954,74 @@ class TestBisectKeepGoing:
         assert result.exit_code == 1
         assert first_break in result.output
         assert "first breaking commit" in result.output
+
+
+class TestBisectJson:
+    """Gap 3: ``bisect --format json`` emits structured output
+    with resolved SHAs, commits_walked, and diagnostics.
+    """
+
+    def test_break_json_payload(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        breaker = _commit(
+            git_repo, "acme/user.proto", _USER_V2_DROP,
+            msg="v2 drop age",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["range"] == f"{old_sha}..HEAD"
+        assert payload["old"] == old_sha
+        assert len(payload["new"]) == 40
+        assert payload["breaking_commit"] == breaker
+        rule_ids = [f["rule_id"] for f in payload["findings"]]
+        assert "field_removed" in rule_ids
+        assert payload["commits_walked"] == 1
+        assert payload["diagnostics"] == []
+
+    def test_clean_json_payload(self, git_repo: Path) -> None:
+        """No break in range → breaking_commit is null, exit 0."""
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// no-op\n",
+            msg="comment edit",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["breaking_commit"] is None
+        assert payload["findings"] == []
+        assert payload["commits_walked"] >= 1
+
+    def test_no_commits_json_payload(self, git_repo: Path) -> None:
+        """Empty range JSON still carries every top-level key."""
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", "HEAD", "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["breaking_commit"] is None
+        assert payload["commits_walked"] == 0
+        assert payload["findings"] == []
+        assert payload["diagnostics"] == []
 
 
 class TestCi:

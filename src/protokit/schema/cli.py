@@ -408,6 +408,51 @@ def _load_pools_git(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
+    """Resolve the endpoints of a ``OLD..NEW`` range to fixed SHAs.
+
+    Useful for JSON output: ``range`` carries what the user
+    typed, while ``old`` / ``new`` carry the resolved SHAs so
+    the payload remains meaningful after the named refs move.
+
+    Raises:
+        SystemExit: via ``error_exit`` if ``range_spec`` lacks
+            ``..`` or either side fails to resolve.
+    """
+    # Support both two-dot and three-dot forms; we only need the
+    # endpoints, and ``A...B`` is just a different walk semantics.
+    if "..." in range_spec:
+        sep = "..."
+    elif ".." in range_spec:
+        sep = ".."
+    else:
+        error_exit(
+            f"invalid --range {range_spec!r}: expected OLD..NEW form"
+        )
+    parts = range_spec.split(sep, 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        error_exit(
+            f"invalid --range {range_spec!r}: both endpoints required"
+        )
+    old_name, new_name = parts
+    try:
+        import subprocess
+        old_sha = subprocess.run(
+            ["git", "rev-parse", old_name],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        new_sha = subprocess.run(
+            ["git", "rev-parse", new_name],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        error_exit(
+            f"could not resolve range endpoints {range_spec!r}: {stderr}"
+        )
+    return old_sha, new_sha
+
+
 def _build_configured_checker(
     *,
     level: CompatibilityLevel,
@@ -854,6 +899,12 @@ def history(
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
 
+    # Resolve the range's endpoints to fixed SHAs. These appear in
+    # the JSON payload so a downstream tool can pin the exact
+    # commits this walk examined — important when the range was
+    # specified as moving names like ``HEAD~20..HEAD``.
+    old_endpoint, new_endpoint = _resolve_range_endpoints(range_spec)
+
     try:
         commits = commits_in_range(range_spec, paths=[proto_file])
     except GitRefNotFoundError as exc:
@@ -861,7 +912,14 @@ def history(
 
     if not commits:
         if output_format.lower() == "json":
-            click.echo(json.dumps({"range": range_spec, "entries": []}, indent=2))
+            click.echo(json.dumps({
+                "range": range_spec,
+                "old": old_endpoint,
+                "new": new_endpoint,
+                "commits_walked": 0,
+                "entries": [],
+                "diagnostics": [],
+            }, indent=2))
         else:
             click.echo(f"# {range_spec}: no commits touch {proto_file}")
         sys.exit(0)
@@ -882,6 +940,7 @@ def history(
         prev = sha
 
     entries: list[dict[str, Any]] = []
+    aggregated_diagnostics: list[dict[str, Any]] = []
     any_findings = False
     any_diagnostics = False
     for old_ref, new_ref in pairs:
@@ -915,6 +974,12 @@ def history(
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
                 click.echo(f"{prefix} ({new_ref[:12]}): {d}", err=True)
+                aggregated_diagnostics.append({
+                    "commit": new_ref,
+                    "level": d.level,
+                    "path": d.path,
+                    "message": d.message,
+                })
         if report.findings:
             any_findings = True
 
@@ -939,7 +1004,14 @@ def history(
         })
 
     if output_format.lower() == "json":
-        click.echo(json.dumps({"range": range_spec, "entries": entries}, indent=2))
+        click.echo(json.dumps({
+            "range": range_spec,
+            "old": old_endpoint,
+            "new": new_endpoint,
+            "commits_walked": len(commits),
+            "entries": entries,
+            "diagnostics": aggregated_diagnostics,
+        }, indent=2))
     else:
         for entry in entries:
             short = entry["new"][:12]
@@ -1051,6 +1123,14 @@ def history(
          "flag, you get the full picture in one run; exit code "
          "still dominates on diagnostics.",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(("human", "json"), case_sensitive=False),
+    default="human",
+    show_default=True,
+    help="Output format.",
+)
 def bisect(
     old_ref: str,
     new_ref: str,
@@ -1064,6 +1144,7 @@ def bisect(
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     keep_going: bool,
+    output_format: str,
 ) -> None:
     """Find the earliest commit in OLD..NEW that broke compatibility.
 
@@ -1087,6 +1168,12 @@ def bisect(
     if not verify_ref(new_ref):
         error_exit(f"unknown git ref: {new_ref!r}")
 
+    # Resolve named refs to SHAs for the JSON payload — the
+    # ``old`` / ``new`` keys in output should pin exactly what
+    # this run examined, even if ``HEAD`` or a branch moves
+    # before the next invocation.
+    old_sha, new_sha = _resolve_range_endpoints(f"{old_ref}..{new_ref}")
+
     try:
         commits = commits_in_range(
             f"{old_ref}..{new_ref}", paths=[proto_file],
@@ -1094,11 +1181,58 @@ def bisect(
     except GitRefNotFoundError as exc:
         error_exit(str(exc))
 
+    json_mode = output_format.lower() == "json"
+
+    def _emit_and_exit(
+        *,
+        breaking_commit: str | None,
+        breaking_findings: list,
+        diagnostics_payload: list[dict[str, Any]],
+        exit_code: int,
+    ) -> None:
+        """Render the final output and exit."""
+        if json_mode:
+            click.echo(json.dumps({
+                "range": f"{old_ref}..{new_ref}",
+                "old": old_sha,
+                "new": new_sha,
+                "breaking_commit": breaking_commit,
+                "findings": [
+                    {
+                        "path": str(f.path),
+                        "rule_id": f.rule_id,
+                        "severity": f.severity.value,
+                        "direction": f.direction.value,
+                        "message": f.message,
+                    }
+                    for f in breaking_findings
+                ],
+                "commits_walked": len(commits),
+                "diagnostics": diagnostics_payload,
+            }, indent=2))
+        else:
+            if breaking_commit is not None:
+                click.echo(f"first breaking commit: {breaking_commit}")
+                for f in breaking_findings:
+                    click.echo(f"  {f}")
+            elif not commits:
+                click.echo(
+                    f"# {old_ref}..{new_ref}: no commits touch {proto_file}"
+                )
+            else:
+                click.echo(
+                    f"# {old_ref}..{new_ref}: no break found across "
+                    f"{len(commits)} commit(s)"
+                )
+        sys.exit(exit_code)
+
     if not commits:
-        click.echo(
-            f"# {old_ref}..{new_ref}: no commits touch {proto_file}"
+        _emit_and_exit(
+            breaking_commit=None,
+            breaking_findings=[],
+            diagnostics_payload=[],
+            exit_code=0,
         )
-        sys.exit(0)
 
     try:
         anchor_pool = extract_pool_from_ref(
@@ -1107,8 +1241,10 @@ def bisect(
     except (GitRefNotFoundError, ProtoImportError) as exc:
         error_exit(str(exc))
 
-    # Accumulators — only used by the --keep-going path, but
-    # always written so the post-loop reporting has one shape.
+    # Accumulators — used by the --keep-going path AND the
+    # JSON output shape so every invocation emits the same
+    # top-level keys.
+    diagnostics_payload: list[dict[str, Any]] = []
     any_diagnostics = False
     first_break_sha: str | None = None
     first_break_findings: list = []
@@ -1138,36 +1274,45 @@ def bisect(
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
                 click.echo(f"{prefix} ({sha[:12]}): {d}", err=True)
+                diagnostics_payload.append({
+                    "commit": sha,
+                    "level": d.level,
+                    "path": d.path,
+                    "message": d.message,
+                })
             if not keep_going:
                 # Stop-fast: assume the diagnostic invalidates any
                 # subsequent result.
-                sys.exit(2)
+                _emit_and_exit(
+                    breaking_commit=first_break_sha,
+                    breaking_findings=first_break_findings,
+                    diagnostics_payload=diagnostics_payload,
+                    exit_code=2,
+                )
         if report.findings and first_break_sha is None:
             first_break_sha = sha
             first_break_findings = list(report.findings)
             if not keep_going:
-                click.echo(f"first breaking commit: {sha}")
-                for f in report.findings:
-                    click.echo(f"  {f}")
-                sys.exit(1)
-
-    # --keep-going post-loop reporting.
-    if first_break_sha is not None:
-        click.echo(f"first breaking commit: {first_break_sha}")
-        for f in first_break_findings:
-            click.echo(f"  {f}")
-    else:
-        click.echo(
-            f"# {old_ref}..{new_ref}: no break found across "
-            f"{len(commits)} commit(s)"
-        )
+                _emit_and_exit(
+                    breaking_commit=first_break_sha,
+                    breaking_findings=first_break_findings,
+                    diagnostics_payload=diagnostics_payload,
+                    exit_code=1,
+                )
 
     # Exit priority: diagnostics (2) > break (1) > clean (0).
     if any_diagnostics:
-        sys.exit(2)
-    if first_break_sha is not None:
-        sys.exit(1)
-    sys.exit(0)
+        exit_code = 2
+    elif first_break_sha is not None:
+        exit_code = 1
+    else:
+        exit_code = 0
+    _emit_and_exit(
+        breaking_commit=first_break_sha,
+        breaking_findings=first_break_findings,
+        diagnostics_payload=diagnostics_payload,
+        exit_code=exit_code,
+    )
 
 
 # ---------------------------------------------------------------------------
