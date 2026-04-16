@@ -799,6 +799,124 @@ class TestBisect:
         assert result.exit_code == 2
 
 
+class TestPluginParity:
+    """Gap 2: history / bisect / ci all accept the full plugin
+    surface (--rule-pack, --ignore, --dedupe-by-type).
+    """
+
+    def test_history_accepts_ignore(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        # Without --ignore: break surfaces.
+        result_plain = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result_plain.exit_code == 1
+        # With --ignore covering the dropped field's path: no break.
+        result_ignored = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "age",
+        ])
+        assert result_ignored.exit_code == 0
+
+    def test_bisect_accepts_ignore(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "age",
+        ])
+        assert result.exit_code == 0
+        assert "no break found" in result.output
+
+    def test_ci_accepts_ignore(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        # Without --ignore: break.
+        result_plain = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result_plain.exit_code == 1
+        # With --ignore: clean.
+        result_ignored = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "age",
+        ])
+        assert result_ignored.exit_code == 0
+
+
+class TestBisectKeepGoing:
+    """Gap 2: ``--keep-going`` walks every commit, aggregating
+    diagnostics AND finding the first break in one pass.
+    """
+
+    def test_without_keep_going_stops_at_first_break(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # Two breaks in the range; default bisect stops at the first.
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 drop age")
+        _commit(
+            git_repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message User {}\n',  # name also dropped
+            msg="v3 drop name too",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        # The first breaking commit is printed; second break isn't
+        # referenced in the output because the walk stopped early.
+        lines = result.output.splitlines()
+        assert sum(1 for line in lines if line.startswith("first breaking")) == 1
+
+    def test_keep_going_still_reports_first_break(
+        self, git_repo: Path,
+    ) -> None:
+        """With --keep-going, bisect walks to the end but still
+        reports the EARLIEST breaking commit (bisect semantics).
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        first_break = _commit(
+            git_repo, "acme/user.proto", _USER_V2_DROP,
+            msg="v2 drop age",
+        )
+        _commit(
+            git_repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message User {}\n',
+            msg="v3 drop name too",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--keep-going",
+        ])
+        assert result.exit_code == 1
+        assert first_break in result.output
+        assert "first breaking commit" in result.output
+
+
 class TestCi:
     def test_against_explicit_base(self, git_repo: Path) -> None:
         _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")

@@ -404,6 +404,36 @@ def _load_pools_git(
 
 
 # ---------------------------------------------------------------------------
+# Shared checker construction
+# ---------------------------------------------------------------------------
+
+
+def _build_configured_checker(
+    *,
+    level: CompatibilityLevel,
+    rule_packs: tuple[str, ...] = (),
+    ignore_paths: tuple[str, ...] = (),
+    dedupe_by_type: bool = False,
+) -> SchemaChecker:
+    """Build a :class:`SchemaChecker` from CLI flag values.
+
+    Shared by every subcommand so ``--rule-pack`` / ``--ignore``
+    / ``--dedupe-by-type`` behave identically across
+    ``check`` / ``history`` / ``bisect`` / ``ci``. Any invalid
+    input surfaces via ``error_exit`` (exit 2) so the caller
+    never has to branch on it.
+    """
+    checker = SchemaChecker(level=level, dedupe_by_type=dedupe_by_type)
+    _load_rule_packs(checker, rule_packs)
+    for path in ignore_paths:
+        try:
+            checker.ignore(path)
+        except ValueError as exc:
+            error_exit(f"invalid --ignore path {path!r}: {exc}")
+    return checker
+
+
+# ---------------------------------------------------------------------------
 # Check pipeline (shared by check / ci)
 # ---------------------------------------------------------------------------
 
@@ -429,13 +459,12 @@ def _run_check_pipeline(
     always calls ``sys.exit`` at the end with the conventional
     code (0/1/2).
     """
-    checker = SchemaChecker(level=level, dedupe_by_type=dedupe_by_type)
-    _load_rule_packs(checker, rule_packs)
-    for path in ignore_paths:
-        try:
-            checker.ignore(path)
-        except ValueError as exc:
-            error_exit(f"invalid --ignore path {path!r}: {exc}")
+    checker = _build_configured_checker(
+        level=level,
+        rule_packs=rule_packs,
+        ignore_paths=ignore_paths,
+        dedupe_by_type=dedupe_by_type,
+    )
 
     try:
         report = checker.check(old_pool, old_type, new_pool, new_type)
@@ -769,6 +798,28 @@ def check(
     help="Compatibility profile.",
 )
 @click.option(
+    "--rule-pack",
+    "rule_packs",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a RULES list of (rule_id, plugin_fn) "
+         "pairs (repeatable). Applied to every pair in the walk.",
+)
+@click.option(
+    "--ignore",
+    "ignore_paths",
+    multiple=True,
+    metavar="PATH",
+    help="Suppress findings at this dotted path prefix (repeatable).",
+)
+@click.option(
+    "--dedupe-by-type",
+    is_flag=True,
+    default=False,
+    help="Emit findings for each shared nested type only once per pair "
+         "(original behavior). Default is path-complete.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(("human", "json"), case_sensitive=False),
@@ -784,6 +835,9 @@ def history(
     old_type: str | None,
     new_type: str | None,
     level_flag: str,
+    rule_packs: tuple[str, ...],
+    ignore_paths: tuple[str, ...],
+    dedupe_by_type: bool,
     output_format: str,
 ) -> None:
     """Walk commits in OLD..NEW that touch the .proto and report findings per pair.
@@ -794,7 +848,8 @@ def history(
 
     Exits 0 if no commit in the range produced a finding under
     the chosen profile; 1 if any did; 2 on a hard error
-    (unknown ref, missing import, plugin warning).
+    (unknown ref, missing import, any diagnostic from the
+    registered plugins).
     """
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
@@ -828,7 +883,7 @@ def history(
 
     entries: list[dict[str, Any]] = []
     any_findings = False
-    any_warnings = False
+    any_diagnostics = False
     for old_ref, new_ref in pairs:
         try:
             old_pool = extract_pool_from_ref(
@@ -840,7 +895,14 @@ def history(
         except (GitRefNotFoundError, ProtoImportError) as exc:
             error_exit(str(exc))
 
-        checker = SchemaChecker(level=level)
+        # Fresh checker per pair so rule-pack plugin state doesn't
+        # leak findings across commits.
+        checker = _build_configured_checker(
+            level=level,
+            rule_packs=rule_packs,
+            ignore_paths=ignore_paths,
+            dedupe_by_type=dedupe_by_type,
+        )
         try:
             report = checker.check(
                 old_pool, old_type_name, new_pool, new_type_name,
@@ -849,7 +911,7 @@ def history(
             error_exit(str(exc))
 
         if report.diagnostics:
-            any_warnings = True
+            any_diagnostics = True
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
                 click.echo(f"{prefix} ({new_ref[:12]}): {d}", err=True)
@@ -870,6 +932,10 @@ def history(
                 }
                 for f in report.findings
             ],
+            "diagnostics": [
+                {"level": d.level, "path": d.path, "message": d.message}
+                for d in report.diagnostics
+            ],
         })
 
     if output_format.lower() == "json":
@@ -885,7 +951,7 @@ def history(
                     f"{f['path']}: {f['message']} ({f['rule_id']})"
                 )
 
-    if any_warnings:
+    if any_diagnostics:
         sys.exit(2)
     sys.exit(1 if any_findings else 0)
 
@@ -952,6 +1018,39 @@ def history(
     show_default=True,
     help="Compatibility profile.",
 )
+@click.option(
+    "--rule-pack",
+    "rule_packs",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a RULES list of (rule_id, plugin_fn) "
+         "pairs (repeatable). Applied at every commit in the walk.",
+)
+@click.option(
+    "--ignore",
+    "ignore_paths",
+    multiple=True,
+    metavar="PATH",
+    help="Suppress findings at this dotted path prefix (repeatable).",
+)
+@click.option(
+    "--dedupe-by-type",
+    is_flag=True,
+    default=False,
+    help="Emit findings for each shared nested type only once per pair "
+         "(original behavior). Default is path-complete.",
+)
+@click.option(
+    "--keep-going",
+    is_flag=True,
+    default=False,
+    help="Walk every commit in the range even after hitting a "
+         "diagnostic or a break. Without this flag the walk stops "
+         "at the first anomaly — faster feedback but forces extra "
+         "CI runs when multiple independent issues exist. With the "
+         "flag, you get the full picture in one run; exit code "
+         "still dominates on diagnostics.",
+)
 def bisect(
     old_ref: str,
     new_ref: str,
@@ -961,6 +1060,10 @@ def bisect(
     old_type: str | None,
     new_type: str | None,
     level_flag: str,
+    rule_packs: tuple[str, ...],
+    ignore_paths: tuple[str, ...],
+    dedupe_by_type: bool,
+    keep_going: bool,
 ) -> None:
     """Find the earliest commit in OLD..NEW that broke compatibility.
 
@@ -973,7 +1076,8 @@ def bisect(
     Exit codes:
         0 = no break found in the range (--old and --new are both compatible).
         1 = found the breaking commit; SHA printed to stdout.
-        2 = hard error (unknown ref, missing import, plugin warning).
+        2 = hard error (unknown ref, missing import, any diagnostic
+            from the registered plugins).
     """
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
@@ -1003,6 +1107,12 @@ def bisect(
     except (GitRefNotFoundError, ProtoImportError) as exc:
         error_exit(str(exc))
 
+    # Accumulators — only used by the --keep-going path, but
+    # always written so the post-loop reporting has one shape.
+    any_diagnostics = False
+    first_break_sha: str | None = None
+    first_break_findings: list = []
+
     for sha in commits:
         try:
             new_pool = extract_pool_from_ref(
@@ -1010,28 +1120,53 @@ def bisect(
             )
         except (GitRefNotFoundError, ProtoImportError) as exc:
             error_exit(str(exc))
-        checker = SchemaChecker(level=level)
+        checker = _build_configured_checker(
+            level=level,
+            rule_packs=rule_packs,
+            ignore_paths=ignore_paths,
+            dedupe_by_type=dedupe_by_type,
+        )
         try:
             report = checker.check(
                 anchor_pool, old_type_name, new_pool, new_type_name,
             )
         except ValueError as exc:
             error_exit(str(exc))
+
         if report.diagnostics:
+            any_diagnostics = True
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
                 click.echo(f"{prefix} ({sha[:12]}): {d}", err=True)
-            sys.exit(2)
-        if report.findings:
-            click.echo(f"first breaking commit: {sha}")
-            for f in report.findings:
-                click.echo(f"  {f}")
-            sys.exit(1)
+            if not keep_going:
+                # Stop-fast: assume the diagnostic invalidates any
+                # subsequent result.
+                sys.exit(2)
+        if report.findings and first_break_sha is None:
+            first_break_sha = sha
+            first_break_findings = list(report.findings)
+            if not keep_going:
+                click.echo(f"first breaking commit: {sha}")
+                for f in report.findings:
+                    click.echo(f"  {f}")
+                sys.exit(1)
 
-    click.echo(
-        f"# {old_ref}..{new_ref}: no break found across "
-        f"{len(commits)} commit(s)"
-    )
+    # --keep-going post-loop reporting.
+    if first_break_sha is not None:
+        click.echo(f"first breaking commit: {first_break_sha}")
+        for f in first_break_findings:
+            click.echo(f"  {f}")
+    else:
+        click.echo(
+            f"# {old_ref}..{new_ref}: no break found across "
+            f"{len(commits)} commit(s)"
+        )
+
+    # Exit priority: diagnostics (2) > break (1) > clean (0).
+    if any_diagnostics:
+        sys.exit(2)
+    if first_break_sha is not None:
+        sys.exit(1)
     sys.exit(0)
 
 
@@ -1092,6 +1227,28 @@ def bisect(
     help="Compatibility profile.",
 )
 @click.option(
+    "--rule-pack",
+    "rule_packs",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a RULES list of (rule_id, plugin_fn) "
+         "pairs (repeatable).",
+)
+@click.option(
+    "--ignore",
+    "ignore_paths",
+    multiple=True,
+    metavar="PATH",
+    help="Suppress findings at this dotted path prefix (repeatable).",
+)
+@click.option(
+    "--dedupe-by-type",
+    is_flag=True,
+    default=False,
+    help="Emit findings for each shared nested type only once "
+         "(original behavior). Default is path-complete.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(("human", "json"), case_sensitive=False),
@@ -1107,6 +1264,9 @@ def ci(
     old_type: str | None,
     new_type: str | None,
     level_flag: str,
+    rule_packs: tuple[str, ...],
+    ignore_paths: tuple[str, ...],
+    dedupe_by_type: bool,
     output_format: str,
 ) -> None:
     """CI gate: compare HEAD against a base branch's merge-base.
@@ -1140,8 +1300,9 @@ def ci(
         old_pool=old_pool, new_pool=new_pool,
         old_type=old_type_name, new_type=new_type_name,
         level=level,
-        rule_packs=(), ignore_paths=(),
-        dedupe_by_type=False,
+        rule_packs=rule_packs,
+        ignore_paths=ignore_paths,
+        dedupe_by_type=dedupe_by_type,
         output_format=output_format, quiet=False,
         header=header,
     )
