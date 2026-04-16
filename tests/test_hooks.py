@@ -584,10 +584,13 @@ class TestHookExceptionSafety:
         # Comparison continues — both diffs emitted.
         paths = {str(d.path) for d in result}
         assert paths == {"x", "y"}
-        # Each field triggers one warning.
+        # Each field triggers one error diagnostic (not a warning —
+        # hook crashes are tool-level failures, level="error").
         assert sum(
-            "raised RuntimeError" in w.message for w in result.warnings
+            "raised RuntimeError" in e.message for e in result.errors
         ) >= 2
+        # And they don't leak into the warning stream.
+        assert not any("raised RuntimeError" in w.message for w in result.warnings)
 
     def test_raising_message_hook_becomes_warning(self) -> None:
         builder = ProtoBuilder()
@@ -601,8 +604,9 @@ class TestHookExceptionSafety:
         differ = MessageDifferencer()
         differ.register_message_validate_hook(bad)
         result = differ.compare(left, right)
+        # Message-hook exceptions go to .errors, not .warnings.
         assert any(
-            "raised ValueError" in w.message for w in result.warnings
+            "raised ValueError" in e.message for e in result.errors
         )
         # Field comparison still ran.
         assert any(str(d.path) == "x" for d in result)

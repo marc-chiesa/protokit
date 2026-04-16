@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterator
 
-from protokit.message.model import FieldPath, Warning
+from protokit.message.model import Diagnostic, FieldPath
 
 
 class Severity(Enum):
@@ -187,19 +187,20 @@ class CompatibilityReport:
             ordered as the checker emitted them (traversal order).
             Defaults to an empty tuple, in which case the report is
             ``COMPATIBLE``.
-        warnings: Non-finding diagnostics emitted during the check —
-            primarily plugin-exception captures. Non-empty warnings
-            mean the report may be incomplete (a plugin that was
-            supposed to surface a finding failed). CI callers should
-            treat a non-empty ``warnings`` tuple as an error condition
-            and fail the check even if ``is_compatible`` is True —
-            the ``protokit compat`` CLI does this automatically via
-            exit code 2.
+        diagnostics: Non-finding messages emitted during the check,
+            each tagged with a severity ``level``. A ``level="error"``
+            entry (plugin crash, async-plugin misuse) means the
+            report may be incomplete — CI callers should treat the
+            presence of any error diagnostic as fail-closed, even
+            when ``is_compatible`` is True. ``level="warning"``
+            entries are heads-up information about the comparison.
+            The ``protokit compat`` CLI fail-closes on any error
+            via exit code 2.
     """
 
     level: CompatibilityLevel
     findings: tuple[Finding, ...] = ()
-    warnings: tuple[Warning, ...] = ()
+    diagnostics: tuple[Diagnostic, ...] = ()
 
     @property
     def is_compatible(self) -> bool:
@@ -251,6 +252,33 @@ class CompatibilityReport:
             severity is ``POLICY``, in original order.
         """
         return tuple(f for f in self.findings if f.severity is Severity.POLICY)
+
+    @property
+    def warnings(self) -> tuple[Diagnostic, ...]:
+        """Diagnostics at ``"warning"`` level (comparison caveats).
+
+        Convenience filter over ``self.diagnostics`` for callers
+        that want heads-up messages separate from tool-level
+        failures.
+
+        Returns:
+            A fresh tuple, in original emission order.
+        """
+        return tuple(d for d in self.diagnostics if d.level == "warning")
+
+    @property
+    def errors(self) -> tuple[Diagnostic, ...]:
+        """Diagnostics at ``"error"`` level (tool-level failures).
+
+        A non-empty value means the report may be incomplete — a
+        plugin crashed or a hook raised mid-check. CI callers
+        should fail closed whenever this tuple is non-empty,
+        regardless of ``is_compatible``.
+
+        Returns:
+            A fresh tuple, in original emission order.
+        """
+        return tuple(d for d in self.diagnostics if d.level == "error")
 
     def __len__(self) -> int:
         """Return the number of findings in the report.

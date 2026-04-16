@@ -102,7 +102,8 @@ def pytest_assertrepr_compare(op: str, left: Any, right: Any) -> list[str] | Non
                     f"  C {path_str}: {diff.left_label} -> {diff.right_label}"
                 )
 
-    for warning in result.warnings:
-        lines.append(f"  warning: {warning}")
+    for d in result.diagnostics:
+        prefix = "error" if d.level == "error" else "warning"
+        lines.append(f"  {prefix}: {d}")
 
     return lines

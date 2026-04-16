@@ -126,7 +126,7 @@ class TestFieldPlugin:
     def test_plugin_exception_recorded_and_traversal_continues(self) -> None:
         """A broken plugin must not abort subsequent plugins.
 
-        Exception is captured into ``report.warnings``; later plugins
+        Exception is captured into ``report.errors``; later plugins
         still run.
         """
         old, new = _identical_pair()
@@ -141,12 +141,12 @@ class TestFieldPlugin:
         checker.register_field_rule("boom", boom)
         checker.register_field_rule("follow_up", follow_up)
         report = checker.check(old, "t.M", new, "t.M")
-        assert any("boom" in w.message for w in report.warnings)
-        assert any("RuntimeError" in w.message for w in report.warnings)
+        assert any("boom" in w.message for w in report.errors)
+        assert any("RuntimeError" in w.message for w in report.errors)
         assert any(f.rule_id == "follow_up" for f in report.findings)
 
     def test_plugin_exception_surfaces_in_report_warnings(self) -> None:
-        """CI safety: CLI uses ``report.warnings`` for exit-code 2."""
+        """CI safety: CLI uses ``report.errors`` for exit-code 2."""
         old, new = _identical_pair()
 
         def boom(ctx: FieldRuleContext) -> None:
@@ -155,14 +155,14 @@ class TestFieldPlugin:
         checker = SchemaChecker(level=CompatibilityLevel.WIRE)
         checker.register_field_rule("boom", boom)
         report = checker.check(old, "t.M", new, "t.M")
-        assert report.warnings
-        assert any("boom" in w.message for w in report.warnings)
-        assert any("RuntimeError" in w.message for w in report.warnings)
+        assert report.errors
+        assert any("boom" in w.message for w in report.errors)
+        assert any("RuntimeError" in w.message for w in report.errors)
         # Path is the field path where the plugin fired.
-        assert any(w.path == "x" for w in report.warnings)
+        assert any(w.path == "x" for w in report.errors)
 
     def test_plugin_does_not_also_emit_python_warning(self) -> None:
-        """Plugin failures are recorded only in ``report.warnings``.
+        """Plugin failures are recorded only in ``report.errors``.
 
         Pre-fix the engine also called ``warnings.warn`` which
         produced duplicate CLI output and a confusing stacklevel.
@@ -181,7 +181,7 @@ class TestFieldPlugin:
         # No Python-level warnings were emitted.
         assert len(w) == 0
         # But the failure is recorded in the report for CLI consumption.
-        assert report.warnings
+        assert report.errors
 
     def test_plugin_emit_validation_error_surfaces_in_warnings(self) -> None:
         """TypeErrors from emit validation propagate as report warnings."""
@@ -194,7 +194,7 @@ class TestFieldPlugin:
         checker = SchemaChecker(level=CompatibilityLevel.WIRE)
         checker.register_field_rule("bad", bad)
         report = checker.check(old, "t.M", new, "t.M")
-        assert any("TypeError" in w.message for w in report.warnings)
+        assert any("TypeError" in w.message for w in report.errors)
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +239,10 @@ class TestMessagePlugin:
         checker = SchemaChecker()
         checker.register_message_rule("boom", boom)
         report = checker.check(old, "t.M", new, "t.M")
-        assert any("boom" in w.message for w in report.warnings)
-        assert any("ValueError" in w.message for w in report.warnings)
+        assert any("boom" in w.message for w in report.errors)
+        assert any("ValueError" in w.message for w in report.errors)
         # Built-in rules still ran (no findings here since pair is identical
-        # at the message level; report.warnings is the sole signal).
+        # at the message level; report.errors is the sole signal).
         assert not report.findings
 
 
@@ -291,7 +291,7 @@ class TestEmitValidation:
         checker = SchemaChecker(include_builtin=False)
         checker.register_field_rule("bad", bad)
         report = checker.check(old, "t.M", new, "t.M")
-        assert any("TypeError" in w.message for w in report.warnings)
+        assert any("TypeError" in w.message for w in report.errors)
 
     def test_non_enum_direction_raises(self) -> None:
         old, new = _identical_pair()
@@ -303,7 +303,7 @@ class TestEmitValidation:
         checker = SchemaChecker(include_builtin=False)
         checker.register_field_rule("bad", bad)
         report = checker.check(old, "t.M", new, "t.M")
-        assert any("TypeError" in w.message for w in report.warnings)
+        assert any("TypeError" in w.message for w in report.errors)
 
 
 class TestAsyncPluginRejection:
@@ -345,10 +345,10 @@ class TestAsyncPluginRejection:
         # Registration accepts the wrapper (it's not a coroutinefunction).
         checker.register_field_rule("wrapped_async", AsyncWrapper())
         report = checker.check(old, "t.M", new, "t.M")
-        assert report.warnings
+        assert report.errors
         assert any("awaitable" in w.message.lower()
                    or "async" in w.message.lower()
-                   for w in report.warnings)
+                   for w in report.errors)
 
     def test_dispatch_catches_asyncio_future_return(self) -> None:
         """Plugins returning an asyncio.Future also fail-closed.
@@ -371,7 +371,7 @@ class TestAsyncPluginRejection:
         checker.register_field_rule("future_return", plugin)
         report = checker.check(old, "t.M", new, "t.M")
         assert any("awaitable" in w.message.lower()
-                   for w in report.warnings)
+                   for w in report.errors)
 
     def test_dispatch_catches_custom_await_object(self) -> None:
         """Custom objects with ``__await__`` are awaitable but not coroutines."""
@@ -390,7 +390,7 @@ class TestAsyncPluginRejection:
         checker.register_field_rule("custom_await", plugin)
         report = checker.check(old, "t.M", new, "t.M")
         assert any("awaitable" in w.message.lower()
-                   for w in report.warnings)
+                   for w in report.errors)
 
     def test_dispatch_catches_legacy_generator_coroutine(self) -> None:
         """@types.coroutine-style awaitables slip past inspect.iscoroutine.
@@ -412,7 +412,7 @@ class TestAsyncPluginRejection:
         checker.register_field_rule("legacy_coro", plugin)
         report = checker.check(old, "t.M", new, "t.M")
         assert any("awaitable" in w.message.lower()
-                   for w in report.warnings)
+                   for w in report.errors)
 
     def test_cleanup_falls_through_to_cancel_when_close_raises(self) -> None:
         """If close() raises, _cleanup_awaitable must still try cancel().
@@ -444,7 +444,7 @@ class TestAsyncPluginRejection:
         checker.register_field_rule("hybrid", plugin)
         report = checker.check(old, "t.M", new, "t.M")
         assert cancel_called == [True]
-        assert report.warnings
+        assert report.errors
 
     def test_cleanup_of_coroutine_that_raises_on_close_does_not_crash(self) -> None:
         """A coroutine that re-raises on GeneratorExit must not abort the check.
@@ -472,9 +472,9 @@ class TestAsyncPluginRejection:
         checker.register_field_rule("nasty", plugin)
         # Must not raise; must record a failure.
         report = checker.check(old, "t.M", new, "t.M")
-        assert report.warnings
+        assert report.errors
         assert any("awaitable" in w.message.lower()
-                   for w in report.warnings)
+                   for w in report.errors)
 
 
 class TestReentrancy:

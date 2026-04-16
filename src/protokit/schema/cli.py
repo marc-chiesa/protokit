@@ -294,9 +294,9 @@ def _render_json(report: CompatibilityReport) -> str:
             }
             for f in report.findings
         ],
-        "warnings": [
-            {"path": w.path, "message": w.message}
-            for w in report.warnings
+        "diagnostics": [
+            {"level": d.level, "path": d.path, "message": d.message}
+            for d in report.diagnostics
         ],
         "summary": {
             "wire_breaks": len(report.wire_breaks),
@@ -442,9 +442,13 @@ def _run_check_pipeline(
     except ValueError as exc:
         error_exit(str(exc))
 
-    if report.warnings:
-        for w in report.warnings:
-            click.echo(f"Warning: {w}", err=True)
+    # Diagnostics stream to stderr regardless of --quiet. Errors
+    # (tool-level failures — plugin crashes) and warnings
+    # (comparison caveats) share the exit-2 contract but render
+    # with different prefixes so operators can triage.
+    for d in report.diagnostics:
+        prefix = "Error:" if d.level == "error" else "Warning:"
+        click.echo(f"{prefix} {d}", err=True)
 
     if not quiet:
         if header:
@@ -454,7 +458,7 @@ def _run_check_pipeline(
         else:
             click.echo(_render_human(report))
 
-    if report.warnings:
+    if report.diagnostics:
         sys.exit(2)
     sys.exit(0 if report.is_compatible else 1)
 
@@ -826,10 +830,11 @@ def history(
         except ValueError as exc:
             error_exit(str(exc))
 
-        if report.warnings:
+        if report.diagnostics:
             any_warnings = True
-            for w in report.warnings:
-                click.echo(f"Warning ({new_ref[:12]}): {w}", err=True)
+            for d in report.diagnostics:
+                prefix = "Error" if d.level == "error" else "Warning"
+                click.echo(f"{prefix} ({new_ref[:12]}): {d}", err=True)
         if report.findings:
             any_findings = True
 
@@ -994,9 +999,10 @@ def bisect(
             )
         except ValueError as exc:
             error_exit(str(exc))
-        if report.warnings:
-            for w in report.warnings:
-                click.echo(f"Warning ({sha[:12]}): {w}", err=True)
+        if report.diagnostics:
+            for d in report.diagnostics:
+                prefix = "Error" if d.level == "error" else "Warning"
+                click.echo(f"{prefix} ({sha[:12]}): {d}", err=True)
             sys.exit(2)
         if report.findings:
             click.echo(f"first breaking commit: {sha}")

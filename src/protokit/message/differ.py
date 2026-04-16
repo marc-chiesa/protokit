@@ -37,6 +37,7 @@ from protokit.message.model import (
     DiffResult,
     DuplicateKeyError,
     FieldHook,
+    Diagnostic,
     FieldHookContext,
     FieldPath,
     HookStage,
@@ -44,7 +45,6 @@ from protokit.message.model import (
     MessageValidateHook,
     MissingKeyError,
     PathSegment,
-    Warning,
     _FieldHookState,
     _MessageHookState,
 )
@@ -169,7 +169,7 @@ class MessageDifferencer:
         max_depth: Maximum recursion depth (``None`` for unlimited,
             the default). Subtrees below the limit are not compared
             and their paths appear in ``DiffResult.truncated_paths``.
-        strict_schema: When True (default False), emit a ``Warning``
+        strict_schema: When True (default False), emit a ``Diagnostic``
             if two compared messages have different fully-qualified
             type names, even if their field shapes align.
     """
@@ -303,14 +303,14 @@ class MessageDifferencer:
         hooks: list[FieldHook],
         ctx_state: _FieldHookState,
         ctx: FieldHookContext,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         *,
         has_diff: bool = False,
     ) -> None:
         """Run every hook registered for ``stage`` on ``ctx``.
 
         Hooks are wrapped in ``try/except Exception`` — a raising
-        hook becomes a ``Warning`` and comparison continues.
+        hook becomes a ``Diagnostic`` and comparison continues.
         """
         if not hooks:
             ctx_state.reset_for_stage(stage, has_diff=has_diff)
@@ -320,26 +320,27 @@ class MessageDifferencer:
             try:
                 hook(ctx)
             except Exception as exc:
-                warnings.append(Warning(
+                warnings.append(Diagnostic(
                     path=str(ctx.path) if ctx.path else None,
                     message=(
                         f"hook {_hook_name(hook)!r} raised "
                         f"{type(exc).__name__} during {stage.value}: {exc}"
                     ),
+                    level="error",
                 ))
 
     def _drain_field_ctx_warnings(
         self,
         ctx_state: _FieldHookState,
         path: FieldPath,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
     ) -> None:
         """Move ``ctx.warn()`` messages onto the caller's warnings list."""
         if not ctx_state.warnings:
             return
         path_str = str(path) if path else None
         for msg in ctx_state.warnings:
-            warnings.append(Warning(path=path_str, message=msg))
+            warnings.append(Diagnostic(path=path_str, message=msg))
         ctx_state.warnings = []
 
     def _run_validate_compare(
@@ -350,7 +351,7 @@ class MessageDifferencer:
         left_fd: proto_descriptor.FieldDescriptor,
         right_fd: proto_descriptor.FieldDescriptor,
         same_pool: bool,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         path: FieldPath,
     ) -> bool:
         """Run VALIDATE → COMPARE → ``_values_equal`` for a both-present leaf.
@@ -376,7 +377,7 @@ class MessageDifferencer:
         ctx_state: _FieldHookState,
         ctx: FieldHookContext,
         diffs: list[Difference],
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         path: FieldPath,
     ) -> None:
         """Fire REPORT hooks, attach annotations, append to ``diffs``."""
@@ -394,7 +395,7 @@ class MessageDifferencer:
     def _fire_message_validate(
         self,
         item: _WorkItem,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
     ) -> None:
         """Fire message-level VALIDATE hooks for the current stack item."""
         if not self._message_validate_hooks:
@@ -412,17 +413,18 @@ class MessageDifferencer:
             try:
                 hook(ctx)
             except Exception as exc:
-                warnings.append(Warning(
+                warnings.append(Diagnostic(
                     path=str(item.path) if item.path else None,
                     message=(
                         f"hook {_hook_name(hook)!r} raised "
                         f"{type(exc).__name__} during message VALIDATE: {exc}"
                     ),
+                    level="error",
                 ))
         if state.warnings:
             path_str = str(item.path) if item.path else None
             for msg in state.warnings:
-                warnings.append(Warning(path=path_str, message=msg))
+                warnings.append(Diagnostic(path=path_str, message=msg))
 
     def ignore_fields(self, *selectors: str) -> None:
         """Add field name selectors to the ignore list.
@@ -565,7 +567,7 @@ class MessageDifferencer:
 
         Returns:
             A ``DiffResult`` with every detected ``Difference``,
-            any ``Warning`` diagnostics (schema drift, cardinality
+            any ``Diagnostic`` diagnostics (schema drift, cardinality
             change, ``treat_as_map`` fallbacks), and the set of
             paths where ``max_depth`` cut off traversal. Differences
             are sorted by path for deterministic output.
@@ -577,7 +579,7 @@ class MessageDifferencer:
                 an element with the key sub-field unset.
         """
         differences: list[Difference] = []
-        warnings: list[Warning] = []
+        warnings: list[Diagnostic] = []
         truncated_paths: list[FieldPath] = []
         same_pool = _same_pool(left, right)
 
@@ -597,7 +599,7 @@ class MessageDifferencer:
                 # Max depth check
                 if self.max_depth is not None and item.depth > self.max_depth:
                     truncated_paths.append(item.path)
-                    warnings.append(Warning(
+                    warnings.append(Diagnostic(
                         path=str(item.path) if item.path else None,
                         message=f"comparison truncated at depth {self.max_depth}; "
                                 "differences below this path are not reported",
@@ -682,7 +684,7 @@ class MessageDifferencer:
                     if left_is_map != right_is_map:
                         left_kind = "map" if left_is_map else "repeated"
                         right_kind = "map" if right_is_map else "repeated"
-                        warnings.append(Warning(
+                        warnings.append(Diagnostic(
                             path=str(field_path),
                             message=f"field changed from {left_kind} to {right_kind}; "
                                     "values not compared",
@@ -727,7 +729,7 @@ class MessageDifferencer:
 
         return DiffResult(
             differences=tuple(differences),
-            warnings=tuple(warnings),
+            diagnostics=tuple(warnings),
             truncated_paths=tuple(truncated_paths),
         )
 
@@ -761,7 +763,7 @@ class MessageDifferencer:
         right_fd: proto_descriptor.FieldDescriptor,
         path: FieldPath,
         diffs: list[Difference],
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
     ) -> None:
         """Check for schema evolution between two field descriptors.
 
@@ -774,7 +776,7 @@ class MessageDifferencer:
             right_fd: Field descriptor from the right message schema.
             path: The current field path for reporting.
             diffs: Accumulator list for Difference objects.
-            warnings: Accumulator list for Warning objects.
+            warnings: Accumulator list for Diagnostic objects.
         """
         # Field number change
         if left_fd.number != right_fd.number:
@@ -813,7 +815,7 @@ class MessageDifferencer:
             and right_fd.type == TYPE_MESSAGE
             and left_fd.message_type.full_name != right_fd.message_type.full_name
         ):
-            warnings.append(Warning(
+            warnings.append(Diagnostic(
                 path=str(path),
                 message=(
                     f"message type name changed: "
@@ -830,7 +832,7 @@ class MessageDifferencer:
         right_fd: proto_descriptor.FieldDescriptor,
         path: FieldPath,
         diffs: list[Difference],
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         same_pool: bool,
     ) -> None:
         """Compare a leaf (scalar/enum/bytes/float) field.
@@ -847,7 +849,7 @@ class MessageDifferencer:
             right_fd: Field descriptor from the right schema.
             path: The current field path for reporting.
             diffs: Accumulator list for Difference objects.
-            warnings: Accumulator list for Warning objects.
+            warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
         left_val = getattr(left_msg, left_fd.name)
@@ -983,7 +985,7 @@ class MessageDifferencer:
         *,
         is_new: bool,
         diffs: list[Difference],
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
     ) -> None:
         """Emit a one-sided scalar ADDED/REMOVED through the hook pipeline.
 
@@ -1053,7 +1055,7 @@ class MessageDifferencer:
         right_msg: Message,
         same_pool: bool,
         diffs: list[Difference],
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
     ) -> None:
         """Compare a scalar-valued pair from a repeated or map field.
 
@@ -1122,7 +1124,7 @@ class MessageDifferencer:
         left_fd: proto_descriptor.FieldDescriptor,
         right_fd: proto_descriptor.FieldDescriptor,
         same_pool: bool,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         path: FieldPath,
     ) -> bool:
         """Compare two field values for equality.
@@ -1136,7 +1138,7 @@ class MessageDifferencer:
             left_fd: Field descriptor from the left schema.
             right_fd: Field descriptor from the right schema.
             same_pool: True if both messages share a descriptor pool.
-            warnings: Accumulator list for Warning objects (enum drift).
+            warnings: Accumulator list for Diagnostic objects (enum drift).
             path: The current field path for warning context.
 
         Returns:
@@ -1154,7 +1156,7 @@ class MessageDifferencer:
                 left_ev.number, left_ev.name, right_ev.number, right_ev.name
             )
             if warning:
-                warnings.append(Warning(path=str(path), message=warning))
+                warnings.append(Diagnostic(path=str(path), message=warning))
             return equal
 
         return compare_scalar(left, right)
@@ -1208,7 +1210,7 @@ class MessageDifferencer:
         stack: list[_WorkItem],
         depth: int,
         diffs: list[Difference],
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         same_pool: bool,
     ) -> None:
         """Handle singular message field comparison.
@@ -1225,7 +1227,7 @@ class MessageDifferencer:
             stack: The iterative comparison work stack.
             depth: Current comparison depth.
             diffs: Accumulator list for Difference objects.
-            warnings: Accumulator list for Warning objects.
+            warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
         left_present = left_msg.HasField(left_fd.name)
@@ -1273,7 +1275,7 @@ class MessageDifferencer:
         diffs: list[Difference],
         stack: list[_WorkItem],
         depth: int,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         same_pool: bool,
     ) -> None:
         """Compare repeated fields using index-by-index or treat_as_map.
@@ -1291,7 +1293,7 @@ class MessageDifferencer:
             diffs: Accumulator list for Difference objects.
             stack: The iterative comparison work stack.
             depth: Current comparison depth.
-            warnings: Accumulator list for Warning objects.
+            warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
         field_name = left_fd.name
@@ -1305,7 +1307,7 @@ class MessageDifferencer:
                     key_field, diffs, stack, depth, warnings, same_pool,
                 )
                 return
-            warnings.append(Warning(
+            warnings.append(Diagnostic(
                 path=str(path),
                 message=f"treat_as_map configured but field is not a repeated message "
                         f"(type={type_name(left_fd.type)}); falling back to index comparison",
@@ -1379,7 +1381,7 @@ class MessageDifferencer:
         diffs: list[Difference],
         stack: list[_WorkItem],
         depth: int,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         same_pool: bool,
     ) -> None:
         """Compare native protobuf map fields.
@@ -1396,7 +1398,7 @@ class MessageDifferencer:
             diffs: Accumulator list for Difference objects.
             stack: The iterative comparison work stack.
             depth: Current comparison depth.
-            warnings: Accumulator list for Warning objects.
+            warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
         left_map = getattr(left_msg, left_fd.name)
@@ -1469,7 +1471,7 @@ class MessageDifferencer:
         diffs: list[Difference],
         stack: list[_WorkItem],
         depth: int,
-        warnings: list[Warning],
+        warnings: list[Diagnostic],
         same_pool: bool,
     ) -> None:
         """Compare a repeated message field using key-based matching.
@@ -1487,7 +1489,7 @@ class MessageDifferencer:
             diffs: Accumulator list for Difference objects.
             stack: The iterative comparison work stack.
             depth: Current comparison depth.
-            warnings: Accumulator list for Warning objects.
+            warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
         left_list = getattr(left_msg, left_fd.name)
@@ -1604,7 +1606,7 @@ class MessageDifferencer:
         *,
         is_new: bool,
         depth: int = 0,
-        warnings: list[Warning] | None = None,
+        warnings: list[Diagnostic] | None = None,
         truncated_paths: list[FieldPath] | None = None,
     ) -> None:
         """Emit leaf-level diffs for all populated fields in a message.
@@ -1620,7 +1622,7 @@ class MessageDifferencer:
             is_new: If True, values go into ``new_value``; otherwise
                 ``old_value``.
             depth: Current comparison depth for max_depth enforcement.
-            warnings: Accumulator list for Warning objects (truncation).
+            warnings: Accumulator list for Diagnostic objects (truncation).
             truncated_paths: Accumulator list for truncated FieldPaths.
         """
         # Use an internal stack to handle arbitrary nesting depth.
@@ -1635,7 +1637,7 @@ class MessageDifferencer:
                 if truncated_paths is not None:
                     truncated_paths.append(cur_path)
                 if warnings is not None:
-                    warnings.append(Warning(
+                    warnings.append(Diagnostic(
                         path=str(cur_path) if cur_path else None,
                         message=f"comparison truncated at depth {self.max_depth}; "
                                 "differences below this path are not reported",
@@ -1846,7 +1848,7 @@ def diff_messages(
             means unlimited; subtrees below the limit are not
             compared and their paths appear in
             ``DiffResult.truncated_paths``.
-        strict_schema: When True, emit a ``Warning`` if the two
+        strict_schema: When True, emit a ``Diagnostic`` if the two
             messages have different fully-qualified type names.
             Defaults to False.
 

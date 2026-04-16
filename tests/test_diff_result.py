@@ -14,8 +14,8 @@ def _diff(path: str, change_type: ChangeType = ChangeType.MODIFIED) -> Differenc
     return Difference(path=FieldPath.parse(path), change_type=change_type)
 
 
-def _result(*diffs: Difference, warnings: tuple[Warning, ...] = ()) -> DiffResult:
-    return DiffResult(differences=diffs, warnings=warnings)
+def _result(*diffs: Difference, diagnostics: tuple[Warning, ...] = ()) -> DiffResult:
+    return DiffResult(differences=diffs, diagnostics=diagnostics)
 
 
 class TestDiffResultBasics:
@@ -134,14 +134,14 @@ class TestDiffResultWarnings:
         w = Warning(path="user.status", message="enum drift")
         r = DiffResult(
             differences=(_diff("user.name"),),
-            warnings=(w,),
+            diagnostics=(w,),
         )
         assert len(r.warnings) == 1
 
     def test_warning_filtered_by_path(self) -> None:
         r = DiffResult(
             differences=(_diff("user.name"), _diff("config.timeout")),
-            warnings=(
+            diagnostics=(
                 Warning(path="user.status", message="enum drift"),
                 Warning(path="config.mode", message="type drift"),
                 Warning(path=None, message="global warning"),
@@ -153,10 +153,43 @@ class TestDiffResultWarnings:
     def test_global_warning_always_included(self) -> None:
         r = DiffResult(
             differences=(),
-            warnings=(Warning(path=None, message="global"),),
+            diagnostics=(Warning(path=None, message="global"),),
         )
         filtered = r.filter(path="nonexistent")
         assert len(filtered.warnings) == 1
+
+
+class TestDiagnosticLevels:
+    """Gap 5: the ``level`` field on Diagnostic splits
+    comparison caveats from tool-level failures. Properties
+    ``.warnings`` and ``.errors`` filter accordingly, and the
+    default level is ``"warning"`` for backward compatibility
+    with pre-Gap-5 emission sites.
+    """
+
+    def test_default_level_is_warning(self) -> None:
+        d = Warning(path="x", message="m")
+        assert d.level == "warning"
+
+    def test_errors_property_filters_to_error_level(self) -> None:
+        r = DiffResult(
+            differences=(),
+            diagnostics=(
+                Warning(path="a", message="caveat", level="warning"),
+                Warning(path="b", message="crash", level="error"),
+            ),
+        )
+        assert len(r.warnings) == 1
+        assert r.warnings[0].message == "caveat"
+        assert len(r.errors) == 1
+        assert r.errors[0].message == "crash"
+
+    def test_warning_alias_is_diagnostic(self) -> None:
+        """``Warning`` is kept as a deprecated alias for ``Diagnostic``
+        so external callers don't break during migration.
+        """
+        from protokit.message.model import Diagnostic
+        assert Warning is Diagnostic
 
     def test_truncated_paths(self) -> None:
         tp = FieldPath.parse("deep.nested.path")

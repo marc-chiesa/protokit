@@ -35,7 +35,14 @@ from protokit._cli_utils import (
 )
 from protokit.message.differ import MessageDifferencer
 from protokit.message.formatting import format_value as _format_value
-from protokit.message.model import ChangeType, Difference, DiffResult, EnumValue, FieldPath
+from protokit.message.model import (
+    ChangeType,
+    Diagnostic,
+    Difference,
+    DiffResult,
+    EnumValue,
+    FieldPath,
+)
 
 
 def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> type:
@@ -243,9 +250,9 @@ def _output_human(result: DiffResult, verbose: bool) -> None:
     """
     if not result.has_changes():
         click.echo(click.style("Messages are equal.", fg="green"))
-        if verbose and result.warnings:
-            for w in result.warnings:
-                click.echo(click.style(f"  ⚠ {w}", fg="yellow"))
+        if verbose and result.diagnostics:
+            for d in result.diagnostics:
+                _echo_diagnostic(d)
         return
 
     click.echo(click.style(
@@ -257,11 +264,16 @@ def _output_human(result: DiffResult, verbose: bool) -> None:
     for diff in result:
         click.echo(_format_diff_human(diff))
 
-    if result.warnings:
+    if result.diagnostics:
         click.echo()
-        click.echo(click.style("Warnings:", fg="yellow", bold=True))
-        for w in result.warnings:
-            click.echo(click.style(f"  ⚠ {w}", fg="yellow"))
+        if result.errors:
+            click.echo(click.style("Errors:", fg="red", bold=True))
+            for d in result.errors:
+                click.echo(click.style(f"  ✗ {d}", fg="red"))
+        if result.warnings:
+            click.echo(click.style("Warnings:", fg="yellow", bold=True))
+            for d in result.warnings:
+                click.echo(click.style(f"  ⚠ {d}", fg="yellow"))
 
     if not result.is_complete:
         click.echo()
@@ -270,6 +282,14 @@ def _output_human(result: DiffResult, verbose: bool) -> None:
             f"{len(result.truncated_paths)} subtree(s) not fully compared.",
             fg="yellow",
         ))
+
+
+def _echo_diagnostic(d: Diagnostic) -> None:
+    """Render a single Diagnostic to stdout with severity-matched color."""
+    if d.level == "error":
+        click.echo(click.style(f"  ✗ {d}", fg="red"))
+    else:
+        click.echo(click.style(f"  ⚠ {d}", fg="yellow"))
 
 
 def _serialize_value(val: object) -> Any:
@@ -339,12 +359,15 @@ def _output_json(result: DiffResult) -> None:
 
         diffs.append(entry)
 
-    warnings = [{"path": w.path, "message": w.message} for w in result.warnings]
+    diagnostics = [
+        {"level": d.level, "path": d.path, "message": d.message}
+        for d in result.diagnostics
+    ]
 
     output = {
         "equal": not result.has_changes(),
         "differences": diffs,
-        "warnings": warnings,
+        "diagnostics": diagnostics,
     }
     click.echo(json.dumps(output, indent=2, default=str))
 
