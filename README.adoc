@@ -577,6 +577,18 @@ In both modes, commits that touched `.proto` files *outside* the
 root's dep tree are always excluded — unrelated schema churn
 never inflates a bisect range.
 
+**Known limitation — rename without importer update.** If a commit
+renames a dependency (e.g. `date.proto` → `calendar.proto`)
+*without* updating the root proto's import statement in the same
+commit, the rename commit can be invisible to the walk even in
+exact mode. The root's dep graph at the rename commit can no
+longer resolve the old dependency (it's gone) and doesn't yet
+know about the new one (import line still says the old name), so
+the filter has nothing to intersect with. This is a rare pattern
+in practice — most teams rename a file and its importers in the
+same commit — but worth flagging. The workaround is to rerun the
+walk against a ref where the importer has been updated.
+
 == Supported Field Types
 
 * Scalars (int32/64, uint32/64, sint32/64, fixed32/64, sfixed32/64, float, double, bool, string, bytes)

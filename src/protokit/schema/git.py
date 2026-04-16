@@ -501,6 +501,12 @@ def _commits_affecting_fast(
     for import_path in all_paths:
         if _is_well_known(import_path):
             continue
+        # Union commits across every proto_root that resolves this
+        # import path. Do NOT break on the first non-exception —
+        # an empty log under one root doesn't imply the file isn't
+        # tracked elsewhere. Pre-Gap-1 review this short-circuit
+        # silently dropped commits when a dep lived only in the
+        # second root (e.g. vendor/).
         for root in proto_roots:
             clean_root = root.rstrip("/")
             repo_path = (
@@ -519,7 +525,6 @@ def _commits_affecting_fast(
                 for line in str(out).splitlines():
                     if line:
                         seen.add(line)
-                break
             except subprocess.CalledProcessError:
                 continue
 

@@ -500,6 +500,23 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
     return old_sha, new_sha
 
 
+def _reject_quiet_plus_json(*, quiet: bool, output_format: str) -> None:
+    """Refuse ``--quiet --format json`` — the combination is
+    ambiguous and pre-fix produced empty stdout, breaking CI
+    consumers that expected to parse JSON.
+
+    Semantically contradictory: ``--quiet`` says "no stdout",
+    ``--format json`` asks for structured stdout. Fail loudly so
+    users pick one.
+    """
+    if quiet and output_format.lower() == "json":
+        error_exit(
+            "--quiet and --format json are mutually exclusive: "
+            "one suppresses stdout, the other asks for structured "
+            "output. Pick one."
+        )
+
+
 def _build_configured_checker(
     *,
     level: CompatibilityLevel,
@@ -779,6 +796,7 @@ def check(
     # "no message type specified", because the mode-specific one
     # points at the next thing they need to fix.
     # --------------------------------------------------------------
+    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
     git_mode = since is not None or against_base is not None
     if git_mode and (old_input is not None or new_input is not None):
         error_exit(
@@ -964,6 +982,7 @@ def history(
     (unknown ref, missing import, any diagnostic from the
     registered plugins).
     """
+    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
 
@@ -1254,6 +1273,7 @@ def bisect(
         2 = hard error (unknown ref, missing import, any diagnostic
             from the registered plugins).
     """
+    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
 
@@ -1498,6 +1518,13 @@ def bisect(
     show_default=True,
     help="Output format.",
 )
+@click.option(
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress stdout; return exit code only. Diagnostics "
+         "still stream to stderr.",
+)
 def ci(
     base_ref: str | None,
     proto_file: str,
@@ -1510,6 +1537,7 @@ def ci(
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     output_format: str,
+    quiet: bool,
 ) -> None:
     """CI gate: compare HEAD against a base branch's merge-base.
 
@@ -1520,6 +1548,7 @@ def ci(
     no positional-arg shape, no mode-detection ambiguity, and
     a name that signals intent in pipeline yaml.
     """
+    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
 
@@ -1545,6 +1574,6 @@ def ci(
         rule_packs=rule_packs,
         ignore_paths=ignore_paths,
         dedupe_by_type=dedupe_by_type,
-        output_format=output_format, quiet=False,
+        output_format=output_format, quiet=quiet,
         header=header,
     )

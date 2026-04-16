@@ -1286,6 +1286,100 @@ class TestCrossTypeBisect:
         assert "first breaking commit: " + rename_sha not in result.output
 
 
+class TestQuietJsonMutex:
+    """Review follow-up: ``--quiet --format json`` used to emit
+    empty stdout (CI scripts parsing the JSON hit zero bytes).
+    The combination is now rejected with a clear error.
+    """
+
+    def test_check_rejects_quiet_plus_json(
+        self, git_repo: Path, tmp_path: Path,
+    ) -> None:
+        # Build a minimal descriptor-set pair for local-file mode.
+        from google.protobuf import descriptor_pool
+        from tests.schema.helpers import build_message
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[])
+        build_message(new, "t.M", fields=[])
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, [
+            "check", str(old_path), str(new_path),
+            "--type", "t.M",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "--quiet" in result.output
+        assert "--format json" in result.output
+
+    def test_bisect_rejects_quiet_plus_json(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect", "--old", "HEAD", "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+    def test_history_rejects_quiet_plus_json(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+    def test_ci_rejects_quiet_plus_json(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// comment edit\n",
+            msg="feature edit",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+
+class TestCiQuiet:
+    """Review follow-up: ``ci`` now accepts ``--quiet`` for
+    pipeline gates that want exit-code-only output.
+    """
+
+    def test_ci_quiet_suppresses_stdout(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 drop")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet",
+        ])
+        assert result.exit_code == 1  # break detected
+        assert result.stdout == ""
+
+
 class TestEntryPointDispatch:
     """Low-severity follow-up: all schema-CLI tests invoke
     ``protokit.schema.cli.main`` directly, bypassing the
