@@ -649,11 +649,28 @@ def check(
         protokit compat check --against-base --proto-file acme/user.proto --type X
             # auto-resolves @{upstream} → origin/main → origin/master
     """
+    # --------------------------------------------------------------
+    # Structural validation first — fail with the most
+    # mode-specific, actionable error before falling through to
+    # generic type / level checks. A user who forgot both
+    # --proto-file AND --type should see the mode-specific error
+    # ("--since requires --proto-file") rather than the generic
+    # "no message type specified", because the mode-specific one
+    # points at the next thing they need to fix.
+    # --------------------------------------------------------------
     git_mode = since is not None or against_base is not None
     if git_mode and (old_input is not None or new_input is not None):
         error_exit(
             "Positional inputs cannot be combined with --since / "
             "--against-base."
+        )
+    if since is not None and against_base is not None:
+        error_exit(
+            "--since and --against-base are mutually exclusive."
+        )
+    if git_mode and proto_file is None:
+        error_exit(
+            "--since / --against-base require --proto-file PATH."
         )
     # --proto / --proto-path are local-mode flags. Reject early in
     # git mode so a silent no-op doesn't confuse users.
@@ -665,6 +682,7 @@ def check(
             "use --proto-root for git-mode import search."
         )
 
+    # Generic argument resolution runs AFTER mode-specific checks.
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
 

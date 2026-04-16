@@ -588,6 +588,25 @@ class TestCheckSince:
         assert result.exit_code == 2
         assert "--proto-file" in result.output
 
+    def test_missing_proto_file_surfaces_before_missing_type(
+        self, git_repo: Path,
+    ) -> None:
+        """Gap 4: mode-specific missing-flag errors must fire BEFORE
+        the generic 'no message type specified' error. A user who
+        forgot both ``--type`` and ``--proto-file`` with ``--since``
+        should see the proto-file error first — it's the next
+        thing they need to fix for the mode they chose.
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            # Note: no --type and no --proto-file.
+        ])
+        assert result.exit_code == 2
+        assert "--proto-file" in result.output
+        # Must NOT surface the generic type error first.
+        assert "No message type specified" not in result.output
+
     def test_positional_inputs_with_since_exits_2(
         self, git_repo: Path, tmp_path: Path,
     ) -> None:
