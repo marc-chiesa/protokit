@@ -956,6 +956,80 @@ class TestBisectKeepGoing:
         assert "first breaking commit" in result.output
 
 
+class TestBisectDepAware:
+    """Gap 1: bisect's default (exact) mode finds commits that
+    broke the root proto via dep changes. ``--fast`` opts into
+    E+ enumeration (faster but misses mid-range-only deps).
+    """
+
+    def _setup_dep_break(self, git_repo: Path) -> dict[str, str]:
+        shas: dict[str, str] = {}
+        shas["c1"] = _commit(
+            git_repo, "acme/date.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Date { int32 year = 1; int32 month = 2; }\n',
+            msg="c1 date.proto",
+        )
+        shas["c2"] = _commit(
+            git_repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'import "acme/date.proto";\n'
+            'message User { string name = 1; acme.Date bday = 2; }\n',
+            msg="c2 user.proto imports date",
+        )
+        # c3 breaks date.proto WITHOUT touching user.proto.
+        shas["c3"] = _commit(
+            git_repo, "acme/date.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Date { int32 year = 1; }\n',
+            msg="c3 drop date.month",
+        )
+        return shas
+
+    def test_default_mode_finds_dep_only_break(
+        self, git_repo: Path,
+    ) -> None:
+        """The root-only enumeration would miss c3 (it doesn't
+        touch user.proto). The dep-aware default catches it —
+        ``field_removed`` on ``date.month`` surfaces at
+        ``consumer-safe`` because it's SEMANTIC/BACKWARD.
+        """
+        shas = self._setup_dep_break(git_repo)
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", shas["c2"],  # after user.proto exists
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        assert shas["c3"] in result.output
+        assert "field_removed" in result.output
+
+    def test_fast_mode_also_finds_dep_break(
+        self, git_repo: Path,
+    ) -> None:
+        """In this scenario date.proto is in HEAD's dep tree, so
+        fast mode also catches c3. (It would miss only in
+        dep-swap cases where the broken dep isn't live at either
+        endpoint.)
+        """
+        shas = self._setup_dep_break(git_repo)
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", shas["c2"],
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--fast",
+        ])
+        assert result.exit_code == 1
+        assert shas["c3"] in result.output
+
+
 class TestBisectJson:
     """Gap 3: ``bisect --format json`` emits structured output
     with resolved SHAs, commits_walked, and diagnostics.

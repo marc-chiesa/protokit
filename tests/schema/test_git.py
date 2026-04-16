@@ -463,3 +463,100 @@ class TestEndToEndWithCompatibilityCheck:
         )
         rule_ids = {f.rule_id for f in report.findings}
         assert "field_removed" in rule_ids
+
+
+class TestDepAwareEnumeration:
+    """Gap 1: ``commits_affecting_dep_tree`` finds commits that
+    change the root proto OR any of its transitive dependencies.
+    The exact mode (default) walks every .proto-touching commit
+    and filters per-ref; the fast mode (``fast=True``) uses
+    endpoint-union + multi-follow.
+    """
+
+    def _setup_dep_scenario(self, repo: Path) -> dict[str, str]:
+        """Build a repo where ``user.proto`` imports ``date.proto``
+        and both get touched separately. Returns SHAs by label.
+        """
+        shas: dict[str, str] = {}
+        shas["c1"] = _commit_proto(
+            repo, "acme/date.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Date { int32 year = 1; int32 month = 2; }\n',
+            msg="c1 add date.proto",
+        )
+        shas["c2"] = _commit_proto(
+            repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'import "acme/date.proto";\n'
+            'message User { string name = 1; acme.Date bday = 2; }\n',
+            msg="c2 add user.proto importing date",
+        )
+        # c3: modify date.proto ONLY (doesn't touch user.proto).
+        # A root-only enumeration misses this; dep-aware catches it.
+        shas["c3"] = _commit_proto(
+            repo, "acme/date.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Date { int32 year = 1; }\n',  # drop month
+            msg="c3 drop date.month (affects user via import)",
+        )
+        # c4: unrelated .proto that doesn't enter user's dep tree.
+        shas["c4"] = _commit_proto(
+            repo, "acme/unrelated.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Other { string x = 1; }\n',
+            msg="c4 unrelated proto",
+        )
+        return shas
+
+    def test_exact_mode_catches_dep_only_commit(
+        self, repo: Path,
+    ) -> None:
+        """The default exact mode includes commits that modified a
+        dep but not the root. c3 touches only date.proto — it
+        must appear in the enumeration because date.proto is in
+        user.proto's dep tree.
+        """
+        from protokit.schema.git import commits_affecting_dep_tree
+        shas = self._setup_dep_scenario(repo)
+        commits = commits_affecting_dep_tree(
+            f"{shas['c1']}..HEAD", "acme/user.proto", cwd=repo,
+        )
+        # c2 created user.proto; c3 modified the dep. Both affect.
+        # c4 touched an unrelated proto — NOT included.
+        assert shas["c2"] in commits
+        assert shas["c3"] in commits
+        assert shas["c4"] not in commits
+
+    def test_fast_mode_catches_head_deps(
+        self, repo: Path,
+    ) -> None:
+        """Fast mode uses OLD ∪ NEW dep graphs. In this scenario
+        date.proto is in HEAD's dep tree, so fast mode DOES catch
+        c3 — the dep-swap-miss only bites when a dep was live
+        mid-range but is gone at both endpoints.
+        """
+        from protokit.schema.git import commits_affecting_dep_tree
+        shas = self._setup_dep_scenario(repo)
+        commits = commits_affecting_dep_tree(
+            f"{shas['c1']}..HEAD", "acme/user.proto",
+            fast=True, cwd=repo,
+        )
+        assert shas["c3"] in commits
+
+    def test_unrelated_proto_commits_excluded(
+        self, repo: Path,
+    ) -> None:
+        """Commits touching .proto files outside the root's dep
+        tree are filtered out in both modes."""
+        from protokit.schema.git import commits_affecting_dep_tree
+        shas = self._setup_dep_scenario(repo)
+        for fast in (False, True):
+            commits = commits_affecting_dep_tree(
+                f"{shas['c1']}..HEAD", "acme/user.proto",
+                fast=fast, cwd=repo,
+            )
+            assert shas["c4"] not in commits

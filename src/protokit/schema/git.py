@@ -286,6 +286,248 @@ def commits_in_range(
     return [line for line in str(out).splitlines() if line]
 
 
+def walk_dep_graph(
+    ref: str,
+    root_proto: str,
+    proto_roots: Sequence[str] = (".",),
+    *,
+    cwd: Path | None = None,
+) -> set[str]:
+    """Return the import-relative paths in ``root_proto``'s transitive
+    dep tree at ``ref`` — parse-only, no compilation.
+
+    Walks imports via :func:`_parse_imports` without shelling out
+    to the compiler, so it's cheap enough to call once per commit
+    during a range walk. The returned set includes ``root_proto``
+    itself. Well-known imports (``google/protobuf/...``) and
+    unresolvable paths are omitted.
+
+    Missing ``import weak`` deps are silently skipped (matching
+    :func:`extract_pool_from_ref`). Missing standard deps at an
+    intermediate commit ARE skipped too — dep-graph walking
+    tolerates partial resolution; the caller is responsible for
+    re-validating when they actually compile at that commit.
+    """
+    visited: set[str] = set()
+    queue: deque[str] = deque([root_proto])
+    while queue:
+        import_path = queue.popleft()
+        if import_path in visited:
+            continue
+        visited.add(import_path)
+        if _is_well_known(import_path):
+            continue
+        content: bytes | None = None
+        for root in proto_roots:
+            clean_root = root.rstrip("/")
+            repo_path = (
+                f"{clean_root}/{import_path}"
+                if clean_root and clean_root != "."
+                else import_path
+            )
+            try:
+                content = _git_show(ref, repo_path, cwd=cwd)
+                break
+            except FileNotFoundError:
+                continue
+        if content is None:
+            continue
+        for _, sub_import in _parse_imports(content):
+            if sub_import not in visited:
+                queue.append(sub_import)
+    return visited
+
+
+def _strip_proto_root(
+    repo_path: str, proto_roots: Sequence[str],
+) -> str:
+    """Translate a git repo path to its import-relative form.
+
+    For ``proto_roots=("proto",)`` and ``repo_path="proto/acme/u.proto"``
+    returns ``"acme/u.proto"``. Unrecognised paths are returned
+    unchanged (they may already be import-relative, or may live
+    outside any declared root).
+    """
+    for root in proto_roots:
+        clean_root = root.rstrip("/")
+        if clean_root and clean_root != "." and repo_path.startswith(
+            f"{clean_root}/",
+        ):
+            return repo_path[len(clean_root) + 1:]
+    return repo_path
+
+
+def _files_changed_in_commit(
+    sha: str, *, cwd: Path | None = None,
+) -> list[str]:
+    """Return repo-relative paths of files changed in ``sha``.
+
+    Uses ``git show --name-only``. Empty list if the commit
+    introduced no changes to tracked files (root commit, merge
+    resolutions with no content differences, etc.).
+    """
+    try:
+        out = _run_git(
+            ["show", "--name-only", "--format=", sha],
+            cwd=cwd, text=True,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    return [line for line in str(out).splitlines() if line.strip()]
+
+
+def commits_affecting_dep_tree(
+    range_spec: str,
+    root_proto: str,
+    proto_roots: Sequence[str] = (".",),
+    *,
+    fast: bool = False,
+    cwd: Path | None = None,
+) -> list[str]:
+    """Enumerate commits in ``range_spec`` whose changes affect
+    ``root_proto``'s compatibility — dep-aware.
+
+    Two modes. Both return a chronologically-ordered list of
+    commit SHAs (oldest → newest).
+
+    **Default (``fast=False``) — D from the design discussion.**
+    Walks every commit that touched a ``.proto`` in the range.
+    At each candidate, parses ``root_proto``'s transitive dep
+    graph AT THAT REF via :func:`walk_dep_graph`, then keeps the
+    commit only if its changed files intersect the dep graph.
+    Catches every real break, including dep changes active only
+    mid-range. Pays one dep-graph parse per ``.proto``-touching
+    commit — typically cheap since parse avoids compilation.
+
+    **``fast=True`` — E+ from the design discussion.**
+    Unions the dep graphs at the range's OLD and NEW endpoints,
+    then issues one ``git log --follow -- PATH`` per path in the
+    union, merging the results. Tracks renames per-path (a win
+    over the default). Misses commits that modified a file which
+    was a dep only at intermediate refs — rare, documented in
+    the README's bisect-accuracy section.
+
+    Args:
+        range_spec: ``"OLD..NEW"`` git range.
+        root_proto: Import-relative path of the root file to
+            track compatibility of.
+        proto_roots: Repository prefixes for import resolution,
+            analogous to ``protoc -I``.
+        fast: Use the fast E+ enumeration. Default False (D,
+            full correctness).
+        cwd: Working directory for git commands.
+
+    Returns:
+        Ordered list of commit SHAs whose changes affected the
+        root proto's compat, oldest first.
+
+    Raises:
+        GitRefNotFoundError: Either range endpoint fails to resolve.
+    """
+    if fast:
+        return _commits_affecting_fast(
+            range_spec, root_proto, proto_roots, cwd=cwd,
+        )
+    return _commits_affecting_exact(
+        range_spec, root_proto, proto_roots, cwd=cwd,
+    )
+
+
+def _commits_affecting_exact(
+    range_spec: str,
+    root_proto: str,
+    proto_roots: Sequence[str],
+    *,
+    cwd: Path | None = None,
+) -> list[str]:
+    """D: broad enumeration + per-ref dep-tree filter."""
+    candidates = commits_in_range(
+        range_spec, paths=["*.proto"], cwd=cwd,
+    )
+    affecting: list[str] = []
+    for sha in candidates:
+        changed_files = _files_changed_in_commit(sha, cwd=cwd)
+        changed_protos = [
+            _strip_proto_root(f, proto_roots)
+            for f in changed_files
+            if f.endswith(".proto")
+        ]
+        if not changed_protos:
+            continue
+        try:
+            dep_set = walk_dep_graph(sha, root_proto, proto_roots, cwd=cwd)
+        except (GitRefNotFoundError, FileNotFoundError):
+            # The root proto doesn't resolve at this ref yet —
+            # treat as "this commit doesn't affect root_proto."
+            continue
+        if any(p in dep_set for p in changed_protos):
+            affecting.append(sha)
+    return affecting
+
+
+def _commits_affecting_fast(
+    range_spec: str,
+    root_proto: str,
+    proto_roots: Sequence[str],
+    *,
+    cwd: Path | None = None,
+) -> list[str]:
+    """E+: multi-``git log --follow`` of OLD ∪ NEW dep graphs."""
+    if ".." not in range_spec:
+        raise GitRefNotFoundError(
+            f"invalid range {range_spec!r}: expected OLD..NEW"
+        )
+    sep = "..." if "..." in range_spec else ".."
+    old_name, new_name = range_spec.split(sep, 1)
+
+    # Gather deps at each endpoint; tolerate missing roots (the
+    # root may only exist at one end of the range, e.g. newly
+    # added or newly removed).
+    try:
+        old_deps = walk_dep_graph(old_name, root_proto, proto_roots, cwd=cwd)
+    except (GitRefNotFoundError, FileNotFoundError):
+        old_deps = set()
+    try:
+        new_deps = walk_dep_graph(new_name, root_proto, proto_roots, cwd=cwd)
+    except (GitRefNotFoundError, FileNotFoundError):
+        new_deps = set()
+    all_paths = old_deps | new_deps
+    all_paths.add(root_proto)
+
+    # One ``git log --follow -- PATH`` per import path. ``--follow``
+    # only works with a single path argument, which is why we issue
+    # N calls and merge.
+    seen: set[str] = set()
+    for import_path in all_paths:
+        if _is_well_known(import_path):
+            continue
+        for root in proto_roots:
+            clean_root = root.rstrip("/")
+            repo_path = (
+                f"{clean_root}/{import_path}"
+                if clean_root and clean_root != "."
+                else import_path
+            )
+            try:
+                out = _run_git(
+                    [
+                        "log", "--reverse", "--format=%H", "--follow",
+                        range_spec, "--", repo_path,
+                    ],
+                    cwd=cwd, text=True,
+                )
+                for line in str(out).splitlines():
+                    if line:
+                        seen.add(line)
+                break
+            except subprocess.CalledProcessError:
+                continue
+
+    # Return commits in the range's natural chronological order.
+    ordered = commits_in_range(range_spec, cwd=cwd)
+    return [sha for sha in ordered if sha in seen]
+
+
 def _git_show(ref: str, path: str, *, cwd: Path | None = None) -> bytes:
     """Return the raw bytes of ``path`` at ``ref`` via ``git show``.
 

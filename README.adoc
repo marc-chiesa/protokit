@@ -509,6 +509,74 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | Suppress output; return exit code only.
 |===
 
+=== Git-integrated subcommands
+
+`protokit compat` also exposes three git-aware subcommands for
+Phase 2 workflows:
+
+* `protokit compat check --since REF --proto-file PATH --type X`
+  — compare HEAD against a prior ref.
+* `protokit compat check --against-base [BRANCH] --proto-file PATH`
+  — compare HEAD against the merge-base with BRANCH (auto-resolves
+  `@{upstream}` → `origin/main` → `origin/master` when the
+  argument is omitted).
+* `protokit compat history --range OLD..NEW --proto-file PATH --type X`
+  — walk the commits in the range that affect the proto's
+  compatibility and emit per-pair findings.
+* `protokit compat bisect --old REF --new REF --proto-file PATH --type X`
+  — find the earliest commit in the range that broke
+  compatibility.
+* `protokit compat ci [--base BRANCH] --proto-file PATH --type X`
+  — CI gate, same semantics as `check --against-base` with a
+  distinct name for pipeline yaml.
+
+All five support `--format json` (bisect's shape carries
+resolved `old` / `new` SHAs, `commits_walked`, and aggregated
+per-commit `diagnostics`), and `history` / `bisect` / `ci` accept
+the same `--rule-pack` / `--ignore` / `--dedupe-by-type` options
+as `check`. `bisect` additionally accepts `--keep-going`, which
+walks every commit in the range even after the first break — one
+CI run surfaces everything rather than forcing multiple
+"fix-rerun" cycles.
+
+[[bisect-accuracy]]
+=== `history` / `bisect` enumeration accuracy (`--fast` tradeoff)
+
+`history` and `bisect` walk a range of commits and determine
+which of them affected the root proto's compatibility. Because
+proto compatibility depends on the *transitive import graph*
+(not just the root file), the enumeration has to look beyond
+commits that touched the root itself.
+
+Two modes:
+
+**Default (exact, 10/10 correctness).**
+Walks every commit in the range that touched any `.proto` file.
+For each candidate commit, parses the root's dep graph *at that
+ref* (no compilation — just import-statement scanning) and keeps
+the commit only if its changed files intersect the dep graph.
+Catches every real break, including those introduced via
+dependencies that existed only at intermediate refs. This mode is
+the default because a bisect that silently misses a break is
+worse than a bisect that took a few extra seconds — the hardest
+bug to fix is the one the tool doesn't show you.
+
+**`--fast` (E+, ~9/10 correctness, ~3x faster on monorepos).**
+Unions the dep graph at the range's OLD and NEW endpoints and
+issues one `git log --follow -- PATH` per file in the union,
+merging results. Preserves rename tracking per-path. Misses
+commits that modified a dependency which was live *only
+mid-range* — e.g. if the root swapped its import from
+`date.proto` to `calendar.proto` between OLD and NEW, a commit
+that broke `date.proto` while it was still a dep won't appear.
+This failure mode is rare in practice (dep swaps aren't a hot
+path in most proto repos) but real. Use `--fast` for tight
+interactive loops; stay on the default for CI gates.
+
+In both modes, commits that touched `.proto` files *outside* the
+root's dep tree are always excluded — unrelated schema churn
+never inflates a bisect range.
+
 == Supported Field Types
 
 * Scalars (int32/64, uint32/64, sint32/64, fixed32/64, sfixed32/64, float, double, bool, string, bytes)

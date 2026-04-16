@@ -40,6 +40,7 @@ from protokit.schema.git import (
     GitRefNotFoundError,
     ProtoImportError,
     ShallowRepoError,
+    commits_affecting_dep_tree,
     commits_in_range,
     extract_pool_from_ref,
     merge_base,
@@ -865,6 +866,18 @@ def check(
          "(original behavior). Default is path-complete.",
 )
 @click.option(
+    "--fast",
+    is_flag=True,
+    default=False,
+    help="Use the fast dep-tree enumeration (E+): unions dep "
+         "graphs at range endpoints and does per-path "
+         "`git log --follow`. Tracks renames. Misses commits "
+         "that modified a dep which was live only mid-range — "
+         "rare. Default is the exact enumeration (D): walks every "
+         ".proto-touching commit and filters by per-ref dep tree. "
+         "See README §bisect-accuracy for the full tradeoff.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(("human", "json"), case_sensitive=False),
@@ -883,6 +896,7 @@ def history(
     rule_packs: tuple[str, ...],
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
+    fast: bool,
     output_format: str,
 ) -> None:
     """Walk commits in OLD..NEW that touch the .proto and report findings per pair.
@@ -906,7 +920,10 @@ def history(
     old_endpoint, new_endpoint = _resolve_range_endpoints(range_spec)
 
     try:
-        commits = commits_in_range(range_spec, paths=[proto_file])
+        commits = commits_affecting_dep_tree(
+            range_spec, proto_file, proto_roots,
+            fast=fast,
+        )
     except GitRefNotFoundError as exc:
         error_exit(str(exc))
 
@@ -1124,6 +1141,18 @@ def history(
          "still dominates on diagnostics.",
 )
 @click.option(
+    "--fast",
+    is_flag=True,
+    default=False,
+    help="Use the fast dep-tree enumeration (E+): unions dep "
+         "graphs at range endpoints and does per-path "
+         "`git log --follow`. Tracks renames. Misses commits "
+         "that modified a dep which was live only mid-range — "
+         "rare. Default is the exact enumeration (D): walks every "
+         ".proto-touching commit and filters by per-ref dep tree. "
+         "See README §bisect-accuracy for the full tradeoff.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(("human", "json"), case_sensitive=False),
@@ -1144,6 +1173,7 @@ def bisect(
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     keep_going: bool,
+    fast: bool,
     output_format: str,
 ) -> None:
     """Find the earliest commit in OLD..NEW that broke compatibility.
@@ -1175,8 +1205,9 @@ def bisect(
     old_sha, new_sha = _resolve_range_endpoints(f"{old_ref}..{new_ref}")
 
     try:
-        commits = commits_in_range(
-            f"{old_ref}..{new_ref}", paths=[proto_file],
+        commits = commits_affecting_dep_tree(
+            f"{old_ref}..{new_ref}", proto_file, proto_roots,
+            fast=fast,
         )
     except GitRefNotFoundError as exc:
         error_exit(str(exc))
