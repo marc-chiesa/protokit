@@ -1158,3 +1158,161 @@ class TestCi:
         assert "--base BRANCH" in result.output
         # And must NOT mention the check flag.
         assert "--against-base BRANCH" not in result.output
+
+
+class TestQuietOnHistoryBisect:
+    """Low-severity follow-up: ``--quiet`` suppresses stdout on
+    ``history`` and ``bisect`` (diagnostics still stream to
+    stderr; exit code unchanged).
+    """
+
+    def test_history_quiet_suppresses_stdout(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet",
+        ])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+
+    def test_bisect_quiet_suppresses_stdout(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet",
+        ])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+
+
+class TestProtoFilePrecheck:
+    """Low-severity follow-up: a typoed ``--proto-file`` in git
+    mode surfaces a clear CLI-layer error instead of a deep
+    ``ProtoImportError``.
+    """
+
+    def test_check_since_missing_file_has_clean_error(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/doesnotexist.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto-file" in result.output
+        assert "doesnotexist.proto" in result.output
+        assert "not found" in result.output.lower()
+
+    def test_ci_missing_file_has_clean_error(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/nope.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "nope.proto" in result.output
+
+
+class TestCrossTypeBisect:
+    """Low-severity follow-up: ``--old-type`` / ``--new-type``
+    are accepted by ``bisect`` but were only tested on
+    ``check``. Bisect pins the OLD pool once (so the OLD type
+    name needs to exist only there) and compares each commit's
+    NEW-type-named shape against it — the clean cross-type use
+    case. (``history`` also accepts the flags, but each pair in
+    the walk would need BOTH names resolvable on each side,
+    which doesn't map cleanly onto a rename timeline.)
+    """
+
+    _USER_V1_NAMED_V1 = (
+        'syntax = "proto3";\n'
+        'package acme;\n'
+        'message UserV1 { string name = 1; int32 age = 2; }\n'
+    )
+    _USER_V1_NAMED_V2 = (
+        'syntax = "proto3";\n'
+        'package acme;\n'
+        'message UserV2 { string name = 1; int32 age = 2; }\n'
+    )
+    _USER_V2_NAMED_V2 = (
+        'syntax = "proto3";\n'
+        'package acme;\n'
+        'message UserV2 { string name = 1; }\n'  # drop age
+    )
+
+    def test_bisect_cross_type_finds_rename_break(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(
+            git_repo, "acme/user.proto",
+            self._USER_V1_NAMED_V1, msg="v1 UserV1",
+        )
+        rename_sha = _commit(
+            git_repo, "acme/user.proto",
+            self._USER_V1_NAMED_V2, msg="v2 rename to UserV2",
+        )
+        breaker = _commit(
+            git_repo, "acme/user.proto",
+            self._USER_V2_NAMED_V2, msg="v3 UserV2 drop age",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha,  # UserV1 existed here
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--old-type", "acme.UserV1",
+            "--new-type", "acme.UserV2",
+        ])
+        # The rename commit (rename_sha) itself produces no breaks
+        # — both schemas have {name, age}. The drop at `breaker` is
+        # the first commit where UserV2's shape diverges from UserV1.
+        assert result.exit_code == 1
+        assert breaker in result.output
+        # And NOT the rename commit (that one is compatible).
+        assert "first breaking commit: " + rename_sha not in result.output
+
+
+class TestEntryPointDispatch:
+    """Low-severity follow-up: all schema-CLI tests invoke
+    ``protokit.schema.cli.main`` directly, bypassing the
+    top-level ``protokit.cli:main`` group. A typo in the
+    top-level dispatch could never be caught. One end-to-end
+    test forces the full dispatch chain to run.
+    """
+
+    def test_compat_check_via_top_level_cli(
+        self, git_repo: Path,
+    ) -> None:
+        import os
+        from protokit.cli import main as top_level_main
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        prev = os.getcwd()
+        os.chdir(git_repo)
+        try:
+            result = CliRunner().invoke(top_level_main, [
+                "compat", "check",
+                "--since", "HEAD",
+                "--proto-file", "acme/user.proto",
+                "--type", "acme.User",
+            ])
+        finally:
+            os.chdir(prev)
+        # HEAD vs HEAD → compatible, exit 0. The important thing is
+        # that the invocation was dispatched correctly through the
+        # top-level group.
+        assert result.exit_code == 0
+        assert "COMPATIBLE" in result.output

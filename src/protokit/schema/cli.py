@@ -340,6 +340,46 @@ def _load_pools_local(
     )
 
 
+def _verify_proto_file_at_ref(
+    proto_file: str,
+    ref: str,
+    proto_roots: tuple[str, ...],
+    *,
+    cwd: Path | None = None,
+) -> None:
+    """Pre-flight check: does ``proto_file`` exist at ``ref``?
+
+    Gives the user a clean "proto_file not found at ref" error
+    before the extraction pipeline dives into dep-walking and
+    hands back a less-obvious ``ProtoImportError``. Run against
+    the user-facing endpoint (typically HEAD or NEW) so typos
+    surface before any historical-ref extraction starts.
+    """
+    from protokit.schema.git import _git_show  # avoid module-top circular
+
+    for root in proto_roots:
+        clean_root = root.rstrip("/")
+        repo_path = (
+            f"{clean_root}/{proto_file}"
+            if clean_root and clean_root != "."
+            else proto_file
+        )
+        try:
+            _git_show(ref, repo_path, cwd=cwd)
+            return  # found under some root
+        except FileNotFoundError:
+            continue
+        except GitRefNotFoundError:
+            # ref itself is bogus — let the main pipeline produce
+            # that error; we're here to validate the path.
+            return
+    error_exit(
+        f"--proto-file {proto_file!r} not found at ref {ref!r} "
+        f"under any of the configured --proto-root paths "
+        f"({list(proto_roots)!r}). Check the path and try again."
+    )
+
+
 def _load_pools_git(
     *,
     since: str | None,
@@ -391,6 +431,12 @@ def _load_pools_git(
         except (GitRefNotFoundError, ShallowRepoError) as exc:
             error_exit(str(exc))
         new_ref = "HEAD"
+
+    # Pre-flight: verify --proto-file actually exists at the
+    # user-facing endpoint (NEW ref) before we start extracting.
+    # A typoed path otherwise surfaces as a deep ProtoImportError;
+    # the pre-check gives a one-line, actionable message.
+    _verify_proto_file_at_ref(proto_file, new_ref, proto_roots, cwd=cwd)
 
     try:
         old_pool = extract_pool_from_ref(
@@ -885,6 +931,13 @@ def check(
     show_default=True,
     help="Output format.",
 )
+@click.option(
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress stdout; return exit code only. Diagnostics "
+         "still stream to stderr.",
+)
 def history(
     range_spec: str,
     proto_file: str,
@@ -898,6 +951,7 @@ def history(
     dedupe_by_type: bool,
     fast: bool,
     output_format: str,
+    quiet: bool,
 ) -> None:
     """Walk commits in OLD..NEW that touch the .proto and report findings per pair.
 
@@ -928,17 +982,18 @@ def history(
         error_exit(str(exc))
 
     if not commits:
-        if output_format.lower() == "json":
-            click.echo(json.dumps({
-                "range": range_spec,
-                "old": old_endpoint,
-                "new": new_endpoint,
-                "commits_walked": 0,
-                "entries": [],
-                "diagnostics": [],
-            }, indent=2))
-        else:
-            click.echo(f"# {range_spec}: no commits touch {proto_file}")
+        if not quiet:
+            if output_format.lower() == "json":
+                click.echo(json.dumps({
+                    "range": range_spec,
+                    "old": old_endpoint,
+                    "new": new_endpoint,
+                    "commits_walked": 0,
+                    "entries": [],
+                    "diagnostics": [],
+                }, indent=2))
+            else:
+                click.echo(f"# {range_spec}: no commits touch {proto_file}")
         sys.exit(0)
 
     # Anchor: the parent of the oldest commit in the range. Without it
@@ -1020,25 +1075,26 @@ def history(
             ],
         })
 
-    if output_format.lower() == "json":
-        click.echo(json.dumps({
-            "range": range_spec,
-            "old": old_endpoint,
-            "new": new_endpoint,
-            "commits_walked": len(commits),
-            "entries": entries,
-            "diagnostics": aggregated_diagnostics,
-        }, indent=2))
-    else:
-        for entry in entries:
-            short = entry["new"][:12]
-            verdict = "OK" if entry["compatible"] else "BROKEN"
-            click.echo(f"{short} {verdict} ({len(entry['findings'])} finding(s))")
-            for f in entry["findings"]:
-                click.echo(
-                    f"    [{f['severity']}/{f['direction']}] "
-                    f"{f['path']}: {f['message']} ({f['rule_id']})"
-                )
+    if not quiet:
+        if output_format.lower() == "json":
+            click.echo(json.dumps({
+                "range": range_spec,
+                "old": old_endpoint,
+                "new": new_endpoint,
+                "commits_walked": len(commits),
+                "entries": entries,
+                "diagnostics": aggregated_diagnostics,
+            }, indent=2))
+        else:
+            for entry in entries:
+                short = entry["new"][:12]
+                verdict = "OK" if entry["compatible"] else "BROKEN"
+                click.echo(f"{short} {verdict} ({len(entry['findings'])} finding(s))")
+                for f in entry["findings"]:
+                    click.echo(
+                        f"    [{f['severity']}/{f['direction']}] "
+                        f"{f['path']}: {f['message']} ({f['rule_id']})"
+                    )
 
     if any_diagnostics:
         sys.exit(2)
@@ -1160,6 +1216,13 @@ def history(
     show_default=True,
     help="Output format.",
 )
+@click.option(
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress stdout; return exit code only. Diagnostics "
+         "still stream to stderr.",
+)
 def bisect(
     old_ref: str,
     new_ref: str,
@@ -1175,6 +1238,7 @@ def bisect(
     keep_going: bool,
     fast: bool,
     output_format: str,
+    quiet: bool,
 ) -> None:
     """Find the earliest commit in OLD..NEW that broke compatibility.
 
@@ -1222,6 +1286,8 @@ def bisect(
         exit_code: int,
     ) -> None:
         """Render the final output and exit."""
+        if quiet:
+            sys.exit(exit_code)
         if json_mode:
             click.echo(json.dumps({
                 "range": f"{old_ref}..{new_ref}",
