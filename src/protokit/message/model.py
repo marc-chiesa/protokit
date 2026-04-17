@@ -9,12 +9,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
 if TYPE_CHECKING:  # pragma: no cover — typing-only imports
     from google.protobuf import descriptor as proto_descriptor
     from google.protobuf import descriptor_pool
     from google.protobuf.message import Message
+
+
+DiagnosticLevel = Literal["info", "warning", "error"]
 
 
 class ChangeType(Enum):
@@ -73,24 +76,43 @@ class EnumValue:
 
 
 @dataclass(frozen=True)
-class Warning:
-    """A non-diff diagnostic surfaced alongside a ``DiffResult``.
+class Diagnostic:
+    """A non-finding message emitted during comparison.
 
-    Warnings are used for situations the engine wants to flag but
-    that are not themselves differences — e.g., a fallback to
-    index-based comparison when ``treat_as_map`` is configured but
-    the key field has unsupported type, or a synthetic-oneof edge
-    case during cross-pool comparison.
+    The engine emits diagnostics alongside differences / findings
+    to surface conditions callers should know about without
+    collapsing them into the diff/finding stream. Examples: a
+    ``treat_as_map`` fallback because the key field had an
+    unsupported type; a cross-pool enum drift; a plugin crashed
+    mid-check. Each carries a severity ``level`` so callers can
+    distinguish "heads-up about the comparison" from "the tool
+    itself broke."
 
     Attributes:
-        path: Dotted-path string identifying where the warning
-            applies, or ``None`` for warnings about the message as a
-            whole.
+        path: Dotted-path string identifying where the diagnostic
+            applies, or ``None`` for diagnostics about the message
+            as a whole.
         message: Human-readable explanation.
+        level: Severity ladder.
+
+            - ``"error"`` — the tool itself broke (plugin crash,
+              hook exception, async plugin misuse). Results
+              downstream of this point may be incomplete or
+              misleading. CI callers should treat any ``"error"``
+              as a fail-closed condition even if the filtered
+              findings list is empty.
+            - ``"warning"`` (default) — the comparison proceeded
+              with a caveat (``treat_as_map`` fallback, enum
+              drift, cardinality change without value compare,
+              depth truncation). Surfaced for operator awareness;
+              not fatal by itself.
+            - ``"info"`` — reserved for future informational
+              output. Not currently emitted by the engine.
     """
 
     path: str | None
     message: str
+    level: DiagnosticLevel = "warning"
 
     def __str__(self) -> str:
         """Render as ``path: message`` (or just ``message`` when path is None).
@@ -101,6 +123,13 @@ class Warning:
         if self.path:
             return f"{self.path}: {self.message}"
         return self.message
+
+
+# Deprecated alias for the pre-Gap-5 name. New code should use
+# :class:`Diagnostic`. Kept so that existing test assertions and
+# external callers who still reference ``Warning`` don't break
+# during the migration window.
+Warning = Diagnostic
 
 
 class DuplicateKeyError(ValueError):
@@ -483,15 +512,18 @@ class DiffResult:
     Attributes:
         differences: Tuple of ``Difference`` objects in traversal
             order. Empty tuple means the messages compared equal.
-        warnings: Tuple of ``Warning`` diagnostics emitted during
-            comparison. Defaults to empty.
+        diagnostics: Tuple of ``Diagnostic`` entries emitted during
+            comparison — each tagged with a severity ``level``
+            (``"warning"`` for comparison caveats, ``"error"`` for
+            tool-level failures like plugin crashes). Defaults to
+            empty.
         truncated_paths: Tuple of paths where ``max_depth`` cut off
             the traversal. Empty when the comparison ran to the
             leaves. See ``is_complete``.
     """
 
     differences: tuple[Difference, ...]
-    warnings: tuple[Warning, ...] = ()
+    diagnostics: tuple[Diagnostic, ...] = ()
     truncated_paths: tuple[FieldPath, ...] = ()
 
     @property
@@ -504,6 +536,32 @@ class DiffResult:
             subtrees before reaching the leaves.
         """
         return not self.truncated_paths
+
+    @property
+    def warnings(self) -> tuple[Diagnostic, ...]:
+        """Diagnostics at ``"warning"`` level.
+
+        Convenience accessor; equivalent to
+        ``tuple(d for d in self.diagnostics if d.level == "warning")``.
+
+        Returns:
+            A fresh tuple, in original emission order.
+        """
+        return tuple(d for d in self.diagnostics if d.level == "warning")
+
+    @property
+    def errors(self) -> tuple[Diagnostic, ...]:
+        """Diagnostics at ``"error"`` level.
+
+        Tool-level failures — a plugin crashed, a hook raised, an
+        async plugin was misused. A non-empty value means the
+        report may be incomplete; CI callers should treat it as
+        a fail-closed condition.
+
+        Returns:
+            A fresh tuple, in original emission order.
+        """
+        return tuple(d for d in self.diagnostics if d.level == "error")
 
     def has_changes(self) -> bool:
         """Report whether any differences were found.
@@ -544,23 +602,23 @@ class DiffResult:
             and warnings. ``truncated_paths`` are carried over unchanged.
         """
         diffs = self.differences
-        warnings = self.warnings
+        diagnostics = self.diagnostics
 
         if path is not None:
             filter_path = FieldPath.parse(path)
             if exact:
                 diffs = tuple(d for d in diffs if filter_path.matches_exact(d.path))
-                warnings = tuple(
-                    w
-                    for w in warnings
-                    if w.path is None or filter_path.matches_exact(FieldPath.parse(w.path))
+                diagnostics = tuple(
+                    d
+                    for d in diagnostics
+                    if d.path is None or filter_path.matches_exact(FieldPath.parse(d.path))
                 )
             else:
                 diffs = tuple(d for d in diffs if filter_path.is_prefix_of(d.path))
-                warnings = tuple(
-                    w
-                    for w in warnings
-                    if w.path is None or filter_path.is_prefix_of(FieldPath.parse(w.path))
+                diagnostics = tuple(
+                    d
+                    for d in diagnostics
+                    if d.path is None or filter_path.is_prefix_of(FieldPath.parse(d.path))
                 )
 
         if change_type is not None:
@@ -568,7 +626,7 @@ class DiffResult:
 
         return DiffResult(
             differences=diffs,
-            warnings=warnings,
+            diagnostics=diagnostics,
             truncated_paths=self.truncated_paths,
         )
 

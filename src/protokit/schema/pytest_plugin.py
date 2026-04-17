@@ -104,25 +104,27 @@ def assert_compatible(
     """Assert a :class:`CompatibilityReport` is free of findings.
 
     Raises ``AssertionError`` with a multi-line message listing
-    every surviving ``Finding`` when the report is not clean. When
-    ``allow_warnings`` is False (default), any ``Warning`` in the
-    report also triggers a failure — matching the CLI's
-    fail-closed behavior where plugin exceptions or other
-    unresolved findings force a non-zero exit.
+    every surviving ``Finding``, error diagnostic, or (unless
+    suppressed) warning diagnostic. Tool-level failures — any
+    ``Diagnostic`` at ``level="error"`` — ALWAYS fail the
+    assertion regardless of ``allow_warnings``: a crashed plugin
+    means the report may be incomplete, and silently passing
+    when a detector broke defeats the point of the test.
 
     Args:
         report: The ``CompatibilityReport`` returned by a
             ``SchemaChecker.check()`` or
             ``CompatibilityPolicy.check()`` call.
-        allow_warnings: When True, warnings don't cause a
-            failure. Use sparingly — a warning typically means
-            the report is incomplete (a rule plugin raised
-            mid-check).
+        allow_warnings: When True, ``level="warning"`` diagnostics
+            (comparison caveats like ``treat_as_map`` fallbacks)
+            don't cause a failure. Error diagnostics are unaffected
+            — they always fail. Use sparingly.
 
     Raises:
-        AssertionError: If ``report.findings`` is non-empty, or
-            (when ``allow_warnings=False``) ``report.warnings`` is
-            non-empty. The message lists every finding/warning.
+        AssertionError: If ``report.findings`` is non-empty, if
+            ``report.errors`` is non-empty, or (when
+            ``allow_warnings=False``) ``report.warnings`` is
+            non-empty.
     """
     if report.findings:
         header = (
@@ -130,6 +132,17 @@ def assert_compatible(
             f"under {report.level.value}:"
         )
         lines = [header] + [f"  {f}" for f in report.findings]
+        raise AssertionError("\n".join(lines))
+    if report.errors:
+        # Tool-level failures are never suppressible: a crashed
+        # plugin may have missed findings it was supposed to
+        # surface.
+        header = (
+            f"{len(report.errors)} error diagnostic(s) during "
+            f"compatibility check (a plugin / hook crashed; the "
+            f"report may be incomplete):"
+        )
+        lines = [header] + [f"  {e}" for e in report.errors]
         raise AssertionError("\n".join(lines))
     if not allow_warnings and report.warnings:
         header = (

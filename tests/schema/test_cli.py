@@ -78,7 +78,7 @@ class TestCompatibleExit0:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
         ])
         assert result.exit_code == 0
@@ -93,7 +93,7 @@ class TestIncompatibleExit1:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
         ])
         assert result.exit_code == 1
@@ -119,7 +119,7 @@ class TestCrossType:
         ])
         old_path = _write_desc(tmp_path, "old", old, ["t.UserV1"])
         new_path = _write_desc(tmp_path, "new", new, ["t.UserV2"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path),
             "--old-type", "t.UserV1",
             "--new-type", "t.UserV2",
@@ -145,7 +145,7 @@ class TestLevel:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--level", "consumer-safe",
         ])
@@ -160,7 +160,7 @@ class TestLevel:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--level", "producer-safe",
         ])
@@ -175,7 +175,7 @@ class TestLevel:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--level", "wire",
         ])
@@ -196,7 +196,7 @@ class TestJsonOutput:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--format", "json",
         ])
@@ -227,7 +227,7 @@ class TestIgnore:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--ignore", "debug",
         ])
@@ -272,7 +272,7 @@ class TestDedupeByType:
 
     def test_default_is_path_complete(self, tmp_path: Path) -> None:
         old_path, new_path = self._build_shared_pair(tmp_path)
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.Outer",
             "--level", "strict",
         ])
@@ -283,7 +283,7 @@ class TestDedupeByType:
 
     def test_dedupe_flag_collapses_to_first_path(self, tmp_path: Path) -> None:
         old_path, new_path = self._build_shared_pair(tmp_path)
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.Outer",
             "--level", "strict",
             "--dedupe-by-type",
@@ -301,7 +301,7 @@ class TestQuiet:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M", "--quiet",
         ])
         assert result.exit_code == 0
@@ -314,7 +314,7 @@ class TestQuiet:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M", "--quiet",
         ])
         assert result.exit_code == 1
@@ -349,7 +349,7 @@ class TestRulePack:
             )
             old_path = _write_desc(tmp_path, "old", old, ["t.M"])
             new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-            result = CliRunner().invoke(main, [
+            result = CliRunner().invoke(main, ["check", 
                 str(old_path), str(new_path), "--type", "t.M",
                 "--level", "wire",
                 "--rule-pack", pack_name,
@@ -381,7 +381,7 @@ class TestRulePack:
             )
             old_path = _write_desc(tmp_path, "old", old, ["t.M"])
             new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-            result = CliRunner().invoke(main, [
+            result = CliRunner().invoke(main, ["check", 
                 str(old_path), str(new_path), "--type", "t.M",
                 "--rule-pack", pack_name,
             ])
@@ -396,7 +396,7 @@ class TestRulePack:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--rule-pack", "definitely.not.a.real.module",
         ])
@@ -414,7 +414,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [str(old_path), str(new_path)])
+        result = CliRunner().invoke(main, ["check", str(old_path), str(new_path)])
         assert result.exit_code == 2
         assert "type" in result.output.lower()
 
@@ -422,7 +422,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path),
             "--type", "t.M",
             "--old-type", "t.M",
@@ -433,7 +433,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path),
             "--old-type", "t.M",
         ])
@@ -444,7 +444,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.Nonexistent",
         ])
         assert result.exit_code == 2
@@ -454,7 +454,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(old_path), str(new_path), "--type", "t.M",
             "--proto-path", str(tmp_path),
         ])
@@ -466,7 +466,7 @@ class TestErrors:
         bad.write_bytes(b"this is not a FileDescriptorSet")
         old, new = _simple_pair([], [])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check", 
             str(bad), str(new_path), "--type", "t.M",
         ])
         assert result.exit_code == 2
@@ -476,9 +476,937 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, [
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--ignore", "bad.trailing.",
         ])
         assert result.exit_code == 2
         assert "--ignore" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Git-mode CLI tests (Phase 2)
+# ---------------------------------------------------------------------------
+
+import subprocess
+
+
+def _git(*args: str, cwd: Path) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """Initialise a git repo with deterministic identity."""
+    _git("init", "-q", "-b", "main", cwd=tmp_path)
+    _git("config", "user.email", "t@t", cwd=tmp_path)
+    _git("config", "user.name", "Test", cwd=tmp_path)
+    _git("config", "commit.gpgsign", "false", cwd=tmp_path)
+    return tmp_path
+
+
+def _commit(repo: Path, path: str, contents: str, *, msg: str) -> str:
+    full = repo / path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_text(contents)
+    _git("add", path, cwd=repo)
+    _git("commit", "-q", "-m", msg, cwd=repo)
+    return _git("rev-parse", "HEAD", cwd=repo)
+
+
+def _invoke_in_repo(repo: Path, args: list[str]):
+    """Run the CLI with cwd=repo so git commands resolve correctly."""
+    import os
+    runner = CliRunner()
+    cwd = os.getcwd()
+    try:
+        os.chdir(repo)
+        return runner.invoke(main, args)
+    finally:
+        os.chdir(cwd)
+
+
+_USER_V1 = (
+    'syntax = "proto3";\n'
+    'package acme;\n'
+    'message User { string name = 1; int32 age = 2; }\n'
+)
+_USER_V2_DROP = (
+    'syntax = "proto3";\n'
+    'package acme;\n'
+    'message User { string name = 1; }\n'  # age removed
+)
+
+
+class TestCheckSince:
+    def test_against_prior_commit_detects_break(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--level", "consumer-safe",
+        ])
+        assert result.exit_code == 1
+        assert "field_removed" in result.output
+
+    def test_unchanged_schema_is_compatible(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # Same descriptors, only a comment differs → no findings.
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// touched comment\n",
+            msg="v1 + comment",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 0
+        assert "COMPATIBLE" in result.output
+
+    def test_unknown_ref_exits_2(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", "no-such-ref",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+
+    def test_missing_proto_file_flag_exits_2(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto-file" in result.output
+
+    def test_missing_proto_file_surfaces_before_missing_type(
+        self, git_repo: Path,
+    ) -> None:
+        """Gap 4: mode-specific missing-flag errors must fire BEFORE
+        the generic 'no message type specified' error. A user who
+        forgot both ``--type`` and ``--proto-file`` with ``--since``
+        should see the proto-file error first — it's the next
+        thing they need to fix for the mode they chose.
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            # Note: no --type and no --proto-file.
+        ])
+        assert result.exit_code == 2
+        assert "--proto-file" in result.output
+        # Must NOT surface the generic type error first.
+        assert "No message type specified" not in result.output
+
+    def test_positional_inputs_with_since_exits_2(
+        self, git_repo: Path, tmp_path: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # Create dummy files so click's exists=True doesn't fail first.
+        a = tmp_path / "a.bin"; a.write_bytes(b"")
+        b = tmp_path / "b.bin"; b.write_bytes(b"")
+        result = _invoke_in_repo(git_repo, [
+            "check", str(a), str(b),
+            "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "Positional inputs cannot be combined" in result.output
+
+    def test_proto_path_in_git_mode_exits_2(self, git_repo: Path) -> None:
+        """``--proto-path`` is a local-mode flag. Combining with
+        ``--since`` previously silently ignored the path; must
+        now error with a clear message.
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--proto-path", "/custom/include",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto-path" in result.output
+        assert "--proto-root" in result.output
+
+    def test_proto_flag_in_git_mode_exits_2(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/user.proto",
+            "--proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto only applies in local-file mode" in result.output
+
+
+class TestCheckAgainstBase:
+    def test_explicit_base_branch(self, git_repo: Path) -> None:
+        """--against-base BRANCH: compare HEAD vs merge-base with BRANCH."""
+        # Setup: main has v1; create branch 'feature' with v2 (drop).
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--against-base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        assert "field_removed" in result.output
+
+    def test_auto_base_falls_through_resolution(
+        self, git_repo: Path,
+    ) -> None:
+        """Without an upstream / origin/main / origin/master, the
+        auto-resolution must error with a clear message.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--against-base",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "no default base branch" in result.output
+
+    def test_against_base_and_since_mutually_exclusive(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check",
+            "--since", old_sha,
+            "--against-base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+
+class TestHistory:
+    def test_empty_range_exits_0_with_message(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # No further proto commits — range is empty.
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 0
+        assert "no commits touch" in result.output
+
+    def test_finds_break_in_range(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        assert "BROKEN" in result.output
+        assert "field_removed" in result.output
+
+    def test_json_format(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["range"] == "HEAD~..HEAD"
+        assert len(payload["entries"]) == 1
+        entry = payload["entries"][0]
+        assert entry["compatible"] is False
+        rule_ids = [f["rule_id"] for f in entry["findings"]]
+        assert "field_removed" in rule_ids
+
+    def test_json_has_resolved_shas_and_walk_count(
+        self, git_repo: Path,
+    ) -> None:
+        """Gap 3: JSON payload includes top-level ``old`` / ``new``
+        (resolved SHAs), ``commits_walked``, and aggregated
+        ``diagnostics`` alongside the existing entries array.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        payload = json.loads(result.output)
+        assert "old" in payload and len(payload["old"]) == 40  # full SHA
+        assert "new" in payload and len(payload["new"]) == 40
+        assert payload["commits_walked"] == 1
+        assert payload["diagnostics"] == []  # no plugins registered
+
+    def test_empty_range_json_shape_matches(
+        self, git_repo: Path,
+    ) -> None:
+        """Empty-range JSON still carries the full top-level keys."""
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        payload = json.loads(result.output)
+        assert payload["range"] == "HEAD..HEAD"
+        assert payload["commits_walked"] == 0
+        assert payload["entries"] == []
+        assert payload["diagnostics"] == []
+        assert "old" in payload and "new" in payload
+
+
+class TestBisect:
+    def test_finds_first_breaking_commit(self, git_repo: Path) -> None:
+        """Three commits: v1, v1.1 (comment-only), v2 (drops age = WIRE break).
+        Bisect at --level wire must report v2 as the breaker —
+        v1.1's no-op change must NOT trip the bisect.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        old_sha = _git("rev-parse", "HEAD", cwd=git_repo)
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// v1.1 comment-only edit\n",
+            msg="v1.1 comment-only (no descriptor change)",
+        )
+        breaker = _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 drop age")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha,
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--level", "consumer-safe",
+        ])
+        assert result.exit_code == 1
+        assert breaker in result.output
+        assert "first breaking commit" in result.output
+
+    def test_no_break_in_range_exits_0(self, git_repo: Path) -> None:
+        """Comment-only edit produces no descriptor change —
+        bisect should report no break at any level.
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// add a comment, descriptor unchanged\n",
+            msg="comment-only edit",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha,
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 0
+        assert "no break found" in result.output
+
+    def test_unknown_old_ref_exits_2(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", "no-such-ref",
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+
+
+class TestPluginParity:
+    """Gap 2: history / bisect / ci all accept the full plugin
+    surface (--rule-pack, --ignore, --dedupe-by-type).
+    """
+
+    def test_history_accepts_ignore(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        # Without --ignore: break surfaces.
+        result_plain = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result_plain.exit_code == 1
+        # With --ignore covering the dropped field's path: no break.
+        result_ignored = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "age",
+        ])
+        assert result_ignored.exit_code == 0
+
+    def test_bisect_accepts_ignore(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "age",
+        ])
+        assert result.exit_code == 0
+        assert "no break found" in result.output
+
+    def test_ci_accepts_ignore(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        # Without --ignore: break.
+        result_plain = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result_plain.exit_code == 1
+        # With --ignore: clean.
+        result_ignored = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "age",
+        ])
+        assert result_ignored.exit_code == 0
+
+
+class TestBisectKeepGoing:
+    """Gap 2: ``--keep-going`` walks every commit, aggregating
+    diagnostics AND finding the first break in one pass.
+    """
+
+    def test_without_keep_going_stops_at_first_break(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # Two breaks in the range; default bisect stops at the first.
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 drop age")
+        _commit(
+            git_repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message User {}\n',  # name also dropped
+            msg="v3 drop name too",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        # The first breaking commit is printed; second break isn't
+        # referenced in the output because the walk stopped early.
+        lines = result.output.splitlines()
+        assert sum(1 for line in lines if line.startswith("first breaking")) == 1
+
+    def test_keep_going_still_reports_first_break(
+        self, git_repo: Path,
+    ) -> None:
+        """With --keep-going, bisect walks to the end but still
+        reports the EARLIEST breaking commit (bisect semantics).
+        """
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        first_break = _commit(
+            git_repo, "acme/user.proto", _USER_V2_DROP,
+            msg="v2 drop age",
+        )
+        _commit(
+            git_repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message User {}\n',
+            msg="v3 drop name too",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--keep-going",
+        ])
+        assert result.exit_code == 1
+        assert first_break in result.output
+        assert "first breaking commit" in result.output
+
+
+class TestBisectDepAware:
+    """Gap 1: bisect's default (exact) mode finds commits that
+    broke the root proto via dep changes. ``--fast`` opts into
+    E+ enumeration (faster but misses mid-range-only deps).
+    """
+
+    def _setup_dep_break(self, git_repo: Path) -> dict[str, str]:
+        shas: dict[str, str] = {}
+        shas["c1"] = _commit(
+            git_repo, "acme/date.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Date { int32 year = 1; int32 month = 2; }\n',
+            msg="c1 date.proto",
+        )
+        shas["c2"] = _commit(
+            git_repo, "acme/user.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'import "acme/date.proto";\n'
+            'message User { string name = 1; acme.Date bday = 2; }\n',
+            msg="c2 user.proto imports date",
+        )
+        # c3 breaks date.proto WITHOUT touching user.proto.
+        shas["c3"] = _commit(
+            git_repo, "acme/date.proto",
+            'syntax = "proto3";\n'
+            'package acme;\n'
+            'message Date { int32 year = 1; }\n',
+            msg="c3 drop date.month",
+        )
+        return shas
+
+    def test_default_mode_finds_dep_only_break(
+        self, git_repo: Path,
+    ) -> None:
+        """The root-only enumeration would miss c3 (it doesn't
+        touch user.proto). The dep-aware default catches it —
+        ``field_removed`` on ``date.month`` surfaces at
+        ``consumer-safe`` because it's SEMANTIC/BACKWARD.
+        """
+        shas = self._setup_dep_break(git_repo)
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", shas["c2"],  # after user.proto exists
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        assert shas["c3"] in result.output
+        assert "field_removed" in result.output
+
+    def test_fast_mode_also_finds_dep_break(
+        self, git_repo: Path,
+    ) -> None:
+        """In this scenario date.proto is in HEAD's dep tree, so
+        fast mode also catches c3. (It would miss only in
+        dep-swap cases where the broken dep isn't live at either
+        endpoint.)
+        """
+        shas = self._setup_dep_break(git_repo)
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", shas["c2"],
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--fast",
+        ])
+        assert result.exit_code == 1
+        assert shas["c3"] in result.output
+
+
+class TestBisectJson:
+    """Gap 3: ``bisect --format json`` emits structured output
+    with resolved SHAs, commits_walked, and diagnostics.
+    """
+
+    def test_break_json_payload(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        breaker = _commit(
+            git_repo, "acme/user.proto", _USER_V2_DROP,
+            msg="v2 drop age",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["range"] == f"{old_sha}..HEAD"
+        assert payload["old"] == old_sha
+        assert len(payload["new"]) == 40
+        assert payload["breaking_commit"] == breaker
+        rule_ids = [f["rule_id"] for f in payload["findings"]]
+        assert "field_removed" in rule_ids
+        assert payload["commits_walked"] == 1
+        assert payload["diagnostics"] == []
+
+    def test_clean_json_payload(self, git_repo: Path) -> None:
+        """No break in range → breaking_commit is null, exit 0."""
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// no-op\n",
+            msg="comment edit",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["breaking_commit"] is None
+        assert payload["findings"] == []
+        assert payload["commits_walked"] >= 1
+
+    def test_no_commits_json_payload(self, git_repo: Path) -> None:
+        """Empty range JSON still carries every top-level key."""
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", "HEAD", "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+        ])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["breaking_commit"] is None
+        assert payload["commits_walked"] == 0
+        assert payload["findings"] == []
+        assert payload["diagnostics"] == []
+
+
+class TestCi:
+    def test_against_explicit_base(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        result = _invoke_in_repo(git_repo, [
+            "ci",
+            "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 1
+        assert "field_removed" in result.output
+
+    def test_clean_branch_exits_0(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// add a comment\n",
+            msg="comment-only edit on feature",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "ci",
+            "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 0
+        assert "COMPATIBLE" in result.output
+
+    def test_proto_file_required(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--type", "acme.User",
+        ])
+        # Click rejects missing required option → exit 2.
+        assert result.exit_code == 2
+
+    def test_auto_base_error_message_names_base_flag(
+        self, git_repo: Path,
+    ) -> None:
+        """Regression lock: when ``ci`` auto-resolution fails, the
+        error message must reference ``--base`` (the ci flag), not
+        ``--against-base`` (the check flag). Before the fix the
+        shared ``resolve_default_base`` always said
+        ``--against-base``, which was wrong when invoked via ``ci``.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        # No --base, no upstream, no origin/main, no origin/master.
+        result = _invoke_in_repo(git_repo, [
+            "ci",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--base BRANCH" in result.output
+        # And must NOT mention the check flag.
+        assert "--against-base BRANCH" not in result.output
+
+
+class TestQuietOnHistoryBisect:
+    """Low-severity follow-up: ``--quiet`` suppresses stdout on
+    ``history`` and ``bisect`` (diagnostics still stream to
+    stderr; exit code unchanged).
+    """
+
+    def test_history_quiet_suppresses_stdout(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet",
+        ])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+
+    def test_bisect_quiet_suppresses_stdout(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet",
+        ])
+        assert result.exit_code == 1
+        assert result.stdout == ""
+
+
+class TestProtoFilePrecheck:
+    """Low-severity follow-up: a typoed ``--proto-file`` in git
+    mode surfaces a clear CLI-layer error instead of a deep
+    ``ProtoImportError``.
+    """
+
+    def test_check_since_missing_file_has_clean_error(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "check", "--since", old_sha,
+            "--proto-file", "acme/doesnotexist.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "--proto-file" in result.output
+        assert "doesnotexist.proto" in result.output
+        assert "not found" in result.output.lower()
+
+    def test_ci_missing_file_has_clean_error(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/nope.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2
+        assert "nope.proto" in result.output
+
+
+class TestCrossTypeBisect:
+    """Low-severity follow-up: ``--old-type`` / ``--new-type``
+    are accepted by ``bisect`` but were only tested on
+    ``check``. Bisect pins the OLD pool once (so the OLD type
+    name needs to exist only there) and compares each commit's
+    NEW-type-named shape against it — the clean cross-type use
+    case. (``history`` also accepts the flags, but each pair in
+    the walk would need BOTH names resolvable on each side,
+    which doesn't map cleanly onto a rename timeline.)
+    """
+
+    _USER_V1_NAMED_V1 = (
+        'syntax = "proto3";\n'
+        'package acme;\n'
+        'message UserV1 { string name = 1; int32 age = 2; }\n'
+    )
+    _USER_V1_NAMED_V2 = (
+        'syntax = "proto3";\n'
+        'package acme;\n'
+        'message UserV2 { string name = 1; int32 age = 2; }\n'
+    )
+    _USER_V2_NAMED_V2 = (
+        'syntax = "proto3";\n'
+        'package acme;\n'
+        'message UserV2 { string name = 1; }\n'  # drop age
+    )
+
+    def test_bisect_cross_type_finds_rename_break(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(
+            git_repo, "acme/user.proto",
+            self._USER_V1_NAMED_V1, msg="v1 UserV1",
+        )
+        rename_sha = _commit(
+            git_repo, "acme/user.proto",
+            self._USER_V1_NAMED_V2, msg="v2 rename to UserV2",
+        )
+        breaker = _commit(
+            git_repo, "acme/user.proto",
+            self._USER_V2_NAMED_V2, msg="v3 UserV2 drop age",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha,  # UserV1 existed here
+            "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--old-type", "acme.UserV1",
+            "--new-type", "acme.UserV2",
+        ])
+        # The rename commit (rename_sha) itself produces no breaks
+        # — both schemas have {name, age}. The drop at `breaker` is
+        # the first commit where UserV2's shape diverges from UserV1.
+        assert result.exit_code == 1
+        assert breaker in result.output
+        # And NOT the rename commit (that one is compatible).
+        assert "first breaking commit: " + rename_sha not in result.output
+
+
+class TestQuietJsonMutex:
+    """Review follow-up: ``--quiet --format json`` used to emit
+    empty stdout (CI scripts parsing the JSON hit zero bytes).
+    The combination is now rejected with a clear error.
+    """
+
+    def test_check_rejects_quiet_plus_json(
+        self, git_repo: Path, tmp_path: Path,
+    ) -> None:
+        # Build a minimal descriptor-set pair for local-file mode.
+        from google.protobuf import descriptor_pool
+        from tests.schema.helpers import build_message
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[])
+        build_message(new, "t.M", fields=[])
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, [
+            "check", str(old_path), str(new_path),
+            "--type", "t.M",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "--quiet" in result.output
+        assert "--format json" in result.output
+
+    def test_bisect_rejects_quiet_plus_json(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect", "--old", "HEAD", "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+    def test_history_rejects_quiet_plus_json(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+    def test_ci_rejects_quiet_plus_json(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// comment edit\n",
+            msg="feature edit",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", "json",
+        ])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+
+class TestCiQuiet:
+    """Review follow-up: ``ci`` now accepts ``--quiet`` for
+    pipeline gates that want exit-code-only output.
+    """
+
+    def test_ci_quiet_suppresses_stdout(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 drop")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet",
+        ])
+        assert result.exit_code == 1  # break detected
+        assert result.stdout == ""
+
+
+class TestEntryPointDispatch:
+    """Low-severity follow-up: all schema-CLI tests invoke
+    ``protokit.schema.cli.main`` directly, bypassing the
+    top-level ``protokit.cli:main`` group. A typo in the
+    top-level dispatch could never be caught. One end-to-end
+    test forces the full dispatch chain to run.
+    """
+
+    def test_compat_check_via_top_level_cli(
+        self, git_repo: Path,
+    ) -> None:
+        import os
+        from protokit.cli import main as top_level_main
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        prev = os.getcwd()
+        os.chdir(git_repo)
+        try:
+            result = CliRunner().invoke(top_level_main, [
+                "compat", "check",
+                "--since", "HEAD",
+                "--proto-file", "acme/user.proto",
+                "--type", "acme.User",
+            ])
+        finally:
+            os.chdir(prev)
+        # HEAD vs HEAD → compatible, exit 0. The important thing is
+        # that the invocation was dispatched correctly through the
+        # top-level group.
+        assert result.exit_code == 0
+        assert "COMPATIBLE" in result.output

@@ -52,7 +52,7 @@ from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
 from protokit._descriptors import get_field_map, is_map_field
-from protokit.message.model import FieldPath, Warning
+from protokit.message.model import Diagnostic, FieldPath
 from protokit.schema.model import (
     CompatibilityLevel,
     CompatibilityReport,
@@ -357,7 +357,7 @@ class SchemaChecker:
                 f"new_type '{new_type}' not found in new_pool"
             ) from exc
 
-        warnings_sink: list[Warning] = []
+        warnings_sink: list[Diagnostic] = []
         cache_token = _open_caches()
         try:
             raw = self._traverse(
@@ -371,7 +371,7 @@ class SchemaChecker:
         return CompatibilityReport(
             level=self.level,
             findings=tuple(filtered),
-            warnings=tuple(warnings_sink),
+            diagnostics=tuple(warnings_sink),
         )
 
     # ------------------------------------------------------------------
@@ -384,7 +384,7 @@ class SchemaChecker:
         root_new: proto_descriptor.Descriptor,
         old_pool: descriptor_pool.DescriptorPool,
         new_pool: descriptor_pool.DescriptorPool,
-        warnings_sink: list[Warning],
+        warnings_sink: list[Diagnostic],
     ) -> list[Finding]:
         """Walk the descriptor tree and collect findings.
 
@@ -527,7 +527,7 @@ class SchemaChecker:
         old_pool: descriptor_pool.DescriptorPool,
         new_pool: descriptor_pool.DescriptorPool,
         findings: list[Finding],
-        warnings_sink: list[Warning],
+        warnings_sink: list[Diagnostic],
         stack: list,
     ) -> None:
         old_fields = get_field_map(old_m)
@@ -586,7 +586,7 @@ class SchemaChecker:
         old_pool: descriptor_pool.DescriptorPool,
         new_pool: descriptor_pool.DescriptorPool,
         findings: list[Finding],
-        warnings_sink: list[Warning],
+        warnings_sink: list[Diagnostic],
         stack: list,
     ) -> None:
         """Dispatch field rules + push recursion for a map's value sub-field.
@@ -650,7 +650,7 @@ class SchemaChecker:
         old_pool: descriptor_pool.DescriptorPool,
         new_pool: descriptor_pool.DescriptorPool,
         findings: list[Finding],
-        warnings_sink: list[Warning],
+        warnings_sink: list[Diagnostic],
     ) -> None:
         sink: list[Finding] = []
         emit = make_emit(rule_id, sink, old_descriptor=old_fd, new_descriptor=new_fd)
@@ -693,7 +693,7 @@ class SchemaChecker:
         old_pool: descriptor_pool.DescriptorPool,
         new_pool: descriptor_pool.DescriptorPool,
         findings: list[Finding],
-        warnings_sink: list[Warning],
+        warnings_sink: list[Diagnostic],
     ) -> None:
         sink: list[Finding] = []
         emit = make_emit(rule_id, sink, old_descriptor=old_m, new_descriptor=new_m)
@@ -756,24 +756,25 @@ class SchemaChecker:
         rule_id: str,
         exc: Exception,
         path: FieldPath,
-        warnings_sink: list[Warning],
+        warnings_sink: list[Diagnostic],
     ) -> None:
-        """Record a plugin exception into ``CompatibilityReport.warnings``.
+        """Record a plugin exception into ``CompatibilityReport.diagnostics``.
 
-        The sink is the single source of truth for plugin failures:
-        CLI callers surface it and exit with code 2; library callers
-        read ``report.warnings`` directly. Library code that wants
-        Python's ``warnings`` subsystem integration can bridge by
-        iterating ``report.warnings`` and calling ``warnings.warn``
-        themselves after the check returns.
+        A plugin crash is a tool-level failure, not a comparison
+        caveat: the ``Diagnostic`` goes in at ``level="error"`` so
+        consumers can distinguish it from benign warnings. CLI
+        callers fail-closed on any error diagnostic (exit 2);
+        library callers can read ``report.errors`` directly or
+        iterate ``report.diagnostics`` and branch on ``d.level``.
         """
         message = (
             f"schema plugin '{rule_id}' raised "
             f"{type(exc).__name__}: {exc}"
         )
-        warnings_sink.append(Warning(
+        warnings_sink.append(Diagnostic(
             path=str(path) if path else None,
             message=message,
+            level="error",
         ))
 
     # ------------------------------------------------------------------

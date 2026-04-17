@@ -25,7 +25,7 @@ from protokit.schema.pytest_plugin import (
     schema_checker,
     schema_policy,
 )
-from protokit.message.model import FieldPath, Warning
+from protokit.message.model import Diagnostic, FieldPath, Warning  # Warning kept as deprecated alias
 from tests.schema.helpers import T, build_message
 
 
@@ -95,26 +95,57 @@ class TestAssertCompatible:
         assert "field_removed" in msg
 
     def test_warnings_cause_failure_by_default(self) -> None:
-        """Warnings without findings still fail closed."""
-        # Hand-craft a report with a warning but no findings.
+        """Warnings (comparison caveats) without findings still
+        fail closed by default.
+        """
         report = CompatibilityReport(
             level=CompatibilityLevel.STRICT,
             findings=(),
-            warnings=(Warning(path=None, message="plugin crashed"),),
+            diagnostics=(
+                Diagnostic(
+                    path=None, message="treat_as_map fallback",
+                    level="warning",
+                ),
+            ),
         )
         with pytest.raises(AssertionError) as exc:
             assert_compatible(report)
         assert "warning(s)" in str(exc.value)
-        assert "plugin crashed" in str(exc.value)
+        assert "treat_as_map" in str(exc.value)
 
     def test_allow_warnings_suppresses_warning_failure(self) -> None:
         report = CompatibilityReport(
             level=CompatibilityLevel.STRICT,
             findings=(),
-            warnings=(Warning(path=None, message="plugin crashed"),),
+            diagnostics=(
+                Diagnostic(
+                    path=None, message="treat_as_map fallback",
+                    level="warning",
+                ),
+            ),
         )
-        # With allow_warnings=True we accept the report despite warnings.
+        # allow_warnings=True accepts the report despite the
+        # warning-level diagnostic.
         assert_compatible(report, allow_warnings=True)
+
+    def test_errors_always_fail_even_with_allow_warnings(self) -> None:
+        """Error-level diagnostics (tool failures) are unsuppressable —
+        ``allow_warnings=True`` only gates warnings."""
+        report = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            findings=(),
+            diagnostics=(
+                Diagnostic(
+                    path=None,
+                    message="schema plugin 'boom' raised RuntimeError: kaboom",
+                    level="error",
+                ),
+            ),
+        )
+        with pytest.raises(AssertionError) as exc:
+            assert_compatible(report, allow_warnings=True)
+        assert "error diagnostic" in str(exc.value)
+        assert "boom" in str(exc.value)
 
     def test_findings_always_fail_even_with_allow_warnings(self) -> None:
         """``allow_warnings`` only gates warnings — findings still fail."""
@@ -129,7 +160,7 @@ class TestAssertCompatible:
                     message="field x removed",
                 ),
             ),
-            warnings=(),
+            diagnostics=(),
         )
         with pytest.raises(AssertionError) as exc:
             assert_compatible(report, allow_warnings=True)

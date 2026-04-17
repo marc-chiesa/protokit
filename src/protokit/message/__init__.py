@@ -16,6 +16,8 @@ from protokit.message.comparators import FloatComparison
 from protokit.message.differ import MessageDifferencer, diff_messages
 from protokit.message.model import (
     ChangeType,
+    Diagnostic,
+    DiagnosticLevel,
     Difference,
     DiffResult,
     DuplicateKeyError,
@@ -28,11 +30,13 @@ from protokit.message.model import (
     MessageValidateHook,
     MissingKeyError,
     PathSegment,
-    Warning,
+    Warning,  # deprecated alias for Diagnostic; kept for migration
 )
 
 __all__ = [
     "ChangeType",
+    "Diagnostic",
+    "DiagnosticLevel",
     "Difference",
     "DiffResult",
     "DuplicateKeyError",
@@ -47,6 +51,6 @@ __all__ = [
     "MessageValidateHook",
     "MissingKeyError",
     "PathSegment",
-    "Warning",
+    "Warning",  # deprecated alias; remove in a later release
     "diff_messages",
 ]
