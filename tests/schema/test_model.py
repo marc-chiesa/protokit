@@ -5,12 +5,16 @@ Pure dataclass / enum behavior. No descriptor traversal, no rules.
 
 import pytest
 
-from protokit.message.model import FieldPath
+from protokit.message.model import Diagnostic, FieldPath
 from protokit.schema import (
+    BisectReport,
+    CommitDiagnostic,
     CompatibilityLevel,
     CompatibilityReport,
     Direction,
     Finding,
+    HistoryEntry,
+    HistoryReport,
     Severity,
     Verdict,
 )
@@ -170,3 +174,147 @@ class TestCompatibilityReport:
     def test_default_findings_empty_tuple(self) -> None:
         r = CompatibilityReport(level=CompatibilityLevel.WIRE)
         assert r.findings == ()
+
+
+class TestCommitDiagnostic:
+    def test_basic_construction(self) -> None:
+        cd = CommitDiagnostic(
+            commit="abc123", level="error", path="user.email", message="boom",
+        )
+        assert cd.commit == "abc123"
+        assert cd.level == "error"
+        assert cd.path == "user.email"
+        assert cd.message == "boom"
+
+    def test_path_can_be_none(self) -> None:
+        cd = CommitDiagnostic(
+            commit="abc123", level="warning", path=None, message="global",
+        )
+        assert cd.path is None
+
+    def test_is_frozen(self) -> None:
+        cd = CommitDiagnostic(
+            commit="x", level="info", path=None, message="m",
+        )
+        with pytest.raises(Exception):
+            cd.commit = "y"  # type: ignore[misc]
+
+
+class TestHistoryEntry:
+    def test_basic_construction(self) -> None:
+        report = CompatibilityReport(level=CompatibilityLevel.STRICT)
+        entry = HistoryEntry(
+            commit_sha="new123", parent_sha="old456",
+            commit_subject="fix: thing", report=report,
+        )
+        assert entry.commit_sha == "new123"
+        assert entry.parent_sha == "old456"
+        assert entry.commit_subject == "fix: thing"
+        assert entry.report is report
+
+    def test_is_frozen(self) -> None:
+        entry = HistoryEntry(
+            commit_sha="a", parent_sha="b", commit_subject="s",
+            report=CompatibilityReport(level=CompatibilityLevel.STRICT),
+        )
+        with pytest.raises(Exception):
+            entry.commit_sha = "c"  # type: ignore[misc]
+
+
+class TestHistoryReport:
+    def test_minimal_construction(self) -> None:
+        r = HistoryReport(
+            range_spec="HEAD~3..HEAD", old_sha="aaa", new_sha="bbb",
+            commits_walked=0,
+        )
+        assert r.range_spec == "HEAD~3..HEAD"
+        assert r.entries == ()
+        assert r.diagnostics == ()
+        assert r.commits_walked == 0
+
+    def test_tuple_coercion_for_entries(self) -> None:
+        report = CompatibilityReport(level=CompatibilityLevel.STRICT)
+        entry = HistoryEntry(
+            commit_sha="x", parent_sha="y", commit_subject="s", report=report,
+        )
+        r = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[entry],  # list, not tuple
+        )
+        assert isinstance(r.entries, tuple)
+        assert r.entries == (entry,)
+
+    def test_tuple_coercion_for_diagnostics(self) -> None:
+        diag = CommitDiagnostic(commit="x", level="error", path=None, message="m")
+        r = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=0,
+            diagnostics=[diag],
+        )
+        assert isinstance(r.diagnostics, tuple)
+        assert r.diagnostics == (diag,)
+
+    def test_commits_walked_independent_from_entries(self) -> None:
+        # Pairing consumes one commit as the anchor, so commits_walked
+        # may exceed len(entries).
+        r = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=5,
+            entries=(),
+        )
+        assert r.commits_walked == 5
+        assert len(r.entries) == 0
+
+    def test_is_frozen(self) -> None:
+        r = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=0,
+        )
+        with pytest.raises(Exception):
+            r.range_spec = "x"  # type: ignore[misc]
+
+
+class TestBisectReport:
+    def test_minimal_construction(self) -> None:
+        r = BisectReport(
+            range_spec="A..B", old_sha="aaa", new_sha="bbb",
+            breaking_commit=None, commits_walked=0,
+        )
+        assert r.breaking_commit is None
+        assert r.breaking_findings == ()
+        assert r.diagnostics == ()
+        assert r.commits_walked == 0
+
+    def test_breaking_commit_with_findings(self) -> None:
+        finding = _make_finding()
+        r = BisectReport(
+            range_spec="A..B", old_sha="aaa", new_sha="bbb",
+            breaking_commit="xxx", commits_walked=3,
+            breaking_findings=(finding,),
+        )
+        assert r.breaking_commit == "xxx"
+        assert r.breaking_findings == (finding,)
+
+    def test_tuple_coercion_for_breaking_findings(self) -> None:
+        finding = _make_finding()
+        r = BisectReport(
+            range_spec="r", old_sha="a", new_sha="b",
+            breaking_commit="x", commits_walked=1,
+            breaking_findings=[finding],  # list, not tuple
+        )
+        assert isinstance(r.breaking_findings, tuple)
+
+    def test_tuple_coercion_for_diagnostics(self) -> None:
+        diag = CommitDiagnostic(commit="x", level="error", path=None, message="m")
+        r = BisectReport(
+            range_spec="r", old_sha="a", new_sha="b",
+            breaking_commit=None, commits_walked=0,
+            diagnostics=[diag],
+        )
+        assert isinstance(r.diagnostics, tuple)
+
+    def test_is_frozen(self) -> None:
+        r = BisectReport(
+            range_spec="r", old_sha="a", new_sha="b",
+            breaking_commit=None, commits_walked=0,
+        )
+        with pytest.raises(Exception):
+            r.breaking_commit = "x"  # type: ignore[misc]
+

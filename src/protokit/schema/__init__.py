@@ -8,7 +8,11 @@ Public surface:
 
 - ``SchemaChecker`` and ``check_compatibility`` — the engine.
 - ``CompatibilityLevel`` / ``CompatibilityReport`` / ``Finding`` /
-  ``Severity`` / ``Direction`` / ``Verdict`` — data model.
+  ``Severity`` / ``Direction`` / ``Verdict`` / ``Diagnostic`` — data
+  model for a single compatibility check.
+- ``CommitDiagnostic`` / ``HistoryEntry`` / ``HistoryReport`` /
+  ``BisectReport`` — aggregate data model for git-mode subcommands
+  (``history`` and ``bisect``).
 - ``CompatibilityPolicy`` — bundle a profile with custom rules and
   ignore paths.
 - ``FieldRuleContext`` / ``MessageRuleContext`` / ``FieldPlugin`` /
@@ -18,12 +22,17 @@ Public surface:
 
 from __future__ import annotations
 
+from protokit.message.model import Diagnostic
 from protokit.schema.checker import SchemaChecker, check_compatibility
 from protokit.schema.model import (
+    BisectReport,
+    CommitDiagnostic,
     CompatibilityLevel,
     CompatibilityReport,
     Direction,
     Finding,
+    HistoryEntry,
+    HistoryReport,
     Severity,
     Verdict,
 )
@@ -39,13 +48,18 @@ from protokit.schema.profiles import (
 )
 
 __all__ = [
+    "BisectReport",
+    "CommitDiagnostic",
     "CompatibilityLevel",
     "CompatibilityPolicy",
     "CompatibilityReport",
+    "Diagnostic",
     "Direction",
     "FieldPlugin",
     "FieldRuleContext",
     "Finding",
+    "HistoryEntry",
+    "HistoryReport",
     "MessagePlugin",
     "MessageRuleContext",
     "SchemaChecker",

@@ -40,6 +40,7 @@ from protokit.schema.git import (
     GitRefNotFoundError,
     ProtoImportError,
     ShallowRepoError,
+    commit_subject,
     commits_affecting_dep_tree,
     commits_in_range,
     extract_pool_from_ref,
@@ -48,9 +49,13 @@ from protokit.schema.git import (
     verify_ref,
 )
 from protokit.schema.model import (
+    BisectReport,
+    CommitDiagnostic,
     CompatibilityLevel,
     CompatibilityReport,
     Finding,
+    HistoryEntry,
+    HistoryReport,
     Severity,
 )
 
@@ -543,6 +548,93 @@ def _reject_quiet_plus_json(*, quiet: bool, output_format: str) -> None:
             "one suppresses stdout, the other asks for structured "
             "output. Pick one."
         )
+
+
+def _history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
+    """Project a ``HistoryReport`` into the legacy JSON payload.
+
+    Preserves the key set the ``history`` subcommand has emitted
+    since Phase 2: ``range``, ``old``, ``new``, ``commits_walked``,
+    ``entries`` (each with ``old`` / ``new`` / ``compatible`` /
+    ``findings`` / ``diagnostics``), and top-level ``diagnostics``.
+    Fields on the dataclass that are not in the legacy shape (e.g.
+    ``HistoryEntry.commit_subject``) are intentionally omitted —
+    the regression contract is structural equivalence with the
+    pre-refactor output.
+    """
+    return {
+        "range": report.range_spec,
+        "old": report.old_sha,
+        "new": report.new_sha,
+        "commits_walked": report.commits_walked,
+        "entries": [
+            {
+                "old": entry.parent_sha,
+                "new": entry.commit_sha,
+                "compatible": entry.report.is_compatible,
+                "findings": [
+                    {
+                        "path": str(f.path),
+                        "rule_id": f.rule_id,
+                        "severity": f.severity.value,
+                        "direction": f.direction.value,
+                        "message": f.message,
+                    }
+                    for f in entry.report.findings
+                ],
+                "diagnostics": [
+                    {"level": d.level, "path": d.path, "message": d.message}
+                    for d in entry.report.diagnostics
+                ],
+            }
+            for entry in report.entries
+        ],
+        "diagnostics": [
+            {
+                "commit": d.commit,
+                "level": d.level,
+                "path": d.path,
+                "message": d.message,
+            }
+            for d in report.diagnostics
+        ],
+    }
+
+
+def _bisect_report_to_dict(report: BisectReport) -> dict[str, Any]:
+    """Project a ``BisectReport`` into the legacy JSON payload.
+
+    Mirrors the shape the ``bisect`` subcommand has emitted since
+    Phase 2: ``range``, ``old``, ``new``, ``breaking_commit``,
+    ``findings`` (for the breaking commit), ``commits_walked``,
+    ``diagnostics``.
+    """
+    return {
+        "range": report.range_spec,
+        "old": report.old_sha,
+        "new": report.new_sha,
+        "breaking_commit": report.breaking_commit,
+        "findings": [
+            {
+                "path": str(f.path),
+                "rule_id": f.rule_id,
+                "severity": f.severity.value,
+                "direction": f.direction.value,
+                "message": f.message,
+            }
+            for f in report.breaking_findings
+        ],
+        "commits_walked": report.commits_walked,
+        "diagnostics": [
+            {
+                "commit": d.commit,
+                "level": d.level,
+                "path": d.path,
+                "message": d.message,
+            }
+            for d in report.diagnostics
+        ],
+    }
 
 
 def _resolve_common_flags(
@@ -1058,16 +1150,15 @@ def history(
         error_exit(str(exc))
 
     if not commits:
+        empty_report = HistoryReport(
+            range_spec=range_spec,
+            old_sha=old_endpoint,
+            new_sha=new_endpoint,
+            commits_walked=0,
+        )
         if not quiet:
             if output_format.lower() == "json":
-                click.echo(json.dumps({
-                    "range": range_spec,
-                    "old": old_endpoint,
-                    "new": new_endpoint,
-                    "commits_walked": 0,
-                    "entries": [],
-                    "diagnostics": [],
-                }, indent=2))
+                click.echo(json.dumps(_history_report_to_dict(empty_report), indent=2))
             else:
                 click.echo(f"# {range_spec}: no commits touch {proto_file}")
         sys.exit(0)
@@ -1087,8 +1178,8 @@ def history(
         pairs.append((prev, sha))
         prev = sha
 
-    entries: list[dict[str, Any]] = []
-    aggregated_diagnostics: list[dict[str, Any]] = []
+    entries: list[HistoryEntry] = []
+    aggregated_diagnostics: list[CommitDiagnostic] = []
     any_findings = False
     any_diagnostics = False
     for old_ref, new_ref in pairs:
@@ -1122,54 +1213,50 @@ def history(
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
                 click.echo(f"{prefix} ({new_ref[:12]}): {d}", err=True)
-                aggregated_diagnostics.append({
-                    "commit": new_ref,
-                    "level": d.level,
-                    "path": d.path,
-                    "message": d.message,
-                })
+                aggregated_diagnostics.append(CommitDiagnostic(
+                    commit=new_ref,
+                    level=d.level,
+                    path=d.path,
+                    message=d.message,
+                ))
         if report.findings:
             any_findings = True
 
-        entries.append({
-            "old": old_ref,
-            "new": new_ref,
-            "compatible": report.is_compatible,
-            "findings": [
-                {
-                    "path": str(f.path),
-                    "rule_id": f.rule_id,
-                    "severity": f.severity.value,
-                    "direction": f.direction.value,
-                    "message": f.message,
-                }
-                for f in report.findings
-            ],
-            "diagnostics": [
-                {"level": d.level, "path": d.path, "message": d.message}
-                for d in report.diagnostics
-            ],
-        })
+        try:
+            subject = commit_subject(new_ref)
+        except GitRefNotFoundError:
+            subject = ""
+        entries.append(HistoryEntry(
+            commit_sha=new_ref,
+            parent_sha=old_ref,
+            commit_subject=subject,
+            report=report,
+        ))
+
+    history_report = HistoryReport(
+        range_spec=range_spec,
+        old_sha=old_endpoint,
+        new_sha=new_endpoint,
+        commits_walked=len(commits),
+        entries=entries,
+        diagnostics=aggregated_diagnostics,
+    )
 
     if not quiet:
         if output_format.lower() == "json":
-            click.echo(json.dumps({
-                "range": range_spec,
-                "old": old_endpoint,
-                "new": new_endpoint,
-                "commits_walked": len(commits),
-                "entries": entries,
-                "diagnostics": aggregated_diagnostics,
-            }, indent=2))
+            click.echo(json.dumps(_history_report_to_dict(history_report), indent=2))
         else:
-            for entry in entries:
-                short = entry["new"][:12]
-                verdict = "OK" if entry["compatible"] else "BROKEN"
-                click.echo(f"{short} {verdict} ({len(entry['findings'])} finding(s))")
-                for f in entry["findings"]:
+            for entry in history_report.entries:
+                short = entry.commit_sha[:12]
+                verdict = "OK" if entry.report.is_compatible else "BROKEN"
+                click.echo(
+                    f"{short} {verdict} "
+                    f"({len(entry.report.findings)} finding(s))"
+                )
+                for f in entry.report.findings:
                     click.echo(
-                        f"    [{f['severity']}/{f['direction']}] "
-                        f"{f['path']}: {f['message']} ({f['rule_id']})"
+                        f"    [{f.severity.value}/{f.direction.value}] "
+                        f"{f.path}: {f.message} ({f.rule_id})"
                     )
 
     if any_diagnostics:
@@ -1356,49 +1443,43 @@ def bisect(
         error_exit(str(exc))
 
     json_mode = output_format.lower() == "json"
+    range_spec = f"{old_ref}..{new_ref}"
 
     def _emit_and_exit(
         *,
         breaking_commit: str | None,
-        breaking_findings: list,
-        diagnostics_payload: list[dict[str, Any]],
+        breaking_findings: list[Finding],
+        diagnostics: list[CommitDiagnostic],
+        commits_walked: int,
         exit_code: int,
     ) -> None:
         """Render the final output and exit."""
         if quiet:
             sys.exit(exit_code)
+        bisect_report = BisectReport(
+            range_spec=range_spec,
+            old_sha=old_sha,
+            new_sha=new_sha,
+            breaking_commit=breaking_commit,
+            commits_walked=commits_walked,
+            breaking_findings=breaking_findings,
+            diagnostics=diagnostics,
+        )
         if json_mode:
-            click.echo(json.dumps({
-                "range": f"{old_ref}..{new_ref}",
-                "old": old_sha,
-                "new": new_sha,
-                "breaking_commit": breaking_commit,
-                "findings": [
-                    {
-                        "path": str(f.path),
-                        "rule_id": f.rule_id,
-                        "severity": f.severity.value,
-                        "direction": f.direction.value,
-                        "message": f.message,
-                    }
-                    for f in breaking_findings
-                ],
-                "commits_walked": len(commits),
-                "diagnostics": diagnostics_payload,
-            }, indent=2))
+            click.echo(json.dumps(_bisect_report_to_dict(bisect_report), indent=2))
         else:
             if breaking_commit is not None:
                 click.echo(f"first breaking commit: {breaking_commit}")
                 for f in breaking_findings:
                     click.echo(f"  {f}")
-            elif not commits:
+            elif commits_walked == 0:
                 click.echo(
-                    f"# {old_ref}..{new_ref}: no commits touch {proto_file}"
+                    f"# {range_spec}: no commits touch {proto_file}"
                 )
             else:
                 click.echo(
-                    f"# {old_ref}..{new_ref}: no break found across "
-                    f"{len(commits)} commit(s)"
+                    f"# {range_spec}: no break found across "
+                    f"{commits_walked} commit(s)"
                 )
         sys.exit(exit_code)
 
@@ -1406,7 +1487,8 @@ def bisect(
         _emit_and_exit(
             breaking_commit=None,
             breaking_findings=[],
-            diagnostics_payload=[],
+            diagnostics=[],
+            commits_walked=0,
             exit_code=0,
         )
 
@@ -1420,10 +1502,10 @@ def bisect(
     # Accumulators — used by the --keep-going path AND the
     # JSON output shape so every invocation emits the same
     # top-level keys.
-    diagnostics_payload: list[dict[str, Any]] = []
+    diagnostics: list[CommitDiagnostic] = []
     any_diagnostics = False
     first_break_sha: str | None = None
-    first_break_findings: list = []
+    first_break_findings: list[Finding] = []
 
     for sha in commits:
         try:
@@ -1450,19 +1532,20 @@ def bisect(
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
                 click.echo(f"{prefix} ({sha[:12]}): {d}", err=True)
-                diagnostics_payload.append({
-                    "commit": sha,
-                    "level": d.level,
-                    "path": d.path,
-                    "message": d.message,
-                })
+                diagnostics.append(CommitDiagnostic(
+                    commit=sha,
+                    level=d.level,
+                    path=d.path,
+                    message=d.message,
+                ))
             if not keep_going:
                 # Stop-fast: assume the diagnostic invalidates any
                 # subsequent result.
                 _emit_and_exit(
                     breaking_commit=first_break_sha,
                     breaking_findings=first_break_findings,
-                    diagnostics_payload=diagnostics_payload,
+                    diagnostics=diagnostics,
+                    commits_walked=len(commits),
                     exit_code=2,
                 )
         if report.findings and first_break_sha is None:
@@ -1472,7 +1555,8 @@ def bisect(
                 _emit_and_exit(
                     breaking_commit=first_break_sha,
                     breaking_findings=first_break_findings,
-                    diagnostics_payload=diagnostics_payload,
+                    diagnostics=diagnostics,
+                    commits_walked=len(commits),
                     exit_code=1,
                 )
 
@@ -1486,7 +1570,8 @@ def bisect(
     _emit_and_exit(
         breaking_commit=first_break_sha,
         breaking_findings=first_break_findings,
-        diagnostics_payload=diagnostics_payload,
+        diagnostics=diagnostics,
+        commits_walked=len(commits),
         exit_code=exit_code,
     )
 

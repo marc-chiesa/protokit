@@ -304,3 +304,151 @@ class CompatibilityReport:
             is INCOMPATIBLE).
         """
         return bool(self.findings)
+
+
+@dataclass(frozen=True)
+class CommitDiagnostic:
+    """A diagnostic attributed to a specific git commit.
+
+    Used by the aggregate history/bisect reports to preserve
+    commit identity on diagnostics that are collected across a
+    range of comparisons. Mirrors the shape of the per-commit
+    diagnostic dict the CLI has emitted since Phase 2.
+
+    Attributes:
+        commit: SHA of the commit whose comparison produced the
+            diagnostic. Format matches what the caller passed in
+            (typically a resolved full SHA).
+        level: Severity level — ``"info"``, ``"warning"``, or
+            ``"error"``. Matches ``Diagnostic.level``.
+        path: Dotted path into the schema the diagnostic is
+            attributed to, or ``None`` for global diagnostics.
+        message: Human-readable diagnostic text.
+    """
+
+    commit: str
+    level: str
+    path: str | None
+    message: str
+
+
+@dataclass(frozen=True)
+class HistoryEntry:
+    """One commit-pair comparison inside a ``HistoryReport``.
+
+    Each entry represents the compatibility check between a commit
+    and its immediate predecessor in the walk. Per-commit
+    diagnostics live on ``report.diagnostics`` (no commit field
+    needed because the entry itself carries the SHA).
+
+    Attributes:
+        commit_sha: Resolved SHA of the new side of the pair.
+            Matches the ``"new"`` key in the legacy JSON shape.
+        parent_sha: Resolved SHA of the old side of the pair — the
+            anchor for the first entry in a walk, the previous
+            entry's ``commit_sha`` for subsequent entries. Matches
+            the ``"old"`` key in the legacy JSON shape.
+        commit_subject: First line of the commit message, or the
+            full message verbatim when there is no newline. Used
+            by JUnit/SARIF formatters for suite/testcase names;
+            not part of the legacy JSON shape.
+        report: Compatibility report for this commit pair, already
+            filtered by the active profile.
+    """
+
+    commit_sha: str
+    parent_sha: str
+    commit_subject: str
+    report: CompatibilityReport
+
+
+@dataclass(frozen=True)
+class HistoryReport:
+    """Aggregate result of ``protokit compat history`` over a range.
+
+    Constructed by the ``history`` subcommand and passed to the
+    ``COMPAT_HISTORY`` formatter. ``entries`` pairs each
+    dep-affecting commit with its predecessor; ``commits_walked``
+    is the raw count of commits enumerated and is NOT derivable
+    from ``len(entries)`` because pairing consumes one commit as
+    the anchor.
+
+    Attributes:
+        range_spec: User-supplied range string (e.g.
+            ``"HEAD~5..HEAD"``). Echoed back so downstream
+            consumers can correlate output to invocation.
+        old_sha: Resolved SHA of the range's oldest endpoint.
+        new_sha: Resolved SHA of the range's newest endpoint.
+        commits_walked: Number of dep-affecting commits enumerated
+            in the range. May exceed ``len(entries)`` when the
+            range starts at the repo root or when enumeration
+            returns a single anchor.
+        entries: Per-commit comparison entries, ordered oldest
+            → newest by the walk.
+        diagnostics: Aggregated per-commit diagnostics. Each
+            entry carries its commit SHA so the list can be
+            filtered or grouped without losing attribution.
+    """
+
+    range_spec: str
+    old_sha: str
+    new_sha: str
+    commits_walked: int
+    entries: tuple[HistoryEntry, ...] = ()
+    diagnostics: tuple[CommitDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Coerce list inputs to tuples so frozen invariants hold.
+
+        Callers constructing from CLI processing typically pass
+        lists. Frozen dataclasses do not coerce, so we do it here
+        to keep the API ergonomic while preserving immutability.
+        """
+        if not isinstance(self.entries, tuple):
+            object.__setattr__(self, "entries", tuple(self.entries))
+        if not isinstance(self.diagnostics, tuple):
+            object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+
+
+@dataclass(frozen=True)
+class BisectReport:
+    """Aggregate result of ``protokit compat bisect`` over a range.
+
+    Unlike ``HistoryReport``, bisect collapses per-commit findings
+    and reports at the level of the range as a whole — the
+    meaningful output is whether and where compatibility broke.
+
+    Attributes:
+        range_spec: User-supplied range expression (often
+            ``"OLD..NEW"``).
+        old_sha: Resolved SHA of the ``--old`` endpoint.
+        new_sha: Resolved SHA of the ``--new`` endpoint.
+        breaking_commit: Full SHA of the first commit where
+            compatibility broke, or ``None`` if no break was
+            found in the range.
+        breaking_findings: Findings emitted by the first breaking
+            commit's compatibility check. Empty tuple when no
+            break was found. Downstream formatters render these
+            as the detail for the breaking commit.
+        commits_walked: Number of commits walked during the
+            bisect. Independent from ``len(diagnostics)``.
+        diagnostics: Aggregated per-commit diagnostics collected
+            across the bisect, each carrying its commit SHA.
+    """
+
+    range_spec: str
+    old_sha: str
+    new_sha: str
+    breaking_commit: str | None
+    commits_walked: int
+    breaking_findings: tuple[Finding, ...] = ()
+    diagnostics: tuple[CommitDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Coerce list inputs to tuples. See ``HistoryReport.__post_init__``."""
+        if not isinstance(self.breaking_findings, tuple):
+            object.__setattr__(
+                self, "breaking_findings", tuple(self.breaking_findings),
+            )
+        if not isinstance(self.diagnostics, tuple):
+            object.__setattr__(self, "diagnostics", tuple(self.diagnostics))

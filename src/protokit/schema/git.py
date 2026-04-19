@@ -176,6 +176,37 @@ def verify_ref(ref: str, *, cwd: Path | None = None) -> bool:
         return False
 
 
+def commit_subject(ref: str, *, cwd: Path | None = None) -> str:
+    """Return the single-line subject of a commit.
+
+    Uses ``git log -1 --format=%s`` so the output is just the
+    commit message's first line (or the full message when it
+    has no newline). Empty subjects (pathological commits) are
+    returned as the empty string.
+
+    Args:
+        ref: Any git revision expression that resolves to a
+            single commit (SHA, tag, branch name).
+        cwd: Working directory for the git invocation.
+
+    Returns:
+        The commit's subject line, without trailing newline.
+
+    Raises:
+        GitRefNotFoundError: ``ref`` does not resolve.
+    """
+    try:
+        out = _run_git(
+            ["log", "-1", "--format=%s", ref], cwd=cwd, text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise GitRefNotFoundError(
+            f"could not read subject for {ref!r}: {stderr}"
+        ) from exc
+    return str(out).rstrip("\n")
+
+
 def merge_base(
     ref_a: str, ref_b: str, *, cwd: Path | None = None,
 ) -> str:
