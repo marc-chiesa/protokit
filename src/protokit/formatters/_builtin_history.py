@@ -9,7 +9,10 @@ JSON contract stays in one place.
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 
+from protokit.formatters import _junit_xml as junit
+from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
     FormatterContext,
     FormatterKind,
@@ -77,5 +80,99 @@ def history_json(report: HistoryReport, ctx: FormatterContext) -> str:
     return json.dumps(_history_report_to_dict(report), indent=2)
 
 
+def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
+    """Render a HistoryReport as a ``<testsuites>`` aggregating per-commit suites.
+
+    Each ``HistoryEntry`` becomes one ``<testsuite>`` rendered
+    by the COMPAT JUnit formatter; suite-level ``package`` is
+    the commit subject and ``id`` is the entry index. The
+    aggregated xsd requires both attributes.
+
+    Empty walks emit an empty ``<testsuites/>`` document — the
+    Apache Ant xsd allows zero ``<testsuite>`` children under
+    ``<testsuites>``.
+    """
+    # Local import — _builtin_compat owns _build_compat_testsuite,
+    # and going through the package-level import would create a
+    # cycle at module load time.
+    from protokit.formatters._builtin_compat import _build_compat_testsuite
+
+    root = ET.Element("testsuites")
+    for index, entry in enumerate(report.entries):
+        # Build the inner suite via the COMPAT helper for
+        # per-finding semantics, then upgrade it to an
+        # aggregated testsuite by adding the xsd-required
+        # ``package`` and ``id`` attributes.
+        entry_ctx = FormatterContext(
+            subcommand=ctx.subcommand,
+            target_type=ctx.target_type,
+            old_target_type=ctx.old_target_type,
+            new_target_type=ctx.new_target_type,
+            level=ctx.level,
+            range_spec=ctx.range_spec,
+            old_ref=entry.parent_sha,
+            new_ref=entry.commit_sha,
+            proto_file=ctx.proto_file,
+        )
+        suite = _build_compat_testsuite(entry.report, entry_ctx)
+        suite.set("name", f"commit-{entry.commit_sha[:12]}")
+        suite.set("package", junit.xml_safe_text(entry.commit_subject or ""))
+        suite.set("id", str(index))
+        root.append(suite)
+    return junit.serialize(root)
+
+
+def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
+    """Render a HistoryReport as SARIF 2.1.0 JSON.
+
+    Single ``run`` aggregating findings across every commit;
+    each result carries ``partialFingerprints = {"commit": sha}``
+    so consumers can group by commit. Per-commit error and
+    warning diagnostics flow into invocation notifications with
+    the same commit fingerprint. The aggregated
+    ``HistoryReport.diagnostics`` are also surfaced under their
+    commit key.
+    """
+    from protokit.formatters._builtin_compat import _protokit_version
+
+    findings_with_context: list = []
+    error_messages: list[tuple[str | None, str]] = []
+    warning_messages: list[tuple[str | None, str]] = []
+
+    for entry in report.entries:
+        commit = entry.commit_sha
+        for f in entry.report.findings:
+            findings_with_context.append(
+                (f, ctx.proto_file, {"commit": commit}),
+            )
+        per_errs, per_warns = sarif.collect_diagnostics_from_report(
+            entry.report, commit=commit,
+        )
+        error_messages.extend(per_errs)
+        warning_messages.extend(per_warns)
+
+    # Aggregate-level diagnostics keep their own commit
+    # attribution from the CommitDiagnostic itself.
+    for d in report.diagnostics:
+        target = error_messages if d.level == "error" else warning_messages
+        target.append((d.commit, d.message))
+
+    run = sarif.build_run(
+        findings_with_context=findings_with_context,
+        error_messages=error_messages,
+        warning_messages=warning_messages,
+        properties={
+            "range_spec": report.range_spec,
+            "old_sha": report.old_sha,
+            "new_sha": report.new_sha,
+            "commits_walked": report.commits_walked,
+        },
+        protokit_version=_protokit_version(),
+    )
+    return json.dumps(sarif.build_document(runs=[run]), indent=2)
+
+
 _register_builtin("human", history_human, kind=FormatterKind.COMPAT_HISTORY)
 _register_builtin("json", history_json, kind=FormatterKind.COMPAT_HISTORY)
+_register_builtin("junit", history_junit, kind=FormatterKind.COMPAT_HISTORY)
+_register_builtin("sarif", history_sarif, kind=FormatterKind.COMPAT_HISTORY)

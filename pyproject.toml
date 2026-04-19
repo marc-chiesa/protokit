@@ -38,6 +38,18 @@ dependencies = [
 compiler = [
     "protoxy>=0.7",
 ]
+# Development / test-only dependencies.
+#  - xmlschema validates JUnit XML output against the vendored
+#    Apache Ant JUnit xsd in tests/fixtures/junit-xml/.
+#  - jsonschema validates SARIF 2.1.0 output against the vendored
+#    OASIS schema in tests/fixtures/sarif/.
+# Neither is needed at runtime — formatters emit XML/JSON via
+# stdlib only.
+dev = [
+    "pytest",
+    "xmlschema>=2.0",
+    "jsonschema>=4.0",
+]
 
 [project.scripts]
 protokit = "protokit.cli:main"

@@ -42,6 +42,13 @@ from protokit.formatters._registry import (
     register_formatter,
 )
 
+# Shared helpers must import before any built-in module that
+# uses them, otherwise the built-in's top-level
+# ``from protokit.formatters import _junit_xml as junit`` would
+# trigger a partial re-entry into this __init__ at module load.
+from protokit.formatters import _junit_xml  # noqa: F401, E402
+from protokit.formatters import _sarif_json  # noqa: F401, E402
+
 # Import built-in modules to trigger their _register_builtin
 # calls. The order here doesn't matter — each module owns its
 # own (kind, name) keyspace and registration is idempotent.

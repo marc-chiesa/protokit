@@ -16,7 +16,6 @@ from protokit.formatters import (
     load_formatter_pack,
     register_formatter,
 )
-from protokit.formatters._registry import _register_builtin
 
 
 def _identity_formatter(report: object, ctx: FormatterContext) -> str:
@@ -130,32 +129,31 @@ class TestReregistration:
 
 
 class TestBuiltinReservation:
+    # Use real built-in names registered at package import (Unit 3+).
+    # This avoids the previous cleanup hack that was destructive once
+    # the built-ins became real.
+
     def test_cannot_shadow_builtin_without_replace(self) -> None:
-        # Simulate a built-in registration via the internal helper
-        # (Unit 3 will populate these for real).
-        _register_builtin("junit", _identity_formatter, kind=FormatterKind.COMPAT)
-        try:
-            with pytest.raises(FormatterError, match="built-in"):
-                register_formatter(
-                    "junit", _identity_formatter, kind=FormatterKind.COMPAT,
-                )
-        finally:
-            from protokit.formatters._registry import _BUILTIN_NAMES, _REGISTRY
-            _BUILTIN_NAMES.discard((FormatterKind.COMPAT, "junit"))
-            _REGISTRY.pop((FormatterKind.COMPAT, "junit"), None)
+        # `human` is a built-in for every kind.
+        with pytest.raises(FormatterError, match="built-in"):
+            register_formatter(
+                "human", _identity_formatter, kind=FormatterKind.COMPAT,
+            )
 
     def test_cannot_shadow_builtin_even_with_replace(self) -> None:
-        _register_builtin("junit", _identity_formatter, kind=FormatterKind.COMPAT)
-        try:
-            with pytest.raises(FormatterError, match="built-in"):
-                register_formatter(
-                    "junit", _identity_formatter,
-                    kind=FormatterKind.COMPAT, replace=True,
-                )
-        finally:
-            from protokit.formatters._registry import _BUILTIN_NAMES, _REGISTRY
-            _BUILTIN_NAMES.discard((FormatterKind.COMPAT, "junit"))
-            _REGISTRY.pop((FormatterKind.COMPAT, "junit"), None)
+        # `junit` is a built-in for COMPAT.
+        with pytest.raises(FormatterError, match="built-in"):
+            register_formatter(
+                "junit", _identity_formatter,
+                kind=FormatterKind.COMPAT, replace=True,
+            )
+
+    def test_case_insensitive_shadowing_check(self) -> None:
+        # The reservation lowercases names; uppercase still rejects.
+        with pytest.raises(FormatterError, match="built-in"):
+            register_formatter(
+                "HUMAN", _identity_formatter, kind=FormatterKind.DIFF,
+            )
 
 
 class TestListFormatters:
@@ -184,19 +182,15 @@ class TestClearUserFormatters:
             get_formatter("foo", FormatterKind.COMPAT)
 
     def test_preserves_builtins(self) -> None:
-        _register_builtin("human", _identity_formatter, kind=FormatterKind.COMPAT)
-        try:
-            register_formatter("foo", _identity_formatter, kind=FormatterKind.COMPAT)
-            clear_user_formatters()
-            # Built-in still resolvable.
-            assert get_formatter("human", FormatterKind.COMPAT) is _identity_formatter
-            # User entry gone.
-            with pytest.raises(KeyError):
-                get_formatter("foo", FormatterKind.COMPAT)
-        finally:
-            from protokit.formatters._registry import _BUILTIN_NAMES, _REGISTRY
-            _BUILTIN_NAMES.discard((FormatterKind.COMPAT, "human"))
-            _REGISTRY.pop((FormatterKind.COMPAT, "human"), None)
+        # Real built-ins are registered at protokit.formatters import.
+        # User entries should be wiped while built-ins stay resolvable.
+        register_formatter("foo", _identity_formatter, kind=FormatterKind.COMPAT)
+        clear_user_formatters()
+        # Built-in is still callable (the real human formatter).
+        assert callable(get_formatter("human", FormatterKind.COMPAT))
+        # User entry is gone.
+        with pytest.raises(KeyError):
+            get_formatter("foo", FormatterKind.COMPAT)
 
 
 class TestLoadFormatterPack:

@@ -18,10 +18,12 @@ from __future__ import annotations
 import base64
 import json
 import math
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import click
 
+from protokit.formatters import _junit_xml as junit
 from protokit.formatters._registry import (
     FormatterContext,
     FormatterKind,
@@ -250,5 +252,91 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
     return json.dumps(output, indent=2, default=str)
 
 
+def _difference_line(diff: Difference) -> str:
+    """Single-line summary of a Difference for JUnit failure body.
+
+    Plain text, no ANSI colors, no Unicode arrows — keeps the
+    body parseable by CI consumers that surface failure text
+    in HTML or terminal-unaware contexts.
+    """
+    path = str(diff.path) if diff.path else "(root)"
+    match diff.change_type:
+        case ChangeType.ADDED:
+            return f"+ {path}: {diff.new_value!r}"
+        case ChangeType.REMOVED:
+            return f"- {path}: {diff.old_value!r}"
+        case ChangeType.MODIFIED:
+            return f"~ {path}: {diff.old_value!r} -> {diff.new_value!r}"
+        case ChangeType.TYPE_CHANGED:
+            return f"T {path}: type {diff.left_type} -> {diff.right_type}"
+        case ChangeType.FIELD_NUMBER_CHANGED:
+            return (
+                f"# {path}: field# {diff.left_field_number} -> "
+                f"{diff.right_field_number}"
+            )
+        case ChangeType.CARDINALITY_CHANGED:
+            return f"C {path}: {diff.left_label} -> {diff.right_label}"
+    raise AssertionError(f"unhandled change type: {diff.change_type}")  # unreachable
+
+
+def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
+    """Render a DiffResult as JUnit XML using a binary-result pattern.
+
+    Emits a single ``<testsuite>`` containing exactly one
+    ``<testcase>``. The case passes when ``result.has_changes()``
+    is False; otherwise it carries a ``<failure>`` whose body
+    lists each Difference on its own line.
+
+    Rationale (see plan Key Technical Decisions): a diff is one
+    assertion ("these messages are equal") with per-field
+    differences as evidence of the single failure. Per-difference
+    testcase rendering would produce "100 tests / 100 failures"
+    noise in CI aggregators with no extra signal vs.
+    "1 test / 1 failure with 100 lines of body."
+
+    Args:
+        result: The DiffResult to render.
+        ctx: Formatter context (used only for warning attribution
+            via ``<system-out>``).
+
+    Returns:
+        UTF-8 XML string with the standard prolog.
+    """
+    del ctx
+    has_changes = result.has_changes()
+    n = len(result)
+    failures = 1 if has_changes else 0
+
+    suite = junit.make_testsuite(
+        name="protokit-diff",
+        tests=1,
+        failures=failures,
+        errors=0,
+    )
+    case = junit.make_testcase(
+        classname="diff", name="messages-equal",
+    )
+    if has_changes:
+        body = "\n".join(_difference_line(d) for d in result)
+        plural = "s" if n != 1 else ""
+        junit.append_failure(
+            case,
+            message=f"{n} difference{plural} found",
+            type_="diff",
+            body=body,
+        )
+    junit.add_testcase(suite, case)
+    if result.warnings:
+        junit.append_system_out(
+            suite, "\n".join(str(d) for d in result.warnings),
+        )
+
+    # Emit <testsuite> as root (the xsd's standalone form). The
+    # aggregating <testsuites> wrapper is reserved for HISTORY,
+    # which the xsd requires to set package/id on each child.
+    return junit.serialize(suite)
+
+
 _register_builtin("human", diff_human, kind=FormatterKind.DIFF)
 _register_builtin("json", diff_json, kind=FormatterKind.DIFF)
+_register_builtin("junit", diff_junit, kind=FormatterKind.DIFF)
