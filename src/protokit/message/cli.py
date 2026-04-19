@@ -12,12 +12,8 @@ Exit codes: 0 = equal, 1 = different, 2 = error
 
 from __future__ import annotations
 
-import base64
-import json
-import math
 import sys
 from pathlib import Path
-from typing import Any
 
 import click
 from google.protobuf import (
@@ -32,17 +28,13 @@ from protokit._cli_utils import (
     compile_proto as _compile_proto,
     error_exit as _error,
     load_descriptor_pool as _load_descriptor_pool,
+    load_formatter_packs,
+    reject_quiet_plus_structured,
+    resolve_and_validate_formatter,
+    run_formatter_safely,
 )
+from protokit.formatters import FormatterContext, FormatterKind
 from protokit.message.differ import MessageDifferencer
-from protokit.message.formatting import format_value as _format_value
-from protokit.message.model import (
-    ChangeType,
-    Diagnostic,
-    Difference,
-    DiffResult,
-    EnumValue,
-    FieldPath,
-)
 
 
 def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> type:
@@ -179,200 +171,6 @@ def _validate_flag_groups(
 
 
 # ---------------------------------------------------------------------------
-# Output formatting
-# ---------------------------------------------------------------------------
-
-
-_CHANGE_SYMBOLS = {
-    ChangeType.ADDED: ("+", "green"),
-    ChangeType.REMOVED: ("-", "red"),
-    ChangeType.MODIFIED: ("~", "yellow"),
-    ChangeType.TYPE_CHANGED: ("T", "magenta"),
-    ChangeType.FIELD_NUMBER_CHANGED: ("#", "cyan"),
-    ChangeType.CARDINALITY_CHANGED: ("C", "blue"),
-}
-
-
-def _format_diff_human(diff: Difference) -> str:
-    """Format a single difference for human-readable colored output.
-
-    Args:
-        diff: The Difference to format.
-
-    Returns:
-        A string with ANSI color codes suitable for terminal display.
-    """
-    symbol, color = _CHANGE_SYMBOLS[diff.change_type]
-    path_str = str(diff.path) if diff.path else "(root)"
-    prefix = click.style(f"  {symbol} ", fg=color, bold=True)
-
-    match diff.change_type:
-        case ChangeType.ADDED:
-            val = _format_value(diff.new_value)
-            return f"{prefix}{click.style(path_str, bold=True)}: {click.style(val, fg='green')}"
-        case ChangeType.REMOVED:
-            val = _format_value(diff.old_value)
-            return f"{prefix}{click.style(path_str, bold=True)}: {click.style(val, fg='red')}"
-        case ChangeType.MODIFIED:
-            old = _format_value(diff.old_value)
-            new = _format_value(diff.new_value)
-            return (
-                f"{prefix}{click.style(path_str, bold=True)}: "
-                f"{click.style(old, fg='red')} → {click.style(new, fg='green')}"
-            )
-        case ChangeType.TYPE_CHANGED:
-            return (
-                f"{prefix}{click.style(path_str, bold=True)}: "
-                f"type {click.style(str(diff.left_type), fg='red')} → "
-                f"{click.style(str(diff.right_type), fg='green')}"
-            )
-        case ChangeType.FIELD_NUMBER_CHANGED:
-            return (
-                f"{prefix}{click.style(path_str, bold=True)}: "
-                f"field# {click.style(str(diff.left_field_number), fg='red')} → "
-                f"{click.style(str(diff.right_field_number), fg='green')}"
-            )
-        case ChangeType.CARDINALITY_CHANGED:
-            return (
-                f"{prefix}{click.style(path_str, bold=True)}: "
-                f"{click.style(str(diff.left_label), fg='red')} → "
-                f"{click.style(str(diff.right_label), fg='green')}"
-            )
-    raise AssertionError(f"Unhandled change type: {diff.change_type}")  # unreachable
-
-
-def _output_human(result: DiffResult, verbose: bool) -> None:
-    """Print human-readable colored diff output to stdout.
-
-    Args:
-        result: The DiffResult to display.
-        verbose: If True, show warnings even when messages are equal.
-    """
-    if not result.has_changes():
-        click.echo(click.style("Messages are equal.", fg="green"))
-        if verbose and result.diagnostics:
-            for d in result.diagnostics:
-                _echo_diagnostic(d)
-        return
-
-    click.echo(click.style(
-        f"Found {len(result)} difference{'s' if len(result) != 1 else ''}:",
-        bold=True,
-    ))
-    click.echo()
-
-    for diff in result:
-        click.echo(_format_diff_human(diff))
-
-    if result.diagnostics:
-        click.echo()
-        if result.errors:
-            click.echo(click.style("Errors:", fg="red", bold=True))
-            for d in result.errors:
-                click.echo(click.style(f"  ✗ {d}", fg="red"))
-        if result.warnings:
-            click.echo(click.style("Warnings:", fg="yellow", bold=True))
-            for d in result.warnings:
-                click.echo(click.style(f"  ⚠ {d}", fg="yellow"))
-
-    if not result.is_complete:
-        click.echo()
-        click.echo(click.style(
-            f"  ⚠ Comparison truncated at max depth. "
-            f"{len(result.truncated_paths)} subtree(s) not fully compared.",
-            fg="yellow",
-        ))
-
-
-def _echo_diagnostic(d: Diagnostic) -> None:
-    """Render a single Diagnostic to stdout with severity-matched color."""
-    if d.level == "error":
-        click.echo(click.style(f"  ✗ {d}", fg="red"))
-    else:
-        click.echo(click.style(f"  ⚠ {d}", fg="yellow"))
-
-
-def _serialize_value(val: object) -> Any:
-    """Serialize a value for JSON output.
-
-    Args:
-        val: The value to serialize (may be None, EnumValue, bytes, or
-            any JSON-compatible type).
-
-    Returns:
-        A JSON-serializable representation: ``None`` for None, a dict
-        for EnumValue, base64 string for bytes, or the value as-is.
-    """
-    if val is None:
-        return None
-    if isinstance(val, EnumValue):
-        return {"name": val.name, "number": val.number}
-    if isinstance(val, bytes):
-        return base64.b64encode(val).decode("ascii")
-    if isinstance(val, bool):
-        return val  # must check before int since bool is a subclass of int
-    if isinstance(val, float):
-        if math.isnan(val):
-            return {"special_float": "NaN"}
-        if math.isinf(val):
-            return {"special_float": "Infinity" if val > 0 else "-Infinity"}
-        return val
-    return val
-
-
-def _output_json(result: DiffResult) -> None:
-    """Print JSON-formatted diff output to stdout.
-
-    Args:
-        result: The DiffResult to serialize and print.
-    """
-    diffs = []
-    for d in result:
-        entry: dict[str, Any] = {
-            "path": str(d.path) if d.path else "",
-            "change_type": d.change_type.value,
-        }
-
-        match d.change_type:
-            case ChangeType.ADDED | ChangeType.REMOVED | ChangeType.MODIFIED:
-                entry["old_value"] = _serialize_value(d.old_value)
-                entry["new_value"] = _serialize_value(d.new_value)
-                entry["field_type"] = d.field_type
-            case ChangeType.TYPE_CHANGED:
-                entry["old_value"] = None
-                entry["new_value"] = None
-                entry["field_type"] = None
-                entry["left_type"] = d.left_type
-                entry["right_type"] = d.right_type
-            case ChangeType.FIELD_NUMBER_CHANGED:
-                entry["old_value"] = None
-                entry["new_value"] = None
-                entry["field_type"] = d.field_type
-                entry["left_field_number"] = d.left_field_number
-                entry["right_field_number"] = d.right_field_number
-            case ChangeType.CARDINALITY_CHANGED:
-                entry["old_value"] = None
-                entry["new_value"] = None
-                entry["field_type"] = d.field_type
-                entry["left_label"] = d.left_label
-                entry["right_label"] = d.right_label
-
-        diffs.append(entry)
-
-    diagnostics = [
-        {"level": d.level, "path": d.path, "message": d.message}
-        for d in result.diagnostics
-    ]
-
-    output = {
-        "equal": not result.has_changes(),
-        "differences": diffs,
-        "diagnostics": diagnostics,
-    }
-    click.echo(json.dumps(output, indent=2, default=str))
-
-
-# ---------------------------------------------------------------------------
 # Main CLI command
 # ---------------------------------------------------------------------------
 
@@ -395,7 +193,18 @@ def _output_json(result: DiffResult) -> None:
 @click.option("--text-format", "use_text_format", is_flag=True, help="Parse input as protobuf text format.")
 @click.option("--json", "use_json", is_flag=True, help="Parse input as JSON-encoded protobuf.")
 # Output format
-@click.option("--format", "output_format", type=click.Choice(["human", "json"]), default="human", help="Output format.")
+@click.option(
+    "--format", "output_format",
+    type=click.STRING, default="human",
+    help="Output format. Built-in: human, json, junit. "
+         "Use --formatter-module to add more.",
+)
+@click.option(
+    "--formatter-module", "formatter_modules",
+    multiple=True, metavar="MODULE",
+    help="Python module exposing a FORMATTERS list of "
+         "(name, fn, kind) tuples (repeatable).",
+)
 @click.option("--quiet", is_flag=True, help="Suppress output, exit code only.")
 @click.option("--verbose", is_flag=True, help="Show warnings even when messages are equal.")
 # Diff options
@@ -419,6 +228,7 @@ def main(
     use_text_format: bool,
     use_json: bool,
     output_format: str,
+    formatter_modules: tuple[str, ...],
     quiet: bool,
     verbose: bool,
     filter_path: str | None,
@@ -432,6 +242,8 @@ def main(
 
     EXIT CODES: 0 = equal, 1 = different, 2 = error.
     """
+    load_formatter_packs(formatter_modules)
+    reject_quiet_plus_structured(quiet=quiet, output_format=output_format)
     if use_text_format and use_json:
         _error("--text-format and --json are mutually exclusive.")
 
@@ -500,9 +312,29 @@ def main(
     if quiet:
         sys.exit(1 if result.has_changes() else 0)
 
-    if output_format == "json":
-        _output_json(result)
-    else:
-        _output_human(result, verbose)
+    # Equal-and-not-verbose case is a CLI concern: we want the
+    # legacy "Messages are equal." stub that doesn't echo
+    # diagnostics. The formatters always render diagnostics
+    # when present, so short-circuit before invoking them.
+    if (
+        output_format.lower() == "human"
+        and not result.has_changes()
+        and not verbose
+    ):
+        click.echo(click.style("Messages are equal.", fg="green"))
+        sys.exit(0)
+
+    fn = resolve_and_validate_formatter(output_format, FormatterKind.DIFF)
+    target_type = (
+        message_type if message_type is not None
+        else None
+    )
+    ctx = FormatterContext(
+        subcommand="diff",
+        target_type=target_type,
+        old_target_type=left_type,
+        new_target_type=right_type,
+    )
+    click.echo(run_formatter_safely(fn, result, ctx, name=output_format))
 
     sys.exit(1 if result.has_changes() else 0)

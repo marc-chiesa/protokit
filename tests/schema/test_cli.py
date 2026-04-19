@@ -1311,7 +1311,7 @@ class TestQuietJsonMutex:
         ])
         assert result.exit_code == 2
         assert "--quiet" in result.output
-        assert "--format json" in result.output
+        assert "json" in result.output.lower()
 
     def test_bisect_rejects_quiet_plus_json(
         self, git_repo: Path,
@@ -1324,7 +1324,8 @@ class TestQuietJsonMutex:
             "--quiet", "--format", "json",
         ])
         assert result.exit_code == 2
-        assert "mutually exclusive" in result.output
+        assert "--quiet" in result.output
+        assert "json" in result.output.lower()
 
     def test_history_rejects_quiet_plus_json(
         self, git_repo: Path,
@@ -1337,7 +1338,8 @@ class TestQuietJsonMutex:
             "--quiet", "--format", "json",
         ])
         assert result.exit_code == 2
-        assert "mutually exclusive" in result.output
+        assert "--quiet" in result.output
+        assert "json" in result.output.lower()
 
     def test_ci_rejects_quiet_plus_json(
         self, git_repo: Path,
@@ -1356,7 +1358,8 @@ class TestQuietJsonMutex:
             "--quiet", "--format", "json",
         ])
         assert result.exit_code == 2
-        assert "mutually exclusive" in result.output
+        assert "--quiet" in result.output
+        assert "json" in result.output.lower()
 
 
 class TestCiQuiet:

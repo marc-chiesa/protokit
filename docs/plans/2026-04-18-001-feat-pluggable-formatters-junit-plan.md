@@ -397,7 +397,7 @@ This is a new pattern in the project; document the choice in the dataclass docst
 
 ---
 
-- [ ] **Unit 4: Add JUnit and SARIF built-in formatters**
+- [x] **Unit 4: Add JUnit and SARIF built-in formatters**
 
 **Goal:** Four JUnit formatters (one per kind) plus three SARIF formatters (compat kinds). JUnit for DIFF uses a binary-result single-testcase pattern (pass if equal / fail with per-difference detail in body); JUnit for compat kinds uses per-finding testcase rendering. SARIF 2.1.0 for compat kinds targets GitHub Code Scanning consumption. Validates against GH Actions JUnit xsd and OASIS SARIF JSON schema respectively.
 
@@ -498,7 +498,7 @@ This is a new pattern in the project; document the choice in the dataclass docst
 
 ---
 
-- [ ] **Unit 5: CLI wire-up — dynamic `--format` + `--formatter-module` + exception handling**
+- [x] **Unit 5: CLI wire-up — dynamic `--format` + `--formatter-module` + exception handling**
 
 **Goal:** Replace `click.Choice` on every subcommand's `--format` with `click.STRING` + manual validation. Add `--formatter-module` (repeatable). Wire formatter exceptions to the CLI top-level error handler. Pass `FormatterContext` into the selected formatter.
 

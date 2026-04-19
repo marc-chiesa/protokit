@@ -7,14 +7,27 @@ point — consumers should invoke the CLIs, not import from here.
 
 from __future__ import annotations
 
+import importlib
+import io
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 from google.protobuf import descriptor_pb2, descriptor_pool
+
+from protokit.formatters import (
+    Formatter,
+    FormatterContext,
+    FormatterError,
+    FormatterKind,
+    get_formatter,
+    list_formatters,
+    load_formatter_pack,
+)
 
 
 def error_exit(message: str) -> NoReturn:
@@ -162,3 +175,123 @@ def _compile_with_protoc(
         return load_descriptor_pool(tmp_path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Formatter helpers — shared by every CLI subcommand that has --format
+# ---------------------------------------------------------------------------
+
+
+def load_formatter_packs(module_names: tuple[str, ...]) -> None:
+    """Import each ``--formatter-module`` and load its FORMATTERS pack.
+
+    Mirrors :func:`_load_rule_packs` in ``schema/cli.py``: each
+    name resolves via ``importlib.import_module`` and any error
+    surfaces verbatim through :func:`error_exit`. The
+    underlying :func:`~protokit.formatters.load_formatter_pack`
+    runs a two-phase load — staging entries first so a malformed
+    later entry doesn't leave half-loaded formatters behind.
+    """
+    for name in module_names:
+        try:
+            module = importlib.import_module(name)
+        except Exception as exc:
+            error_exit(f"failed to import formatter pack '{name}': {exc}")
+        try:
+            load_formatter_pack(module)
+        except (AttributeError, TypeError, FormatterError) as exc:
+            error_exit(f"failed to load formatter pack '{name}': {exc}")
+
+
+def resolve_and_validate_formatter(
+    name: str, kind: FormatterKind,
+) -> Formatter:
+    """Look up a formatter; exit with an actionable list on miss.
+
+    Always-on lower-casing matches the registry's
+    case-insensitive lookup so users can type ``JUnit`` or
+    ``junit`` interchangeably.
+
+    Raises:
+        SystemExit: Via :func:`error_exit` (code 2) when no
+            formatter is registered for ``(kind, name.lower())``.
+            The error names every available formatter for the
+            kind so the user can fix the typo without re-reading
+            the docs.
+    """
+    try:
+        return get_formatter(name, kind)
+    except KeyError:
+        available = ", ".join(list_formatters(kind))
+        error_exit(
+            f"unknown formatter '{name}'. "
+            f"Available for {kind.value}: {available}"
+        )
+
+
+def reject_quiet_plus_structured(
+    *, quiet: bool, output_format: str,
+) -> None:
+    """Reject ``--quiet --format <structured>`` combinations.
+
+    The two flags conflict in spirit: ``--quiet`` says "give me
+    no output, just an exit code"; a structured format says
+    "give me machine-parseable output." The legacy check only
+    rejected ``--quiet --format json``; this widened version
+    rejects every non-``human`` formatter so user-registered
+    structured formats (junit, sarif, custom slack-pack) get
+    the same loud-fail treatment instead of silently
+    swallowing their output under ``--quiet``.
+    """
+    if quiet and output_format.lower() != "human":
+        error_exit(
+            f"--quiet is incompatible with structured output format "
+            f"'{output_format}'. Drop --quiet, or pick --format human."
+        )
+
+
+def run_formatter_safely(
+    fn: Formatter,
+    report: Any,
+    ctx: FormatterContext,
+    *,
+    name: str,
+) -> str:
+    """Invoke a formatter with stdout-capture and exception fail-fast.
+
+    Two guarantees:
+
+    1. **Stdout-write guard.** Formatters MUST be pure
+       str-returning functions. If a third-party formatter
+       writes to ``sys.stdout`` mid-render and then either
+       raises or returns, those bytes leak out of order
+       relative to whatever the CLI eventually echoes. We
+       redirect stdout into an in-memory buffer for the
+       duration of the call; non-empty buffer triggers a
+       contract-violation error (exit 2).
+    2. **Exception fail-fast.** Any exception from ``fn``
+       converts to ``error_exit("formatter '{name}' raised
+       {ExceptionType}: {message}")``. No traceback. The
+       project doesn't have a ``--verbose`` flag today, so
+       there's no opt-in for tracebacks; the one-line error
+       matches every other CLI failure path.
+
+    Returns:
+        The formatter's returned string. Caller is responsible
+        for echoing it (:func:`click.echo`).
+    """
+    buffer = io.StringIO()
+    try:
+        with redirect_stdout(buffer):
+            output = fn(report, ctx)
+    except Exception as exc:
+        error_exit(
+            f"formatter '{name}' raised {type(exc).__name__}: {exc}"
+        )
+    leaked = buffer.getvalue()
+    if leaked:
+        error_exit(
+            f"formatter '{name}' wrote to stdout directly; "
+            "formatters must return str only"
+        )
+    return output

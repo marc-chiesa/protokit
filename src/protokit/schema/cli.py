@@ -22,7 +22,6 @@ Exit codes (uniform across subcommands):
 from __future__ import annotations
 
 import importlib
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,7 +33,12 @@ from protokit._cli_utils import (
     compile_proto,
     error_exit,
     load_descriptor_pool,
+    load_formatter_packs,
+    reject_quiet_plus_structured,
+    resolve_and_validate_formatter,
+    run_formatter_safely,
 )
+from protokit.formatters import FormatterContext, FormatterKind
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.git import (
     GitRefNotFoundError,
@@ -56,7 +60,6 @@ from protokit.schema.model import (
     Finding,
     HistoryEntry,
     HistoryReport,
-    Severity,
 )
 
 
@@ -207,111 +210,6 @@ def _resolve_types(
         "No message type specified. Use --type NAME for same-name checks "
         "or --old-type OLD --new-type NEW for cross-type checks."
     )
-
-
-# ---------------------------------------------------------------------------
-# Output formatting
-# ---------------------------------------------------------------------------
-
-
-_SEVERITY_COLORS: dict[Severity, str] = {
-    Severity.WIRE: "red",
-    Severity.SEMANTIC: "yellow",
-    Severity.POLICY: "magenta",
-}
-
-
-def _format_finding_human(finding: Finding) -> str:
-    """Render one finding as a colored, single-line string.
-
-    Args:
-        finding: The ``Finding`` to render.
-
-    Returns:
-        An ANSI-colored string suitable for terminal display. The
-        severity is color-coded (red/yellow/magenta) and the rule_id
-        appears in parentheses at the end.
-    """
-    color = _SEVERITY_COLORS[finding.severity]
-    tag = click.style(
-        f"[{finding.severity.value}/{finding.direction.value}]",
-        fg=color,
-        bold=True,
-    )
-    path_str = str(finding.path) if finding.path else "(root)"
-    path_styled = click.style(path_str, bold=True)
-    rule = click.style(f"({finding.rule_id})", fg="cyan")
-    return f"  {tag} {path_styled}: {finding.message} {rule}"
-
-
-def _render_human(report: CompatibilityReport) -> str:
-    """Render a human-readable summary of the report.
-
-    Args:
-        report: The ``CompatibilityReport`` to render.
-
-    Returns:
-        A multi-line string. Header names the profile; body lists
-        each finding; trailer shows the verdict (COMPATIBLE or
-        INCOMPATIBLE in color).
-    """
-    lines = []
-    header = (
-        f"protokit compat — level: {report.level.value}, "
-        f"{len(report)} finding(s)"
-    )
-    lines.append(click.style(header, bold=True))
-
-    for finding in report:
-        lines.append(_format_finding_human(finding))
-
-    if report.is_compatible:
-        verdict = click.style("COMPATIBLE", fg="green", bold=True)
-    else:
-        verdict = click.style("INCOMPATIBLE", fg="red", bold=True)
-    lines.append("")
-    lines.append(verdict)
-    return "\n".join(lines)
-
-
-def _render_json(report: CompatibilityReport) -> str:
-    """Render the report as JSON matching the design-doc schema.
-
-    Args:
-        report: The ``CompatibilityReport`` to render.
-
-    Returns:
-        A pretty-printed JSON string with keys ``compatible``,
-        ``level``, ``findings`` (list of objects with ``path``,
-        ``rule_id``, ``severity``, ``direction``, ``message``), and
-        ``summary`` (wire_breaks / semantic_breaks / policy_breaks /
-        total counts).
-    """
-    payload: dict[str, Any] = {
-        "compatible": report.is_compatible,
-        "level": report.level.value,
-        "findings": [
-            {
-                "path": str(f.path),
-                "rule_id": f.rule_id,
-                "severity": f.severity.value,
-                "direction": f.direction.value,
-                "message": f.message,
-            }
-            for f in report.findings
-        ],
-        "diagnostics": [
-            {"level": d.level, "path": d.path, "message": d.message}
-            for d in report.diagnostics
-        ],
-        "summary": {
-            "wire_breaks": len(report.wire_breaks),
-            "semantic_breaks": len(report.semantic_breaks),
-            "policy_breaks": len(report.policy_breaks),
-            "total": len(report),
-        },
-    }
-    return json.dumps(payload, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -533,23 +431,6 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
     return old_sha, new_sha
 
 
-def _reject_quiet_plus_json(*, quiet: bool, output_format: str) -> None:
-    """Refuse ``--quiet --format json`` — the combination is
-    ambiguous and pre-fix produced empty stdout, breaking CI
-    consumers that expected to parse JSON.
-
-    Semantically contradictory: ``--quiet`` says "no stdout",
-    ``--format json`` asks for structured stdout. Fail loudly so
-    users pick one.
-    """
-    if quiet and output_format.lower() == "json":
-        error_exit(
-            "--quiet and --format json are mutually exclusive: "
-            "one suppresses stdout, the other asks for structured "
-            "output. Pick one."
-        )
-
-
 def _history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
     """Project a ``HistoryReport`` into the legacy JSON payload.
 
@@ -662,7 +543,7 @@ def _resolve_common_flags(
     mode-specific checks between steps 1 and 2 and therefore
     doesn't call this helper — see the subcommand body.
     """
-    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
+    reject_quiet_plus_structured(quiet=quiet, output_format=output_format)
     old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
     level = _resolve_level(level_flag.lower())
     return old_type_name, new_type_name, level
@@ -711,13 +592,22 @@ def _run_check_pipeline(
     output_format: str,
     quiet: bool,
     header: str | None = None,
+    subcommand: str = "compat-check",
+    proto_file: str | None = None,
+    old_ref: str | None = None,
+    new_ref: str | None = None,
 ) -> CompatibilityReport:
-    """Run the configured checker, render output, and ``sys.exit``.
+    """Run the configured checker, dispatch the formatter, and ``sys.exit``.
 
     Used by ``check`` and ``ci``. Returns the report (so subcommands
     that need it for further work can read it before the exit), but
     always calls ``sys.exit`` at the end with the conventional
     code (0/1/2).
+
+    The ``--format`` value is resolved through the formatter
+    registry; the registry has already been populated with any
+    user-supplied ``--formatter-module`` packs by the caller
+    before this helper runs.
     """
     checker = _build_configured_checker(
         level=level,
@@ -742,10 +632,19 @@ def _run_check_pipeline(
     if not quiet:
         if header:
             click.echo(header)
-        if output_format.lower() == "json":
-            click.echo(_render_json(report))
-        else:
-            click.echo(_render_human(report))
+        fn = resolve_and_validate_formatter(output_format, FormatterKind.COMPAT)
+        target_type = old_type if old_type == new_type else None
+        ctx = FormatterContext(
+            subcommand=subcommand,
+            target_type=target_type,
+            old_target_type=old_type if old_type != new_type else None,
+            new_target_type=new_type if old_type != new_type else None,
+            level=level.value.lower().replace("_", "-"),
+            proto_file=proto_file,
+            old_ref=old_ref,
+            new_ref=new_ref,
+        )
+        click.echo(run_formatter_safely(fn, report, ctx, name=output_format))
 
     if report.diagnostics:
         sys.exit(2)
@@ -866,10 +765,19 @@ def main() -> None:
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(("human", "json"), case_sensitive=False),
+    type=click.STRING,
     default="human",
     show_default=True,
-    help="Output format.",
+    help="Output format. Built-in: human, json, junit, sarif. "
+         "Use --formatter-module to add more.",
+)
+@click.option(
+    "--formatter-module",
+    "formatter_modules",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a FORMATTERS list of "
+         "(name, fn, kind) tuples (repeatable).",
 )
 @click.option(
     "--rule-pack",
@@ -914,6 +822,7 @@ def check(
     proto_paths: tuple[str, ...],
     level_flag: str,
     output_format: str,
+    formatter_modules: tuple[str, ...],
     rule_packs: tuple[str, ...],
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
@@ -947,7 +856,8 @@ def check(
     # "no message type specified", because the mode-specific one
     # points at the next thing they need to fix.
     # --------------------------------------------------------------
-    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
+    load_formatter_packs(formatter_modules)
+    reject_quiet_plus_structured(quiet=quiet, output_format=output_format)
     git_mode = since is not None or against_base is not None
     if git_mode and (old_input is not None or new_input is not None):
         error_exit(
@@ -977,16 +887,21 @@ def check(
             since=since, against_base=against_base,
             proto_file=proto_file, proto_roots=proto_roots,
         )
+        # Header only for human format; structured outputs
+        # (json/junit/sarif/...) own their own framing and a
+        # leading comment line would corrupt them.
         header = (
             f"# protokit compat check: {old_ref} -> {new_ref} "
             f"({proto_file})"
-        ) if not quiet and output_format.lower() != "json" else None
+        ) if not quiet and output_format.lower() == "human" else None
     else:
         old_pool, new_pool = _load_pools_local(
             old_input, new_input,
             use_proto=use_proto, proto_paths=proto_paths,
         )
         header = None
+        old_ref = None
+        new_ref = None
 
     _run_check_pipeline(
         old_pool=old_pool, new_pool=new_pool,
@@ -996,6 +911,10 @@ def check(
         dedupe_by_type=dedupe_by_type,
         output_format=output_format, quiet=quiet,
         header=header,
+        subcommand="compat-check",
+        proto_file=proto_file,
+        old_ref=old_ref,
+        new_ref=new_ref,
     )
 
 
@@ -1091,10 +1010,19 @@ def check(
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(("human", "json"), case_sensitive=False),
+    type=click.STRING,
     default="human",
     show_default=True,
-    help="Output format.",
+    help="Output format. Built-in: human, json, junit, sarif. "
+         "Use --formatter-module to add more.",
+)
+@click.option(
+    "--formatter-module",
+    "formatter_modules",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a FORMATTERS list of "
+         "(name, fn, kind) tuples (repeatable).",
 )
 @click.option(
     "--quiet",
@@ -1116,6 +1044,7 @@ def history(
     dedupe_by_type: bool,
     fast: bool,
     output_format: str,
+    formatter_modules: tuple[str, ...],
     quiet: bool,
 ) -> None:
     """Walk commits in OLD..NEW that touch the .proto and report findings per pair.
@@ -1129,6 +1058,7 @@ def history(
     (unknown ref, missing import, any diagnostic from the
     registered plugins).
     """
+    load_formatter_packs(formatter_modules)
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1157,10 +1087,19 @@ def history(
             commits_walked=0,
         )
         if not quiet:
-            if output_format.lower() == "json":
-                click.echo(json.dumps(_history_report_to_dict(empty_report), indent=2))
-            else:
-                click.echo(f"# {range_spec}: no commits touch {proto_file}")
+            fn = resolve_and_validate_formatter(
+                output_format, FormatterKind.COMPAT_HISTORY,
+            )
+            ctx = FormatterContext(
+                subcommand="compat-history",
+                range_spec=range_spec,
+                old_ref=old_endpoint,
+                new_ref=new_endpoint,
+                proto_file=proto_file,
+            )
+            click.echo(run_formatter_safely(
+                fn, empty_report, ctx, name=output_format,
+            ))
         sys.exit(0)
 
     # Anchor: the parent of the oldest commit in the range. Without it
@@ -1243,21 +1182,30 @@ def history(
     )
 
     if not quiet:
-        if output_format.lower() == "json":
-            click.echo(json.dumps(_history_report_to_dict(history_report), indent=2))
-        else:
-            for entry in history_report.entries:
-                short = entry.commit_sha[:12]
-                verdict = "OK" if entry.report.is_compatible else "BROKEN"
-                click.echo(
-                    f"{short} {verdict} "
-                    f"({len(entry.report.findings)} finding(s))"
-                )
-                for f in entry.report.findings:
-                    click.echo(
-                        f"    [{f.severity.value}/{f.direction.value}] "
-                        f"{f.path}: {f.message} ({f.rule_id})"
-                    )
+        fn = resolve_and_validate_formatter(
+            output_format, FormatterKind.COMPAT_HISTORY,
+        )
+        target_type = (
+            old_type_name if old_type_name == new_type_name else None
+        )
+        ctx = FormatterContext(
+            subcommand="compat-history",
+            target_type=target_type,
+            old_target_type=(
+                old_type_name if old_type_name != new_type_name else None
+            ),
+            new_target_type=(
+                new_type_name if old_type_name != new_type_name else None
+            ),
+            level=level.value.lower().replace("_", "-"),
+            range_spec=range_spec,
+            old_ref=old_endpoint,
+            new_ref=new_endpoint,
+            proto_file=proto_file,
+        )
+        click.echo(run_formatter_safely(
+            fn, history_report, ctx, name=output_format,
+        ))
 
     if any_diagnostics:
         sys.exit(2)
@@ -1374,10 +1322,19 @@ def history(
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(("human", "json"), case_sensitive=False),
+    type=click.STRING,
     default="human",
     show_default=True,
-    help="Output format.",
+    help="Output format. Built-in: human, json, junit, sarif. "
+         "Use --formatter-module to add more.",
+)
+@click.option(
+    "--formatter-module",
+    "formatter_modules",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a FORMATTERS list of "
+         "(name, fn, kind) tuples (repeatable).",
 )
 @click.option(
     "--quiet",
@@ -1401,6 +1358,7 @@ def bisect(
     keep_going: bool,
     fast: bool,
     output_format: str,
+    formatter_modules: tuple[str, ...],
     quiet: bool,
 ) -> None:
     """Find the earliest commit in OLD..NEW that broke compatibility.
@@ -1417,6 +1375,7 @@ def bisect(
         2 = hard error (unknown ref, missing import, any diagnostic
             from the registered plugins).
     """
+    load_formatter_packs(formatter_modules)
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1442,7 +1401,6 @@ def bisect(
     except GitRefNotFoundError as exc:
         error_exit(str(exc))
 
-    json_mode = output_format.lower() == "json"
     range_spec = f"{old_ref}..{new_ref}"
 
     def _emit_and_exit(
@@ -1453,7 +1411,7 @@ def bisect(
         commits_walked: int,
         exit_code: int,
     ) -> None:
-        """Render the final output and exit."""
+        """Render via the bisect formatter and exit."""
         if quiet:
             sys.exit(exit_code)
         bisect_report = BisectReport(
@@ -1465,22 +1423,30 @@ def bisect(
             breaking_findings=breaking_findings,
             diagnostics=diagnostics,
         )
-        if json_mode:
-            click.echo(json.dumps(_bisect_report_to_dict(bisect_report), indent=2))
-        else:
-            if breaking_commit is not None:
-                click.echo(f"first breaking commit: {breaking_commit}")
-                for f in breaking_findings:
-                    click.echo(f"  {f}")
-            elif commits_walked == 0:
-                click.echo(
-                    f"# {range_spec}: no commits touch {proto_file}"
-                )
-            else:
-                click.echo(
-                    f"# {range_spec}: no break found across "
-                    f"{commits_walked} commit(s)"
-                )
+        fn = resolve_and_validate_formatter(
+            output_format, FormatterKind.COMPAT_BISECT,
+        )
+        target_type = (
+            old_type_name if old_type_name == new_type_name else None
+        )
+        ctx = FormatterContext(
+            subcommand="compat-bisect",
+            target_type=target_type,
+            old_target_type=(
+                old_type_name if old_type_name != new_type_name else None
+            ),
+            new_target_type=(
+                new_type_name if old_type_name != new_type_name else None
+            ),
+            level=level.value.lower().replace("_", "-"),
+            range_spec=range_spec,
+            old_ref=old_sha,
+            new_ref=new_sha,
+            proto_file=proto_file,
+        )
+        click.echo(run_formatter_safely(
+            fn, bisect_report, ctx, name=output_format,
+        ))
         sys.exit(exit_code)
 
     if not commits:
@@ -1657,10 +1623,19 @@ def bisect(
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(("human", "json"), case_sensitive=False),
+    type=click.STRING,
     default="human",
     show_default=True,
-    help="Output format.",
+    help="Output format. Built-in: human, json, junit, sarif. "
+         "Use --formatter-module to add more.",
+)
+@click.option(
+    "--formatter-module",
+    "formatter_modules",
+    multiple=True,
+    metavar="MODULE",
+    help="Python module exposing a FORMATTERS list of "
+         "(name, fn, kind) tuples (repeatable).",
 )
 @click.option(
     "--quiet",
@@ -1681,6 +1656,7 @@ def ci(
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     output_format: str,
+    formatter_modules: tuple[str, ...],
     quiet: bool,
 ) -> None:
     """CI gate: compare HEAD against a base branch's merge-base.
@@ -1692,6 +1668,7 @@ def ci(
     no positional-arg shape, no mode-detection ambiguity, and
     a name that signals intent in pipeline yaml.
     """
+    load_formatter_packs(formatter_modules)
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1709,9 +1686,11 @@ def ci(
         proto_file=proto_file, proto_roots=proto_roots,
         base_flag_hint="--base",
     )
+    # Header gates on human format only — structured outputs
+    # own their own framing.
     header = (
         f"# protokit compat ci: {old_ref} -> {new_ref} ({proto_file})"
-        if output_format.lower() != "json" else None
+        if output_format.lower() == "human" else None
     )
     _run_check_pipeline(
         old_pool=old_pool, new_pool=new_pool,
@@ -1722,4 +1701,8 @@ def ci(
         dedupe_by_type=dedupe_by_type,
         output_format=output_format, quiet=quiet,
         header=header,
+        subcommand="compat-ci",
+        proto_file=proto_file,
+        old_ref=old_ref,
+        new_ref=new_ref,
     )
