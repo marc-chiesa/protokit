@@ -159,14 +159,21 @@ class TestBuiltinReservation:
 
 
 class TestListFormatters:
-    def test_empty_kind_returns_empty_list(self) -> None:
-        assert list_formatters(FormatterKind.DIFF) == []
+    def test_returns_built_ins_when_no_user_formatters(self) -> None:
+        # Built-ins are registered at protokit.formatters import.
+        # Each kind ships at least human and json.
+        for kind in FormatterKind:
+            names = list_formatters(kind)
+            assert "human" in names, f"missing human for {kind.value}"
+            assert "json" in names, f"missing json for {kind.value}"
 
-    def test_returns_sorted_lowercase_names(self) -> None:
-        register_formatter("Zeta", _identity_formatter, kind=FormatterKind.COMPAT)
+    def test_user_formatters_appear_alongside_built_ins(self) -> None:
         register_formatter("alpha", _identity_formatter, kind=FormatterKind.COMPAT)
-        register_formatter("Mike", _identity_formatter, kind=FormatterKind.COMPAT)
-        assert list_formatters(FormatterKind.COMPAT) == ["alpha", "mike", "zeta"]
+        register_formatter("Zeta", _identity_formatter, kind=FormatterKind.COMPAT)
+        names = list_formatters(FormatterKind.COMPAT)
+        # Built-ins survive; user names are included; ordering is sorted.
+        assert names == sorted(set(names))
+        assert {"alpha", "human", "json", "zeta"}.issubset(set(names))
 
 
 class TestClearUserFormatters:

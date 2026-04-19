@@ -42,6 +42,16 @@ from protokit.formatters._registry import (
     register_formatter,
 )
 
+# Import built-in modules to trigger their _register_builtin
+# calls. The order here doesn't matter — each module owns its
+# own (kind, name) keyspace and registration is idempotent.
+from protokit.formatters import (  # noqa: F401, E402
+    _builtin_bisect,
+    _builtin_compat,
+    _builtin_diff,
+    _builtin_history,
+)
+
 __all__ = [
     "Formatter",
     "FormatterContext",
