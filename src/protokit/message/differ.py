@@ -335,13 +335,21 @@ class MessageDifferencer:
         path: FieldPath,
         warnings: list[Diagnostic],
     ) -> None:
-        """Move ``ctx.warn()`` messages onto the caller's warnings list."""
-        if not ctx_state.warnings:
+        """Move ``ctx.warn()`` / ``ctx.error()`` messages onto the caller's list.
+
+        Both streams drain to the same diagnostics list on the
+        result; ``level`` is what distinguishes them downstream
+        (``DiffResult.warnings`` vs ``DiffResult.errors``).
+        """
+        if not ctx_state.warnings and not ctx_state.errors:
             return
         path_str = str(path) if path else None
         for msg in ctx_state.warnings:
             warnings.append(Diagnostic(path=path_str, message=msg))
+        for msg in ctx_state.errors:
+            warnings.append(Diagnostic(path=path_str, message=msg, level="error"))
         ctx_state.warnings = []
+        ctx_state.errors = []
 
     def _run_validate_compare(
         self,
@@ -421,10 +429,14 @@ class MessageDifferencer:
                     ),
                     level="error",
                 ))
-        if state.warnings:
+        if state.warnings or state.errors:
             path_str = str(item.path) if item.path else None
             for msg in state.warnings:
                 warnings.append(Diagnostic(path=path_str, message=msg))
+            for msg in state.errors:
+                warnings.append(Diagnostic(
+                    path=path_str, message=msg, level="error",
+                ))
 
     def ignore_fields(self, *selectors: str) -> None:
         """Add field name selectors to the ignore list.

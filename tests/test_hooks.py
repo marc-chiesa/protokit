@@ -121,6 +121,76 @@ class TestValidateStage:
             for w in result.warnings
         )
 
+    def test_error_appears_in_diffresult_errors_not_warnings(self) -> None:
+        """``ctx.error()`` emits an error-level diagnostic.
+
+        Goes to ``result.errors``, not ``result.warnings`` —
+        separating recoverable caveats from hook-detected
+        unrecoverable conditions. CI gates should treat the
+        error stream as fail-closed.
+        """
+        builder = ProtoBuilder()
+        builder.message("t.M", {"x": (T.TYPE_INT32, 1)})
+        left = builder.build("t.M", x=10)
+        right = builder.build("t.M", x=20)
+
+        def hook(ctx: FieldHookContext) -> None:
+            ctx.error(f"hook refuses to validate {ctx.path}")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(hook)
+        result = differ.compare(left, right)
+        assert any(
+            e.message == "hook refuses to validate x"
+            and e.path == "x"
+            and e.level == "error"
+            for e in result.errors
+        )
+        # Must not leak into the warnings stream.
+        assert not any(
+            "hook refuses to validate" in w.message for w in result.warnings
+        )
+        # Diff still emitted — error() does not abort comparison.
+        assert any(str(d.path) == "x" for d in result)
+
+    def test_warn_and_error_coexist_on_same_hook(self) -> None:
+        """One hook can emit both a warning and an error per field."""
+        builder = ProtoBuilder()
+        builder.message("t.M", {"x": (T.TYPE_INT32, 1)})
+        left = builder.build("t.M", x=1)
+        right = builder.build("t.M", x=2)
+
+        def hook(ctx: FieldHookContext) -> None:
+            ctx.warn("caveat")
+            ctx.error("broken")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(hook)
+        result = differ.compare(left, right)
+        assert any(w.message == "caveat" for w in result.warnings)
+        assert any(e.message == "broken" for e in result.errors)
+
+    def test_error_accumulates_across_stages(self) -> None:
+        """VALIDATE error + REPORT error both land in result.errors."""
+        builder = ProtoBuilder()
+        builder.message("t.M", {"x": (T.TYPE_INT32, 1)})
+        left = builder.build("t.M", x=1)
+        right = builder.build("t.M", x=2)
+
+        def vhook(ctx: FieldHookContext) -> None:
+            ctx.error("validate-error")
+
+        def rhook(ctx: FieldHookContext) -> None:
+            ctx.error("report-error")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.register_report_hook(rhook)
+        result = differ.compare(left, right)
+        messages = {e.message for e in result.errors}
+        assert "validate-error" in messages
+        assert "report-error" in messages
+
 
 # ---------------------------------------------------------------------------
 # COMPARE stage
@@ -557,6 +627,27 @@ class TestMessageValidateHook:
         result = differ.compare(left, right)
         assert any(
             "message at " in w.message for w in result.warnings
+        )
+
+    def test_error_appears_in_diffresult_errors(self) -> None:
+        """Message-level ``ctx.error()`` emits an error-level diagnostic."""
+        builder = ProtoBuilder()
+        builder.message("t.M", {"x": (T.TYPE_INT32, 1)})
+        left = builder.build("t.M", x=1)
+        right = builder.build("t.M", x=2)
+
+        def hook(ctx: MessageHookContext) -> None:
+            ctx.error("schema drift")
+
+        differ = MessageDifferencer()
+        differ.register_message_validate_hook(hook)
+        result = differ.compare(left, right)
+        assert any(
+            e.message == "schema drift" and e.level == "error"
+            for e in result.errors
+        )
+        assert not any(
+            "schema drift" in w.message for w in result.warnings
         )
 
 

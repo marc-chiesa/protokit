@@ -704,24 +704,27 @@ class _FieldHookState:
     """
 
     __slots__ = (
-        "stage", "has_diff", "warnings", "override_equal", "annotations",
+        "stage", "has_diff", "warnings", "errors",
+        "override_equal", "annotations",
     )
 
     def __init__(self) -> None:
         self.stage: HookStage | None = None
         self.has_diff: bool = False
         self.warnings: list[str] = []
+        self.errors: list[str] = []
         self.override_equal: bool = False
         self.annotations: list[str] = []
 
     def reset_for_stage(self, stage: HookStage, *, has_diff: bool) -> None:
-        """Advance to the given stage; keep accumulated warnings.
+        """Advance to the given stage; keep accumulated diagnostics.
 
-        Warnings accumulate across stages (a VALIDATE warn and a
-        REPORT warn both end up in ``DiffResult.warnings``).
-        ``override_equal`` and ``annotations`` are per-stage scratch
-        — the engine reads them after the stage completes and does
-        not re-use the values in a later stage.
+        Warnings and errors accumulate across stages (a VALIDATE
+        ``warn()`` and a REPORT ``error()`` both end up in
+        ``DiffResult.diagnostics``). ``override_equal`` and
+        ``annotations`` are per-stage scratch — the engine reads
+        them after the stage completes and does not re-use the
+        values in a later stage.
         """
         self.stage = stage
         self.has_diff = has_diff
@@ -828,6 +831,24 @@ class FieldHookContext:
         """
         self._state.warnings.append(message)
 
+    def error(self, message: str) -> None:
+        """Record an error-level diagnostic. Appears in ``DiffResult.errors``.
+
+        Use this when the hook itself detects an unrecoverable
+        condition — e.g. the descriptor is missing a custom option
+        the hook relies on, or an external validator service
+        returned a protocol error. Results downstream of an
+        ``error()`` may be incomplete; CI callers treat any
+        ``"error"`` diagnostic as a fail-closed condition (exit
+        code 2 in the CLI).
+
+        Works in every stage. The diagnostic's path is always the
+        context's field path. For recoverable caveats ("this
+        comparison took a slow path", "treat_as_map fell back"),
+        use :meth:`warn` instead.
+        """
+        self._state.errors.append(message)
+
     def override_equal(self) -> None:
         """Mark these two values as equal for the purpose of diffing.
 
@@ -858,10 +879,11 @@ class FieldHookContext:
 class _MessageHookState:
     """Engine-internal mutable scratch space for a ``MessageHookContext``."""
 
-    __slots__ = ("warnings",)
+    __slots__ = ("warnings", "errors")
 
     def __init__(self) -> None:
         self.warnings: list[str] = []
+        self.errors: list[str] = []
 
 
 @dataclass(frozen=True)
@@ -906,6 +928,16 @@ class MessageHookContext:
     def warn(self, message: str) -> None:
         """Record a warning. Appears in ``DiffResult.warnings`` with the context path."""
         self._state.warnings.append(message)
+
+    def error(self, message: str) -> None:
+        """Record an error-level diagnostic. Appears in ``DiffResult.errors``.
+
+        Mirror of :meth:`FieldHookContext.error` at the message
+        level. Use when a message-validate hook detects a
+        condition that should fail the CI gate (unrecoverable
+        schema-drift disagreement, missing required metadata).
+        """
+        self._state.errors.append(message)
 
 
 # Type aliases for registration.
