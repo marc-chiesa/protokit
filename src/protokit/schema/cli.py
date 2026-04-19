@@ -380,6 +380,39 @@ def _verify_proto_file_at_ref(
     )
 
 
+def _validate_git_mode_flags(
+    *,
+    since: str | None,
+    against_base: str | None,
+    proto_file: str | None,
+) -> None:
+    """Reject malformed ``--since`` / ``--against-base`` flag combos.
+
+    Two invariants:
+
+    - ``--since`` and ``--against-base`` are mutually exclusive
+      (each picks a different old-ref strategy).
+    - Either flag requires ``--proto-file`` — without it we
+      have no schema anchor to compare at the chosen ref.
+
+    Called twice per ``check`` invocation on purpose: once from
+    the subcommand body (early — so the error beats generic
+    ``--type`` resolution) and once from :func:`_load_pools_git`
+    (defensive — library users who call the loader directly
+    still get the same guardrail). Idempotent: both calls run
+    before any side effects, so the duplication costs nothing
+    observable and lets either entry point stand alone.
+    """
+    if since is not None and against_base is not None:
+        error_exit(
+            "--since and --against-base are mutually exclusive."
+        )
+    if proto_file is None:
+        error_exit(
+            "--since / --against-base require --proto-file PATH."
+        )
+
+
 def _load_pools_git(
     *,
     since: str | None,
@@ -399,14 +432,9 @@ def _load_pools_git(
     message so ``ci`` users see ``--base`` and ``check`` users see
     ``--against-base``.
     """
-    if since is not None and against_base is not None:
-        error_exit(
-            "--since and --against-base are mutually exclusive."
-        )
-    if proto_file is None:
-        error_exit(
-            "--since / --against-base require --proto-file PATH."
-        )
+    _validate_git_mode_flags(
+        since=since, against_base=against_base, proto_file=proto_file,
+    )
 
     if since is not None:
         if not verify_ref(since, cwd=cwd):
@@ -515,6 +543,37 @@ def _reject_quiet_plus_json(*, quiet: bool, output_format: str) -> None:
             "one suppresses stdout, the other asks for structured "
             "output. Pick one."
         )
+
+
+def _resolve_common_flags(
+    *,
+    quiet: bool,
+    output_format: str,
+    type_flag: str | None,
+    old_type: str | None,
+    new_type: str | None,
+    level_flag: str,
+) -> tuple[str, str, CompatibilityLevel]:
+    """Validate the subcommand-shared flag group and resolve derived values.
+
+    Every subcommand opens with the same three-step prologue:
+
+    1. Reject ``--quiet --format json`` (mutually exclusive —
+       quiet suppresses stdout, JSON expects structured stdout).
+    2. Resolve ``--type`` / ``--old-type`` / ``--new-type`` into
+       the ``(old, new)`` type-name pair.
+    3. Parse ``--level`` into a :class:`CompatibilityLevel`.
+
+    Exit-priority is intentional: the ``--quiet/--format`` check
+    is cheapest and points at the most likely user typo, so it
+    runs first. The ``check`` subcommand interleaves
+    mode-specific checks between steps 1 and 2 and therefore
+    doesn't call this helper — see the subcommand body.
+    """
+    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
+    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
+    level = _resolve_level(level_flag.lower())
+    return old_type_name, new_type_name, level
 
 
 def _build_configured_checker(
@@ -803,13 +862,9 @@ def check(
             "Positional inputs cannot be combined with --since / "
             "--against-base."
         )
-    if since is not None and against_base is not None:
-        error_exit(
-            "--since and --against-base are mutually exclusive."
-        )
-    if git_mode and proto_file is None:
-        error_exit(
-            "--since / --against-base require --proto-file PATH."
+    if git_mode:
+        _validate_git_mode_flags(
+            since=since, against_base=against_base, proto_file=proto_file,
         )
     # --proto / --proto-path are local-mode flags. Reject early in
     # git mode so a silent no-op doesn't confuse users.
@@ -982,9 +1037,11 @@ def history(
     (unknown ref, missing import, any diagnostic from the
     registered plugins).
     """
-    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
-    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
-    level = _resolve_level(level_flag.lower())
+    old_type_name, new_type_name, level = _resolve_common_flags(
+        quiet=quiet, output_format=output_format,
+        type_flag=type_flag, old_type=old_type, new_type=new_type,
+        level_flag=level_flag,
+    )
 
     # Resolve the range's endpoints to fixed SHAs. These appear in
     # the JSON payload so a downstream tool can pin the exact
@@ -1273,9 +1330,11 @@ def bisect(
         2 = hard error (unknown ref, missing import, any diagnostic
             from the registered plugins).
     """
-    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
-    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
-    level = _resolve_level(level_flag.lower())
+    old_type_name, new_type_name, level = _resolve_common_flags(
+        quiet=quiet, output_format=output_format,
+        type_flag=type_flag, old_type=old_type, new_type=new_type,
+        level_flag=level_flag,
+    )
 
     if not verify_ref(old_ref):
         error_exit(f"unknown git ref: {old_ref!r}")
@@ -1548,9 +1607,11 @@ def ci(
     no positional-arg shape, no mode-detection ambiguity, and
     a name that signals intent in pipeline yaml.
     """
-    _reject_quiet_plus_json(quiet=quiet, output_format=output_format)
-    old_type_name, new_type_name = _resolve_types(type_flag, old_type, new_type)
-    level = _resolve_level(level_flag.lower())
+    old_type_name, new_type_name, level = _resolve_common_flags(
+        quiet=quiet, output_format=output_format,
+        type_flag=type_flag, old_type=old_type, new_type=new_type,
+        level_flag=level_flag,
+    )
 
     # The CI subcommand always uses --against-base semantics. Reuse
     # the shared loader so the resolution rules stay identical.
