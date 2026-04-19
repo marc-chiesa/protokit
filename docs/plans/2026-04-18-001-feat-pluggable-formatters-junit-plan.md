@@ -241,7 +241,7 @@ load_formatter_pack(module):
 
 ## Implementation Units
 
-- [ ] **Unit 1: Promote history/bisect outputs to public dataclasses**
+- [x] **Unit 1: Promote history/bisect outputs to public dataclasses**
 
 **Goal:** Replace inline-dict construction in `history` / `bisect` subcommands with frozen public dataclasses (`HistoryEntry`, `HistoryReport`, `BisectReport`). No formatter machinery yet — just extract the data model so formatters can type-hint against it.
 
@@ -300,7 +300,7 @@ This is a new pattern in the project; document the choice in the dataclass docst
 
 ---
 
-- [ ] **Unit 2: Build `protokit.formatters` registry**
+- [x] **Unit 2: Build `protokit.formatters` registry**
 
 **Goal:** New top-level package `protokit.formatters` with the public API: `FormatterKind`, `FormatterContext`, `register_formatter`, `get_formatter`, `list_formatters`, `load_formatter_pack`. No built-ins yet, no CLI integration.
 
@@ -352,7 +352,7 @@ This is a new pattern in the project; document the choice in the dataclass docst
 
 ---
 
-- [ ] **Unit 3: Extract existing `human` / `json` rendering into built-in formatters**
+- [x] **Unit 3: Extract existing `human` / `json` rendering into built-in formatters**
 
 **Goal:** Move existing rendering logic from `src/protokit/schema/cli.py` and `src/protokit/message/cli.py` into the new `_builtin_*.py` modules. Register at `protokit.formatters` import. Snapshot tests verify byte-identical output.
 
