@@ -41,7 +41,7 @@ TOOL_INFORMATION_URI = "https://github.com/marc/protokit"
 
 
 # Static catalog of built-in rule descriptions. Sourced from
-# README.adoc's "Built-in Rules" table. Plugin rules that fire
+# README.md's "Built-in Rules" table. Plugin rules that fire
 # without an entry here get a generic fallback description in
 # :func:`build_run` — SARIF requires a rule entry for every
 # ``ruleId`` referenced in results, but the description text
