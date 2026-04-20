@@ -1361,6 +1361,149 @@ class TestQuietJsonMutex:
         assert "--quiet" in result.output
         assert "json" in result.output.lower()
 
+    @pytest.mark.parametrize("structured_format", ["junit", "sarif"])
+    def test_history_rejects_quiet_plus_structured(
+        self, git_repo: Path, structured_format: str,
+    ) -> None:
+        # Regression for the 2026-04-19 review (testing P2): the
+        # widened reject_quiet_plus_structured must reject every
+        # non-human format, not just json. junit and sarif on
+        # history/bisect/ci had no test coverage prior.
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", structured_format,
+        ])
+        assert result.exit_code == 2
+        assert "--quiet" in result.output
+        assert structured_format in result.output
+
+    @pytest.mark.parametrize("structured_format", ["junit", "sarif"])
+    def test_bisect_rejects_quiet_plus_structured(
+        self, git_repo: Path, structured_format: str,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect", "--old", "HEAD", "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", structured_format,
+        ])
+        assert result.exit_code == 2
+        assert "--quiet" in result.output
+        assert structured_format in result.output
+
+    @pytest.mark.parametrize("structured_format", ["junit", "sarif"])
+    def test_ci_rejects_quiet_plus_structured(
+        self, git_repo: Path, structured_format: str,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(
+            git_repo, "acme/user.proto",
+            _USER_V1 + "// comment edit\n",
+            msg="feature edit",
+        )
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--quiet", "--format", structured_format,
+        ])
+        assert result.exit_code == 2
+        assert "--quiet" in result.output
+        assert structured_format in result.output
+
+
+class TestHistoryBisectStructuredFormats:
+    """End-to-end CLI dispatch of structured formatters
+    on history and bisect — closes the integration-test gap
+    flagged in the 2026-04-19 review (testing P2). The unit
+    tests in ``test_formatters_junit.py`` /
+    ``test_formatters_sarif.py`` cover formatter shape; these
+    tests cover the full pipeline (CLI args → report → context
+    → formatter → stdout → schema validation).
+    """
+
+    def _validate_junit(self, xml_str: str) -> None:
+        import xmlschema
+        from pathlib import Path as _Path
+        xsd = _Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd"
+        xmlschema.XMLSchema(str(xsd)).validate(xml_str)
+
+    def _validate_sarif(self, json_str: str) -> None:
+        import json as _json
+        import jsonschema
+        from pathlib import Path as _Path
+        schema_path = _Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
+        with open(schema_path) as f:
+            schema = _json.load(f)
+        validator = jsonschema.Draft7Validator(schema)
+        payload = _json.loads(json_str)
+        errors = list(validator.iter_errors(payload))
+        assert not errors, "\n".join(
+            f"{list(e.path)}: {e.message}" for e in errors
+        )
+
+    def test_history_junit_round_trip_validates(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~1..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "junit",
+        ])
+        # exit 1 on findings, 2 on diagnostics (none here).
+        assert result.exit_code in (0, 1)
+        self._validate_junit(result.output)
+
+    def test_history_sarif_round_trip_validates(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~1..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "sarif",
+        ])
+        assert result.exit_code in (0, 1)
+        self._validate_sarif(result.output)
+
+    def test_bisect_junit_round_trip_validates(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 break")
+        result = _invoke_in_repo(git_repo, [
+            "bisect", "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "junit",
+        ])
+        assert result.exit_code in (0, 1)
+        self._validate_junit(result.output)
+
+    def test_bisect_sarif_round_trip_validates(
+        self, git_repo: Path,
+    ) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 break")
+        result = _invoke_in_repo(git_repo, [
+            "bisect", "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "sarif",
+        ])
+        assert result.exit_code in (0, 1)
+        self._validate_sarif(result.output)
+
 
 class TestCiQuiet:
     """Review follow-up: ``ci`` now accepts ``--quiet`` for

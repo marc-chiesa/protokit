@@ -57,7 +57,19 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `--format json` only; now rejects every non-`human` formatter
   (junit, sarif, custom packs) so structured output is never
   silently swallowed.
-- `protokit.schema.message.model.Diagnostic` is now exported from
+- **Error message wording** for two existing rejections changed.
+  Exit codes are unchanged (still 2 for both), but CI scripts that
+  parse stderr text need updating:
+  - Unknown `--format`: was Click's auto `"Invalid value for '--format':
+    'X' is not 'human' or 'json'"`, now `"unknown formatter 'X'.
+    Available for {KIND}: human, json, junit, sarif"`.
+  - `--quiet --format json`: was `"--quiet and --format json are
+    mutually exclusive"`, now `"--quiet is incompatible with structured
+    output format 'X'. Drop --quiet, or pick --format human"`.
+  - Built-in formatter shadowing via `--formatter-module` now reports
+    `"formatter pack 'X' conflicts with a reserved built-in name: ..."`
+    (distinct prefix from the generic `"failed to load formatter pack"`).
+- `protokit.schema.Diagnostic` is now exported from
   `protokit.schema.__all__` (was importable only via the
   `protokit.message` path).
 

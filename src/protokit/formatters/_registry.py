@@ -12,7 +12,6 @@ since it was a ``click.Choice``.
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -97,6 +96,13 @@ class FormatterContext:
     proto_file: str | None = None
 
 
+# ``Any`` for the report parameter is deliberate: each
+# ``FormatterKind`` dispatches at runtime to a different
+# concrete report type (DiffResult / CompatibilityReport /
+# HistoryReport / BisectReport). Static narrowing belongs to
+# the formatter author, not this alias — narrowing here would
+# break user-supplied formatters that consume more than one
+# kind via runtime dispatch.
 Formatter = Callable[[Any, FormatterContext], str]
 
 
@@ -289,13 +295,16 @@ def load_formatter_pack(module: Any) -> None:
         staged.append((name, fn, kind))
 
     # Commit phase. Track what we registered so we can roll back
-    # on partial failure.
+    # on partial failure. Catch ``Exception`` (not just
+    # ``FormatterError``) so any unexpected error inside
+    # ``register_formatter`` still triggers cleanup — fail-loud
+    # but never leave the registry half-loaded.
     committed: list[tuple[FormatterKind, str]] = []
     try:
         for name, fn, kind in staged:
             register_formatter(name, fn, kind=kind)
             committed.append((kind, name.lower()))
-    except FormatterError:
+    except Exception:
         for key in committed:
             # Only delete entries we ourselves added — never touch
             # a built-in (we couldn't have added it; built-in
@@ -303,9 +312,3 @@ def load_formatter_pack(module: Any) -> None:
             if key in _REGISTRY and key not in _BUILTIN_NAMES:
                 del _REGISTRY[key]
         raise
-
-
-# Suppress an unused-import warning for ``warnings`` — kept on
-# the module so future helpers (e.g. for soft-deprecation of
-# old formatter names) can use it without re-importing.
-_ = warnings

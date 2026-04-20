@@ -191,6 +191,12 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     underlying :func:`~protokit.formatters.load_formatter_pack`
     runs a two-phase load — staging entries first so a malformed
     later entry doesn't leave half-loaded formatters behind.
+
+    Built-in shadowing errors get a distinct error prefix so
+    pattern-matching agents can branch without parsing the
+    embedded exception text — collisions with reserved built-in
+    names are conceptually different from "the pack failed to
+    load" and benefit from their own surface.
     """
     for name in module_names:
         try:
@@ -199,7 +205,12 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
             error_exit(f"failed to import formatter pack '{name}': {exc}")
         try:
             load_formatter_pack(module)
-        except (AttributeError, TypeError, FormatterError) as exc:
+        except FormatterError as exc:
+            error_exit(
+                f"formatter pack '{name}' conflicts with a reserved "
+                f"built-in name: {exc}"
+            )
+        except (AttributeError, TypeError) as exc:
             error_exit(f"failed to load formatter pack '{name}': {exc}")
 
 
@@ -284,6 +295,17 @@ def run_formatter_safely(
     try:
         with redirect_stdout(buffer):
             output = fn(report, ctx)
+    except SystemExit as exc:
+        # SystemExit subclasses BaseException, not Exception, so
+        # the general handler below would let it through. A
+        # formatter calling sys.exit(0) would otherwise flip the
+        # CI exit code from 1 (incompatible) to 0 (compatible),
+        # defeating the gate. Forced through error_exit so
+        # exit code stays the report's verdict.
+        error_exit(
+            f"formatter '{name}' called sys.exit({exc.code!r}); "
+            "formatters must return str only"
+        )
     except Exception as exc:
         error_exit(
             f"formatter '{name}' raised {type(exc).__name__}: {exc}"
@@ -291,7 +313,13 @@ def run_formatter_safely(
     leaked = buffer.getvalue()
     if leaked:
         error_exit(
-            f"formatter '{name}' wrote to stdout directly; "
-            "formatters must return str only"
+            f"formatter '{name}' wrote to sys.stdout directly "
+            "(low-level fd writes such as os.write(1, ...) are not "
+            "intercepted); formatters must return str only"
+        )
+    if not isinstance(output, str):
+        error_exit(
+            f"formatter '{name}' returned {type(output).__name__}, "
+            "expected str"
         )
     return output

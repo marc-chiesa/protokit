@@ -18,7 +18,7 @@ from protokit.formatters._registry import (
     FormatterKind,
     _register_builtin,
 )
-from protokit.schema.model import HistoryReport
+from protokit.schema.model import Finding, HistoryReport
 
 
 def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
@@ -50,9 +50,10 @@ def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
             f"{short} {verdict} ({len(entry.report.findings)} finding(s))"
         )
         for f in entry.report.findings:
+            path_str = str(f.path) if f.path else "(root)"
             lines.append(
                 f"    [{f.severity.value}/{f.direction.value}] "
-                f"{f.path}: {f.message} ({f.rule_id})"
+                f"{path_str}: {f.message} ({f.rule_id})"
             )
     return "\n".join(lines)
 
@@ -135,7 +136,9 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     """
     from protokit.formatters._builtin_compat import _protokit_version
 
-    findings_with_context: list = []
+    findings_with_context: list[
+        tuple[Finding, str | None, dict[str, str] | None]
+    ] = []
     error_messages: list[tuple[str | None, str]] = []
     warning_messages: list[tuple[str | None, str]] = []
 

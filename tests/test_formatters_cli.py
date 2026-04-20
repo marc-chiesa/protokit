@@ -7,6 +7,7 @@ fail-fast, and the stdout-write guard.
 
 from __future__ import annotations
 
+import itertools
 import sys
 import textwrap
 from pathlib import Path
@@ -161,7 +162,7 @@ class TestDiffFormatFlag:
 # ---------------------------------------------------------------------------
 
 
-_PACK_COUNTER = [0]
+_pack_counter = itertools.count(1)
 
 
 def _write_pack(tmp_path: Path, body: str) -> str:
@@ -176,10 +177,10 @@ def _write_pack(tmp_path: Path, body: str) -> str:
     pytest.
     """
     import importlib
-    _PACK_COUNTER[0] += 1
-    pack_dir = tmp_path / f"pack_dir_{_PACK_COUNTER[0]}"
+    seq = next(_pack_counter)
+    pack_dir = tmp_path / f"pack_dir_{seq}"
     pack_dir.mkdir()
-    name = f"protokit_test_pack_{_PACK_COUNTER[0]}"
+    name = f"protokit_test_pack_{seq}"
     (pack_dir / f"{name}.py").write_text(body)
     sys.path.insert(0, str(pack_dir))
     importlib.invalidate_caches()
@@ -229,7 +230,10 @@ class TestFormatterModule:
             "--formatter-module", pack,
         ])
         assert result.exit_code == 2
-        assert "built-in" in result.output
+        # Distinct error prefix per the 2026-04-19 review (CR-02):
+        # built-in shadowing is its own conceptual failure, not
+        # a generic "failed to load" import problem.
+        assert "conflicts with a reserved built-in name" in result.output
         assert "junit" in result.output
 
     def test_pack_partial_load_rolls_back(self, tmp_path: Path) -> None:
@@ -317,6 +321,71 @@ class TestFormatterFailFast:
         assert "formatter 'crashy' raised RuntimeError" in result.output
         assert "intentional crash" in result.output
 
+    def test_systemexit_in_formatter_does_not_flip_exit_code(
+        self, tmp_path: Path,
+    ) -> None:
+        # Regression test for the 2026-04-19 adversarial review's
+        # P0: a formatter calling sys.exit(0) used to escape the
+        # except-Exception handler (SystemExit is a BaseException),
+        # flipping the CI exit code from 1 (incompatible) to 0
+        # (compatible). The fix catches SystemExit explicitly and
+        # routes through error_exit so exit code stays the
+        # report's verdict.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            import sys
+            from protokit.formatters import FormatterKind
+            def evil(report, ctx):
+                sys.exit(0)
+            FORMATTERS = [("evil", evil, FormatterKind.DIFF)]
+        """))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="B").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+            "--format", "evil",
+        ])
+        # Must be exit 2 (formatter contract violation), NOT
+        # exit 0 (which the formatter tried to force).
+        assert result.exit_code == 2
+        assert "called sys.exit" in result.output
+
+    def test_non_string_return_rejected(self, tmp_path: Path) -> None:
+        # Regression for 2026-04-19 review (REL-001 / ADV-006 /
+        # correctness): a formatter returning None used to silently
+        # emit "None"; bytes were forwarded raw by click.echo. Now
+        # the wrapper enforces isinstance(output, str).
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            from protokit.formatters import FormatterKind
+            def returns_none(report, ctx):
+                pass  # implicit None
+            FORMATTERS = [("returns_none", returns_none, FormatterKind.DIFF)]
+        """))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="B").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+            "--format", "returns_none",
+        ])
+        assert result.exit_code == 2
+        assert "returned NoneType" in result.output
+        assert "expected str" in result.output
+
     def test_stdout_write_guard(self, tmp_path: Path) -> None:
         pack = _write_pack(tmp_path, textwrap.dedent("""
             import sys
@@ -341,7 +410,7 @@ class TestFormatterFailFast:
             "--format", "leaky",
         ])
         assert result.exit_code == 2
-        assert "wrote to stdout directly" in result.output
+        assert "wrote to sys.stdout directly" in result.output
 
 
 # ---------------------------------------------------------------------------

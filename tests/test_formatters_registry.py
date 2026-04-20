@@ -222,6 +222,15 @@ class TestLoadFormatterPack:
         with pytest.raises(TypeError, match="FormatterKind"):
             load_formatter_pack(mod)
 
+    def test_non_callable_fn_raises(self) -> None:
+        # Catches the fn type-validation branch in
+        # load_formatter_pack — previously untested per the
+        # 2026-04-19 review.
+        mod = types.ModuleType("pack_non_callable")
+        mod.FORMATTERS = [("a", 42, FormatterKind.COMPAT)]
+        with pytest.raises(TypeError, match="callable"):
+            load_formatter_pack(mod)
+
     def test_two_phase_rollback_on_partial_failure(self) -> None:
         # Pre-populate so the third entry collides and aborts mid-load.
         register_formatter(

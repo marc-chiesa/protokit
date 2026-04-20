@@ -431,6 +431,18 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
     return old_sha, new_sha
 
 
+def _level_cli_name(level: CompatibilityLevel) -> str:
+    """Render a ``CompatibilityLevel`` as the user-facing CLI flag string.
+
+    Mirrors the ``--level`` flag's accepted values
+    (``wire`` / ``consumer-safe`` / ``producer-safe`` /
+    ``strict``) by lowercasing the enum value and converting
+    underscores to hyphens. Centralised so the three
+    FormatterContext construction sites don't drift apart.
+    """
+    return level.value.lower().replace("_", "-")
+
+
 def _history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
     """Project a ``HistoryReport`` into the legacy JSON payload.
 
@@ -639,7 +651,7 @@ def _run_check_pipeline(
             target_type=target_type,
             old_target_type=old_type if old_type != new_type else None,
             new_target_type=new_type if old_type != new_type else None,
-            level=level.value.lower().replace("_", "-"),
+            level=_level_cli_name(level),
             proto_file=proto_file,
             old_ref=old_ref,
             new_ref=new_ref,
@@ -776,8 +788,8 @@ def main() -> None:
     "formatter_modules",
     multiple=True,
     metavar="MODULE",
-    help="Python module exposing a FORMATTERS list of "
-         "(name, fn, kind) tuples (repeatable).",
+    help="Python module exposing FORMATTERS = [(name, fn, FormatterKind.X), ...]. "
+         "Import FormatterKind from protokit.formatters. Repeatable.",
 )
 @click.option(
     "--rule-pack",
@@ -1021,8 +1033,8 @@ def check(
     "formatter_modules",
     multiple=True,
     metavar="MODULE",
-    help="Python module exposing a FORMATTERS list of "
-         "(name, fn, kind) tuples (repeatable).",
+    help="Python module exposing FORMATTERS = [(name, fn, FormatterKind.X), ...]. "
+         "Import FormatterKind from protokit.formatters. Repeatable.",
 )
 @click.option(
     "--quiet",
@@ -1197,7 +1209,7 @@ def history(
             new_target_type=(
                 new_type_name if old_type_name != new_type_name else None
             ),
-            level=level.value.lower().replace("_", "-"),
+            level=_level_cli_name(level),
             range_spec=range_spec,
             old_ref=old_endpoint,
             new_ref=new_endpoint,
@@ -1333,8 +1345,8 @@ def history(
     "formatter_modules",
     multiple=True,
     metavar="MODULE",
-    help="Python module exposing a FORMATTERS list of "
-         "(name, fn, kind) tuples (repeatable).",
+    help="Python module exposing FORMATTERS = [(name, fn, FormatterKind.X), ...]. "
+         "Import FormatterKind from protokit.formatters. Repeatable.",
 )
 @click.option(
     "--quiet",
@@ -1438,7 +1450,7 @@ def bisect(
             new_target_type=(
                 new_type_name if old_type_name != new_type_name else None
             ),
-            level=level.value.lower().replace("_", "-"),
+            level=_level_cli_name(level),
             range_spec=range_spec,
             old_ref=old_sha,
             new_ref=new_sha,
@@ -1634,8 +1646,8 @@ def bisect(
     "formatter_modules",
     multiple=True,
     metavar="MODULE",
-    help="Python module exposing a FORMATTERS list of "
-         "(name, fn, kind) tuples (repeatable).",
+    help="Python module exposing FORMATTERS = [(name, fn, FormatterKind.X), ...]. "
+         "Import FormatterKind from protokit.formatters. Repeatable.",
 )
 @click.option(
     "--quiet",

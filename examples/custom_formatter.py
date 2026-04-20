@@ -34,7 +34,15 @@ def slack_summary(report: CompatibilityReport, ctx: FormatterContext) -> str:
     payload; this example stays in plain text so the output is
     obvious in the terminal and copy/paste-friendly.
     """
-    target = ctx.target_type or "(unknown type)"
+    # ctx.target_type is None on cross-type runs (--old-type X
+    # --new-type Y); fall back to old->new so a Slack message
+    # still identifies which comparison broke.
+    if ctx.target_type is not None:
+        target = ctx.target_type
+    elif ctx.old_target_type or ctx.new_target_type:
+        target = f"{ctx.old_target_type}->{ctx.new_target_type}"
+    else:
+        target = "(unknown type)"
     verdict = "COMPATIBLE" if report.is_compatible else "INCOMPATIBLE"
     lines = [
         f"*protokit compat — {target}*",

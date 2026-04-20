@@ -196,14 +196,16 @@ def _validate_flag_groups(
 @click.option(
     "--format", "output_format",
     type=click.STRING, default="human",
-    help="Output format. Built-in: human, json, junit. "
+    help="Output format. Built-in: human, json, junit "
+         "(sarif not available on diff — diff isn't pass/fail "
+         "in SARIF's rule/result model). "
          "Use --formatter-module to add more.",
 )
 @click.option(
     "--formatter-module", "formatter_modules",
     multiple=True, metavar="MODULE",
-    help="Python module exposing a FORMATTERS list of "
-         "(name, fn, kind) tuples (repeatable).",
+    help="Python module exposing FORMATTERS = [(name, fn, FormatterKind.X), ...]. "
+         "Import FormatterKind from protokit.formatters. Repeatable.",
 )
 @click.option("--quiet", is_flag=True, help="Suppress output, exit code only.")
 @click.option("--verbose", is_flag=True, help="Show warnings even when messages are equal.")
@@ -325,13 +327,9 @@ def main(
         sys.exit(0)
 
     fn = resolve_and_validate_formatter(output_format, FormatterKind.DIFF)
-    target_type = (
-        message_type if message_type is not None
-        else None
-    )
     ctx = FormatterContext(
         subcommand="diff",
-        target_type=target_type,
+        target_type=message_type,
         old_target_type=left_type,
         new_target_type=right_type,
     )

@@ -134,46 +134,6 @@ def add_testcase(suite: ET.Element, case: ET.Element) -> None:
         suite.insert(sys_out_index, case)
 
 
-def make_aggregated_testsuite(
-    *,
-    name: str,
-    package: str,
-    suite_id: int,
-    tests: int,
-    failures: int,
-    errors: int,
-    timestamp: str = DETERMINISTIC_TIMESTAMP,
-    hostname: str = DETERMINISTIC_HOSTNAME,
-    time: str = "0",
-) -> ET.Element:
-    """Construct a ``<testsuite>`` for inclusion under ``<testsuites>``.
-
-    The xsd requires ``package`` and ``id`` attributes on
-    aggregated suites in addition to the standard attributes.
-    Used by HISTORY rendering, where each entry becomes one
-    suite under a ``<testsuites>`` root.
-
-    Args:
-        name: Suite name.
-        package: ``package=`` attribute, derived from suite
-            origin (e.g., the commit subject).
-        suite_id: Zero-based sequence index across the
-            ``<testsuites>`` children.
-        tests, failures, errors, timestamp, hostname, time: As
-            in :func:`make_testsuite`.
-
-    Returns:
-        A ``<testsuite>`` element with all aggregated attrs set.
-    """
-    suite = make_testsuite(
-        name=name, tests=tests, failures=failures, errors=errors,
-        timestamp=timestamp, hostname=hostname, time=time,
-    )
-    suite.set("package", xml_safe_text(package))
-    suite.set("id", str(suite_id))
-    return suite
-
-
 def make_testcase(
     *,
     classname: str,

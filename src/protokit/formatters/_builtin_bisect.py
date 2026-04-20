@@ -18,7 +18,7 @@ from protokit.formatters._registry import (
     FormatterKind,
     _register_builtin,
 )
-from protokit.schema.model import BisectReport
+from protokit.schema.model import BisectReport, Finding
 
 
 def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
@@ -158,7 +158,9 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
     """
     from protokit.formatters._builtin_compat import _protokit_version
 
-    findings_with_context: list = []
+    findings_with_context: list[
+        tuple[Finding, str | None, dict[str, str] | None]
+    ] = []
     if report.breaking_commit is not None:
         for f in report.breaking_findings:
             findings_with_context.append((
