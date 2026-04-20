@@ -5,51 +5,15 @@ approach (when known) / Effort / Priority / Depends-on / Discovered**.
 Items within a phase should generally land before the next phase
 starts, but the groupings are intent, not strict gates.
 
+Completed phases (1, 1.5, 2, 1.5b) are not listed here — see
+`CHANGELOG.md` and git history.
+
 ---
-
-## Phase 1 completeness
-
-Gaps surfaced during Phase 1 adversarial review that were deferred
-out of scope. Close these on the next branch after merging
-`schema-checker` to main — the diff is small and each is independent.
 
 ## Phase 1.5b — CI release (formatter system)
 
-CEO-plan accepted-scope items #3 and #4 from
-`~/.gstack/projects/python_message_differencer/ceo-plans/2026-04-12-schema-compat-engine.md`:
-
-### Pluggable formatter system + JUnit built-ins — ✅ landed 2026-04-19
-
-Shipped as ``protokit.formatters`` with four ``FormatterKind``
-values, ``register_formatter`` / ``load_formatter_pack`` /
-``clear_user_formatters`` API, and the CLI's
-``--formatter-module`` flag. Built-ins per kind: ``human`` and
-``json`` (extracted from the prior CLI rendering); ``junit``
-across all four kinds (binary-result for DIFF, per-finding for
-the three compat kinds); ``sarif`` for the three compat kinds
-(SARIF for DIFF intentionally omitted — diffs don't fit SARIF's
-rule/result model). 15 built-ins total.
-
-JUnit output validated against the vendored Apache Ant JUnit
-xsd (``tests/fixtures/junit-xml/JUnit.xsd``) — the canonical
-reference Jenkins, GitLab, GitHub Actions, CircleCI, and
-TeamCity all consume. SARIF output validated against the
-vendored OASIS 2.1.0 schema
-(``tests/fixtures/sarif/sarif-2.1.0.json``) consumed by GitHub
-Code Scanning and GitLab security dashboards.
-
-Built-in names are reserved against ``--formatter-module``
-shadowing — a third-party pack can't silently replace the
-built-in ``junit`` and let downstream CI consumers ingest
-drift. ``--quiet`` mutex was widened to reject every
-non-``human`` format (was ``json``-only). Formatter exceptions
-fail fast (exit 2 with the formatter name + exception type);
-a stdout-write guard catches the contract violation when a
-formatter writes directly to stdout instead of returning a
-string.
-
-Plan + brainstorm: ``docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md``
-(in repo) ← ``~/.gstack/projects/python_message_differencer/marc-main-brainstorm-phase-1.5b-ci-release-20260418-115400.md`` (gstack).
+Pluggable formatter system + JUnit/SARIF built-ins (CEO #3+#4)
+landed 2026-04-19. Remaining items from that brainstorm below.
 
 ### Schema diff report (CEO plan item #1) — deferred to Phase 3 docgen
 
@@ -118,72 +82,6 @@ its own product framing distinct from compat checking, and
 suggestions) is still phase-sized, not a small follow-up.
 Earn the scope via a standalone brainstorm before committing.
 
-
-
-## Phase 1.5 — Differ hook system
-
-The schema checker (Phase 1) detects that an option *changed* between
-schema versions. This phase adds per-value hooks to the runtime
-differ so custom option metadata can drive comparison logic itself.
-Full design lives in the approved design doc's "Phase 1.5" section;
-the following is a planning summary.
-
-### Implement MessageDifferencer hook pipeline
-
-**What:** Three-stage hook pipeline on ``MessageDifferencer``:
-
-- ``HookStage.VALIDATE`` — pre-compare, flag constraint violations on either side.
-- ``HookStage.COMPARE`` — override equality for specific fields.
-- ``HookStage.REPORT`` — post-compare, annotate diffs with option-aware context.
-
-Registration API:
-
-```python
-differ.register_validate_hook(constraint_checker)
-differ.register_compare_hook(custom_equality_override)
-differ.register_report_hook(diff_annotator)
-differ.register_message_validate_hook(schema_drift_checker)
-```
-
-Context objects (``FieldHookContext`` / ``MessageHookContext``) carry both descriptors, both values, both parent messages, both pools, plus ``warn()`` / ``override_equal()`` / ``annotate()`` methods. Engine wires everything through one new ``_compare_field_with_hooks()`` helper; the zero-hooks fast path preserves current performance for all 228 differ tests.
-
-**Why:** Enables option-aware runtime behavior (validate ``validate.rules`` constraints, cross-schema option drift detection, annotation of diffs that cross custom-option boundaries). Complements the schema checker's static option detection.
-
-**Fix approach:** Follow the design doc's "Phase 1.5 Implementation Integration" section verbatim — single new private method, three integration points in ``_compare_leaf`` / ``_compare_repeated`` / ``_compare_map``, optional ``annotations`` field on ``Difference``. Wrap every hook invocation in ``try/except Exception`` with a ``Warning`` on failure (same pattern as schema plugin dispatch).
-
-**Effort:** L (CC: ~90 min including tests)
-**Priority:** P1 (this is the committed next-phase work)
-**Depends on:** Phase 1 schema checker landed. Benefits from a shared ``protokit.options.get_option_value`` helper (see below).
-**Discovered:** 2026-04-06 original design doc
-
----
-
-### Shared `protokit.options` module for plugin/hook option access
-
-**What:** A small shared module housing ``get_option_value(fd, option_path, pool=None)`` with tiered fallback: ``Extensions[]`` first (protoc-compiled descriptor sets), then ``uninterpreted_option`` parsing (always available), then ``None``.
-
-**Why:** Both schema plugins and differ hooks need to read custom options from descriptors. Today the schema checker has no helper and plugin authors reinvent it; Phase 1.5 hooks will need the same thing. Putting it in one place avoids drift.
-
-**Effort:** S (CC: ~15 min)
-**Priority:** P2
-**Depends on:** Nothing. Could even land before Phase 1.5 starts.
-**Discovered:** 2026-04-06 design doc
-
----
-
-## Phase 2 — Git-integrated schema evolution
-
-Makes the checker git-aware: discover schema versions from commit
-history, compare consecutive revisions, bisect for the first
-breaking commit, gate CI on merge-base.
-
-### Protoc replacement via protoxy (Rust bindings) — ✅ landed 2026-04-14
-
-Shipped as an optional backend in ``_cli_utils.compile_proto`` via
-``pip install protokit[compiler]``. Also required a protobuf 5.x
-compatibility pass (added ``is_repeated`` / ``is_required``
-helpers in ``protokit._descriptors``).
-
 ---
 
 ## Phase 3 — Ecosystem plays
@@ -234,26 +132,6 @@ Phase 3 depends on which ecosystem pain the builder hits first.
 
 Orthogonal polish items. Schedule when they're painful enough to
 matter; none block other phases.
-
-### pytest integration for schema compatibility checks — ✅ landed 2026-04-14
-
-Shipped as ``protokit.schema.pytest_plugin`` with ``schema_checker``
-/ ``schema_policy`` fixtures and ``assert_compatible`` helper.
-Users opt in by importing the plugin in ``conftest.py`` (matches
-the ``protokit.message.pytest_plugin`` pattern). Cross-type
-comparison works since the fixture returns a fresh
-``SchemaChecker`` the user calls directly.
-
----
-
-### CompatibilityPolicy supporting message plugins — ✅ landed 2026-04-14
-
-Shipped as ``CompatibilityPolicy.message_rules``. Tuple-frozen
-in ``__post_init__`` alongside ``custom_rules`` /
-``ignore_paths``; ``check()`` loops and calls
-``register_message_rule`` on the fresh ``SchemaChecker``.
-
----
 
 ### Async plugin support via `check_async()`
 
