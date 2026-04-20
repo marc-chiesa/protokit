@@ -824,6 +824,17 @@ Within that trust model, three things protokit enforces:
    a bug-catcher for honest formatters, not a sandbox against
    hostile ones.
 
+NOTE: Pack import side-effects persist beyond the two-phase
+registry rollback. A pack module that mutates `sys.path`, pokes
+`sys.modules`, or calls `register_formatter` at import time
+leaves those mutations in place even if a later entry in its
+`FORMATTERS` list is malformed and the registry rolls back.
+``protokit.formatters`` cannot undo arbitrary Python state. Pack
+authors should keep module-import-time code to a minimum and
+put all registrations in the `FORMATTERS` list; mixing the two
+is undefined behavior. See <<formatter-trust-model>> for the
+broader point: treat packs as `pip install`-grade trust.
+
 [[formatter-logging]]
 === Diagnostics from a custom formatter
 

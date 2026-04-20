@@ -18,7 +18,7 @@ from protokit.formatters._registry import (
     FormatterKind,
     _register_builtin,
 )
-from protokit.schema.model import BisectReport, Finding
+from protokit.schema.model import BisectReport, Finding, bisect_report_to_dict
 
 
 def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
@@ -70,8 +70,7 @@ def bisect_json(report: BisectReport, ctx: FormatterContext) -> str:
         A JSON string with two-space indentation.
     """
     del ctx
-    from protokit.schema.cli import _bisect_report_to_dict
-    return json.dumps(_bisect_report_to_dict(report), indent=2)
+    return json.dumps(bisect_report_to_dict(report), indent=2)
 
 
 def bisect_junit(report: BisectReport, ctx: FormatterContext) -> str:

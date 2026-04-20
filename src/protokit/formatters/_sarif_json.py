@@ -196,28 +196,33 @@ def build_run(
     invocation: dict[str, Any] = {
         "executionSuccessful": not bool(error_messages),
     }
-    if error_messages:
-        invocation["toolExecutionNotifications"] = [
-            {
-                "level": "error",
-                "message": {"text": message},
-                # SARIF notifications don't permit
-                # partialFingerprints, but properties is an
-                # open bag — attach commit attribution there
-                # so consumers can group/filter.
-                **({"properties": {"commit": commit}} if commit else {}),
-            }
-            for commit, message in error_messages
-        ]
-    if warning_messages:
-        invocation["toolConfigurationNotifications"] = [
-            {
-                "level": "warning",
-                "message": {"text": message},
-                **({"properties": {"commit": commit}} if commit else {}),
-            }
-            for commit, message in warning_messages
-        ]
+    # All notifications — error AND warning — go into
+    # toolExecutionNotifications. GitHub Code Scanning and most
+    # other SARIF consumers surface that channel as part of the
+    # run; toolConfigurationNotifications (reserved for problems
+    # with the tool's configuration rather than events during
+    # execution) is often suppressed or de-prioritized. Errors
+    # and warnings share the same array, disambiguated by their
+    # per-entry ``level`` field.
+    notifications: list[dict[str, Any]] = []
+    for commit, message in error_messages or []:
+        notifications.append({
+            "level": "error",
+            "message": {"text": message},
+            # SARIF notifications don't permit
+            # partialFingerprints, but properties is an open
+            # bag — attach commit attribution there so consumers
+            # can group/filter.
+            **({"properties": {"commit": commit}} if commit else {}),
+        })
+    for commit, message in warning_messages or []:
+        notifications.append({
+            "level": "warning",
+            "message": {"text": message},
+            **({"properties": {"commit": commit}} if commit else {}),
+        })
+    if notifications:
+        invocation["toolExecutionNotifications"] = notifications
 
     run: dict[str, Any] = {
         "tool": {

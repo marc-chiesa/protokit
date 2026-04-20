@@ -261,6 +261,24 @@ def reject_quiet_plus_structured(
         )
 
 
+def _scrub_exc_message(exc: BaseException) -> str:
+    """Return a safe ``str(exc)`` for error-path surfacing.
+
+    ``OSError`` subclasses embed ``filename`` / ``filename2``
+    into their ``str()`` — a formatter that touched the
+    filesystem could leak absolute paths (or path-shaped
+    secrets) onto stderr via our generic error handler. For
+    those, emit only the errno string so the failure mode is
+    still recognisable without exposing filesystem layout.
+    Other exception types keep their full message.
+    """
+    if isinstance(exc, OSError):
+        import errno
+        errno_name = errno.errorcode.get(exc.errno, str(exc.errno))
+        return f"[Errno {exc.errno} {errno_name}] {exc.strerror or ''}".strip()
+    return str(exc)
+
+
 def run_formatter_safely(
     fn: Formatter,
     report: Any,
@@ -308,7 +326,8 @@ def run_formatter_safely(
         )
     except Exception as exc:
         error_exit(
-            f"formatter '{name}' raised {type(exc).__name__}: {exc}"
+            f"formatter '{name}' raised {type(exc).__name__}: "
+            f"{_scrub_exc_message(exc)}"
         )
     leaked = buffer.getvalue()
     if leaked:

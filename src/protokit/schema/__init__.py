@@ -22,6 +22,16 @@ Public surface:
 
 from __future__ import annotations
 
+# Diagnostic lives in protokit.message.model (where it
+# originated with the differ) and is re-exported here for
+# ergonomics: schema callers work with CompatibilityReport
+# whose .diagnostics field carries Diagnostic instances, so
+# importing the type from the same namespace as the report
+# reads more naturally than reaching into the sibling package.
+# Both import paths resolve to the same class object — there
+# is no divergence risk as long as this file keeps the
+# re-export aligned. If a future refactor relocates Diagnostic,
+# update both call sites together.
 from protokit.message.model import Diagnostic
 from protokit.schema.checker import SchemaChecker, check_compatibility
 from protokit.schema.model import (

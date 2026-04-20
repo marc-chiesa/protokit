@@ -12,6 +12,7 @@ since it was a ``click.Choice``.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -268,6 +269,24 @@ def load_formatter_pack(module: Any) -> None:
             ``importlib.import_module``).
     """
     formatters_attr = module.FORMATTERS  # AttributeError propagates
+    # An empty FORMATTERS list registers nothing. Most common
+    # cause is a typo (the intended list was bound to a
+    # differently-named attribute). Warn loudly so the
+    # mismatch surfaces at pack-load time rather than at
+    # formatter-lookup time with a misleading "unknown
+    # formatter" error. Authors with a legitimately empty
+    # pack (e.g. all formatters gated behind conditional
+    # imports) can silence via
+    # ``warnings.filterwarnings("ignore", ...)`` on their
+    # side.
+    if not list(formatters_attr):
+        warnings.warn(
+            f"formatter pack {module.__name__!r} exposes an "
+            "empty FORMATTERS list; no formatters registered",
+            UserWarning,
+            stacklevel=2,
+        )
+        return
     staged: list[tuple[str, Formatter, FormatterKind]] = []
     for entry in formatters_attr:
         if not (isinstance(entry, tuple) and len(entry) == 3):

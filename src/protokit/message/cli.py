@@ -196,10 +196,13 @@ def _validate_flag_groups(
 @click.option(
     "--format", "output_format",
     type=click.STRING, default="human",
+    envvar="PROTOKIT_FORMAT",
     help="Output format. Built-in: human, json, junit "
          "(sarif not available on diff — diff isn't pass/fail "
          "in SARIF's rule/result model). "
-         "Use --formatter-module to add more.",
+         "Use --formatter-module to add more. "
+         "Also reads PROTOKIT_FORMAT — set in CI to avoid "
+         "repeating --format on every invocation.",
 )
 @click.option(
     "--formatter-module", "formatter_modules",

@@ -189,9 +189,14 @@ class TestCompatSarif:
         assert notes[0]["level"] == "error"
         assert notes[0]["message"]["text"] == "plugin crashed"
 
-    def test_warning_diagnostic_in_config_notifications(
+    def test_warning_diagnostic_in_execution_notifications(
         self, sarif_validator: jsonschema.Draft7Validator,
     ) -> None:
+        # R-FF fix: warnings land in toolExecutionNotifications
+        # alongside errors (disambiguated by per-entry level).
+        # Previously warnings went into
+        # toolConfigurationNotifications, which GitHub Code
+        # Scanning may suppress as "not a run event".
         report = CompatibilityReport(
             level=CompatibilityLevel.STRICT,
             diagnostics=(Diagnostic(
@@ -204,8 +209,32 @@ class TestCompatSarif:
         run = payload["runs"][0]
         # Warnings don't flip success.
         assert run["invocations"][0]["executionSuccessful"] is True
-        notes = run["invocations"][0]["toolConfigurationNotifications"]
+        notes = run["invocations"][0]["toolExecutionNotifications"]
+        assert notes[0]["level"] == "warning"
         assert notes[0]["message"]["text"] == "advisory"
+        # And toolConfigurationNotifications is no longer present.
+        assert "toolConfigurationNotifications" not in run["invocations"][0]
+
+    def test_errors_and_warnings_coexist_in_execution_notifications(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        # Mixed case — both an error and a warning land in the
+        # same toolExecutionNotifications array.
+        report = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            diagnostics=(
+                Diagnostic(level="error", path=None, message="plugin crashed"),
+                Diagnostic(level="warning", path=None, message="advisory"),
+            ),
+        )
+        fn = get_formatter("sarif", FormatterKind.COMPAT)
+        out = fn(report, FormatterContext(subcommand="compat-check"))
+        payload = _validate(sarif_validator, out)
+        invocation = payload["runs"][0]["invocations"][0]
+        assert invocation["executionSuccessful"] is False
+        notes = invocation["toolExecutionNotifications"]
+        levels = [n["level"] for n in notes]
+        assert set(levels) == {"error", "warning"}
 
 
 # ---------------------------------------------------------------------------

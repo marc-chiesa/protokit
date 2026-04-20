@@ -18,7 +18,11 @@ from protokit.formatters._registry import (
     FormatterKind,
     _register_builtin,
 )
-from protokit.schema.model import Finding, HistoryReport
+from protokit.schema.model import (
+    Finding,
+    HistoryReport,
+    history_report_to_dict,
+)
 
 
 def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
@@ -74,11 +78,7 @@ def history_json(report: HistoryReport, ctx: FormatterContext) -> str:
         A JSON string with two-space indentation.
     """
     del ctx
-    # Local import — avoids a circular dependency at package
-    # import time. ``protokit.schema.cli`` imports formatters in
-    # Unit 5; this lazy import keeps the dependency one-way.
-    from protokit.schema.cli import _history_report_to_dict
-    return json.dumps(_history_report_to_dict(report), indent=2)
+    return json.dumps(history_report_to_dict(report), indent=2)
 
 
 def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
@@ -96,7 +96,19 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
     # Local import — _builtin_compat owns _build_compat_testsuite,
     # and going through the package-level import would create a
     # cycle at module load time.
-    from protokit.formatters._builtin_compat import _build_compat_testsuite
+    from protokit.formatters._builtin_compat import (
+        _build_compat_testsuite,
+        _suite_name_for,
+    )
+
+    # Type-qualified prefix shared with the standalone COMPAT
+    # suite name. Combined with the commit short-SHA below it
+    # produces a fully disambiguated suite name like
+    # ``protokit-compat-acme.User-commit-abcdef123456`` so two
+    # concurrent ``history`` runs over the same commit range
+    # but different ``--type`` values don't overwrite each
+    # other in CI aggregators that dedupe by suite name.
+    type_prefix = _suite_name_for(ctx)
 
     root = ET.Element("testsuites")
     for index, entry in enumerate(report.entries):
@@ -116,7 +128,7 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
             proto_file=ctx.proto_file,
         )
         suite = _build_compat_testsuite(entry.report, entry_ctx)
-        suite.set("name", f"commit-{entry.commit_sha[:12]}")
+        suite.set("name", f"{type_prefix}-commit-{entry.commit_sha[:12]}")
         suite.set("package", junit.xml_safe_text(entry.commit_subject or ""))
         suite.set("id", str(index))
         root.append(suite)

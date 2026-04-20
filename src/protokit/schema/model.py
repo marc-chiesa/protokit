@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator
+from typing import Any, Iterator
 
 from protokit.message.model import Diagnostic, FieldPath
 
@@ -452,3 +452,105 @@ class BisectReport:
             )
         if not isinstance(self.diagnostics, tuple):
             object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+
+
+# ---------------------------------------------------------------------------
+# Legacy JSON projections
+# ---------------------------------------------------------------------------
+#
+# The two functions below project the aggregate dataclasses into
+# the dict shape the CLI's ``--format json`` output has emitted
+# since Phase 2. They live here (alongside the dataclasses they
+# serialize) rather than in ``schema/cli.py`` so the formatter
+# built-ins that consume them — ``protokit.formatters._builtin_history``
+# and ``_builtin_bisect`` — can import them as a stable top-level
+# dependency rather than via a lazy import to break a cycle. The
+# regression contract is structural equivalence with the
+# pre-refactor output (``json.loads(new) == json.loads(old)``).
+
+
+def history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
+    """Project a ``HistoryReport`` into the legacy JSON payload.
+
+    Preserves the key set the ``history`` subcommand has emitted
+    since Phase 2: ``range``, ``old``, ``new``, ``commits_walked``,
+    ``entries`` (each with ``old`` / ``new`` / ``compatible`` /
+    ``findings`` / ``diagnostics``), and top-level ``diagnostics``.
+    Fields on the dataclass that are not in the legacy shape (e.g.
+    ``HistoryEntry.commit_subject``) are intentionally omitted —
+    the regression contract is structural equivalence with the
+    pre-refactor output.
+    """
+    return {
+        "range": report.range_spec,
+        "old": report.old_sha,
+        "new": report.new_sha,
+        "commits_walked": report.commits_walked,
+        "entries": [
+            {
+                "old": entry.parent_sha,
+                "new": entry.commit_sha,
+                "compatible": entry.report.is_compatible,
+                "findings": [
+                    {
+                        "path": str(f.path),
+                        "rule_id": f.rule_id,
+                        "severity": f.severity.value,
+                        "direction": f.direction.value,
+                        "message": f.message,
+                    }
+                    for f in entry.report.findings
+                ],
+                "diagnostics": [
+                    {"level": d.level, "path": d.path, "message": d.message}
+                    for d in entry.report.diagnostics
+                ],
+            }
+            for entry in report.entries
+        ],
+        "diagnostics": [
+            {
+                "commit": d.commit,
+                "level": d.level,
+                "path": d.path,
+                "message": d.message,
+            }
+            for d in report.diagnostics
+        ],
+    }
+
+
+def bisect_report_to_dict(report: BisectReport) -> dict[str, Any]:
+    """Project a ``BisectReport`` into the legacy JSON payload.
+
+    Mirrors the shape the ``bisect`` subcommand has emitted since
+    Phase 2: ``range``, ``old``, ``new``, ``breaking_commit``,
+    ``findings`` (for the breaking commit), ``commits_walked``,
+    ``diagnostics``.
+    """
+    return {
+        "range": report.range_spec,
+        "old": report.old_sha,
+        "new": report.new_sha,
+        "breaking_commit": report.breaking_commit,
+        "findings": [
+            {
+                "path": str(f.path),
+                "rule_id": f.rule_id,
+                "severity": f.severity.value,
+                "direction": f.direction.value,
+                "message": f.message,
+            }
+            for f in report.breaking_findings
+        ],
+        "commits_walked": report.commits_walked,
+        "diagnostics": [
+            {
+                "commit": d.commit,
+                "level": d.level,
+                "path": d.path,
+                "message": d.message,
+            }
+            for d in report.diagnostics
+        ],
+    }

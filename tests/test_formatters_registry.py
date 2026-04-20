@@ -231,6 +231,17 @@ class TestLoadFormatterPack:
         with pytest.raises(TypeError, match="callable"):
             load_formatter_pack(mod)
 
+    def test_empty_formatters_list_warns(self) -> None:
+        # R-D7 fix: an empty FORMATTERS list used to succeed
+        # silently, deferring the mistake to a misleading
+        # "unknown formatter" error at lookup time. Now the
+        # pack load emits a UserWarning so the mismatch
+        # surfaces at the right layer.
+        mod = types.ModuleType("pack_empty")
+        mod.FORMATTERS = []
+        with pytest.warns(UserWarning, match="empty FORMATTERS"):
+            load_formatter_pack(mod)
+
     def test_two_phase_rollback_on_partial_failure(self) -> None:
         # Pre-populate so the third entry collides and aborts mid-load.
         register_formatter(

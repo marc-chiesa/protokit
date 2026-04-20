@@ -24,7 +24,6 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-from typing import Any
 
 import click
 from google.protobuf import descriptor_pool
@@ -443,93 +442,6 @@ def _level_cli_name(level: CompatibilityLevel) -> str:
     return level.value.lower().replace("_", "-")
 
 
-def _history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
-    """Project a ``HistoryReport`` into the legacy JSON payload.
-
-    Preserves the key set the ``history`` subcommand has emitted
-    since Phase 2: ``range``, ``old``, ``new``, ``commits_walked``,
-    ``entries`` (each with ``old`` / ``new`` / ``compatible`` /
-    ``findings`` / ``diagnostics``), and top-level ``diagnostics``.
-    Fields on the dataclass that are not in the legacy shape (e.g.
-    ``HistoryEntry.commit_subject``) are intentionally omitted —
-    the regression contract is structural equivalence with the
-    pre-refactor output.
-    """
-    return {
-        "range": report.range_spec,
-        "old": report.old_sha,
-        "new": report.new_sha,
-        "commits_walked": report.commits_walked,
-        "entries": [
-            {
-                "old": entry.parent_sha,
-                "new": entry.commit_sha,
-                "compatible": entry.report.is_compatible,
-                "findings": [
-                    {
-                        "path": str(f.path),
-                        "rule_id": f.rule_id,
-                        "severity": f.severity.value,
-                        "direction": f.direction.value,
-                        "message": f.message,
-                    }
-                    for f in entry.report.findings
-                ],
-                "diagnostics": [
-                    {"level": d.level, "path": d.path, "message": d.message}
-                    for d in entry.report.diagnostics
-                ],
-            }
-            for entry in report.entries
-        ],
-        "diagnostics": [
-            {
-                "commit": d.commit,
-                "level": d.level,
-                "path": d.path,
-                "message": d.message,
-            }
-            for d in report.diagnostics
-        ],
-    }
-
-
-def _bisect_report_to_dict(report: BisectReport) -> dict[str, Any]:
-    """Project a ``BisectReport`` into the legacy JSON payload.
-
-    Mirrors the shape the ``bisect`` subcommand has emitted since
-    Phase 2: ``range``, ``old``, ``new``, ``breaking_commit``,
-    ``findings`` (for the breaking commit), ``commits_walked``,
-    ``diagnostics``.
-    """
-    return {
-        "range": report.range_spec,
-        "old": report.old_sha,
-        "new": report.new_sha,
-        "breaking_commit": report.breaking_commit,
-        "findings": [
-            {
-                "path": str(f.path),
-                "rule_id": f.rule_id,
-                "severity": f.severity.value,
-                "direction": f.direction.value,
-                "message": f.message,
-            }
-            for f in report.breaking_findings
-        ],
-        "commits_walked": report.commits_walked,
-        "diagnostics": [
-            {
-                "commit": d.commit,
-                "level": d.level,
-                "path": d.path,
-                "message": d.message,
-            }
-            for d in report.diagnostics
-        ],
-    }
-
-
 def _resolve_common_flags(
     *,
     quiet: bool,
@@ -780,8 +692,11 @@ def main() -> None:
     type=click.STRING,
     default="human",
     show_default=True,
+    envvar="PROTOKIT_FORMAT",
     help="Output format. Built-in: human, json, junit, sarif. "
-         "Use --formatter-module to add more.",
+         "Use --formatter-module to add more. "
+         "Also reads PROTOKIT_FORMAT — set in CI to avoid "
+         "repeating --format on every invocation.",
 )
 @click.option(
     "--formatter-module",
@@ -1025,8 +940,11 @@ def check(
     type=click.STRING,
     default="human",
     show_default=True,
+    envvar="PROTOKIT_FORMAT",
     help="Output format. Built-in: human, json, junit, sarif. "
-         "Use --formatter-module to add more.",
+         "Use --formatter-module to add more. "
+         "Also reads PROTOKIT_FORMAT — set in CI to avoid "
+         "repeating --format on every invocation.",
 )
 @click.option(
     "--formatter-module",
@@ -1337,8 +1255,11 @@ def history(
     type=click.STRING,
     default="human",
     show_default=True,
+    envvar="PROTOKIT_FORMAT",
     help="Output format. Built-in: human, json, junit, sarif. "
-         "Use --formatter-module to add more.",
+         "Use --formatter-module to add more. "
+         "Also reads PROTOKIT_FORMAT — set in CI to avoid "
+         "repeating --format on every invocation.",
 )
 @click.option(
     "--formatter-module",
@@ -1484,8 +1405,15 @@ def bisect(
     any_diagnostics = False
     first_break_sha: str | None = None
     first_break_findings: list[Finding] = []
+    # commits_walked tracks the actual iteration count rather
+    # than the range size. On stop-fast early exit we previously
+    # reported len(commits) even though we'd only evaluated N
+    # commits before stopping, which misled downstream tooling
+    # attributing "commits evaluated" from the JSON payload.
+    commits_walked = 0
 
     for sha in commits:
+        commits_walked += 1
         try:
             new_pool = extract_pool_from_ref(
                 sha, proto_file, proto_roots=proto_roots,
@@ -1523,7 +1451,7 @@ def bisect(
                     breaking_commit=first_break_sha,
                     breaking_findings=first_break_findings,
                     diagnostics=diagnostics,
-                    commits_walked=len(commits),
+                    commits_walked=commits_walked,
                     exit_code=2,
                 )
         if report.findings and first_break_sha is None:
@@ -1534,7 +1462,7 @@ def bisect(
                     breaking_commit=first_break_sha,
                     breaking_findings=first_break_findings,
                     diagnostics=diagnostics,
-                    commits_walked=len(commits),
+                    commits_walked=commits_walked,
                     exit_code=1,
                 )
 
@@ -1549,7 +1477,7 @@ def bisect(
         breaking_commit=first_break_sha,
         breaking_findings=first_break_findings,
         diagnostics=diagnostics,
-        commits_walked=len(commits),
+        commits_walked=commits_walked,
         exit_code=exit_code,
     )
 
@@ -1638,8 +1566,11 @@ def bisect(
     type=click.STRING,
     default="human",
     show_default=True,
+    envvar="PROTOKIT_FORMAT",
     help="Output format. Built-in: human, json, junit, sarif. "
-         "Use --formatter-module to add more.",
+         "Use --formatter-module to add more. "
+         "Also reads PROTOKIT_FORMAT — set in CI to avoid "
+         "repeating --format on every invocation.",
 )
 @click.option(
     "--formatter-module",

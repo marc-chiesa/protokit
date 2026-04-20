@@ -404,8 +404,40 @@ class TestHistoryJunit:
         assert suites[0].get("id") == "0"
         assert suites[1].get("package") == "break"
         assert suites[1].get("id") == "1"
-        # Suite name carries short-sha identifier.
-        assert suites[0].get("name") == "commit-aaaaaaaaaaaa"
+        # Suite name carries the type-qualified prefix + short SHA
+        # so concurrent multi-type history runs don't collide in
+        # CI aggregators that dedupe by suite name (R-CC fix).
+        assert suites[0].get("name") == "protokit-compat-acme.User-commit-aaaaaaaaaaaa"
+
+    def test_suite_names_disambiguate_across_types(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        # Regression for the 2026-04-19 review (ADV-007): two
+        # history runs over the same commit range but different
+        # --type values used to produce identical "commit-{sha}"
+        # suite names. CI aggregators that dedupe by name would
+        # silently overwrite one type's findings with the other's.
+        # The fix prefixes each suite name with the type-qualified
+        # form so they live side-by-side.
+        report_user = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[HistoryEntry(
+                commit_sha="abc", parent_sha="x", commit_subject="s",
+                report=CompatibilityReport(level=CompatibilityLevel.STRICT),
+            )],
+        )
+        fn = get_formatter("junit", FormatterKind.COMPAT_HISTORY)
+        out_user = fn(report_user, FormatterContext(
+            subcommand="compat-history", target_type="acme.User",
+        ))
+        out_order = fn(report_user, FormatterContext(
+            subcommand="compat-history", target_type="acme.Order",
+        ))
+        name_user = ET.fromstring(out_user).find("testsuite").get("name")
+        name_order = ET.fromstring(out_order).find("testsuite").get("name")
+        assert name_user != name_order
+        assert "acme.User" in name_user
+        assert "acme.Order" in name_order
 
 
 # ---------------------------------------------------------------------------
