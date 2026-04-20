@@ -12,5 +12,10 @@ build/
 .venv/
 venv/
 *.so
+*.bak
 .env
 **/.DS_Store
+
+# ce:review and other compound-engineering workflow artifacts —
+# per-run state, not part of the codebase
+.context/
