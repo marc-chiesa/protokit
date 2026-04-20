@@ -214,11 +214,14 @@ assert not result.is_complete  # truncated subtrees exist
 | `--json`
 | Parse input as JSON-encoded protobuf
 
-| `--format human\|json`
-| Output format (default: human)
+| `--format NAME`
+| Output format (default: `human`). Built-in for diff: `human`, `json`, `junit`. See <<output-formatters>>.
+
+| `--formatter-module MODULE`
+| Python module exposing a `FORMATTERS = [(name, fn, kind), ...]` list (repeatable). See <<output-formatters>>.
 
 | `--quiet`
-| Suppress output, exit code only
+| Suppress output, exit code only. Mutually exclusive with any non-`human` `--format`.
 
 | `--verbose`
 | Show warnings even when equal
@@ -493,8 +496,11 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | `--level LEVEL`
 | `wire` \| `consumer-safe` (default) \| `producer-safe` \| `strict`.
 
-| `--format FMT`
-| `human` (default) or `json`.
+| `--format NAME`
+| Output format (default: `human`). Built-in for compat: `human`, `json`, `junit`, `sarif`. See <<output-formatters>>.
+
+| `--formatter-module MODULE`
+| Python module exposing a `FORMATTERS = [(name, fn, kind), ...]` list (repeatable). See <<output-formatters>>.
 
 | `--rule-pack MODULE`
 | Dotted module name exposing a `RULES` list. Repeatable.
@@ -506,7 +512,7 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | Emit findings for each shared nested type only once (original behavior). Default is path-complete: findings appear at every path where the type is referenced.
 
 | `--quiet`
-| Suppress output; return exit code only.
+| Suppress output; return exit code only. Mutually exclusive with any non-`human` `--format`.
 |===
 
 === Git-integrated subcommands
@@ -588,6 +594,210 @@ the filter has nothing to intersect with. This is a rare pattern
 in practice — most teams rename a file and its importers in the
 same commit — but worth flagging. The workaround is to rerun the
 walk against a ref where the importer has been updated.
+
+[[output-formatters]]
+== Output Formatters
+
+`--format NAME` selects how `protokit diff` and every `protokit
+compat` subcommand render their output. Built-in names cover the
+common CI-integration formats; the `--formatter-module` flag
+loads user-supplied packs for anything else.
+
+=== Built-in formatters
+
+[cols="1,1,3"]
+|===
+| Kind | Names | Notes
+
+| `DIFF`
+| `human`, `json`, `junit`
+| `junit` uses a binary-result single-testcase pattern (one
+  assertion per comparison); per-difference detail goes in the
+  failure body. SARIF intentionally omitted — message diffs
+  don't fit SARIF's rule/result model.
+
+| `COMPAT`
+| `human`, `json`, `junit`, `sarif`
+| `junit` is per-finding; empty checks emit a synthetic passing
+  testcase so CI doesn't read the suite as "no tests ran."
+  `sarif` is a single SARIF 2.1.0 `run` with one `result` per
+  finding; `tool.driver.rules` declares every fired rule_id.
+
+| `COMPAT_HISTORY`
+| `human`, `json`, `junit`, `sarif`
+| `junit` wraps per-commit suites under `<testsuites>`; each
+  suite carries the commit subject as `package` and a sequential
+  `id`. `sarif` aggregates results into one `run` with
+  `partialFingerprints.commit` per result.
+
+| `COMPAT_BISECT`
+| `human`, `json`, `junit`, `sarif`
+| `junit` carries `range_spec`, `old_sha`, `new_sha`, and
+  `breaking_commit` in a `<properties>` block. `sarif` exposes
+  the same in `run.properties`.
+|===
+
+15 built-in formatters in total. Built-in names are reserved —
+third-party packs cannot register under `(kind, "human")`,
+`(kind, "json")`, `(COMPAT, "junit")`, `(COMPAT, "sarif")`,
+etc. (See <<formatter-trust-model>>.)
+
+=== JUnit example
+
+[source,bash]
+----
+protokit compat ci --base origin/main \
+  --proto-file acme/user.proto --type acme.User \
+  --format junit
+----
+
+Produces output that validates against the Apache Ant JUnit XML
+reference (the format Jenkins, GitLab CI, GitHub Actions test
+result actions, CircleCI, and TeamCity all consume):
+
+[source,xml]
+----
+<?xml version='1.0' encoding='utf-8'?>
+<testsuite name="protokit-compat-acme.User"
+           tests="1" failures="1" errors="0"
+           timestamp="1970-01-01T00:00:00" hostname="localhost" time="0">
+  <properties/>
+  <testcase classname="field_removed" name="user.email" time="0">
+    <failure type="SEMANTIC/BACKWARD"
+             message="field present in old, absent in new">field present in old, absent in new</failure>
+  </testcase>
+  <system-out/>
+  <system-err/>
+</testsuite>
+----
+
+The vendored xsd lives at `tests/fixtures/junit-xml/JUnit.xsd`
+(Windy Road's Apache Ant reference, Apache 2.0 licensed).
+
+=== SARIF example
+
+[source,bash]
+----
+protokit compat ci --base origin/main \
+  --proto-file acme/user.proto --type acme.User \
+  --format sarif > findings.sarif
+----
+
+Produces a SARIF 2.1.0 document consumable by GitHub Code
+Scanning, GitLab security dashboards, and any OASIS SARIF
+consumer:
+
+[source,json]
+----
+{
+  "version": "2.1.0",
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [{
+    "tool": {
+      "driver": {
+        "name": "protokit",
+        "version": "0.1.0",
+        "rules": [
+          {"id": "field_removed", "name": "field_removed",
+           "shortDescription": {"text": "Field present in old, absent in new."}}
+        ]
+      }
+    },
+    "results": [
+      {
+        "ruleId": "field_removed",
+        "level": "error",
+        "message": {"text": "field present in old, absent in new"},
+        "locations": [{
+          "logicalLocations": [{"fullyQualifiedName": "user.email"}],
+          "physicalLocation": {"artifactLocation": {"uri": "acme/user.proto"}}
+        }]
+      }
+    ],
+    "invocations": [{"executionSuccessful": true}]
+  }]
+}
+----
+
+Severity mapping: `WIRE` and `SEMANTIC` findings map to SARIF
+`"error"`; `POLICY` findings map to `"warning"`. The vendored
+schema lives at `tests/fixtures/sarif/sarif-2.1.0.json`
+(OASIS 2.1.0 via SchemaStore).
+
+=== Custom formatters via `--formatter-module`
+
+A formatter pack is any Python module exposing a `FORMATTERS`
+list of `(name, fn, kind)` tuples. The function signature is
+`(report, FormatterContext) -> str`:
+
+[source,python]
+----
+# myorg/formatters.py
+from protokit.formatters import FormatterContext, FormatterKind
+from protokit.schema import CompatibilityReport
+
+
+def slack_summary(report: CompatibilityReport, ctx: FormatterContext) -> str:
+    target = ctx.target_type or "(unknown type)"
+    verdict = "COMPATIBLE" if report.is_compatible else "INCOMPATIBLE"
+    lines = [f"*protokit compat — {target}*", f"{len(report)} finding(s) · {verdict}"]
+    for f in report:
+        lines.append(f"• [{f.severity.value}] {f.path}: {f.message}")
+    return "\n".join(lines)
+
+
+FORMATTERS = [
+    ("slack", slack_summary, FormatterKind.COMPAT),
+]
+----
+
+Load it via the CLI:
+
+[source,bash]
+----
+protokit compat check old.descriptor_set new.descriptor_set \
+  --type acme.User \
+  --formatter-module myorg.formatters --format slack
+----
+
+Or programmatically:
+
+[source,python]
+----
+from protokit.formatters import register_formatter, FormatterKind
+register_formatter("slack", slack_summary, kind=FormatterKind.COMPAT)
+----
+
+A complete runnable example lives at `examples/custom_formatter.py`.
+
+[[formatter-trust-model]]
+=== Trust model
+
+`--formatter-module` follows the same trust model as `--rule-pack`:
+protokit imports the named module and reads its `FORMATTERS`
+attribute. Treat formatter packs as you would `pip install` —
+only load packs from sources you trust. Three guarantees:
+
+1. *Exit code stays the report's verdict.* The CLI exit code
+   (0 / 1 / 2) is determined by the compat report itself
+   (compatibility verdict + diagnostic levels), not by formatter
+   output. A malicious or buggy formatter can mislead human
+   readers but cannot flip CI gating.
+2. *Built-in names are reserved.* Third-party packs cannot
+   register under `(kind, "human")`, `(kind, "json")`,
+   `(COMPAT, "junit")`, `(COMPAT, "sarif")`, etc. Attempts to
+   shadow a built-in fail with `cannot override built-in
+   formatter` at registration time, regardless of `replace=True`.
+3. *Stdout-write guard.* Formatters MUST be pure str-returning
+   functions. If a formatter writes directly to `sys.stdout`,
+   the CLI catches the leak and exits 2 with a contract-violation
+   error — guarantees that a half-rendered output never reaches
+   downstream CI parsers when the formatter raises mid-render.
+
+NOTE: `register_formatter` rejects re-registration of an
+existing non-built-in name unless `replace=True` is passed
+explicitly. This makes accidental name collisions loud rather
+than silent.
 
 == Supported Field Types
 

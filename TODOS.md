@@ -13,6 +13,65 @@ Gaps surfaced during Phase 1 adversarial review that were deferred
 out of scope. Close these on the next branch after merging
 `schema-checker` to main — the diff is small and each is independent.
 
+## Phase 1.5b — CI release (formatter system)
+
+CEO-plan accepted-scope items #3 and #4 from
+`~/.gstack/projects/python_message_differencer/ceo-plans/2026-04-12-schema-compat-engine.md`:
+
+### Pluggable formatter system + JUnit built-ins — ✅ landed 2026-04-19
+
+Shipped as ``protokit.formatters`` with four ``FormatterKind``
+values, ``register_formatter`` / ``load_formatter_pack`` /
+``clear_user_formatters`` API, and the CLI's
+``--formatter-module`` flag. Built-ins per kind: ``human`` and
+``json`` (extracted from the prior CLI rendering); ``junit``
+across all four kinds (binary-result for DIFF, per-finding for
+the three compat kinds); ``sarif`` for the three compat kinds
+(SARIF for DIFF intentionally omitted — diffs don't fit SARIF's
+rule/result model). 15 built-ins total.
+
+JUnit output validated against the vendored Apache Ant JUnit
+xsd (``tests/fixtures/junit-xml/JUnit.xsd``) — the canonical
+reference Jenkins, GitLab, GitHub Actions, CircleCI, and
+TeamCity all consume. SARIF output validated against the
+vendored OASIS 2.1.0 schema
+(``tests/fixtures/sarif/sarif-2.1.0.json``) consumed by GitHub
+Code Scanning and GitLab security dashboards.
+
+Built-in names are reserved against ``--formatter-module``
+shadowing — a third-party pack can't silently replace the
+built-in ``junit`` and let downstream CI consumers ingest
+drift. ``--quiet`` mutex was widened to reject every
+non-``human`` format (was ``json``-only). Formatter exceptions
+fail fast (exit 2 with the formatter name + exception type);
+a stdout-write guard catches the contract violation when a
+formatter writes directly to stdout instead of returning a
+string.
+
+Plan + brainstorm: ``docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md``
+(in repo) ← ``~/.gstack/projects/python_message_differencer/marc-main-brainstorm-phase-1.5b-ci-release-20260418-115400.md`` (gstack).
+
+### Schema diff report (CEO plan item #1) — deferred to Phase 3 docgen
+
+The plan accepted ``Schema diff report (all structural changes,
+not just breaking)`` but the ce:brainstorm pressure test
+concluded the same descriptor-traversal engine produces
+changelogs in Phase 3, so delivering a standalone schema-diff
+now would duplicate work. Roll into Phase 3 docgen when
+changelogs are built.
+
+### Linting (CEO plan item #2) — deferred to its own brainstorm
+
+The plan accepted ``register_lint_rule`` + ``lint()`` + a
+``protokit compat lint`` subcommand. Deferred because (a) the
+lint thesis (custom-option-aware Python-native rules) needs
+its own product framing distinct from compat checking, and
+(b) the descoped form (no inline ``protokit:ignore``, no fix
+suggestions) is still phase-sized, not a small follow-up.
+Earn the scope via a standalone brainstorm before committing.
+
+
+
 ## Phase 1.5 — Differ hook system
 
 The schema checker (Phase 1) detects that an option *changed* between

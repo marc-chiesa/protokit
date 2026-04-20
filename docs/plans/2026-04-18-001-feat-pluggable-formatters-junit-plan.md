@@ -566,7 +566,7 @@ This is a new pattern in the project; document the choice in the dataclass docst
 
 ---
 
-- [ ] **Unit 6: Integration tests, docs, changelog, TODOS update**
+- [x] **Unit 6: Integration tests, docs, changelog, TODOS update**
 
 **Goal:** End-to-end validation; user-facing documentation; close the loop on the CEO plan tracking.
 

@@ -16,11 +16,65 @@ All notable changes to `protokit` are documented here. Format loosely follows
 - Rule-pack loading via `SchemaChecker.load_rule_pack(module)` and the
   CLI `--rule-pack MODULE` flag. Rule packs are plain Python modules
   exposing a `RULES = [(rule_id, fn), ...]` list.
-- `examples/` directory with runnable scripts demonstrating the library
-  and plugin APIs.
-- pytest-based test coverage: 420+ tests covering rules, plugin
-  dispatch, profile filtering, CLI behavior, reentrancy, async-plugin
-  rejection, cross-type comparisons, and plugin exception safety.
+- **`protokit.formatters` — pluggable output formatter system** spanning
+  both CLIs. Four `FormatterKind` values (`DIFF`, `COMPAT`,
+  `COMPAT_HISTORY`, `COMPAT_BISECT`); user packs register via
+  `register_formatter(name, fn, *, kind)` or the CLI's
+  `--formatter-module MODULE` (repeatable, mirrors `--rule-pack`).
+  Built-in names (`human`, `json`, `junit`, `sarif`) are reserved
+  against override.
+- **JUnit XML built-ins** for every kind. `protokit diff --format junit`
+  uses a binary-result single-testcase pattern (one assertion per
+  comparison); `protokit compat {check,history,bisect,ci} --format junit`
+  uses per-finding testcases. Output validates against the Apache Ant
+  reference JUnit xsd consumed by Jenkins, GitLab, GitHub Actions
+  test-result actions, CircleCI, and TeamCity.
+- **SARIF 2.1.0 built-ins** for every compat kind (`COMPAT`,
+  `COMPAT_HISTORY`, `COMPAT_BISECT`) — consumable by GitHub Code
+  Scanning, GitLab security dashboards, and any OASIS SARIF
+  consumer. Severity mapping: WIRE+SEMANTIC → `"error"`, POLICY →
+  `"warning"`. Aggregate kinds attach `partialFingerprints.commit`
+  for per-commit grouping. SARIF for the DIFF kind is intentionally
+  omitted — message diffs don't fit SARIF's rule/result model.
+- `protokit.schema.HistoryReport`, `protokit.schema.BisectReport`,
+  `protokit.schema.HistoryEntry`, and `protokit.schema.CommitDiagnostic`
+  promoted to public dataclasses. `protokit.schema.Diagnostic` now
+  re-exported as well.
+- `protokit.schema.git.commit_subject(ref)` helper.
+- `examples/custom_formatter.py` Slack-summary demo for the
+  pluggable formatter API.
+- pytest-based test coverage: 700+ tests including formatter
+  registry semantics, built-in coverage, JUnit xsd validation, SARIF
+  schema validation, CLI dispatch, two-phase pack rollback, formatter
+  exception fail-fast, and the stdout-write guard.
+
+### Changed
+- `--format` on every CLI subcommand is now a free-form string instead
+  of a fixed `click.Choice`. Unknown values exit 2 with the available
+  formatter list for the subcommand's kind. Case-insensitivity from
+  the prior `Choice(..., case_sensitive=False)` is preserved.
+- `--quiet` mutual-exclusion widened: previously rejected
+  `--format json` only; now rejects every non-`human` formatter
+  (junit, sarif, custom packs) so structured output is never
+  silently swallowed.
+- `protokit.schema.message.model.Diagnostic` is now exported from
+  `protokit.schema.__all__` (was importable only via the
+  `protokit.message` path).
+
+### Changed — BREAKING
+- **Distribution name renamed** from `proto-differ` to `protokit`.
+- **Import root renamed** from `proto_differ` to `protokit`. The
+  top-level package is now intentionally empty — import from the two
+  subpackages directly:
+  - `proto_differ.*` → `protokit.message.*`
+  - (no `protokit` top-level re-exports; explicit namespacing only)
+- **CLI entry point renamed** from `pbdiff` to `protokit`, now with
+  subcommands:
+  - `pbdiff [args]` → `protokit diff [args]`
+  - `protokit compat [args]` — new schema compatibility command.
+- **pytest plugin import path** changed:
+  - `from proto_differ.pytest_plugin import pytest_assertrepr_compare`
+    → `from protokit.message.pytest_plugin import pytest_assertrepr_compare`
 
 ### Changed — BREAKING
 - **Distribution name renamed** from `proto-differ` to `protokit`.
