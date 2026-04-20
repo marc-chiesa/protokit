@@ -783,24 +783,73 @@ A complete runnable example lives at `examples/custom_formatter.py`.
 
 `--formatter-module` follows the same trust model as `--rule-pack`:
 protokit imports the named module and reads its `FORMATTERS`
-attribute. Treat formatter packs as you would `pip install` —
-only load packs from sources you trust. Three guarantees:
+attribute. **A formatter pack runs with your full process
+privileges.** It can:
+
+* Read environment variables (including `GITHUB_TOKEN`, AWS
+  credentials, anything in the CI environment).
+* Make network calls — exfiltrate data or fetch second-stage
+  payloads.
+* Read or modify any file the invoking user has access to,
+  including `.git/` and source code.
+* Spawn subprocesses.
+
+Treat formatter packs as `pip install`-grade trust. Only load
+packs from sources you already audit for `pip install`. Do not
+load a pack just because a GitHub Action config suggests it.
+
+Within that trust model, three things protokit enforces:
 
 1. *Exit code stays the report's verdict.* The CLI exit code
    (0 / 1 / 2) is determined by the compat report itself
    (compatibility verdict + diagnostic levels), not by formatter
-   output. A malicious or buggy formatter can mislead human
-   readers but cannot flip CI gating.
+   output. A buggy formatter can corrupt the rendered document
+   but cannot flip CI gating. A formatter that calls `sys.exit()`
+   is caught and routed through the contract-violation error
+   path.
 2. *Built-in names are reserved.* Third-party packs cannot
    register under `(kind, "human")`, `(kind, "json")`,
    `(COMPAT, "junit")`, `(COMPAT, "sarif")`, etc. Attempts to
-   shadow a built-in fail with `cannot override built-in
-   formatter` at registration time, regardless of `replace=True`.
-3. *Stdout-write guard.* Formatters MUST be pure str-returning
-   functions. If a formatter writes directly to `sys.stdout`,
-   the CLI catches the leak and exits 2 with a contract-violation
-   error — guarantees that a half-rendered output never reaches
-   downstream CI parsers when the formatter raises mid-render.
+   shadow a built-in fail with `conflicts with a reserved
+   built-in name` at registration time, regardless of
+   `replace=True`.
+3. *Best-effort stdout-write guard.* The CLI redirects
+   `sys.stdout` to an in-memory buffer for the duration of each
+   formatter call and exits 2 if any bytes land there. This
+   catches the common accidental footgun — a forgotten
+   `print()` or `sys.stdout.write()` in a debug statement.
+   **Limitations**: `os.write(1, ...)`, C-extension stdio,
+   `sys.__stdout__.write`, and a `sys.stdout` reference
+   captured at module-import time all bypass the guard. It is
+   a bug-catcher for honest formatters, not a sandbox against
+   hostile ones.
+
+[[formatter-logging]]
+=== Diagnostics from a custom formatter
+
+Formatters are pure `(report, ctx) -> str` functions — the
+returned string is the entire output. If your formatter needs
+to emit progress notes, debug lines, or non-fatal warnings,
+use Python's standard `logging` module rather than `print()`:
+
+[source,python]
+----
+import logging
+
+logger = logging.getLogger("protokit.formatters.my_pack")
+
+def my_formatter(report, ctx):
+    logger.info("rendering %d findings", len(report))
+    # ... build output ...
+    return output
+----
+
+Python's `logging` defaults to stderr when `basicConfig` is
+called, which keeps debug output off the stdout stream the CLI
+uses for structured output. It never interacts with the
+stdout-write guard. The protokit-namespaced logger root
+`protokit.formatters` is a convention — name your sub-logger
+whatever helps downstream filtering.
 
 NOTE: `register_formatter` rejects re-registration of an
 existing non-built-in name unless `replace=True` is passed

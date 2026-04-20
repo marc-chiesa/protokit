@@ -60,6 +60,54 @@ changelogs in Phase 3, so delivering a standalone schema-diff
 now would duplicate work. Roll into Phase 3 docgen when
 changelogs are built.
 
+### Unify CLI diagnostic output through ``logging``
+
+**What:** protokit's internal diagnostic paths currently emit
+via ``click.echo(f"...", err=True)`` — writes land on stderr,
+which is correct, but the pattern is ad-hoc and doesn't give
+embedding callers a way to route diagnostics through standard
+Python ``logging`` config.
+
+Phase 1.5b recommended ``logging`` to third-party formatter
+pack authors (see README "Diagnostics from a custom formatter"
+section and the ``FORMATTER_LOG_NAMESPACE`` constant). For
+consistency, protokit's own diagnostic callsites in
+``schema/cli.py`` (``_run_check_pipeline``, history and bisect
+loops), ``_cli_utils.error_exit``, and ``message/cli.py``
+should route through ``logging`` too — sub-loggers under a
+top-level ``protokit`` namespace.
+
+**Why:** Embeddable-library story (external callers can
+redirect via ``logging.config``); coherent pattern with the
+recommendation we give pack authors; unlocks a trivial
+``--log-level`` / ``--verbose`` flag addition later.
+
+**Fix approach:**
+- Introduce ``protokit._log`` module exposing a ``logger =
+  logging.getLogger("protokit")`` and convenience wrappers for
+  ``error_exit``-style fatal path.
+- Map existing prefixes: ``click.echo("Error: ...", err=True)`` →
+  ``logger.error("...")`` (plus ``sys.exit(2)``).
+- Preserve the current wall-clock-free plain-text format so
+  existing stderr snapshot assertions don't churn (use a
+  minimal formatter without timestamps/level prefixes by
+  default; gate richer formatting behind a future
+  ``--log-format`` flag).
+- Update ``tests/schema/test_cli.py`` and ``tests/test_cli.py``
+  assertions that grep stderr content. The ``caplog`` fixture
+  is the standard pattern; Click's ``CliRunner`` captures
+  stderr separately.
+
+**Effort:** M (CC: ~45 min — 50+ callsites + test updates).
+**Priority:** P3 — consistency win, not a correctness fix.
+Ship if/when we add ``--verbose`` or ``--log-level``.
+**Depends on:** Phase 1.5b (``FORMATTER_LOG_NAMESPACE`` already
+in place).
+**Discovered:** 2026-04-19 ce:review residual / design
+discussion around the stdout-write guard.
+
+---
+
 ### Linting (CEO plan item #2) — deferred to its own brainstorm
 
 The plan accepted ``register_lint_rule`` + ``lint()`` + a

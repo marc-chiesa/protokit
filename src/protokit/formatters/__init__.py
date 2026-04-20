@@ -42,6 +42,17 @@ from protokit.formatters._registry import (
     register_formatter,
 )
 
+#: Root Python ``logging`` namespace recommended for
+#: formatter-pack authors. Attach sub-loggers under this
+#: namespace (e.g. ``logging.getLogger(f"{FORMATTER_LOG_NAMESPACE}.my_pack")``)
+#: so downstream filtering and level control is uniform across
+#: packs. Formatter functions themselves must stay pure
+#: ``(report, ctx) -> str`` — all diagnostic output from a
+#: pack should route through ``logging`` rather than ``print``
+#: or ``sys.stdout.write`` (see README "Diagnostics from a
+#: custom formatter" section).
+FORMATTER_LOG_NAMESPACE: str = "protokit.formatters"
+
 # Shared helpers must import before any built-in module that
 # uses them, otherwise the built-in's top-level
 # ``from protokit.formatters import _junit_xml as junit`` would
@@ -60,6 +71,7 @@ from protokit.formatters import (  # noqa: F401, E402
 )
 
 __all__ = [
+    "FORMATTER_LOG_NAMESPACE",
     "Formatter",
     "FormatterContext",
     "FormatterError",

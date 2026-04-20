@@ -1,0 +1,95 @@
+{
+  "reviewer": "correctness",
+  "findings": [
+    {
+      "title": "run_formatter_safely: non-str return silently produces empty output",
+      "severity": "P2",
+      "file": "src/protokit/_cli_utils.py",
+      "line": 297,
+      "confidence": 0.82,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": false,
+      "pre_existing": false,
+      "suggested_fix": "After leaked = buffer.getvalue() add: if not isinstance(output, str): error_exit(f\"formatter {name!r} returned {type(output).__name__} instead of str\")",
+      "why_it_matters": "If a third-party formatter returns None (forgot a return statement) or any non-str value, run_formatter_safely silently returns that value. The caller does click.echo(None) which emits only a newline with no error. The stdout-write guard catches direct stdout writes but not wrong return types.",
+      "evidence": "src/protokit/_cli_utils.py line 286-297: output = fn(report, ctx) assigned but never type-checked. return output at line 297 returns whatever fn returned. Callers at message/cli.py:338 and schema/cli.py:647,777,893 do click.echo(run_formatter_safely(...)). click.echo(None) emits only a newline."
+    },
+    {
+      "title": "history_human: None path on Finding renders as literal None not (root)",
+      "severity": "P3",
+      "file": "src/protokit/formatters/_builtin_history.py",
+      "line": 888,
+      "confidence": 0.72,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": false,
+      "pre_existing": false,
+      "suggested_fix": "Replace f'{f.path}' with str(f.path) if f.path else '(root)' to match compat_human convention.",
+      "why_it_matters": "compat_human (builtin_compat.py line 257) renders null-path findings as (root). history_human line 888 uses f-string interpolation which renders as None: message (rule_id) when f.path is None. Inconsistent presentation across history vs check for the same findings.",
+      "evidence": "src/protokit/formatters/_builtin_history.py line 888: f\"{f.path}: {f.message} ({f.rule_id})\". Finding.path is FieldPath | None. Contrast: src/protokit/formatters/_builtin_compat.py line 257: path_str = str(finding.path) if finding.path else (root)."
+    },
+    {
+      "title": "bisect commits_walked overstated on stop-fast early exit",
+      "severity": "P3",
+      "file": "src/protokit/schema/cli.py",
+      "line": 1514,
+      "confidence": 0.7,
+      "autofix_class": "manual",
+      "owner": "human",
+      "requires_verification": false,
+      "pre_existing": true,
+      "suggested_fix": "Track an incrementing walked_count inside the for-sha loop and pass it instead of len(commits). len(commits) is only accurate at the terminal exit after the full loop completes.",
+      "why_it_matters": "When bisect exits early (stop-fast on first diagnostic or first break), commits_walked in BisectReport is len(commits) \u2014 the total commits in range \u2014 not the count actually examined. Structured outputs (SARIF run.properties, JUnit suite properties, JSON) report the wrong count. The new formatters expose this value for the first time, making the inaccuracy visible.",
+      "evidence": "src/protokit/schema/cli.py lines 1510-1516 and 1521-1527: both stop-fast paths pass commits_walked=len(commits). Same in old code pre-diff. Now visible through BisectReport.commits_walked in SARIF/JUnit/JSON."
+    },
+    {
+      "title": "load_formatter_pack rollback only catches FormatterError, partial state on unexpected exceptions",
+      "severity": "P3",
+      "file": "src/protokit/formatters/_registry.py",
+      "line": 298,
+      "confidence": 0.63,
+      "autofix_class": "safe_auto",
+      "owner": "review-fixer",
+      "requires_verification": true,
+      "pre_existing": false,
+      "suggested_fix": "Change except FormatterError: to except Exception: in the commit phase rollback block, then re-raise. This ensures partial registrations are cleaned up regardless of what register_formatter raises.",
+      "why_it_matters": "The two-phase load atomicity guarantee relies on rollback running on any failure. If register_formatter raises an unexpected exception (e.g., from a future change), the FormatterError-only clause misses it. Partially-committed formatters from earlier in the same pack remain registered, violating the atomicity contract.",
+      "evidence": "src/protokit/formatters/_registry.py line 298: except FormatterError: is the only rollback trigger. register_formatter currently only raises FormatterError, but the guarantee is structural. Callers in _cli_utils.py load_formatter_packs catch (AttributeError, TypeError, FormatterError) and call error_exit \u2014 but register_formatter raising anything else would propagate unrolled."
+    }
+  ],
+  "residual_risks": [
+    {
+      "area": "os.write(1, ...) bypasses redirect_stdout guard",
+      "description": "The stdout-write guard captures sys.stdout-based writes but not raw fd writes (os.write(1, b...)). A formatter using os-level I/O bypasses detection. Low practical risk since the guard is for honest but incorrect formatters.",
+      "severity": "low"
+    },
+    {
+      "area": "SARIF warning placement in toolConfigurationNotifications",
+      "description": "Warning diagnostics are placed in invocations[0].toolConfigurationNotifications. SARIF 2.1.0 reserves this for configuration warnings; runtime analysis warnings should be in toolExecutionNotifications. GitHub Code Scanning may suppress toolConfigurationNotifications, causing warnings to be invisible in the SARIF UI.",
+      "severity": "medium"
+    },
+    {
+      "area": "Module-level registry bleeds across CLI invocations in embedded use",
+      "description": "Formatter packs loaded via --formatter-module persist in the module-level registry for the process lifetime. In production embedded use (non-CLI), formatter state leaks between calls without explicit clear_user_formatters() calls.",
+      "severity": "low"
+    }
+  ],
+  "testing_gaps": [
+    {
+      "gap": "No test for formatter returning None or non-str type",
+      "description": "TestFormatterFailFast covers exception and stdout-write violation but has no test where a formatter returns None. Currently None would produce silent empty output instead of an error.",
+      "impact": "Silent incorrect behavior from formatters that omit a return statement, undetected by the existing guard."
+    },
+    {
+      "gap": "No test for bisect commits_walked accuracy on stop-fast exit",
+      "description": "No test checks BisectReport.commits_walked when bisect exits early. The field is exposed in all structured outputs but its accuracy is unverified.",
+      "impact": "Downstream tooling consuming commits_walked receives inaccurate counts silently."
+    },
+    {
+      "gap": "SARIF output not validated against vendored sarif-2.1.0.json schema",
+      "description": "The SARIF schema fixture is vendored but tests only perform structural key checks. No test runs jsonschema validation against the full spec.",
+      "impact": "SARIF output could be spec-non-conformant and fail GitHub Code Scanning import without warning."
+    }
+  ]
+}

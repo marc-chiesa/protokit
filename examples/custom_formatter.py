@@ -7,17 +7,36 @@ module stays a normal Python file — same trust model as
 ``FORMATTERS`` attribute, so only load packs from sources you
 trust.
 
-Demonstrates the ``register_formatter`` API by way of the
-``FORMATTERS = [(name, fn, kind), ...]`` pack convention.
-The Slack format is intentionally simple: one block of text
-that summarises the compat report in a way you could paste
-directly into a webhook payload.
+Demonstrates three things pack authors need:
+
+1. The ``FORMATTERS = [(name, fn, kind), ...]`` pack
+   convention.
+2. The formatter function signature
+   ``(report, ctx) -> str`` — pure, no side effects.
+3. ``logging`` as the canonical way to emit diagnostic output
+   from a pack. The ``logging`` module defaults to stderr,
+   which stays off the stdout stream the CLI uses for the
+   returned formatted string. Using ``logging`` also avoids
+   tripping the CLI's stdout-write guard, which catches
+   accidental ``print()`` / ``sys.stdout.write`` calls.
 """
 
 from __future__ import annotations
 
-from protokit.formatters import FormatterContext, FormatterKind
+import logging
+
+from protokit.formatters import (
+    FORMATTER_LOG_NAMESPACE,
+    FormatterContext,
+    FormatterKind,
+)
 from protokit.schema import CompatibilityReport
+
+
+# Name sub-loggers under the ``protokit.formatters`` root so
+# downstream log-level configuration can address all formatter
+# packs uniformly.
+logger = logging.getLogger(f"{FORMATTER_LOG_NAMESPACE}.slack_summary")
 
 
 def slack_summary(report: CompatibilityReport, ctx: FormatterContext) -> str:
@@ -34,6 +53,10 @@ def slack_summary(report: CompatibilityReport, ctx: FormatterContext) -> str:
     payload; this example stays in plain text so the output is
     obvious in the terminal and copy/paste-friendly.
     """
+    logger.info(
+        "rendering slack summary for %s (%d findings)",
+        ctx.target_type or "cross-type", len(report),
+    )
     # ctx.target_type is None on cross-type runs (--old-type X
     # --new-type Y); fall back to old->new so a Slack message
     # still identifies which comparison broke.
