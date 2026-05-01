@@ -483,6 +483,31 @@ class TestErrors:
         assert result.exit_code == 2
         assert "--ignore" in result.output
 
+    def test_compat_compile_failure_exit_code_2(self, tmp_path: Path) -> None:
+        """End-to-end: ``protokit compat check --proto`` on a syntactically
+        broken .proto exits 2 and surfaces the locked
+        ``"protoxy compile failed: "`` stderr prefix.
+
+        Replaces the helper-level invariant from the deleted
+        ``tests/test_cli_utils.py::TestProtoxyBackend::test_compile_failure_exits_with_code_2``
+        which was testing the helper's ``error_exit`` behavior at the
+        wrong layer post-refactor (helpers now raise typed exceptions;
+        only the legacy adapter / CLI surface translates to ``SystemExit``).
+        See protokit-lint Delivery 1 plan for the test-relayering audit.
+        """
+        good = tmp_path / "good.proto"
+        good.write_text(
+            'syntax = "proto3";\npackage t;\nmessage M { string s = 1; }\n'
+        )
+        bad = tmp_path / "bad.proto"
+        bad.write_text('syntax = "proto3";\nmessage {')  # broken
+        result = CliRunner().invoke(main, ["check",
+            "--proto", str(bad), str(good), "--type", "t.M",
+        ])
+        assert result.exit_code == 2
+        # Locked stderr-string prefix per the post-refactor contract.
+        assert "protoxy compile failed: " in result.output
+
 
 # ---------------------------------------------------------------------------
 # Git-mode CLI tests (Phase 2)
