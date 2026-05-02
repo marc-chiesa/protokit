@@ -204,12 +204,17 @@ def _compile_with_protoxy(
         include_source_info=False,
     )
     pool = descriptor_pool.DescriptorPool()
-    expected_roots = _expected_root_names(proto_paths_in, includes)
-    root_names: list[str] = []
+    expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
+    expected_set = set(expected_in_order)
+    emitted: set[str] = set()
     for fd in fds.file:
         pool.Add(fd)
-        if fd.name in expected_roots:
-            root_names.append(fd.name)
+        if fd.name in expected_set:
+            emitted.add(fd.name)
+    # Preserve input order — fds.file iteration is in backend's topological
+    # order, which is wrong for root_names. Walk expected_in_order and keep
+    # only entries actually emitted (defensive against matcher/backend skew).
+    root_names = [name for name in expected_in_order if name in emitted]
     return pool, root_names
 
 
@@ -260,15 +265,68 @@ def _compile_with_protoc(
         fds = descriptor_pb2.FileDescriptorSet()
         fds.ParseFromString(data)
         pool = descriptor_pool.DescriptorPool()
-        expected_roots = _expected_root_names(proto_paths_in, includes)
-        root_names: list[str] = []
+        expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
+        expected_set = set(expected_in_order)
+        emitted: set[str] = set()
         for fd in fds.file:
             pool.Add(fd)
-            if fd.name in expected_roots:
-                root_names.append(fd.name)
+            if fd.name in expected_set:
+                emitted.add(fd.name)
+        root_names = [name for name in expected_in_order if name in emitted]
         return pool, root_names
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _expected_root_names_ordered(
+    proto_paths_in: Sequence[Path],
+    includes: Sequence[str],
+) -> list[str]:
+    """Like :func:`_expected_root_names` but returns input order, not a set.
+
+    Required by helpers that need to populate ``root_names`` in the
+    user's input order rather than the backend's topological iteration
+    order over ``fds.file``. Backends emit fds.file in dependency order;
+    that's the wrong sequencing for ``CompileResult.root_files``, which
+    is contracted to preserve input order per pass-2 review.
+
+    Args:
+        proto_paths_in: Input paths in their declared order.
+        includes: Include directories in declared order (search order).
+
+    Returns:
+        List of expected ``fd.name`` strings, one per input path,
+        preserving input order. May contain duplicates if two inputs
+        resolve to the same name (caller's responsibility — pre-flight
+        same-basename detection happens at the ``compile_protos_to_result``
+        layer).
+    """
+    return [_resolve_expected_name(p, includes) for p in proto_paths_in]
+
+
+def _resolve_expected_name(p: Path, includes: Sequence[str]) -> str:
+    """Compute the expected ``fd.name`` for one input proto path.
+
+    Walks ``includes`` in declared order; the first include that is a
+    prefix of ``p`` determines the relative form (which is what
+    protoxy/protoc emit as ``fd.name``). Falls back to ``p.name`` if
+    no include is a prefix (rare; caller convention is to include
+    ``p.parent``).
+    """
+    try:
+        p_resolved = p.resolve()
+    except (OSError, RuntimeError):
+        p_resolved = p
+    for inc in includes:
+        try:
+            inc_path = Path(inc).resolve()
+        except (OSError, RuntimeError):
+            inc_path = Path(inc)
+        try:
+            return str(p_resolved.relative_to(inc_path))
+        except ValueError:
+            continue
+    return p.name
 
 
 def _expected_root_names(

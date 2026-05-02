@@ -147,13 +147,12 @@ class TestCompileProtosToResultMultiPath:
         Locks the "input order, NOT topological" invariant — a future
         refactor can't silently re-sort.
 
-        Currently expected to FAIL: the helpers in ``_cli_utils.py``
-        populate ``root_names`` by walking the backend-emitted
-        ``fds.file`` (which is in topological / dependency order),
-        not by walking ``proto_paths_in``. ``xfail(strict=True)``
-        flips green once the helpers are fixed to iterate input order;
-        if the bug regresses after the fix, the strict-xfail flips back
-        to a hard failure. See report at end of Unit 4.
+        Implementation note: ``_cli_utils._compile_with_protoxy`` /
+        ``_compile_with_protoc`` populate ``root_names`` by iterating
+        ``_expected_root_names_ordered(proto_paths_in, includes)``
+        — the input-order list — rather than by iterating the
+        backend-emitted ``fds.file`` (topological order). This test
+        is the regression gate for that ordering invariant.
         """
         if backend == "protoc":
             monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: False)
@@ -166,9 +165,7 @@ class TestCompileProtosToResultMultiPath:
         # Pass in REVERSE input order: b before a.
         result = compile_protos_to_result([b, a])
 
-        # Both reachable in the pool regardless of root order — these
-        # assertions hold today, and we keep them BEFORE the xfail call
-        # so the pool-population contract is still locked.
+        # Both reachable in the pool regardless of root order.
         assert result.pool.FindMessageTypeByName("demo.A").full_name == "demo.A"
         b_msg = result.pool.FindMessageTypeByName("demo.B")
         # b's "inner" field references a's message — the descriptors
@@ -176,23 +173,7 @@ class TestCompileProtosToResultMultiPath:
         assert b_msg.fields_by_name["inner"].message_type.full_name == "demo.A"
         assert result.diagnostics == ()
 
-        # Locked invariant — currently failing due to input-order bug
-        # in ``_cli_utils._compile_with_protoxy`` /
-        # ``_compile_with_protoc``: both walk ``fds.file`` (the
-        # backend-emitted FileDescriptorSet, in topological /
-        # dependency order) and only test membership against
-        # ``expected_roots``, losing the input-order signal. The fix
-        # is to iterate ``proto_paths_in`` and look up each input's
-        # expected ``fd.name`` in a name->fd map built from
-        # ``fds.file``. Once fixed, drop this ``xfail`` block and the
-        # final assertion below stays as the locked contract.
-        if result.root_files != ("b.proto", "a.proto"):
-            pytest.xfail(
-                "input-order preservation in CompileResult.root_files: "
-                "helpers populate root_names by walking fds.file "
-                "(topological), not proto_paths_in (input order). "
-                "Bug in _cli_utils — see Unit 4 report.",
-            )
+        # Locked invariant: input order preserved, NOT topological.
         assert result.root_files == ("b.proto", "a.proto")
 
     @pytest.mark.parametrize("backend", _BACKEND_PARAMS)
