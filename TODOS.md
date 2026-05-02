@@ -5,8 +5,10 @@ approach (when known) / Effort / Priority / Depends-on / Discovered**.
 Items within a phase should generally land before the next phase
 starts, but the groupings are intent, not strict gates.
 
-Completed phases (1, 1.5, 2, 1.5b) are not listed here — see
-`CHANGELOG.md` and git history.
+Completed phases (1, 1.5, 2, 1.5b) and protokit-lint Delivery 1
+(foundation, 2026-05-02) are not listed here — see `CHANGELOG.md`
+and git history. Lint deliveries 2–7 are still ahead and tracked
+in their own section below.
 
 ---
 
@@ -72,15 +74,111 @@ discussion around the stdout-write guard.
 
 ---
 
-### Linting (CEO plan item #2) — deferred to its own brainstorm
+## protokit-lint — deliveries 2–7
 
-The plan accepted ``register_lint_rule`` + ``lint()`` + a
-``protokit compat lint`` subcommand. Deferred because (a) the
-lint thesis (custom-option-aware Python-native rules) needs
-its own product framing distinct from compat checking, and
-(b) the descoped form (no inline ``protokit:ignore``, no fix
-suggestions) is still phase-sized, not a small follow-up.
-Earn the scope via a standalone brainstorm before committing.
+D1 (foundation) landed 2026-05-02 (commits `0b82fc3`, `e85faea`,
+`31c0bb1`). The locked types live in `src/protokit/schema/lint/model.py`
+and `src/protokit/schema/compile.py`; helpers in
+`src/protokit/_cli_utils.py`. Six deliveries remain, sequenced per
+`docs/brainstorms/2026-04-30-protokit-lint-delivery-1-foundation-requirements.md`
+"Out of Scope" section.
+
+### D2 — Engine implementation
+
+**What:** `@lint_rule` decorator and `LintEngine`. Consumes the
+locked `LintRuleSpec` / `LintFinding` / `_LintContextEmitMixin`
+types from D1; walks the descriptor tree and dispatches per
+`ElementKind`. Closes the loop on `_emit_fn` injection (currently
+declared on every context but never invoked end-to-end).
+
+**Why:** First delivery that produces actual lint output. Every
+later delivery (CLI, formatters, config, rule packs, plugin API)
+sits on top of this engine.
+
+**Effort:** L. **Priority:** P1 (next in sequence).
+**Depends on:** D1 (landed). **Discovered:** brainstorm step 3.
+
+---
+
+### D3 — `protokit lint` CLI subcommand
+
+**What:** First user-visible lint surface. Mirrors the shape of
+`protokit compat`: positional descriptor-set / `--proto` source
+inputs, `--profile`, `--rule-pack`, `--format`, `--quiet`, exit
+codes (0 clean / 1 findings / 2 diagnostics).
+
+**Why:** Without a CLI, lint findings only surface from library
+calls. The CLI is the dogfood path and the gate for D4 formatters.
+
+**Effort:** M. **Priority:** P1.
+**Depends on:** D2. **Discovered:** brainstorm step 4.
+
+---
+
+### D4 — Formatters / `_builtin_lint.py`
+
+**What:** Register `_builtin_lint` formatters into the existing
+formatter system. Four `FormatterKind`-equivalent shapes for
+`LintReport` (human / json / junit / sarif). The
+`protokit/formatters/__init__.py` eager-load block must NOT
+register `_builtin_lint` until this delivery (codex P0 finding
+LINT-DESIGN-COLD-IMPORT-FORMATTERS); D1 deliberately did not touch
+that file.
+
+**Why:** Same machine-readable pipeline as compat (CI gates,
+SARIF for code-scanning).
+
+**Effort:** M. **Priority:** P1.
+**Depends on:** D2 (engine produces `LintReport`).
+**Discovered:** brainstorm step 5.
+
+---
+
+### D5 — pyproject `[tool.protokit.lint]` config + `--exclude`
+
+**What:** Read `[tool.protokit.lint]` from `pyproject.toml`:
+profile selection, rule overrides, exclude globs. Adds `tomli` to
+required deps (Python 3.10 lacks `tomllib`; 3.11+ has it). Includes
+the `tests/schema/lint/test_perf_smoke.py` measurement that A5
+deferred from D1.
+
+**Why:** Per-project config is how every other lint tool ships.
+Without it, every CLI invocation needs explicit flags.
+
+**Effort:** M. **Priority:** P2.
+**Depends on:** D3 (CLI exists to read the config).
+**Discovered:** brainstorm step 6.
+
+---
+
+### D6 — Rule packs (built-in rules)
+
+**What:** First concrete rules. The brainstorm references AIP-style
+naming / linting (e.g., `naming/snake-case-fields`,
+`naming/upper-camel-messages`, `enum/zero-default-required`). Rule
+packs land grouped by category, each with their own
+`LintRuleSpec` registration.
+
+**Why:** Foundation isn't useful without rules to fire. This is
+where the lint thesis (custom-option-aware Python-native rules)
+becomes a product.
+
+**Effort:** L (depends on rule scope). **Priority:** P2.
+**Depends on:** D2 + D3 + D4. **Discovered:** brainstorm steps 7–8.
+
+---
+
+### D7 — Plugin API + `--lint-rule-pack` / `--compat-rule-pack` flags
+
+**What:** External-pack registration parity with the compat
+plugin API. Symmetric `--lint-rule-pack <module>` flag plus
+matching `--compat-rule-pack` for naming consistency.
+
+**Why:** Closes the third-party-pack story. Compat already supports
+`--rule-pack`; lint should too.
+
+**Effort:** M. **Priority:** P2.
+**Depends on:** D2 + D3. **Discovered:** brainstorm step 9.
 
 ---
 
@@ -97,7 +195,8 @@ Phase 3 depends on which ecosystem pain the builder hits first.
 
 **Effort:** M (CC: ~30 min to integrate + build fix-apply pipeline)
 **Priority:** P2
-**Depends on:** Phase 1 linting must exist first (not yet scoped — separate effort).
+**Depends on:** lint D2 (engine) — D1 foundation landed but the
+fix-apply pipeline needs the engine producing findings.
 **Discovered:** 2026-04-12 CEO review, web search
 
 ---
@@ -110,7 +209,7 @@ Phase 3 depends on which ecosystem pain the builder hits first.
 
 **Effort:** M (CC: ~30 min)
 **Priority:** P2
-**Depends on:** Phase 1 linting (core lint must exist first). May benefit from proto-schema-parser integration (alternative to source_code_info).
+**Depends on:** lint D2 (engine). May benefit from proto-schema-parser integration (alternative to source_code_info).
 **Discovered:** 2026-04-12 CEO review, descoped per outside voice
 
 ---
