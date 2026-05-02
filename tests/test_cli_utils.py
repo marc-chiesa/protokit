@@ -82,7 +82,7 @@ class TestProtoxyBackend:
         self, demo_proto_file: Path,
     ) -> None:
         """Multi-path raising contract: ``_compile_with_protoxy`` returns
-        ``(pool, root_names)``. The root_names list reflects the
+        ``(pool, root_names)`` where ``root_names`` is a tuple of the
         ``.proto``-relative names that came from the user's input paths.
         """
         pool, root_names = _cli_utils._compile_with_protoxy(
@@ -96,7 +96,7 @@ class TestProtoxyBackend:
         assert fields["age"].type == fields["age"].TYPE_INT32
         # root_names matches the input — basename since parent is the
         # auto-included directory.
-        assert root_names == ["demo.proto"]
+        assert root_names == ("demo.proto",)
 
     def test_compile_with_explicit_include_path(
         self, tmp_path: Path,
@@ -132,7 +132,7 @@ class TestProtoxyBackend:
         assert pool.FindMessageTypeByName("demo.User")
         assert pool.FindMessageTypeByName("common.Address")
         # Only main is a root; addr was a transitive import.
-        assert root_names == ["user.proto"]
+        assert root_names == ("user.proto",)
 
     def test_compile_with_protoxy_raises_on_parse_error(
         self, tmp_path: Path,
@@ -176,21 +176,27 @@ class TestBackendDispatch:
         fakes return ``(pool, root_names)`` tuples to match the new
         helper signature.
         """
+        from google.protobuf import descriptor_pool as _dp
         calls = {"protoxy": 0, "protoc": 0}
+        # Capture the exact pool the fake returns so we can verify
+        # compile_proto returns identity rather than dropping it.
+        sentinel_pool = _dp.DescriptorPool()
 
         def fake_protoxy(paths, ip):  # type: ignore[no-untyped-def]
             calls["protoxy"] += 1
-            from google.protobuf import descriptor_pool
-            return descriptor_pool.DescriptorPool(), []
+            return sentinel_pool, ()
 
         def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
             calls["protoc"] += 1
-            from google.protobuf import descriptor_pool
-            return descriptor_pool.DescriptorPool(), []
+            return _dp.DescriptorPool(), ()
 
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoc", fake_protoc)
-        _cli_utils.compile_proto(demo_proto_file, ())
+        # Identity-check the return: a future refactor that drops the
+        # helper's return value (silently breaking compile_proto's
+        # contract) wouldn't pass this assertion.
+        result = _cli_utils.compile_proto(demo_proto_file, ())
+        assert result is sentinel_pool
         assert calls == {"protoxy": 1, "protoc": 0}
 
     def test_falls_back_to_protoc_when_protoxy_unavailable(
@@ -206,7 +212,7 @@ class TestBackendDispatch:
         def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
             calls["protoc"] += 1
             from google.protobuf import descriptor_pool
-            return descriptor_pool.DescriptorPool(), []
+            return descriptor_pool.DescriptorPool(), ()
 
         monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: False)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
@@ -246,6 +252,60 @@ class TestBackendDispatch:
         assert "protoxy" in msg
         assert "protokit[compiler]" in msg
         assert "protoc" in msg
+
+
+class TestResolveExpectedName:
+    """Direct tests for ``_resolve_expected_name``.
+
+    The fallback paths (no include matches; literal-prefix mismatch
+    after the .resolve() strip) were previously exercised only
+    indirectly through the backends. A direct unit-level lock makes
+    matcher regressions visible without a full compile run.
+    """
+
+    def test_first_include_prefix_match_wins(self) -> None:
+        """Walks includes in declared order; first prefix match returns."""
+        result = _cli_utils._resolve_expected_name(
+            Path("/x/a/b/file.proto"), ["/x/a", "/x/a/b"],
+        )
+        # Declared-order winner is /x/a -> 'b/file.proto', NOT the more
+        # specific /x/a/b. Mirrors backend resolution semantics.
+        assert result == "b/file.proto"
+
+    def test_no_include_matches_returns_basename(self) -> None:
+        """Falls back to ``p.name`` when no include is a prefix."""
+        result = _cli_utils._resolve_expected_name(
+            Path("/x/a/file.proto"), ["/y", "/z"],
+        )
+        assert result == "file.proto"
+
+    def test_empty_includes_returns_basename(self) -> None:
+        """Empty include list short-circuits to basename fallback."""
+        result = _cli_utils._resolve_expected_name(
+            Path("/x/a/file.proto"), [],
+        )
+        assert result == "file.proto"
+
+    def test_literal_prefix_no_resolve(self, tmp_path: Path) -> None:
+        """Symlinked include should NOT be resolved through to realpath.
+
+        Locks the F2 fix: the matcher must use literal string-prefix
+        semantics so it agrees with the backends, which pass include
+        directories to protoxy/protoc verbatim. A regression that
+        re-introduces ``.resolve()`` would break this test.
+        """
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "file.proto").write_text("syntax = \"proto3\";")
+        link = tmp_path / "link"
+        link.symlink_to(real)
+
+        # Pass the symlinked include path; expect fd.name to be relative
+        # to the LITERAL include (not the resolved realpath).
+        result = _cli_utils._resolve_expected_name(
+            link / "file.proto", [str(link)],
+        )
+        assert result == "file.proto"
 
 
 class TestLegacyCompileProto:

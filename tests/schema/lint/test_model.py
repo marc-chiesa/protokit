@@ -202,6 +202,21 @@ _CONTEXT_FACTORIES = [
     pytest.param(_make_oneof_ctx, id="oneof"),
 ]
 
+# Map context-factory -> expected LintLocation variant emitted by
+# the matching context's location() override. Used by the all-8
+# emit-dispatch parametrize so a copy-paste error in any single
+# context's location() body surfaces immediately.
+_CONTEXT_LOCATION_EXPECTATIONS = [
+    pytest.param(_make_file_ctx, FileLocation, id="file"),
+    pytest.param(_make_service_ctx, ServiceLocation, id="service"),
+    pytest.param(_make_method_ctx, MethodLocation, id="method"),
+    pytest.param(_make_enum_ctx, EnumLocation, id="enum"),
+    pytest.param(_make_enum_value_ctx, EnumValueLocation, id="enum_value"),
+    pytest.param(_make_message_ctx, MessageLocation, id="message"),
+    pytest.param(_make_field_ctx, FieldLocation, id="field"),
+    pytest.param(_make_oneof_ctx, OneofLocation, id="oneof"),
+]
+
 
 # ---------------------------------------------------------------------------
 # LintProfile.compose
@@ -219,14 +234,23 @@ class TestLintProfileCompose:
         assert composed.min_severity is LintSeverity.WARNING
         assert composed.rule_severity_overrides == {}
 
-    def test_compose_single_string_arg_raises_value_error(self) -> None:
-        """Strings are rejected — caller must resolve names to instances."""
-        with pytest.raises(ValueError) as excinfo:
-            LintProfile.compose("default")
+    def test_compose_single_string_arg_raises_type_error(self) -> None:
+        """Strings are rejected — caller must resolve names to instances.
+
+        Type signature accepts ``LintProfile`` only; a ``str`` argument
+        triggers the runtime guard with ``TypeError``.
+        """
+        with pytest.raises(TypeError) as excinfo:
+            LintProfile.compose("default")  # type: ignore[arg-type]
         # The error message advertises the caller's responsibility.
         assert "caller" in str(excinfo.value).lower() or "responsibility" in str(
             excinfo.value
         ).lower()
+
+    def test_compose_none_arg_raises_type_error(self) -> None:
+        """``None`` is also rejected (guard against registry misses)."""
+        with pytest.raises(TypeError):
+            LintProfile.compose(None)  # type: ignore[arg-type]
 
     def test_compose_single_lintprofile_returns_input_unchanged(self) -> None:
         """Single LintProfile arg is returned as-is (preserves name)."""
@@ -239,6 +263,12 @@ class TestLintProfileCompose:
         # Preserves identity AND name (not renamed to "composed").
         assert result is original
         assert result.name == "strict"
+
+    def test_compose_multi_arg_with_embedded_string_raises(self) -> None:
+        """Multi-arg compose with one string argument fails fast."""
+        p = LintProfile(name="x")
+        with pytest.raises(TypeError):
+            LintProfile.compose(p, "name")  # type: ignore[arg-type]
 
     def test_compose_multi_unions_rule_ids_and_picks_strictest_overrides(
         self,
@@ -321,6 +351,39 @@ class TestLintRuleSpecSeverityFor:
         )
         with pytest.raises(KeyError):
             spec.severity_for("unregistered")
+
+    @pytest.mark.parametrize(
+        ("severity", "message_template"),
+        [
+            pytest.param(
+                {"k1": LintSeverity.ERROR}, "single",
+                id="multi_kind_severity_with_single_template",
+            ),
+            pytest.param(
+                LintSeverity.ERROR, {"k1": "t1"},
+                id="single_severity_with_multi_kind_template",
+            ),
+        ],
+    )
+    def test_dual_shape_invariant_rejects_mismatch(
+        self,
+        severity: object,
+        message_template: object,
+    ) -> None:
+        """severity and message_template must share the same shape.
+
+        Plugin authors will write `LintRuleSpec(severity=dict, ...,
+        message_template="single string")` — without this guard, the
+        spec registers cleanly and only fails at first finding render.
+        """
+        with pytest.raises(TypeError, match="same shape"):
+            LintRuleSpec(
+                rule_id="R",
+                severity=severity,  # type: ignore[arg-type]
+                profiles=("default",),
+                element=ElementKind.FIELD,
+                message_template=message_template,  # type: ignore[arg-type]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +512,47 @@ class TestContextInstantiation:
         with pytest.raises(dataclasses.FrozenInstanceError):
             ctx.profile = "other"  # type: ignore[misc]
 
+    @pytest.mark.parametrize(
+        ("factory", "expected_location_cls"),
+        _CONTEXT_LOCATION_EXPECTATIONS,
+    )
+    def test_each_context_location_returns_matching_variant(
+        self,
+        factory: Any,
+        expected_location_cls: type,
+    ) -> None:
+        """Every context's ``location()`` returns the matching ``LintLocation`` variant.
+
+        Without this parametrize a copy-paste error in any context's
+        ``location()`` body — e.g., ``self.field.name`` referenced from
+        a class without ``field`` — would only surface at runtime when
+        the engine first invokes that context's emit pipeline.
+        """
+        ctx = factory()
+        loc = ctx.location()
+        assert isinstance(loc, expected_location_cls)
+        # Smoke-test the file attribute carries through (every variant
+        # has a ``file`` field except FileLocation, which carries the
+        # file name as its only attribute under the same name).
+        assert loc.file == "demo.proto"
+
+    def test_mixin_location_raises_notimplemented_when_not_overridden(self) -> None:
+        """The defensive raise in ``_LintContextEmitMixin.location`` fires.
+
+        Locks the contract that the engine's ``emit()`` dispatch
+        rejects a subclass that forgot to override ``location()``.
+        Future deliveries that add a 9th context dataclass and skip the
+        override hit this raise instead of a confusing AttributeError.
+        """
+        from protokit.schema.lint.model import _LintContextEmitMixin
+
+        class _Bare(_LintContextEmitMixin):
+            pass
+
+        bare = _Bare()
+        with pytest.raises(NotImplementedError, match="must override location"):
+            bare.location()
+
 
 # ---------------------------------------------------------------------------
 # DuplicateRuleError
@@ -524,6 +628,31 @@ class TestLintFindingLintReport:
         assert isinstance(report.diagnostics, tuple)
         assert isinstance(report.profiles_run, tuple)
         assert isinstance(report.rules_run, tuple)
+
+    def test_get_type_hints_lint_report_resolves_with_localns(self) -> None:
+        """``typing.get_type_hints(LintReport, localns=...)`` resolves.
+
+        ``LintReport.diagnostics`` references ``LintCompileDiagnostic``
+        from another module (preserving the cold-import contract — a
+        runtime import here would drag ``compile.py`` (and its full
+        dependency chain) into every consumer of ``lint.model``).
+        Tooling that needs to introspect annotations supplies
+        ``localns`` with the resolved type. This test documents the
+        canonical pattern; the TYPE_CHECKING import in ``model.py``
+        gives static type-checkers the same resolution.
+        """
+        import typing
+
+        from protokit.schema.compile import LintCompileDiagnostic
+
+        hints = typing.get_type_hints(
+            LintReport,
+            localns={"LintCompileDiagnostic": LintCompileDiagnostic},
+        )
+        # The diagnostics annotation resolves to a generic alias whose
+        # args include LintCompileDiagnostic.
+        assert "diagnostics" in hints
+        assert LintCompileDiagnostic in typing.get_args(hints["diagnostics"])
 
     def test_lint_report_post_init_snapshots_lists_to_tuples(self) -> None:
         """Caller-supplied lists are coerced to tuples by ``__post_init__``."""

@@ -39,6 +39,22 @@ from protokit._cli_utils import (
     _has_protoxy,
 )
 
+DiagnosticCategory = Literal[
+    "protoxy_fallback",
+    "protoc_subprocess",
+    "backend_missing",
+    "infrastructure",
+    "unexpected",
+    "same_basename_collision",
+]
+"""Closed set of diagnostic categories.
+
+Agents and formatters should branch on this rather than on
+``exception_type``. ``exception_type`` is open-ended (any
+``Exception`` subclass name reaches category ``"unexpected"``);
+this Literal is the stable, exhaustive discriminator.
+"""
+
 
 @dataclass(frozen=True)
 class LintCompileDiagnostic:
@@ -50,43 +66,56 @@ class LintCompileDiagnostic:
     :func:`compile_protos_to_result` populates a documented subset
     of fields:
 
-    - **#1 protoxy fallback** (``level="info"``):
-      ``message``, ``exception_type`` populated.
-    - **#2 protoc subprocess error** (``level="error"``):
-      ``message``, ``command``, ``exit_code``, ``stderr``,
-      ``exception_type="CalledProcessError"`` populated.
-    - **#3 backend missing** (``level="error"``):
-      ``message``, ``exception_type="FileNotFoundError"`` populated.
-    - **#4 infrastructure error** (``level="error"``):
-      ``message``, ``exception_type`` populated.
-    - **#5 unexpected backend exception** (``level="error"``):
-      ``message`` (with ``repr`` of the exception), ``exception_type``
-      populated.
-    - **Pre-flight same-basename collision** (``level="error"``):
+    - **#1 protoxy fallback** (``category="protoxy_fallback"``,
+      ``level="info"``): ``message``, ``exception_type`` populated.
+    - **#2 protoc subprocess error** (``category="protoc_subprocess"``,
+      ``level="error"``): ``message``, ``command``, ``exit_code``,
+      ``stderr``, ``exception_type="CalledProcessError"`` populated.
+    - **#3 backend missing** (``category="backend_missing"``,
+      ``level="error"``): ``message``,
+      ``exception_type="FileNotFoundError"`` populated.
+    - **#4 infrastructure error** (``category="infrastructure"``,
+      ``level="error"``): ``message``, ``exception_type`` populated.
+    - **#5 unexpected backend exception** (``category="unexpected"``,
+      ``level="error"``): ``message`` (with ``repr`` of the
+      exception), ``exception_type`` populated.
+    - **Pre-flight same-basename collision**
+      (``category="same_basename_collision"``, ``level="error"``):
       ``message`` (lists the colliding paths),
       ``exception_type="SameBasenameCollision"`` populated.
 
     Attributes:
         level: Severity ladder. ``"info"`` is reserved for the
             protoxy-fallback notice; ``"warning"`` is reserved for
-            future use; every actual failure uses ``"error"``.
+            future use; every actual failure uses ``"error"``. String
+            values match :class:`LintSeverity` so formatters can
+            render findings and diagnostics through the same code
+            path; the ``Literal`` type avoids requiring agents to
+            import :class:`LintSeverity` (and thus preserves the
+            cold-import shape for ``compile.py`` consumers).
+        category: Closed-set discriminator for the failure kind.
+            Stable across protoxy/protoc/stdlib version changes;
+            agents should branch on this rather than ``exception_type``.
         message: Human-readable explanation.
         command: For subprocess failures, the argv tuple that ran.
             ``None`` for non-subprocess failures.
         exit_code: For subprocess failures, the non-zero return
             code. ``None`` for non-subprocess failures.
         stderr: For subprocess failures, the captured stderr (with
-            trailing whitespace stripped). ``None`` if no stderr
-            was captured; ``""`` if stderr was empty.
+            trailing whitespace stripped). Always a string for
+            ``CalledProcessError`` (empty string if stderr was
+            empty). Reserved for ``None`` in future categories that
+            don't capture stderr.
         exception_type: ``type(exc).__name__`` of the underlying
             exception, or a synthetic name (``"SameBasenameCollision"``)
-            for pre-flight rejections. ``None`` only if the
-            diagnostic was constructed without an originating
-            exception (no current code path does this).
+            for pre-flight rejections. Open-ended for categories #4
+            and #5 (any OSError subclass / Exception subclass name).
+            Use ``category`` for closed-set branching.
     """
 
     level: Literal["info", "warning", "error"]
     message: str
+    category: DiagnosticCategory = "unexpected"
     command: tuple[str, ...] | None = None
     exit_code: int | None = None
     stderr: str | None = None
@@ -158,13 +187,6 @@ class CompileResult:
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
 
 
-# ---------------------------------------------------------------------------
-# Internal diagnostic factories — one per compile-failure category. Keeping
-# them as small private helpers makes the dispatch tree in
-# compile_protos_to_result readable line-by-line.
-# ---------------------------------------------------------------------------
-
-
 def _detect_same_basename_collision(
     paths: Sequence[Path],
 ) -> list[Path] | None:
@@ -202,6 +224,7 @@ def _diagnostic_protoxy_fallback(exc: Exception) -> LintCompileDiagnostic:
     """Build a category #1 info diagnostic (protoxy → protoc fallback)."""
     return LintCompileDiagnostic(
         level="info",
+        category="protoxy_fallback",
         message="protoxy parse error; falling back to protoc",
         exception_type=type(exc).__name__,
     )
@@ -211,28 +234,43 @@ def _diagnostic_protoc_subprocess(
     exc: subprocess.CalledProcessError,
 ) -> LintCompileDiagnostic:
     """Build a category #2 error diagnostic (protoc subprocess failure)."""
+    # exc.stderr is None if subprocess.run was called without
+    # capture_output=True / stderr=PIPE; preserve that distinction
+    # rather than collapsing to "" (per the LintCompileDiagnostic
+    # docstring: "" means stderr was empty, None means not captured).
+    if exc.stderr is None:
+        stderr: str | None = None
+    else:
+        stderr = exc.stderr.strip()
     return LintCompileDiagnostic(
         level="error",
+        category="protoc_subprocess",
         message="protoc compilation failed",
         command=tuple(str(a) for a in exc.cmd),
         exit_code=exc.returncode,
-        stderr=exc.stderr.strip() if exc.stderr else "",
+        stderr=stderr,
         exception_type="CalledProcessError",
     )
 
 
 def _diagnostic_backend_missing(
-    exc: FileNotFoundError,
+    exc: FileNotFoundError | ImportError,
 ) -> LintCompileDiagnostic:
-    """Build a category #3 error diagnostic (no compile backend available)."""
-    del exc  # Message is fixed; the exception itself carries no useful detail.
+    """Build a category #3 error diagnostic (no compile backend available).
+
+    Accepts ``FileNotFoundError`` (protoc not on PATH) and
+    ``ImportError`` (protoxy partially installed — ``find_spec``
+    succeeds but the actual import raises). Both surface the same
+    install-hint message.
+    """
     return LintCompileDiagnostic(
         level="error",
+        category="backend_missing",
         message=(
             "compile backend missing: install protokit[compiler] or "
             "put protoc on PATH"
         ),
-        exception_type="FileNotFoundError",
+        exception_type=type(exc).__name__,
     )
 
 
@@ -240,6 +278,7 @@ def _diagnostic_infrastructure(exc: BaseException) -> LintCompileDiagnostic:
     """Build a category #4 error diagnostic (OSError / TimeoutExpired)."""
     return LintCompileDiagnostic(
         level="error",
+        category="infrastructure",
         message=f"compile infrastructure error: {exc}",
         exception_type=type(exc).__name__,
     )
@@ -249,6 +288,7 @@ def _diagnostic_unexpected(exc: Exception) -> LintCompileDiagnostic:
     """Build a category #5 error diagnostic (catch-all for Exception)."""
     return LintCompileDiagnostic(
         level="error",
+        category="unexpected",
         message=f"unexpected backend exception: {exc!r}",
         exception_type=type(exc).__name__,
     )
@@ -257,25 +297,36 @@ def _diagnostic_unexpected(exc: Exception) -> LintCompileDiagnostic:
 def _diagnostic_same_basename_collision(
     colliding: list[Path],
 ) -> LintCompileDiagnostic:
-    """Build the pre-flight error diagnostic for same-basename collisions."""
+    """Build the pre-flight error diagnostic for same-basename collisions.
+
+    The diagnostic message names the colliding paths by basename only;
+    absolute paths are dropped to avoid leaking developer filesystem
+    layout into downstream artifacts (CI logs, formatter output). The
+    full paths are still available on the colliding ``Path`` objects
+    if a future ``LintCompileDiagnostic`` field exposes them
+    structurally.
+    """
+    parents_by_basename: dict[str, list[str]] = {}
+    for p in colliding:
+        parents_by_basename.setdefault(p.name, []).append(str(p.parent))
+    rendered = "; ".join(
+        f"{name} (parents: {sorted(parents)})"
+        for name, parents in sorted(parents_by_basename.items())
+    )
     return LintCompileDiagnostic(
         level="error",
+        category="same_basename_collision",
         message=(
             "multi-path roots with same basename in different parent "
-            f"dirs is unsupported: {[str(p) for p in colliding]}"
+            f"dirs is unsupported: {rendered}"
         ),
         exception_type="SameBasenameCollision",
     )
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
-
 def compile_protos_to_result(
     paths: Sequence[Path],
-    proto_paths: tuple[str, ...] = (),
+    proto_paths: Sequence[str] = (),
 ) -> CompileResult:
     """Compile one or more ``.proto`` files into a :class:`CompileResult`.
 
@@ -334,11 +385,31 @@ def compile_protos_to_result(
 
     try:
         if _has_protoxy():
-            import protoxy  # type: ignore[import-not-found]
             try:
-                pool, names = _compile_with_protoxy(paths, proto_paths)
-                root_files = tuple(names)
-            except (protoxy.ProtoxyError, ValueError) as exc:
+                import protoxy
+            except ImportError as exc:
+                # find_spec returned non-None but the actual import
+                # failed — partially-installed package, broken native
+                # extension, etc. Surface as backend-missing rather
+                # than the catch-all category #5.
+                diagnostics.append(_diagnostic_backend_missing(exc))
+                return CompileResult(
+                    pool=descriptor_pool.DescriptorPool(),
+                    root_files=(),
+                    diagnostics=tuple(diagnostics),
+                )
+            try:
+                pool, root_files = _compile_with_protoxy(paths, proto_paths)
+            except (protoxy.ProtoxyError, ValueError, TypeError) as exc:
+                # ProtoxyError/ValueError: parse-time failures from
+                # protoxy.compile itself.
+                # TypeError: pool.Add() rejecting a FileDescriptorProto
+                # that protoxy accepted but the python protobuf runtime
+                # rejects (e.g., proto2 group-syntax interop, malformed
+                # custom options). Both flavours mean "protoxy didn't
+                # produce a usable result for this input"; protoc is
+                # the documented fallback for either.
+                #
                 # Per A2-2: info-fallback diagnostic comes FIRST so the
                 # tuple's leading entry tells the consumer which backend
                 # was tried and why protoc was attempted.
@@ -346,11 +417,9 @@ def compile_protos_to_result(
                 # Re-attempt with protoc. Any exception here propagates
                 # to the outer catch tree, which appends the SECOND
                 # diagnostic (the both-fail composition contract).
-                pool, names = _compile_with_protoc(paths, proto_paths)
-                root_files = tuple(names)
+                pool, root_files = _compile_with_protoc(paths, proto_paths)
         else:
-            pool, names = _compile_with_protoc(paths, proto_paths)
-            root_files = tuple(names)
+            pool, root_files = _compile_with_protoc(paths, proto_paths)
     except FileNotFoundError as exc:
         diagnostics.append(_diagnostic_backend_missing(exc))
     except subprocess.CalledProcessError as exc:

@@ -181,6 +181,35 @@ class TestCompileFailureCategories:
         assert diag.exception_type == exc_cls.__name__
         assert "compile infrastructure error" in diag.message
 
+    def test_timeout_expired_emits_category_4_diagnostic(
+        self,
+        demo_proto_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Category #4 (TimeoutExpired branch).
+
+        ``subprocess.TimeoutExpired`` is a sibling of CalledProcessError
+        under SubprocessError (NOT an OSError subclass). The dispatch
+        tree has a dedicated except clause BEFORE OSError; this test
+        locks that the clause routes to ``_diagnostic_infrastructure``
+        with ``exception_type='TimeoutExpired'``.
+        """
+        monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
+
+        def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise subprocess.TimeoutExpired(cmd=["protoc"], timeout=1)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = compile_protos_to_result([demo_proto_file])
+
+        assert result.root_files == ()
+        assert len(result.diagnostics) == 1
+        diag = result.diagnostics[0]
+        assert diag.level == "error"
+        assert diag.exception_type == "TimeoutExpired"
+        assert "compile infrastructure error" in diag.message
+
     @pytest.mark.parametrize(
         "exc_cls",
         [RuntimeError, ImportError, MemoryError, TypeError],
@@ -226,6 +255,41 @@ class TestCompileFailureCategories:
         assert diag.level == "error"
         assert diag.exception_type == exc_cls.__name__
         assert diag.message.startswith("unexpected backend exception:")
+
+    def test_lint_compile_diagnostic_str_renders_each_combination(
+        self,
+    ) -> None:
+        """Lock the documented format of ``LintCompileDiagnostic.__str__``.
+
+        Four combinations exercise the conditional fragments:
+        (1) level + message only, (2) + exception_type, (3) +
+        command/exit_code, (4) all populated. A future refactor of the
+        format string would surface here.
+        """
+        # 1: bare info — no optional fragments
+        d1 = LintCompileDiagnostic(level="info", message="hello")
+        assert str(d1) == "[info] hello"
+
+        # 2: with exception_type only
+        d2 = LintCompileDiagnostic(
+            level="error", message="boom", exception_type="RuntimeError",
+        )
+        assert str(d2) == "[error] boom (RuntimeError)"
+
+        # 3: with command + exit_code only
+        d3 = LintCompileDiagnostic(
+            level="error", message="boom",
+            command=("protoc", "--bad"), exit_code=1,
+        )
+        assert str(d3) == "[error] boom cmd='protoc --bad' exit=1"
+
+        # 4: all populated
+        d4 = LintCompileDiagnostic(
+            level="error", message="boom",
+            command=("protoc",), exit_code=2,
+            exception_type="CalledProcessError",
+        )
+        assert str(d4) == "[error] boom (CalledProcessError) cmd='protoc' exit=2"
 
     @pytest.mark.parametrize(
         "exc_cls",

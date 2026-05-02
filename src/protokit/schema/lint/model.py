@@ -48,26 +48,27 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
-# ---------------------------------------------------------------------------
-# Emit callback signature
-# ---------------------------------------------------------------------------
-
+if TYPE_CHECKING:
+    # TYPE_CHECKING is False at runtime, so this import is invisible
+    # to ``import protokit.schema.lint.model`` and preserves the
+    # cold-import contract for ``protokit compat`` (compile.py is not
+    # transitively loaded). Without this import, ``LintReport.diagnostics``
+    # is a string forward ref to ``LintCompileDiagnostic`` that
+    # ``typing.get_type_hints(LintReport)`` cannot resolve — breaking
+    # downstream tooling (Sphinx autodoc with autodoc_typehints,
+    # JSON-schema generators, pydantic adapters, mypy plugins).
+    from protokit.schema.compile import LintCompileDiagnostic
 
 # Engine-injected closure that records a ``LintFinding`` into the
-# in-flight report. Rule plugins should not call this directly —
-# they call ``ctx.emit(...)`` on their lint context, which fills in
-# ``rule_id``, ``severity``, and ``location`` before dispatching here.
+# in-flight report. Rule plugins call ``ctx.emit(...)`` on their lint
+# context, which fills in ``rule_id``, ``severity``, and ``location``
+# before dispatching here.
 EmitFn = Callable[["LintFinding"], None]
-
-
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
 
 
 class LintSeverity(Enum):
@@ -114,11 +115,6 @@ _SEVERITY_RANK: dict[LintSeverity, int] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Lint locations
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class FileLocation:
     """Address of a finding at file scope.
@@ -131,11 +127,7 @@ class FileLocation:
     file: str
 
     def __str__(self) -> str:
-        """Render as ``file``.
-
-        Returns:
-            The file name unchanged.
-        """
+        """Render as ``file`` (e.g., ``"acme/user.proto"``)."""
         return self.file
 
 
@@ -153,11 +145,7 @@ class ServiceLocation:
     service: str
 
     def __str__(self) -> str:
-        """Render as ``file:service``.
-
-        Returns:
-            A string like ``"acme/user.proto:acme.UserService"``.
-        """
+        """Render as ``file:service`` (e.g., ``"acme/user.proto:acme.UserService"``)."""
         return f"{self.file}:{self.service}"
 
 
@@ -177,12 +165,7 @@ class MethodLocation:
     method: str
 
     def __str__(self) -> str:
-        """Render as ``file:service/method``.
-
-        Returns:
-            A string like
-            ``"acme/user.proto:acme.UserService/GetUser"``.
-        """
+        """Render as ``file:service/method`` (e.g., ``"a.proto:acme.S/GetUser"``)."""
         return f"{self.file}:{self.service}/{self.method}"
 
 
@@ -199,11 +182,7 @@ class EnumLocation:
     enum: str
 
     def __str__(self) -> str:
-        """Render as ``file:enum``.
-
-        Returns:
-            A string like ``"acme/user.proto:acme.Status"``.
-        """
+        """Render as ``file:enum`` (e.g., ``"a.proto:acme.Status"``)."""
         return f"{self.file}:{self.enum}"
 
 
@@ -222,11 +201,7 @@ class EnumValueLocation:
     value: str
 
     def __str__(self) -> str:
-        """Render as ``file:enum.value``.
-
-        Returns:
-            A string like ``"acme/user.proto:acme.Status.ACTIVE"``.
-        """
+        """Render as ``file:enum.value`` (e.g., ``"a.proto:acme.Status.ACTIVE"``)."""
         return f"{self.file}:{self.enum}.{self.value}"
 
 
@@ -243,11 +218,7 @@ class MessageLocation:
     message: str
 
     def __str__(self) -> str:
-        """Render as ``file:message``.
-
-        Returns:
-            A string like ``"acme/user.proto:acme.User"``.
-        """
+        """Render as ``file:message`` (e.g., ``"a.proto:acme.User"``)."""
         return f"{self.file}:{self.message}"
 
 
@@ -267,11 +238,7 @@ class FieldLocation:
     field: str
 
     def __str__(self) -> str:
-        """Render as ``file:message.field``.
-
-        Returns:
-            A string like ``"acme/user.proto:acme.User.email"``.
-        """
+        """Render as ``file:message.field`` (e.g., ``"a.proto:acme.User.email"``)."""
         return f"{self.file}:{self.message}.{self.field}"
 
 
@@ -293,17 +260,27 @@ class OneofLocation:
     oneof: str
 
     def __str__(self) -> str:
-        """Render as ``file:message#oneof``.
-
-        Returns:
-            A string like ``"acme/user.proto:acme.User#contact"``.
-        """
+        """Render as ``file:message#oneof`` (e.g., ``"a.proto:acme.User#contact"``)."""
         return f"{self.file}:{self.message}#{self.oneof}"
 
 
 # Discriminated union of all eight location variants. Functions that
 # accept "any location" should use this alias; pattern-matching on
 # specific variants is encouraged at consumer sites.
+#
+# Exhaustiveness contract (load-bearing for D2+):
+#
+# Adding a 9th variant in a future delivery silently breaks any
+# ``match`` statement over ``LintLocation`` that lacks a wildcard arm.
+# Consumers MUST end every match with::
+#
+#     case _:
+#         typing.assert_never(loc)
+#
+# so a type-checker fails closed when a new variant is added (a
+# ``case _: pass`` arm would silently accept the new variant). The
+# project's mypy config (``strict = true``) catches missing
+# ``assert_never`` arms when this convention is followed.
 LintLocation = (
     FileLocation
     | ServiceLocation
@@ -314,11 +291,6 @@ LintLocation = (
     | FieldLocation
     | OneofLocation
 )
-
-
-# ---------------------------------------------------------------------------
-# Findings + reports
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -354,6 +326,18 @@ class LintFinding:
     violation_kind: str
     params: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Snapshot the caller-supplied ``params`` dict.
+
+        ``frozen=True`` only prevents attribute REBINDING; nested
+        mutation of a passed-in dict would still mutate the finding's
+        params after construction. A rule plugin that reuses one
+        params dict across multiple emits would otherwise produce
+        findings whose params alias to the LAST set of values. Snapshot
+        via ``dict(...)`` so each finding owns its params.
+        """
+        object.__setattr__(self, "params", dict(self.params))
+
 
 @dataclass(frozen=True)
 class LintReport:
@@ -385,7 +369,7 @@ class LintReport:
     """
 
     findings: tuple[LintFinding, ...] = ()
-    diagnostics: tuple[LintCompileDiagnostic, ...] = ()  # noqa: F821
+    diagnostics: tuple[LintCompileDiagnostic, ...] = ()
     profiles_run: tuple[str, ...] = ()
     rules_run: tuple[str, ...] = ()
 
@@ -401,11 +385,6 @@ class LintReport:
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
         object.__setattr__(self, "profiles_run", tuple(self.profiles_run))
         object.__setattr__(self, "rules_run", tuple(self.rules_run))
-
-
-# ---------------------------------------------------------------------------
-# Profiles
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -435,8 +414,21 @@ class LintProfile:
     min_severity: LintSeverity = LintSeverity.WARNING
     rule_severity_overrides: dict[str, LintSeverity] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Snapshot caller-supplied dict so the frozen guarantee is real.
+
+        Same rationale as :class:`LintFinding` and :class:`LintReport`:
+        ``frozen=True`` does not prevent nested mutation of a passed-in
+        dict. Profiles passed across deliveries / plugin boundaries
+        could otherwise be mutated post-construction and corrupt the
+        composition.
+        """
+        object.__setattr__(
+            self, "rule_severity_overrides", dict(self.rule_severity_overrides),
+        )
+
     @classmethod
-    def compose(cls, *profiles: str | LintProfile) -> LintProfile:
+    def compose(cls, *profiles: LintProfile) -> LintProfile:
         """Merge zero or more profiles into a single composed profile.
 
         Composition rules:
@@ -445,68 +437,52 @@ class LintProfile:
           (``LintProfile(name="composed")``).
         - A single ``LintProfile`` argument returns that profile
           unchanged.
-        - A single ``str`` argument is rejected: callers are
-          responsible for resolving names to instances (typically via
-          a registry the engine owns). This keeps ``compose()`` pure
-          and side-effect-free.
         - Multiple arguments union ``rule_ids``, take the strictest
           ``min_severity``, and merge ``rule_severity_overrides`` with
           most-strict-wins on conflicts.
 
+        Profile-name resolution is the caller's responsibility (the
+        engine resolves names against its registry before calling
+        ``compose``); this method is pure and side-effect-free.
+
         Args:
-            *profiles: ``LintProfile`` instances to merge. Strings are
-                NOT resolved here.
+            *profiles: ``LintProfile`` instances to merge.
 
         Returns:
             A new ``LintProfile`` named ``"composed"`` (single-arg
             case returns the input as-is, preserving its name).
 
         Raises:
-            ValueError: If a ``str`` is passed instead of a
-                ``LintProfile`` — the caller must resolve names.
+            TypeError: If any argument is not a ``LintProfile``
+                instance — including ``str`` (caller must resolve
+                names) and ``None`` (guard against forwarded registry
+                misses).
         """
+        for prof in profiles:
+            if not isinstance(prof, LintProfile):
+                raise TypeError(
+                    f"compose() requires LintProfile instances; got "
+                    f"{type(prof).__name__}: {prof!r}. Profile-name "
+                    f"resolution is the caller's responsibility."
+                )
+
         if not profiles:
             return cls(name="composed")
         if len(profiles) == 1:
-            only = profiles[0]
-            if isinstance(only, str):
-                raise ValueError(
-                    f"compose() requires LintProfile instances when called "
-                    f"with strings; got: {only!r}. Resolution of profile "
-                    f"names is the caller's responsibility (e.g., engine "
-                    f"looks them up in a registry)."
-                )
-            return only
-
-        # Multiple args: every entry must be a LintProfile (no name
-        # resolution here). Catch strings up front so failures are
-        # consistent with the single-arg path.
-        for prof in profiles:
-            if isinstance(prof, str):
-                raise ValueError(
-                    f"compose() requires LintProfile instances when called "
-                    f"with strings; got: {prof!r}. Resolution of profile "
-                    f"names is the caller's responsibility (e.g., engine "
-                    f"looks them up in a registry)."
-                )
-
-        # mypy can't narrow the loop above, so cast via a comprehension.
-        instances: tuple[LintProfile, ...] = tuple(
-            p for p in profiles if isinstance(p, LintProfile)
-        )
+            return profiles[0]
 
         merged_rule_ids: frozenset[str] = frozenset().union(
-            *(p.rule_ids for p in instances)
+            *(p.rule_ids for p in profiles)
         )
 
         # Strictest min_severity = highest rank in _SEVERITY_RANK.
         merged_min_severity: LintSeverity = max(
-            (p.min_severity for p in instances),
+            (p.min_severity for p in profiles),
             key=lambda s: _SEVERITY_RANK[s],
         )
 
         merged_overrides: dict[str, LintSeverity] = {}
-        for prof in instances:
+        for prof in profiles:
             for rule_id, sev in prof.rule_severity_overrides.items():
                 existing = merged_overrides.get(rule_id)
                 if existing is None or _SEVERITY_RANK[sev] > _SEVERITY_RANK[existing]:
@@ -518,11 +494,6 @@ class LintProfile:
             min_severity=merged_min_severity,
             rule_severity_overrides=merged_overrides,
         )
-
-
-# ---------------------------------------------------------------------------
-# Rule registration record
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -566,6 +537,40 @@ class LintRuleSpec:
     message_template: str | dict[str, str] = ""
     fn: Callable[..., None] | None = None
 
+    def __post_init__(self) -> None:
+        """Snapshot dict-shaped fields and enforce the dual-shape invariant.
+
+        Two responsibilities:
+
+        1. **Snapshot.** Multi-kind specs carry dicts that must not be
+           mutated after registration — a registry-corrupting abuse
+           case where ``severity_for(kind)`` would return different
+           severities at different times. Single-kind variants
+           (``LintSeverity`` / ``str``) pass through untouched.
+        2. **Dual-shape pairing.** ``severity`` and ``message_template``
+           must be the SAME shape: both single-kind (``LintSeverity`` +
+           ``str``) or both multi-kind (``dict`` + ``dict``). Mixing
+           shapes is rejected at registration time so plugin authors
+           hit a clear failure rather than a runtime KeyError at first
+           render.
+        """
+        severity = self.severity
+        template = self.message_template
+        severity_is_dict = isinstance(severity, dict)
+        template_is_dict = isinstance(template, dict)
+        if severity_is_dict != template_is_dict:
+            raise TypeError(
+                f"LintRuleSpec({self.rule_id!r}): severity and "
+                f"message_template must share the same shape "
+                f"(both single-kind, or both dict for multi-kind); "
+                f"got severity={type(severity).__name__}, "
+                f"message_template={type(template).__name__}."
+            )
+        if isinstance(severity, dict):
+            object.__setattr__(self, "severity", dict(severity))
+        if isinstance(template, dict):
+            object.__setattr__(self, "message_template", dict(template))
+
     def severity_for(self, violation_kind: str) -> LintSeverity:
         """Return the effective default severity for ``violation_kind``.
 
@@ -591,11 +596,6 @@ class LintRuleSpec:
         if isinstance(self.severity, LintSeverity):
             return self.severity
         return self.severity[violation_kind]
-
-
-# ---------------------------------------------------------------------------
-# Lint context mixin + concrete contexts
-# ---------------------------------------------------------------------------
 
 
 class _LintContextEmitMixin:
@@ -693,11 +693,7 @@ class FileLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``FileLocation`` addressing this file.
-
-        Returns:
-            ``FileLocation(file=self.file.name)``.
-        """
+        """Return ``FileLocation(file=self.file.name)``."""
         return FileLocation(file=self.file.name)
 
 
@@ -724,12 +720,7 @@ class ServiceLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``ServiceLocation`` addressing this service.
-
-        Returns:
-            ``ServiceLocation`` with the file name and the service's
-            fully-qualified name.
-        """
+        """Return ``ServiceLocation(file, service.full_name)``."""
         return ServiceLocation(
             file=self.file.name,
             service=self.service.full_name,
@@ -761,12 +752,7 @@ class MethodLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``MethodLocation`` addressing this method.
-
-        Returns:
-            ``MethodLocation`` with the file name, service's
-            fully-qualified name, and the method's local name.
-        """
+        """Return ``MethodLocation(file, service.full_name, method.name)``."""
         return MethodLocation(
             file=self.file.name,
             service=self.service.full_name,
@@ -797,12 +783,7 @@ class EnumLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``EnumLocation`` addressing this enum.
-
-        Returns:
-            ``EnumLocation`` with the file name and the enum's
-            fully-qualified name.
-        """
+        """Return ``EnumLocation(file, enum.full_name)``."""
         return EnumLocation(
             file=self.file.name,
             enum=self.enum.full_name,
@@ -834,12 +815,7 @@ class EnumValueLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``EnumValueLocation`` addressing this enum value.
-
-        Returns:
-            ``EnumValueLocation`` with the file name, enum's
-            fully-qualified name, and the value's local name.
-        """
+        """Return ``EnumValueLocation(file, enum.full_name, value.name)``."""
         return EnumValueLocation(
             file=self.file.name,
             enum=self.enum.full_name,
@@ -870,12 +846,7 @@ class MessageLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``MessageLocation`` addressing this message.
-
-        Returns:
-            ``MessageLocation`` with the file name and the message's
-            fully-qualified name.
-        """
+        """Return ``MessageLocation(file, message.full_name)``."""
         return MessageLocation(
             file=self.file.name,
             message=self.message.full_name,
@@ -907,12 +878,7 @@ class FieldLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``FieldLocation`` addressing this field.
-
-        Returns:
-            ``FieldLocation`` with the file name, message's
-            fully-qualified name, and the field's local name.
-        """
+        """Return ``FieldLocation(file, message.full_name, field.name)``."""
         return FieldLocation(
             file=self.file.name,
             message=self.message.full_name,
@@ -945,22 +911,12 @@ class OneofLintContext(_LintContextEmitMixin):
     _effective_severity: Callable[[str], LintSeverity]
 
     def location(self) -> LintLocation:
-        """Return ``OneofLocation`` addressing this oneof.
-
-        Returns:
-            ``OneofLocation`` with the file name, message's
-            fully-qualified name, and the oneof's local name.
-        """
+        """Return ``OneofLocation(file, message.full_name, oneof.name)``."""
         return OneofLocation(
             file=self.file.name,
             message=self.message.full_name,
             oneof=self.oneof.name,
         )
-
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
 
 
 class DuplicateRuleError(Exception):

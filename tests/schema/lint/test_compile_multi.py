@@ -252,10 +252,59 @@ class TestCompileProtosToResultMultiPath:
         diag = result.diagnostics[0]
         assert isinstance(diag, LintCompileDiagnostic)
         assert diag.level == "error"
+        assert diag.category == "same_basename_collision"
         assert diag.exception_type == "SameBasenameCollision"
-        # Both source paths appear in the message for actionable output.
-        assert str(x1) in diag.message
-        assert str(x2) in diag.message
+        # Both colliding parent dirs appear in the message; absolute
+        # paths are scrubbed (basename + parent only) so CI artifacts
+        # don't leak full developer filesystem layout.
+        assert "x.proto" in diag.message
+        assert str(x1.parent) in diag.message
+        assert str(x2.parent) in diag.message
+
+    def test_same_basename_three_paths_two_dirs_flags_collision(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Three paths sharing a basename across 2 dirs is still a collision."""
+        dir1 = tmp_path / "dir1"
+        dir1.mkdir()
+        a1 = dir1 / "x.proto"
+        a1.write_text(_PROTO_A)
+        a2 = dir1 / "y.proto"
+        a2.write_text(_PROTO_B)
+
+        dir2 = tmp_path / "dir2"
+        dir2.mkdir()
+        b1 = dir2 / "x.proto"
+        b1.write_text(_PROTO_A)
+
+        result = compile_protos_to_result([a1, a2, b1])
+
+        assert result.root_files == ()
+        assert len(result.diagnostics) == 1
+        assert result.diagnostics[0].exception_type == "SameBasenameCollision"
+
+    def test_same_basename_same_dir_does_not_flag_collision(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Two inputs sharing a basename in the SAME dir is not a collision.
+
+        Locks the parent-specificity invariant: a refactor that simplifies
+        the heuristic to ``len(group) > 1`` (dropping the parent check)
+        would silently re-classify legitimate same-dir duplicates as
+        collisions and break this test.
+        """
+        a = tmp_path / "x.proto"
+        a.write_text(_PROTO_A)
+        # Pass the SAME path twice — same basename, same parent dir.
+        result = compile_protos_to_result([a, a])
+
+        # No collision diagnostic. The compile may emit warnings or
+        # nothing depending on backend behavior with duplicates; we only
+        # assert that the SameBasenameCollision diagnostic is NOT emitted.
+        for diag in result.diagnostics:
+            assert diag.exception_type != "SameBasenameCollision"
 
     def test_empty_input(self) -> None:
         """``paths=()`` returns an empty result with no diagnostics.

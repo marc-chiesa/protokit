@@ -9,8 +9,11 @@ backend failure SECOND. Locks the A2-2 ordering invariant.
 
 Module-level skip: this module needs ``protoxy`` importable so the
 tests can construct ``protoxy.ProtoxyError`` instances. It is
-skipped on the CI matrix's ``has_protoxy: false`` cell — same
-treatment as :class:`tests.test_cli_utils.TestProtoxyBackend`.
+skipped on the CI matrix's ``has_protoxy: false`` cell via
+``pytest.importorskip("protoxy")`` at module top — a bare
+``import protoxy`` after ``pytestmark`` does NOT skip, because
+``pytestmark`` is evaluated AFTER module import and any failed
+import surfaces as a collection error.
 
 Per pass-3 doc-review F1 (verified 2026-05-01):
 ``protoxy.ProtoxyError.__init__(self, message, details, json_details)``
@@ -21,13 +24,9 @@ centralizes the constructor so test bodies stay readable.
 Reachable both-fail compositions (parametrized in test 2):
 
 - ``info + #2``: protoc subprocess returned non-zero
+- ``info + #3``: ``FileNotFoundError`` (protoxy installed, protoc absent)
 - ``info + #4``: ``OSError`` subclass during protoc
 - ``info + #5``: any other ``Exception`` during protoc
-
-Unreachable (NOT parametrized): ``info + #3`` — the fallback path
-is invoked only when ``protoxy`` IS available, but category #3
-fires when ``protoxy`` is NOT available. The preconditions are
-mutually exclusive.
 """
 
 from __future__ import annotations
@@ -37,17 +36,13 @@ from pathlib import Path
 
 import pytest
 
-from protokit import _cli_utils
-
-pytestmark = pytest.mark.skipif(
-    not _cli_utils._has_protoxy(),
-    reason="optional [compiler] extra not installed",
-)
-
-# Module-gated import: protoxy is guaranteed importable past the
-# pytestmark above, so importing it at module top is safe; tests
-# that need ``protoxy.ProtoxyError`` use it directly.
-import protoxy  # noqa: E402
+# Module-level skip via importorskip: when protoxy is absent, the
+# module is skipped at collection time WITHOUT a collection error.
+# A bare ``import protoxy`` here would raise ModuleNotFoundError on
+# ``has_protoxy: false`` CI cells, turning the cell red instead of
+# skipping it. Subsequent imports run only after the skip gate, so
+# E402 is suppressed for them.
+protoxy = pytest.importorskip("protoxy")
 
 from protokit.schema import compile as compile_module  # noqa: E402
 from protokit.schema.compile import (  # noqa: E402
@@ -140,7 +135,7 @@ class TestCompileProtoxyFallback:
         def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
             pool = descriptor_pool.DescriptorPool()
             pool.Add(fdp)
-            return pool, ["demo.proto"]
+            return pool, ("demo.proto",)
 
         monkeypatch.setattr(protoxy, "compile", fake_protoxy_compile)
         monkeypatch.setattr(
@@ -175,6 +170,11 @@ class TestCompileProtoxyFallback:
                     stderr="parse error",
                 ),
                 "CalledProcessError",
+            ),
+            (
+                "file_not_found",
+                FileNotFoundError("protoc not found"),
+                "FileNotFoundError",
             ),
             (
                 "oserror",

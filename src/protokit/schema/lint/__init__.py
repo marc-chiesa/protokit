@@ -1,10 +1,9 @@
-"""Lint subpackage for protokit schema (D1 foundation).
+"""Lint subpackage for protokit schema.
 
-Houses the lint-side type system, engine, rule registry, and CLI
-formatters. This module is intentionally a lazy-import boundary:
-``protokit.schema`` does not import ``protokit.schema.lint`` at top
-level, so callers that only use the compatibility checker do not
-pay lint-side import cost.
+The lazy-import contract for ``protokit.schema`` (no eager import of
+``lint`` or ``compile``) is enforced by ``protokit.schema.__init__``
+NOT importing this package, and validated by the cold-import smoke
+step in ``.github/workflows/ci.yml``.
 """
 
 from __future__ import annotations

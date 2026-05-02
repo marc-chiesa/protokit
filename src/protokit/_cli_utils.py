@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,28 @@ from protokit.formatters import (
     list_formatters,
     load_formatter_pack,
 )
+
+# Default ceiling on protoc invocation runtime. A pathological proto
+# (deeply nested imports, future protoc bug, generated input) could
+# otherwise hang indefinitely. Override via PROTOKIT_PROTOC_TIMEOUT.
+# On timeout, subprocess raises TimeoutExpired which routes to
+# category #4 (infrastructure) at the compile_protos_to_result layer.
+_PROTOC_TIMEOUT_SECONDS_DEFAULT = 60.0
+
+
+def _protoc_timeout_seconds() -> float:
+    """Return the configured protoc subprocess timeout in seconds.
+
+    Reads ``PROTOKIT_PROTOC_TIMEOUT`` from the environment; falls back
+    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset or unparseable.
+    """
+    raw = os.environ.get("PROTOKIT_PROTOC_TIMEOUT")
+    if raw is None:
+        return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        return _PROTOC_TIMEOUT_SECONDS_DEFAULT
 
 
 def error_exit(message: str) -> NoReturn:
@@ -124,16 +147,23 @@ def compile_proto(
             - ``"compile backend missing: "`` for ``FileNotFoundError``
             - ``"compile infrastructure error: "`` for ``OSError`` / ``TimeoutExpired``
     """
-    if _has_protoxy():
-        import protoxy  # type: ignore[import-not-found]
+    has_protoxy = _has_protoxy()
+    if has_protoxy:
+        import protoxy
         protoxy_caught: tuple[type[BaseException], ...] = (
             protoxy.ProtoxyError, ValueError,
         )
     else:
+        # protoxy is absent — _compile_with_protoxy is unreachable, but
+        # keep ValueError in the catch tuple so a hypothetical ValueError
+        # from _compile_with_protoc surfaces through error_exit instead
+        # of escaping uncaught. The prefix below switches on has_protoxy
+        # so the label is honest about which backend ran.
         protoxy_caught = (ValueError,)
 
+    pool: descriptor_pool.DescriptorPool | None = None
     try:
-        if _has_protoxy():
+        if has_protoxy:
             pool, _ = _compile_with_protoxy([proto_path], proto_paths)
         else:
             pool, _ = _compile_with_protoc([proto_path], proto_paths)
@@ -159,14 +189,15 @@ def compile_proto(
         # PermissionError, BrokenPipeError, etc.
         error_exit(f"compile infrastructure error: {exc}")
     except protoxy_caught as exc:
-        error_exit(f"protoxy compile failed: {exc}")
+        prefix = "protoxy compile failed" if has_protoxy else "protoc compile failed"
+        error_exit(f"{prefix}: {exc}")
     return pool
 
 
 def _compile_with_protoxy(
     proto_paths_in: Sequence[Path],
-    include_paths: tuple[str, ...] = (),
-) -> tuple[descriptor_pool.DescriptorPool, list[str]]:
+    include_paths: Sequence[str] = (),
+) -> tuple[descriptor_pool.DescriptorPool, tuple[str, ...]]:
     """Multi-path compile via the in-process ``protoxy`` (Rust) backend.
 
     Raises on failure (does NOT call ``error_exit``); callers translate
@@ -182,25 +213,25 @@ def _compile_with_protoxy(
 
     Returns:
         Tuple of ``(DescriptorPool, root_names)`` where ``root_names`` is
-        a list of the ``.proto``-relative names that came from the
-        user's input paths (NOT including transitive imports). Used by
-        ``compile_protos_to_result`` to populate ``CompileResult.root_files``.
+        a tuple of the ``.proto``-relative names that came from the
+        user's input paths (NOT including transitive imports), in input
+        order. Used by ``compile_protos_to_result`` to populate
+        ``CompileResult.root_files``.
 
     Raises:
         protoxy.ProtoxyError: On parse / compile failure.
         ValueError: protoxy 0.7 docstring claims this; in practice
             ProtoxyError is what's raised. Defensive over-catch.
     """
-    import protoxy  # type: ignore[import-not-found]
+    import protoxy
     parents = list(dict.fromkeys(str(p.parent) for p in proto_paths_in))
     includes = [*include_paths, *parents]
     fds = protoxy.compile(
         files=[str(p) for p in proto_paths_in],
         includes=includes,
         include_imports=True,
-        # Match the protoc path — neither backend carries source
-        # location info into the pool, so keep the in-memory
-        # FileDescriptorSet byte-equivalent between backends.
+        # Keep the in-memory FileDescriptorSet byte-equivalent between
+        # backends — neither carries source-location info into the pool.
         include_source_info=False,
     )
     pool = descriptor_pool.DescriptorPool()
@@ -211,17 +242,18 @@ def _compile_with_protoxy(
         pool.Add(fd)
         if fd.name in expected_set:
             emitted.add(fd.name)
-    # Preserve input order — fds.file iteration is in backend's topological
-    # order, which is wrong for root_names. Walk expected_in_order and keep
-    # only entries actually emitted (defensive against matcher/backend skew).
-    root_names = [name for name in expected_in_order if name in emitted]
+    # Walk expected_in_order so root_names preserves the user's input
+    # order (fds.file iterates in backend topological order, wrong for
+    # CompileResult.root_files). Filter by `emitted` for defensiveness
+    # against any future matcher/backend skew.
+    root_names = tuple(name for name in expected_in_order if name in emitted)
     return pool, root_names
 
 
 def _compile_with_protoc(
     proto_paths_in: Sequence[Path],
-    include_paths: tuple[str, ...] = (),
-) -> tuple[descriptor_pool.DescriptorPool, list[str]]:
+    include_paths: Sequence[str] = (),
+) -> tuple[descriptor_pool.DescriptorPool, tuple[str, ...]]:
     """Multi-path compile by shelling out to ``protoc`` on PATH.
 
     Raises on failure (does NOT call ``error_exit``).
@@ -231,7 +263,8 @@ def _compile_with_protoc(
         include_paths: Additional ``-I``-style include directories.
 
     Returns:
-        Tuple of ``(DescriptorPool, root_names)``.
+        Tuple of ``(DescriptorPool, root_names)`` where ``root_names`` is
+        a tuple of input-order ``fd.name`` strings.
 
     Raises:
         FileNotFoundError: ``protoc`` not on PATH.
@@ -250,20 +283,35 @@ def _compile_with_protoc(
         cmd = ["protoc", "--descriptor_set_out", str(tmp_path), "--include_imports"]
         for inc in includes:
             cmd.extend(["-I", inc])
+        # End-of-options separator: protoc treats positional args
+        # starting with "--" as flags; the separator forces every
+        # subsequent token to be parsed as an input path.
+        cmd.append("--")
         for p in proto_paths_in:
             cmd.append(str(p))
 
-        # subprocess.run raises FileNotFoundError, CalledProcessError,
-        # OSError subclasses, and (if timeout= ever added) TimeoutExpired.
-        # Per the refactored contract these all propagate; callers translate.
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_protoc_timeout_seconds(),
+        )
 
-        # Read the FileDescriptorSet, build pool, identify roots.
-        # Same shape as _compile_with_protoxy so root_names extraction
-        # stays consistent across backends.
         data = tmp_path.read_bytes()
         fds = descriptor_pb2.FileDescriptorSet()
         fds.ParseFromString(data)
+        # Guard against silent success: protoc exited 0 but produced
+        # an empty FileDescriptorSet (write-truncated tmpfile, future
+        # protoc bug, disk-full mid-write that didn't propagate as a
+        # non-zero exit). Without this check the function returns
+        # (empty_pool, ()) and the caller can't distinguish
+        # "compiled nothing" from "compile silently dropped output".
+        if proto_paths_in and not fds.file:
+            raise OSError(
+                "protoc exited 0 but produced an empty descriptor set "
+                f"for inputs {[str(p) for p in proto_paths_in]}"
+            )
         pool = descriptor_pool.DescriptorPool()
         expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
         expected_set = set(expected_in_order)
@@ -272,7 +320,7 @@ def _compile_with_protoc(
             pool.Add(fd)
             if fd.name in expected_set:
                 emitted.add(fd.name)
-        root_names = [name for name in expected_in_order if name in emitted]
+        root_names = tuple(name for name in expected_in_order if name in emitted)
         return pool, root_names
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -282,13 +330,13 @@ def _expected_root_names_ordered(
     proto_paths_in: Sequence[Path],
     includes: Sequence[str],
 ) -> list[str]:
-    """Like :func:`_expected_root_names` but returns input order, not a set.
+    """Compute expected ``fd.name`` per input path, preserving input order.
 
-    Required by helpers that need to populate ``root_names`` in the
-    user's input order rather than the backend's topological iteration
-    order over ``fds.file``. Backends emit fds.file in dependency order;
-    that's the wrong sequencing for ``CompileResult.root_files``, which
-    is contracted to preserve input order per pass-2 review.
+    Backends emit ``fds.file`` in dependency (topological) order; that is
+    the wrong sequencing for ``CompileResult.root_files``, which is
+    contracted to preserve the user's input order. Returning a list
+    (not a set) lets callers walk in input order while still using a
+    set for membership checks against the backend's emitted names.
 
     Args:
         proto_paths_in: Input paths in their declared order.
@@ -312,73 +360,25 @@ def _resolve_expected_name(p: Path, includes: Sequence[str]) -> str:
     protoxy/protoc emit as ``fd.name``). Falls back to ``p.name`` if
     no include is a prefix (rare; caller convention is to include
     ``p.parent``).
+
+    Path components are matched LITERALLY — neither ``p`` nor the
+    includes are passed through ``Path.resolve()``. Both backends
+    resolve ``-I`` arguments and input paths against the literal
+    string the user passed (no symlink expansion of the include
+    against the input). Calling ``.resolve()`` here would diverge
+    from the backend on macOS (``/var`` -> ``/private/var``), Bazel
+    ``bazel-out`` symlinks, and any container bind-mount where the
+    user-passed path does not byte-match the realpath. The skew
+    silently empties ``CompileResult.root_files`` for compiles
+    that otherwise succeed.
     """
-    try:
-        p_resolved = p.resolve()
-    except (OSError, RuntimeError):
-        p_resolved = p
     for inc in includes:
+        inc_path = Path(inc)
         try:
-            inc_path = Path(inc).resolve()
-        except (OSError, RuntimeError):
-            inc_path = Path(inc)
-        try:
-            return str(p_resolved.relative_to(inc_path))
+            return str(p.relative_to(inc_path))
         except ValueError:
             continue
     return p.name
-
-
-def _expected_root_names(
-    proto_paths_in: Sequence[Path],
-    includes: Sequence[str],
-) -> set[str]:
-    """Pre-compute the expected ``fd.name`` for each input proto path.
-
-    For each input ``p``, find the first include directory in ``includes``
-    that is a prefix of ``p``; the relative form of ``p`` against that
-    include is what protoxy/protoc will emit as ``fd.name`` (both backends
-    follow this convention — the path is relative to whichever ``-I``
-    directory resolved it).
-
-    Includes are walked in declared order (matches both backends).
-    If no include is a prefix of ``p`` (rare; should not occur if the
-    caller follows convention of including ``p.parent``), fall back to
-    the basename so the matcher still produces a result.
-
-    Args:
-        proto_paths_in: Input paths to match.
-        includes: Include directories in declared order.
-
-    Returns:
-        Set of expected ``fd.name`` strings (one per input path).
-    """
-    expected: set[str] = set()
-    for p in proto_paths_in:
-        try:
-            p_resolved = p.resolve()
-        except (OSError, RuntimeError):
-            # Resolve can raise on broken symlinks etc.; fall back to as-is.
-            p_resolved = p
-        for inc in includes:
-            try:
-                inc_path = Path(inc).resolve()
-            except (OSError, RuntimeError):
-                inc_path = Path(inc)
-            try:
-                rel = p_resolved.relative_to(inc_path)
-                expected.add(str(rel))
-                break
-            except ValueError:
-                continue
-        else:
-            expected.add(p.name)
-    return expected
-
-
-# ---------------------------------------------------------------------------
-# Formatter helpers — shared by every CLI subcommand that has --format
-# ---------------------------------------------------------------------------
 
 
 def load_formatter_packs(module_names: tuple[str, ...]) -> None:
@@ -473,8 +473,14 @@ def _scrub_exc_message(exc: BaseException) -> str:
     """
     if isinstance(exc, OSError):
         import errno
-        errno_name = errno.errorcode.get(exc.errno, str(exc.errno))
-        return f"[Errno {exc.errno} {errno_name}] {exc.strerror or ''}".strip()
+        # exc.errno is Optional[int]; errorcode.get expects int. Treat
+        # missing errno as a label so the formatter still surfaces
+        # something useful.
+        if exc.errno is None:
+            errno_label = "Errno-unknown"
+        else:
+            errno_label = errno.errorcode.get(exc.errno, str(exc.errno))
+        return f"[Errno {exc.errno} {errno_label}] {exc.strerror or ''}".strip()
     return str(exc)
 
 
