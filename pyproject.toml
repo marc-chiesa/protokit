@@ -49,6 +49,8 @@ dev = [
     "pytest",
     "xmlschema>=2.0",
     "jsonschema>=4.0",
+    "mypy>=1.8",
+    "ruff>=0.5",
 ]
 
 [project.scripts]
@@ -75,3 +77,12 @@ python_version = "3.10"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# Third-party libs without published type stubs. Both are tracked
+# upstream (google.protobuf via types-protobuf which we deliberately
+# DON'T pull in to avoid stub/runtime drift; protoxy 0.7+ ships no
+# py.typed). Ignoring missing imports here keeps the strict-mode
+# signal-to-noise ratio useful for the protokit code itself.
+[[tool.mypy.overrides]]
+module = ["google.protobuf.*", "protoxy"]
+ignore_missing_imports = true

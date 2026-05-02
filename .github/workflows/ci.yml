@@ -83,8 +83,12 @@ jobs:
       - name: Cold-import smoke test
         # Validates the cold-import contract for `protokit compat`:
         # importing `protokit.schema` MUST NOT transitively load
-        # `protokit.schema.lint`. A regression in any future delivery
-        # that adds an eager import would surface here.
+        # `protokit.schema.lint` OR `protokit.schema.compile`. The
+        # compile module's placement (LintCompileDiagnostic lives there
+        # rather than in lint/model.py per S2-2) only preserves the
+        # contract if `protokit.schema` itself doesn't pull compile in
+        # eagerly. A regression in any future delivery that adds an
+        # eager import of either submodule would surface here.
         #
         # NOTE: this is a SNAPSHOT of today's transitive imports; future
         # deliveries that add eager imports may need to update this
@@ -93,10 +97,28 @@ jobs:
           python -c "
           import protokit.schema
           import sys
-          eager = sorted(k for k in sys.modules if 'protokit.schema.lint' in k)
-          assert not eager, f'protokit.schema.lint transitively loaded: {eager}'
+          eager = sorted(
+              k for k in sys.modules
+              if 'protokit.schema.lint' in k
+              or k == 'protokit.schema.compile'
+          )
+          assert not eager, f'lazy-load contract broken: {eager}'
           print('cold-import OK')
           "
+
+      - name: Run mypy (scoped to D1 surface)
+        # Strict-mode mypy is configured in pyproject.toml but the
+        # broader codebase has ~30 pre-existing strict-mode errors.
+        # This step gates ONLY the modules introduced or refactored in
+        # protokit-lint Delivery 1 so the strict signal is enforced for
+        # new code without forcing pre-existing modules to clear strict
+        # mode in the same PR. Future deliveries can widen the scope by
+        # extending the path list here.
+        run: |
+          python -m mypy \
+            src/protokit/_cli_utils.py \
+            src/protokit/schema/compile.py \
+            src/protokit/schema/lint/
 
       - name: Run test suite
         run: pytest tests/ -v
