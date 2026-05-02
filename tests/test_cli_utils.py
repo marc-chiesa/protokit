@@ -23,7 +23,6 @@ import pytest
 
 from protokit import _cli_utils
 
-
 _DEMO_PROTO = """
 syntax = "proto3";
 package demo;
