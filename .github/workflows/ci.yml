@@ -1,0 +1,102 @@
+# protokit CI — landed by protokit-lint Delivery 1 (2026-05-01).
+#
+# Matrix axes (from pass-3 doc-review on the Delivery 1 plan):
+#
+#   - python: 3.10 (project floor) and 3.12 (project ceiling). 3.11 is
+#     intentionally NOT in the matrix per pass-2 review's A9 finding —
+#     the only currently-load-bearing distinction (tomllib stdlib branch)
+#     is shared with 3.12. Adding 3.11 later when a 3.11-specific issue
+#     surfaces is a one-line change to this file.
+#
+#   - has_protoxy: true installs the optional `[compiler]` extra
+#     (protoxy 0.7+); false skips it. Tests that integration-test the
+#     protoxy backend gate via `pytest.mark.skipif(not _has_protoxy())`
+#     (see tests/test_cli_utils.py header for the convention).
+#     System protoc is installed on EVERY cell so the protoc-only path
+#     always runs; the `has_protoxy` axis only controls protoxy.
+#
+# Apt-shipped protoc on ubuntu-latest is currently 3.21.x — sufficient
+# for proto3 fixtures. If a future delivery introduces Edition 2023
+# fixtures, switch this step to a binary download from the protocolbuffers
+# release bucket pinned to v25+.
+#
+# Note: this workflow lands as dormant config — the repo has no
+# configured GitHub remote at the time of writing. It fires on day-1
+# of CI activation (when a remote is configured + push happens).
+# Pre-remote validation: run `actionlint` locally before merge to catch
+# YAML typos, invalid action versions, and expression-syntax errors.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+        has_protoxy: [true, false]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install system protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install package + dev deps (with protoxy)
+        if: matrix.has_protoxy
+        run: pip install -e ".[compiler,dev]"
+
+      - name: Install package + dev deps (without protoxy)
+        if: ${{ !matrix.has_protoxy }}
+        run: pip install -e ".[dev]"
+
+      - name: Sanity — protoxy must be ABSENT on has_protoxy=false cells
+        # Cheap insurance against the matrix collapsing to an effective
+        # single cell. If a dev dep transitively pulled protoxy in, the
+        # has_protoxy=false cell would silently exercise both backends,
+        # defeating the matrix. Per pass-3 doc-review F11.
+        if: ${{ !matrix.has_protoxy }}
+        run: |
+          if pip list --format=freeze | grep -i '^protoxy='; then
+            echo "FAIL: protoxy is installed on a has_protoxy=false cell;"
+            echo "      a dev dep is transitively pulling it in."
+            exit 1
+          fi
+          echo "OK: protoxy absent on has_protoxy=false cell"
+
+      - name: Cold-import smoke test
+        # Validates the cold-import contract for `protokit compat`:
+        # importing `protokit.schema` MUST NOT transitively load
+        # `protokit.schema.lint`. A regression in any future delivery
+        # that adds an eager import would surface here.
+        #
+        # NOTE: this is a SNAPSHOT of today's transitive imports; future
+        # deliveries that add eager imports may need to update this
+        # assertion target. Per pass-3 doc-review F7.
+        run: |
+          python -c "
+          import protokit.schema
+          import sys
+          eager = sorted(k for k in sys.modules if 'protokit.schema.lint' in k)
+          assert not eager, f'protokit.schema.lint transitively loaded: {eager}'
+          print('cold-import OK')
+          "
+
+      - name: Run test suite
+        run: pytest tests/ -v
