@@ -1,12 +1,23 @@
 """``LintEngine`` — descriptor-tree walker + per-instance rule registry.
 
-Mirrors compat's ``SchemaChecker`` per-instance pattern at
-``schema/checker.py:136-143, 217-235``: each engine instance owns
-its loaded-rule dict; there is no process-global registry.
-``load_rule_pack(module: ModuleType)`` reads ``module.RULES``
-(decorated by ``@lint_rule``), extracts each function's
+Adopts compat's per-instance design at
+``schema/checker.py:136-143, 217-235`` — each engine instance owns
+its loaded-rule dict; there is no process-global registry. The
+``RULES`` attribute name is reused but the **wire format differs**:
+compat's ``module.RULES`` is a sequence of ``(rule_id, plugin_fn)``
+tuples; lint's ``module.RULES`` is a sequence of bare
+``@lint_rule``-decorated callables (the ``rule_id`` lives on
+``fn._lint_spec``). A pack written for one engine cannot be loaded
+into the other; the divergence is intentional (lint co-locates
+rule_id with the rule definition via the decorator) and surfaced
+loudly here so D7 plugin authors don't expect cross-engine reuse.
+
+``load_rule_pack(module: ModuleType)`` mirrors compat's signature
+exactly. Reads ``module.RULES``, extracts each function's
 ``_lint_spec``, and registers per-instance with cross-pack
-``DuplicateRuleError`` detection. ``run(compile_result, *, profile)``
+``DuplicateRuleError`` detection (compat does NOT raise on
+cross-pack collision — another behaviour divergence; lint chose to
+surface duplicates loudly). ``run(compile_result, *, profile)``
 walks ``compile_result.root_files`` in sorted order, dispatches
 rules per ``ElementKind`` with a narrow exception-catch tuple
 (including ``SystemExit`` per the D2-specific R16 amendment), and
@@ -88,6 +99,16 @@ class LintEngine:
     engines for isolation; callers wanting "fresh state" on an
     existing engine call :meth:`reset`.
 
+    **Not thread-safe; not reentrant.** Per-run accumulators
+    (``_findings``, ``_runtime_warnings``, ``_filtered_count``,
+    ``_current_profile``) are instance attributes mutated during
+    :meth:`run`. Concurrent or nested ``run()`` calls on the same
+    engine corrupt the accumulators silently. :meth:`run` raises
+    ``RuntimeError`` on detected reentrancy (a rule recursing into
+    ``engine.run()`` mid-walk). Concurrent threads must use one
+    engine instance per thread. Engines themselves are cheap to
+    construct, so per-thread instances are the recommended pattern.
+
     Attributes (introspectable for tests / D3 CLI ``--list-rules``):
         See :meth:`__init__`.
     """
@@ -128,10 +149,26 @@ class LintEngine:
     def load_rule_pack(self, module: ModuleType) -> None:
         """Load every entry from ``module.RULES`` per-instance.
 
-        Echoes compat's ``SchemaChecker.load_rule_pack(module)``
-        signature exactly (``schema/checker.py:217``). Caller imports
-        the module first; the engine reads ``module.__name__`` for
-        idempotency tracking and ``module.RULES`` for the rule-list.
+        Mirrors compat's ``SchemaChecker.load_rule_pack(module)``
+        signature exactly (``schema/checker.py:217``); two **behaviour
+        divergences** worth noting:
+
+        - The expected element type of ``module.RULES`` differs:
+          compat expects ``(rule_id, plugin_fn)`` tuples; lint expects
+          bare ``@lint_rule``-decorated callables (the rule_id lives
+          on ``fn._lint_spec``). A pack cannot be loaded into both
+          engines.
+        - This method raises ``DuplicateRuleError`` on cross-pack
+          ``rule_id`` collisions; compat silently allows duplicates
+          (both rules run, producing ambiguous findings under one
+          rule_id). Lint chose to fail loudly.
+        - This method is idempotent for the same module name (second
+          call short-circuits); compat is not (second call double-
+          registers).
+
+        Caller imports the module first; the engine reads
+        ``module.__name__`` for idempotency tracking and
+        ``module.RULES`` for the rule-list.
 
         Stage-then-commit: builds a staging mapping of
         ``rule_id → LintRuleSpec`` from ``module.RULES``, validates
@@ -139,10 +176,6 @@ class LintEngine:
         already-loaded rules, then commits or rolls back. On
         ``DuplicateRuleError``, the engine state is unchanged from
         before the call.
-
-        Idempotent for the same module name: calling
-        ``load_rule_pack`` a second time with the same module
-        short-circuits (returns immediately, engine state unchanged).
 
         Args:
             module: An imported module exposing a module-level
@@ -260,6 +293,17 @@ class LintEngine:
             walk-emission order (file basename → per-level full_name
             sort → rule registration order within each ElementKind).
         """
+        # Reentrancy guard — see class docstring. ``_current_profile`` is
+        # set non-None for the duration of ``run()``; a non-None value at
+        # entry means a rule is recursing into engine.run(), which would
+        # silently corrupt the outer run's accumulators.
+        if self._current_profile is not None:
+            raise RuntimeError(
+                "LintEngine.run() is not reentrant; a rule callable cannot "
+                "recurse into engine.run() mid-walk. Construct a separate "
+                "LintEngine instance for nested lint passes."
+            )
+
         # Step 1: snapshot compile diagnostics.
         compile_diagnostics = tuple(compile_result.diagnostics)
 
@@ -269,55 +313,61 @@ class LintEngine:
         self._filtered_count = 0
         self._current_profile = profile
 
-        # Step 2: unloaded-rule diff (one warning per missing rule_id).
-        loaded_ids = set(self._loaded_specs.keys())
-        for rid in sorted(profile.rule_ids - loaded_ids):
-            self._runtime_warnings.append(
-                LintRuntimeWarning(
-                    category="unloaded_rule",
-                    rule_id=rid,
-                    message=(
-                        f"rule {rid!r} is named in profile {profile.name!r} "
-                        f"but not loaded into the engine"
+        try:
+            # Step 2: unloaded-rule diff (one warning per missing rule_id).
+            loaded_ids = set(self._loaded_specs.keys())
+            for rid in sorted(profile.rule_ids - loaded_ids):
+                self._runtime_warnings.append(
+                    LintRuntimeWarning(
+                        category="unloaded_rule",
+                        rule_id=rid,
+                        message=(
+                            f"rule {rid!r} is named in profile "
+                            f"{profile.name!r} but not loaded into the engine"
+                        ),
                     ),
-                ),
+                )
+
+            # Step 3: filter loaded specs by profile.rule_ids; bucket by kind.
+            active_specs = [
+                spec
+                for rid, spec in self._loaded_specs.items()
+                if rid in profile.rule_ids
+            ]
+            group_by_kind: dict[ElementKind, list[LintRuleSpec]] = {
+                kind: [] for kind in ElementKind
+            }
+            for spec in active_specs:
+                group_by_kind[spec.element].append(spec)
+
+            # Step 4: walk root_files (sorted by basename for cross-platform
+            # stability; tie-break by full path for absolute determinism).
+            for fname in sorted(
+                compile_result.root_files,
+                key=lambda f: (os.path.basename(f), f),
+            ):
+                try:
+                    fd = compile_result.pool.FindFileByName(fname)
+                except KeyError:
+                    # Defensive: root_files name not in pool (compile-failure
+                    # path). Skip; no descriptor → no walk for this file.
+                    continue
+                self._dispatch_file(fd, group_by_kind, profile)
+
+            # Step 7: build report.
+            return LintReport(
+                findings=tuple(self._findings),
+                diagnostics=compile_diagnostics,
+                profiles_run=(profile.name,),
+                rules_run=tuple(spec.rule_id for spec in active_specs),
+                runtime_warnings=tuple(self._runtime_warnings),
+                filtered_count=self._filtered_count,
             )
-
-        # Step 3: filter loaded specs by profile.rule_ids; bucket by element.
-        active_specs = [
-            spec
-            for rid, spec in self._loaded_specs.items()
-            if rid in profile.rule_ids
-        ]
-        group_by_kind: dict[ElementKind, list[LintRuleSpec]] = {
-            kind: [] for kind in ElementKind
-        }
-        for spec in active_specs:
-            group_by_kind[spec.element].append(spec)
-
-        # Step 4: walk root_files (sorted by basename for cross-platform
-        # stability; tie-break by full path for absolute determinism).
-        for fname in sorted(
-            compile_result.root_files,
-            key=lambda f: (os.path.basename(f), f),
-        ):
-            try:
-                fd = compile_result.pool.FindFileByName(fname)
-            except KeyError:
-                # Defensive: root_files name not in pool (compile failure
-                # path). Skip; no descriptor → no walk for this file.
-                continue
-            self._dispatch_file(fd, group_by_kind, profile)
-
-        # Step 7: build report.
-        return LintReport(
-            findings=tuple(self._findings),
-            diagnostics=compile_diagnostics,
-            profiles_run=(profile.name,),
-            rules_run=tuple(spec.rule_id for spec in active_specs),
-            runtime_warnings=tuple(self._runtime_warnings),
-            filtered_count=self._filtered_count,
-        )
+        finally:
+            # Clear _current_profile so the reentrancy guard works for the
+            # NEXT run() call AND so escaped-ctx.emit() calls hit the
+            # _emit-time guard rather than appending to a stale _findings.
+            self._current_profile = None
 
     # ------------------------------------------------------------------
     # Dispatch helpers — one per ElementKind
@@ -437,9 +487,19 @@ class LintEngine:
         ``_effective_severity`` closure (see ``model.py:643-646``). This
         callback's job is the min-severity gate only.
         """
-        # _current_profile is set at run() entry; this callback is only
-        # invoked through engine-built contexts during a run.
-        assert self._current_profile is not None  # mypy + invariant
+        # ``_current_profile`` is set at ``run()`` entry and cleared in the
+        # ``finally`` block. A None value here means a captured ctx escaped
+        # the run and called emit() afterward — raise loudly rather than
+        # appending to the discarded accumulator. ``assert`` would suffice
+        # at full strictness but is stripped under ``python -O``; an
+        # explicit raise survives optimisation.
+        if self._current_profile is None:
+            raise RuntimeError(
+                "LintEngine._emit() called outside of an active run() — a "
+                "rule callable likely captured its ctx and called "
+                "ctx.emit() after run() returned. ctx is only valid for "
+                "the duration of the rule's invocation."
+            )
         min_rank = _SEVERITY_RANK[self._current_profile.min_severity]
         finding_rank = _SEVERITY_RANK[finding.severity]
         if finding_rank < min_rank:

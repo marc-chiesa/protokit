@@ -71,6 +71,16 @@ message User {
 """
 
 
+# Bad-name fixture for the canary's sad-path tests.
+#
+# Note on exclusions:
+# - ``_leading_underscore`` and ``with-dash`` are excluded because the
+#   protobuf grammar rejects them at parse time — including either in
+#   the fixture causes ``compile_protos_to_result`` to fail before the
+#   engine sees a descriptor, which makes the canary's regex branches
+#   for those cases dead code in practice. The regex still rejects
+#   them defensively (per the docstring on ``_SNAKE_CASE_RE``); we
+#   trust that branch via spec inspection rather than fixture testing.
 _ALL_BAD_PROTO = """
 syntax = "proto3";
 package bad;

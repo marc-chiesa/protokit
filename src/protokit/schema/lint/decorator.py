@@ -1,14 +1,19 @@
 """``@lint_rule`` decorator — pure metadata attachment for D2 rule packs.
 
-Mirrors compat's per-instance pattern at ``schema/checker.py:217-235``:
-no process-global registry, no module-attribute side effects on the
-importing module. The decorator simply constructs a
-:class:`~protokit.schema.lint.model.LintRuleSpec` from the call-site
-kwargs and attaches it to the decorated function as
+Per-instance design adopted from compat at
+``schema/checker.py:217-235``: no process-global registry, no
+module-attribute side effects on the importing module. The decorator
+constructs a :class:`~protokit.schema.lint.model.LintRuleSpec` from
+the call-site kwargs and attaches it to the decorated function as
 ``fn._lint_spec``. Rule pack modules then expose a ``RULES`` tuple
-listing the decorated functions; the engine reads
-``module.RULES`` (echoing compat's convention) and harvests each
-function's ``_lint_spec`` per-instance.
+listing the decorated functions; the engine reads ``module.RULES``
+and harvests each function's ``_lint_spec`` per-instance.
+
+The ``RULES`` attribute name is reused from compat, but the **wire
+format differs**: compat's entries are ``(rule_id, plugin_fn)``
+tuples; lint's are bare decorated callables (rule_id lives on
+``fn._lint_spec``). Packs are NOT cross-engine-loadable. See
+``LintEngine.load_rule_pack`` docstring for the full divergence list.
 
 Test isolation, ``importlib.reload`` semantics, and dynamic-module
 patterns work by construction — there is no global state to

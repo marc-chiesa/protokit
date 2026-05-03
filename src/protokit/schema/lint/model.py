@@ -645,14 +645,21 @@ class LintProfile:
             compose with another profile.
 
         Raises:
-            AttributeError: If a function in ``module.RULES`` lacks a
+            TypeError: If a function in ``module.RULES`` lacks a
                 ``_lint_spec`` attribute (i.e., wasn't decorated with
-                ``@lint_rule``). Surfaces author errors immediately
-                rather than silently skipping.
+                ``@lint_rule``). The error message names the offending
+                callable so the author can fix it. Mirrors
+                ``LintEngine.load_rule_pack`` exactly so callers can
+                catch a single ``TypeError`` for either entry point.
         """
         rule_ids: list[str] = []
         for fn in getattr(module, "RULES", ()):
-            spec = fn._lint_spec
+            spec = getattr(fn, "_lint_spec", None)
+            if spec is None:
+                raise TypeError(
+                    f"{fn!r} in {module.__name__}.RULES is not "
+                    f"@lint_rule-decorated; missing _lint_spec attribute."
+                )
             if profile_name in spec.profiles:
                 rule_ids.append(spec.rule_id)
         return cls(name=profile_name, rule_ids=frozenset(rule_ids))

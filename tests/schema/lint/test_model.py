@@ -883,16 +883,22 @@ class TestLintProfileFromPack:
         profile = LintProfile.from_pack(pack, "default")  # type: ignore[arg-type]
         assert profile.rule_ids == frozenset()
 
-    def test_from_pack_undecorated_fn_raises_attribute_error(self) -> None:
-        """A RULES entry without _lint_spec surfaces the author error."""
+    def test_from_pack_undecorated_fn_raises_typeerror(self) -> None:
+        """A RULES entry without _lint_spec raises TypeError, not AttributeError.
+
+        Mirrors LintEngine.load_rule_pack's contract exactly so callers
+        can catch one TypeError for either entry point. Updated as part
+        of the ce:review #5 convergence on getattr-with-guard.
+        """
 
         def undecorated_fn(_ctx: Any) -> None:
             pass
 
         class _BadPack:
+            __name__ = "_bad_pack"
             RULES = (undecorated_fn,)
 
-        with pytest.raises(AttributeError):
+        with pytest.raises(TypeError, match="not @lint_rule-decorated"):
             LintProfile.from_pack(_BadPack(), "default")  # type: ignore[arg-type]
 
 

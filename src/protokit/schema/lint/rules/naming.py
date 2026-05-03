@@ -10,11 +10,13 @@ References:
 - protokit-lint D2 plan:
   ``docs/plans/2026-05-02-001-feat-protokit-lint-d2-engine-plan.md``
 
-Module shape echoes compat's ``RULES`` convention
-(``schema/checker.py:217-220``): a module-level ``RULES`` tuple
-listing the ``@lint_rule``-decorated functions this pack exports.
-``LintEngine.load_rule_pack(module)`` reads ``module.RULES`` and
-extracts each function's ``_lint_spec``.
+Module shape adopts the ``RULES`` attribute name from compat
+(``schema/checker.py:217-220``) but its wire format differs: this
+pack's ``RULES`` is a tuple of bare ``@lint_rule``-decorated
+functions (the rule_id lives on ``fn._lint_spec``), whereas compat's
+``RULES`` is ``(rule_id, plugin_fn)`` tuples. Lint packs cannot be
+loaded into ``SchemaChecker`` and vice versa; the divergence is
+documented in ``LintEngine.load_rule_pack``'s docstring.
 """
 
 from __future__ import annotations
@@ -70,7 +72,8 @@ def check_snake_case_fields(ctx: FieldLintContext) -> None:
         )
 
 
-# Module-level RULES tuple — exact echo of compat's
-# `schema/checker.py:217-220` convention. ``LintEngine.load_rule_pack``
-# reads this attribute.
+# Module-level RULES tuple — same attribute name as compat
+# (``schema/checker.py:217-220``) but holding bare decorated callables,
+# not (rule_id, fn) tuples. ``LintEngine.load_rule_pack`` reads this
+# attribute and extracts each fn's ``_lint_spec``.
 RULES: tuple[Callable[..., None], ...] = (check_snake_case_fields,)
