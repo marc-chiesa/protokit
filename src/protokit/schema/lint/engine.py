@@ -32,15 +32,10 @@ from protokit.schema.lint.model import (
     DuplicateRuleError,
     ElementKind,
     EnumLintContext,
-    EnumLocation,
     EnumValueLintContext,
-    EnumValueLocation,
     FieldLintContext,
-    FieldLocation,
     FileLintContext,
-    FileLocation,
     LintFinding,
-    LintLocation,
     LintProfile,
     LintReport,
     LintRuleError,
@@ -48,13 +43,9 @@ from protokit.schema.lint.model import (
     LintRuntimeWarning,
     LintSeverity,
     MessageLintContext,
-    MessageLocation,
     MethodLintContext,
-    MethodLocation,
     OneofLintContext,
-    OneofLocation,
     ServiceLintContext,
-    ServiceLocation,
 )
 
 if TYPE_CHECKING:
@@ -74,11 +65,14 @@ if TYPE_CHECKING:
 # its fix to formatters). Rule authors who legitimately want to abort the
 # run raise an Exception subclass NOT in this tuple — ``RuntimeError`` is
 # the canonical choice; see ``LintRuleError`` docstring.
+#
+# ``KeyError`` is intentionally NOT listed separately — it is a subclass
+# of ``LookupError``, which is already in the tuple, so adding it would
+# be dead coverage.
 _RULE_EXCEPTION_TUPLE: tuple[type[BaseException], ...] = (
     SystemExit,
     ValueError,
     TypeError,
-    KeyError,
     AttributeError,
     LookupError,
     LintRuleError,
@@ -338,30 +332,18 @@ class LintEngine:
         """Walk a single file: dispatch FILE rules, then descend."""
         for spec in group_by_kind[ElementKind.FILE]:
             ctx = self._build_file_ctx(fd, spec, profile)
-            self._invoke_rule(spec, ctx, FileLocation(file=fd.name))
+            self._invoke_rule(spec, ctx)
 
         for service in self._sorted_by_full_name(fd.services_by_name.values()):
             for spec in group_by_kind[ElementKind.SERVICE]:
                 ctx_svc = self._build_service_ctx(service, fd, spec, profile)
-                self._invoke_rule(
-                    spec,
-                    ctx_svc,
-                    ServiceLocation(file=fd.name, service=service.full_name),
-                )
+                self._invoke_rule(spec, ctx_svc)
             for method in self._sorted_by_name(service.methods):
                 for spec in group_by_kind[ElementKind.METHOD]:
                     ctx_m = self._build_method_ctx(
                         method, service, fd, spec, profile,
                     )
-                    self._invoke_rule(
-                        spec,
-                        ctx_m,
-                        MethodLocation(
-                            file=fd.name,
-                            service=service.full_name,
-                            method=method.name,
-                        ),
-                    )
+                    self._invoke_rule(spec, ctx_m)
 
         for enum in self._sorted_by_full_name(fd.enum_types_by_name.values()):
             self._dispatch_enum(enum, fd, group_by_kind, profile)
@@ -379,11 +361,7 @@ class LintEngine:
         """Walk an enum: dispatch ENUM rules, then ENUM_VALUE rules."""
         for spec in group_by_kind[ElementKind.ENUM]:
             ctx = self._build_enum_ctx(enum, fd, spec, profile)
-            self._invoke_rule(
-                spec,
-                ctx,
-                EnumLocation(file=fd.name, enum=enum.full_name),
-            )
+            self._invoke_rule(spec, ctx)
         # enum.values is the proto-declared order, which matches the user's
         # source. Sorting by name would re-order values like UNSPECIFIED=0
         # ahead of FOO=1 unstably; preserve declared order for ENUM_VALUE.
@@ -392,13 +370,7 @@ class LintEngine:
                 ctx_val = self._build_enum_value_ctx(
                     value, enum, fd, spec, profile,
                 )
-                self._invoke_rule(
-                    spec,
-                    ctx_val,
-                    EnumValueLocation(
-                        file=fd.name, enum=enum.full_name, value=value.name,
-                    ),
-                )
+                self._invoke_rule(spec, ctx_val)
 
     def _dispatch_message(
         self,
@@ -410,37 +382,17 @@ class LintEngine:
         """Walk a message: MESSAGE → FIELD → ONEOF → nested ENUM/MESSAGE."""
         for spec in group_by_kind[ElementKind.MESSAGE]:
             ctx = self._build_message_ctx(message, fd, spec, profile)
-            self._invoke_rule(
-                spec,
-                ctx,
-                MessageLocation(file=fd.name, message=message.full_name),
-            )
+            self._invoke_rule(spec, ctx)
 
         for field in self._sorted_by_name(message.fields):
             for spec in group_by_kind[ElementKind.FIELD]:
                 ctx_f = self._build_field_ctx(field, message, fd, spec, profile)
-                self._invoke_rule(
-                    spec,
-                    ctx_f,
-                    FieldLocation(
-                        file=fd.name,
-                        message=message.full_name,
-                        field=field.name,
-                    ),
-                )
+                self._invoke_rule(spec, ctx_f)
 
         for oneof in self._sorted_by_name(message.oneofs):
             for spec in group_by_kind[ElementKind.ONEOF]:
                 ctx_o = self._build_oneof_ctx(oneof, message, fd, spec, profile)
-                self._invoke_rule(
-                    spec,
-                    ctx_o,
-                    OneofLocation(
-                        file=fd.name,
-                        message=message.full_name,
-                        oneof=oneof.name,
-                    ),
-                )
+                self._invoke_rule(spec, ctx_o)
 
         for nested_enum in self._sorted_by_full_name(message.enum_types):
             self._dispatch_enum(nested_enum, fd, group_by_kind, profile)
@@ -452,13 +404,16 @@ class LintEngine:
     # Per-rule invocation + emit
     # ------------------------------------------------------------------
 
-    def _invoke_rule(
-        self,
-        spec: LintRuleSpec,
-        ctx: Any,
-        location: LintLocation,
-    ) -> None:
-        """Call the rule's fn(ctx); record a runtime warning on caught exc."""
+    def _invoke_rule(self, spec: LintRuleSpec, ctx: Any) -> None:
+        """Call the rule's fn(ctx); record a runtime warning on caught exc.
+
+        ``descriptor_path`` for caught exceptions is read from
+        ``ctx.location()`` rather than a separately-passed location
+        argument — every context dataclass already produces the
+        canonical ``LintLocation`` for its element kind, and the dual
+        construction was a divergence-risk surface (the dispatch site
+        and the context could in principle disagree on the location).
+        """
         if spec.fn is None:
             return  # placeholder spec — defensive; production paths reject None
         try:
@@ -470,7 +425,7 @@ class LintEngine:
                     rule_id=spec.rule_id,
                     message=str(exc) if str(exc) else repr(exc),
                     exception_type=exc.__class__.__name__,
-                    descriptor_path=str(location),
+                    descriptor_path=str(ctx.location()),
                 ),
             )
 

@@ -450,8 +450,12 @@ class LintReport:
         profiles_run: Tuple of profile names that the engine resolved
             and ran. Useful for audit logs / report headers. Defaults
             to ``()``.
-        rules_run: Tuple of rule_ids that actually executed (after
-            profile filtering). Defaults to ``()``.
+        rules_run: Tuple of rule_ids selected by the active profile's
+            ``rule_ids`` filter (i.e., specs that the engine consulted
+            during the walk). A rule appears here if it was loaded AND
+            matched the profile filter — even if its ``fn`` was never
+            invoked because no element of its ``ElementKind`` was
+            present in any walked file. Defaults to ``()``.
         runtime_warnings: Tuple of engine-stage warnings raised during
             the run. Two categories share the type:
             ``"rule_exception"`` (a registered rule callable raised

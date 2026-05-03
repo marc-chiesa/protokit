@@ -141,10 +141,11 @@ def get_lint_spec(fn: Any) -> LintRuleSpec:
 
     Convenience accessor that surfaces a clear error when ``fn`` is
     not ``@lint_rule``-decorated, instead of an opaque
-    ``AttributeError`` deep in caller code. Used by the engine and by
-    ``LintProfile.from_pack`` (indirectly) to read the spec. Engine
-    callers may use the attribute directly; this helper is provided
-    for clarity at less-frequent read sites.
+    ``AttributeError`` deep in caller code. The engine and
+    ``LintProfile.from_pack`` access ``fn._lint_spec`` directly today;
+    this helper is provided for external callers (D7 plugin tooling,
+    a future ``--list-rules`` CLI) that want a clear error message
+    rather than a raw attribute miss.
 
     Args:
         fn: A function to inspect. Expected to carry a
