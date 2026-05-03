@@ -43,7 +43,9 @@ from protokit.schema.lint.model import (
     LintFinding,
     LintProfile,
     LintReport,
+    LintRuleError,
     LintRuleSpec,
+    LintRuntimeWarning,
     LintSeverity,
     MessageLintContext,
     MessageLocation,
@@ -624,10 +626,48 @@ class TestLintFindingLintReport:
         assert report.diagnostics == ()
         assert report.profiles_run == ()
         assert report.rules_run == ()
+        assert report.runtime_warnings == ()
+        assert report.filtered_count == 0
         assert isinstance(report.findings, tuple)
         assert isinstance(report.diagnostics, tuple)
         assert isinstance(report.profiles_run, tuple)
         assert isinstance(report.rules_run, tuple)
+        assert isinstance(report.runtime_warnings, tuple)
+        assert isinstance(report.filtered_count, int)
+
+    def test_lint_report_d1_positional_construction_still_works(self) -> None:
+        """The four pre-D2 positional args still construct a valid report.
+
+        D2 appends ``runtime_warnings`` and ``filtered_count`` after
+        ``rules_run``, both defaulted, so existing four-arg positional
+        construction in D1 callers continues to type-check and run.
+        """
+        report = LintReport((), (), (), ())
+        assert report.findings == ()
+        assert report.diagnostics == ()
+        assert report.profiles_run == ()
+        assert report.rules_run == ()
+        # New fields take their defaults.
+        assert report.runtime_warnings == ()
+        assert report.filtered_count == 0
+
+    def test_lint_report_runtime_warnings_snapshots_list_to_tuple(self) -> None:
+        """Caller-supplied list for ``runtime_warnings`` is coerced to a tuple."""
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="oops",
+            exception_type="ValueError",
+            descriptor_path="a.proto:Foo.bar",
+        )
+        warnings_list = [warning]
+        report = LintReport(runtime_warnings=warnings_list)
+        assert isinstance(report.runtime_warnings, tuple)
+        assert report.runtime_warnings == (warning,)
+        # Mutation of the input list does not affect the report — proves
+        # snapshot at __post_init__ is a tuple, not an aliased list.
+        warnings_list.clear()
+        assert report.runtime_warnings == (warning,)
 
     def test_get_type_hints_lint_report_resolves_with_localns(self) -> None:
         """``typing.get_type_hints(LintReport, localns=...)`` resolves.
@@ -679,6 +719,181 @@ class TestLintFindingLintReport:
         assert report.findings == (f1, f2)
         assert report.profiles_run == ("default",)
         assert report.rules_run == ("R",)
+
+
+# ---------------------------------------------------------------------------
+# LintRuntimeWarning — discriminator-based engine-stage warnings.
+# ---------------------------------------------------------------------------
+
+
+class TestLintRuntimeWarning:
+    """Cover both ``category`` cases and field-population per category."""
+
+    def test_rule_exception_category_constructs_with_full_field_set(self) -> None:
+        """``category="rule_exception"`` populates every field."""
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="ValueError: bad input",
+            exception_type="ValueError",
+            descriptor_path="a.proto:Foo.bar",
+        )
+        assert warning.category == "rule_exception"
+        assert warning.rule_id == "naming/snake-case-fields"
+        assert warning.message == "ValueError: bad input"
+        assert warning.exception_type == "ValueError"
+        assert warning.descriptor_path == "a.proto:Foo.bar"
+
+    def test_unloaded_rule_category_constructs_with_optional_fields_none(self) -> None:
+        """``category="unloaded_rule"`` leaves exception_type / descriptor_path None."""
+        warning = LintRuntimeWarning(
+            category="unloaded_rule",
+            rule_id="missing/rule",
+            message="rule 'missing/rule' is named in profile 'x' but not loaded",
+        )
+        assert warning.category == "unloaded_rule"
+        assert warning.rule_id == "missing/rule"
+        assert "not loaded" in warning.message
+        assert warning.exception_type is None
+        assert warning.descriptor_path is None
+
+    def test_runtime_warning_supports_value_equality(self) -> None:
+        """Two warnings with the same fields compare equal (frozen dataclass)."""
+        a = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="x",
+            message="m",
+            exception_type="ValueError",
+            descriptor_path="a.proto:F.b",
+        )
+        b = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="x",
+            message="m",
+            exception_type="ValueError",
+            descriptor_path="a.proto:F.b",
+        )
+        assert a == b
+
+    def test_runtime_warning_is_frozen(self) -> None:
+        """The dataclass is frozen — attribute reassignment raises."""
+        warning = LintRuntimeWarning(
+            category="unloaded_rule",
+            rule_id="x",
+            message="m",
+        )
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            warning.rule_id = "y"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# LintRuleError — explicit fail-soft signal for rule authors.
+# ---------------------------------------------------------------------------
+
+
+class TestLintRuleError:
+    """LintRuleError is a plain Exception subclass for use by rule authors."""
+
+    def test_lint_rule_error_subclasses_exception_not_baseexception(self) -> None:
+        """LintRuleError IS an Exception subclass (caught by the engine)."""
+        assert issubclass(LintRuleError, Exception)
+        # Sanity check the engine's catch tuple covers it indirectly:
+        # the engine catches Exception subclasses by enumeration; this
+        # test pins the inheritance chain so downstream changes can't
+        # accidentally promote it to BaseException-but-not-Exception.
+        assert LintRuleError.__mro__[1] is Exception
+
+    def test_lint_rule_error_constructs_with_message(self) -> None:
+        """LintRuleError(msg) carries the message via str()."""
+        err = LintRuleError("rule bailed because ...")
+        assert str(err) == "rule bailed because ..."
+
+
+# ---------------------------------------------------------------------------
+# LintProfile.from_pack — derive a profile from a rule pack module.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSpec:
+    """Minimal stand-in for LintRuleSpec — only the fields from_pack reads."""
+
+    def __init__(self, rule_id: str, profiles: tuple[str, ...]) -> None:
+        self.rule_id = rule_id
+        self.profiles = profiles
+
+
+class _FakeFn:
+    """Stand-in for an @lint_rule-decorated fn — exposes _lint_spec."""
+
+    def __init__(self, rule_id: str, profiles: tuple[str, ...]) -> None:
+        self._lint_spec = _FakeSpec(rule_id, profiles)
+
+
+class _FakePack:
+    """Stand-in for a rule pack module — exposes RULES."""
+
+    def __init__(self, *fns: _FakeFn) -> None:
+        self.RULES: tuple[Any, ...] = fns
+
+
+class TestLintProfileFromPack:
+    """Exercise the module.RULES walking + profile-membership filter."""
+
+    def test_from_pack_returns_matching_rule_ids(self) -> None:
+        """Rules whose ``profiles`` includes the name are selected."""
+        pack = _FakePack(
+            _FakeFn("naming/snake-case-fields", ("default",)),
+            _FakeFn("naming/upper-camel-messages", ("default", "strict")),
+            _FakeFn("enum/zero-default-required", ("strict",)),
+        )
+        profile = LintProfile.from_pack(pack, "default")  # type: ignore[arg-type]
+        assert profile.name == "default"
+        assert profile.rule_ids == frozenset(
+            {"naming/snake-case-fields", "naming/upper-camel-messages"}
+        )
+
+    def test_from_pack_strict_profile_picks_different_rules(self) -> None:
+        """Filtering on a different profile_name yields a different set."""
+        pack = _FakePack(
+            _FakeFn("naming/snake-case-fields", ("default",)),
+            _FakeFn("enum/zero-default-required", ("strict",)),
+        )
+        profile = LintProfile.from_pack(pack, "strict")  # type: ignore[arg-type]
+        assert profile.rule_ids == frozenset({"enum/zero-default-required"})
+
+    def test_from_pack_unknown_profile_returns_empty_rule_ids(self) -> None:
+        """No matching profile → empty rule_ids (matches R12 explicit-empty)."""
+        pack = _FakePack(_FakeFn("x/y", ("default",)))
+        profile = LintProfile.from_pack(pack, "nonexistent")  # type: ignore[arg-type]
+        assert profile.name == "nonexistent"
+        assert profile.rule_ids == frozenset()
+
+    def test_from_pack_module_without_rules_attr_returns_empty(self) -> None:
+        """``getattr(..., "RULES", ())`` fallback yields an empty profile."""
+
+        class _NoRules:
+            pass
+
+        profile = LintProfile.from_pack(_NoRules(), "default")  # type: ignore[arg-type]
+        assert profile.rule_ids == frozenset()
+
+    def test_from_pack_empty_rules_tuple_returns_empty(self) -> None:
+        """An empty ``RULES`` tuple produces an empty profile."""
+        pack = _FakePack()
+        profile = LintProfile.from_pack(pack, "default")  # type: ignore[arg-type]
+        assert profile.rule_ids == frozenset()
+
+    def test_from_pack_undecorated_fn_raises_attribute_error(self) -> None:
+        """A RULES entry without _lint_spec surfaces the author error."""
+
+        def undecorated_fn(_ctx: Any) -> None:
+            pass
+
+        class _BadPack:
+            RULES = (undecorated_fn,)
+
+        with pytest.raises(AttributeError):
+            LintProfile.from_pack(_BadPack(), "default")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

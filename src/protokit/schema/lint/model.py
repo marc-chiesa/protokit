@@ -48,7 +48,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Literal
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
@@ -340,6 +341,91 @@ class LintFinding:
 
 
 @dataclass(frozen=True)
+class LintRuntimeWarning:
+    """Engine-stage warning recorded during a lint run.
+
+    Two structurally distinct events share this type via the
+    ``category`` discriminator (mirrors ``LintCompileDiagnostic``'s
+    ``category: Literal[...]`` pattern in
+    ``protokit.schema.compile``):
+
+    1. ``"rule_exception"`` — a registered rule callable raised an
+       exception that the engine caught (narrow catch tuple
+       documented in ``LintEngine``). Carries ``exception_type`` (the
+       caught exception's class name) and ``descriptor_path`` (a
+       stable string locating the descriptor at which the rule was
+       firing).
+    2. ``"unloaded_rule"`` — the active profile's ``rule_ids``
+       referenced a ``rule_id`` not loaded into the engine. Computed
+       once at the start of ``LintEngine.run`` (set difference of
+       ``profile.rule_ids`` against the engine's loaded
+       ``rule_id``s); produces exactly one warning per missing
+       ``rule_id``. Carries no exception or descriptor context;
+       ``exception_type`` and ``descriptor_path`` are ``None``.
+
+    **Field-population per category** (enforced by tests, not by the
+    type system):
+
+    +-------------------+--------------------+--------------------+
+    | Field             | ``rule_exception`` | ``unloaded_rule``  |
+    +===================+====================+====================+
+    | ``category``      | ``"rule_exception"`` | ``"unloaded_rule"`` |
+    | ``rule_id``       | populated          | populated          |
+    | ``message``       | ``str(exc)``       | human-readable     |
+    | ``exception_type``| exception class name | ``None``         |
+    | ``descriptor_path``| see table below   | ``None``           |
+    +-------------------+--------------------+--------------------+
+
+    For ``category="rule_exception"``, ``descriptor_path`` mirrors
+    D1's ``LintLocation.__str__`` shapes per ``ElementKind``:
+
+    +--------------+---------------------------------------+
+    | ElementKind  | ``descriptor_path`` format            |
+    +==============+=======================================+
+    | FILE         | ``"file.proto"``                      |
+    | SERVICE      | ``"file.proto:full.Service"``         |
+    | METHOD       | ``"file.proto:full.Service/method"``  |
+    | ENUM         | ``"file.proto:full.Enum"``            |
+    | ENUM_VALUE   | ``"file.proto:full.Enum.VALUE"``      |
+    | MESSAGE      | ``"file.proto:full.Message"``         |
+    | FIELD        | ``"file.proto:full.Message.field"``   |
+    | ONEOF        | ``"file.proto:full.Message#oneof"``   |
+    +--------------+---------------------------------------+
+
+    **mypy-strict narrowing pattern.** mypy ``--strict`` does not
+    narrow ``Optional`` fields by Literal discriminator within a
+    single dataclass. Downstream consumers (D4 formatters) match D1's
+    ``LintCompileDiagnostic`` precedent: branch on ``category``,
+    then ``assert w.descriptor_path is not None`` (or use ``cast``)
+    inside the ``"rule_exception"`` branch before reading. This is
+    the same pattern ``LintCompileDiagnostic`` requires for its own
+    Optional fields (``command``, ``exit_code``, ``stderr``,
+    ``exception_type``); D2 introduces no new convention.
+
+    Attributes:
+        category: Discriminator for the two event shapes.
+        rule_id: The id of the rule the warning is about. For
+            ``"unloaded_rule"`` this is the missing id; for
+            ``"rule_exception"`` this is the rule that raised.
+        message: Human-readable description. For
+            ``"rule_exception"`` typically ``str(exc)``; for
+            ``"unloaded_rule"`` an explanation that the id was named
+            in a profile but not loaded.
+        exception_type: ``__name__`` of the caught exception class
+            for ``"rule_exception"``; ``None`` for ``"unloaded_rule"``.
+        descriptor_path: Stable string locating the descriptor at
+            which a ``"rule_exception"`` was firing (per the table
+            above); ``None`` for ``"unloaded_rule"``.
+    """
+
+    category: Literal["rule_exception", "unloaded_rule"]
+    rule_id: str
+    message: str
+    exception_type: str | None = None
+    descriptor_path: str | None = None
+
+
+@dataclass(frozen=True)
 class LintReport:
     """Top-level result bundle for a lint pass.
 
@@ -366,12 +452,27 @@ class LintReport:
             to ``()``.
         rules_run: Tuple of rule_ids that actually executed (after
             profile filtering). Defaults to ``()``.
+        runtime_warnings: Tuple of engine-stage warnings raised during
+            the run. Two categories share the type:
+            ``"rule_exception"`` (a registered rule callable raised
+            an exception caught by the engine's narrow catch tuple)
+            and ``"unloaded_rule"`` (the active profile referenced a
+            ``rule_id`` not loaded into the engine). Defaults to
+            ``()``. See :class:`LintRuntimeWarning` for field-
+            population rules per category.
+        filtered_count: Count of findings dropped at emit time
+            because their effective severity ranked below the active
+            profile's ``min_severity``. Lets D3+ tooling render
+            ``--statistics`` / ``--max-warnings`` flows without
+            re-walking at a lower threshold. Defaults to ``0``.
     """
 
     findings: tuple[LintFinding, ...] = ()
     diagnostics: tuple[LintCompileDiagnostic, ...] = ()
     profiles_run: tuple[str, ...] = ()
     rules_run: tuple[str, ...] = ()
+    runtime_warnings: tuple[LintRuntimeWarning, ...] = ()
+    filtered_count: int = 0
 
     def __post_init__(self) -> None:
         """Snapshot caller-supplied sequences into immutable tuples.
@@ -385,6 +486,9 @@ class LintReport:
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
         object.__setattr__(self, "profiles_run", tuple(self.profiles_run))
         object.__setattr__(self, "rules_run", tuple(self.rules_run))
+        object.__setattr__(
+            self, "runtime_warnings", tuple(self.runtime_warnings),
+        )
 
 
 @dataclass(frozen=True)
@@ -494,6 +598,60 @@ class LintProfile:
             min_severity=merged_min_severity,
             rule_severity_overrides=merged_overrides,
         )
+
+    @classmethod
+    def from_pack(
+        cls, module: ModuleType, profile_name: str,
+    ) -> LintProfile:
+        """Derive a profile from a rule pack module's declared membership.
+
+        Walks ``module.RULES`` (a tuple of ``@lint_rule``-decorated
+        functions, by convention echoing compat's
+        ``schema/checker.py:217-235`` pattern), reads each function's
+        ``_lint_spec`` attribute, and selects the rule_ids whose
+        ``LintRuleSpec.profiles`` tuple includes ``profile_name``.
+
+        This makes ``LintRuleSpec.profiles`` load-bearing for end
+        users: rule pack authors annotate profile membership at the
+        rule (``@lint_rule(..., profiles=("default",))``), and
+        callers derive the profile via this classmethod. D5's
+        ``[tool.protokit.lint] profile = "default"`` resolves
+        trivially via this method.
+
+        Returns an empty-rule_ids profile when the module has no
+        ``RULES`` attribute, when ``RULES`` is empty, or when no rule
+        in the pack declares ``profile_name`` — matching the explicit
+        empty-rule_ids contract (the engine then runs zero rules per
+        the locked R12).
+
+        Args:
+            module: An imported module exposing ``RULES`` (a tuple of
+                ``@lint_rule``-decorated functions). Falls back to
+                ``()`` when the attribute is missing.
+            profile_name: The profile name to filter by. Functions
+                whose ``_lint_spec.profiles`` includes this string
+                are selected; others are skipped.
+
+        Returns:
+            A new ``LintProfile`` with ``name=profile_name`` and
+            ``rule_ids`` containing the matching rule_ids. The
+            profile's ``min_severity`` and ``rule_severity_overrides``
+            use their dataclass defaults; callers needing different
+            policy should construct ``LintProfile`` directly or
+            compose with another profile.
+
+        Raises:
+            AttributeError: If a function in ``module.RULES`` lacks a
+                ``_lint_spec`` attribute (i.e., wasn't decorated with
+                ``@lint_rule``). Surfaces author errors immediately
+                rather than silently skipping.
+        """
+        rule_ids: list[str] = []
+        for fn in getattr(module, "RULES", ()):
+            spec = fn._lint_spec
+            if profile_name in spec.profiles:
+                rule_ids.append(spec.rule_id)
+        return cls(name=profile_name, rule_ids=frozenset(rule_ids))
 
 
 @dataclass(frozen=True)
@@ -956,3 +1114,37 @@ class DuplicateRuleError(Exception):
             f"{first_fn.__module__}.{first_fn.__qualname__}; refusing to "
             f"override with {second_fn.__module__}.{second_fn.__qualname__}"
         )
+
+
+class LintRuleError(Exception):
+    """Explicit fail-soft signal a rule callable can raise.
+
+    The ``LintEngine``'s rule-callable boundary catches a narrow set
+    of exceptions and converts them to
+    ``LintRuntimeWarning(category="rule_exception")`` while continuing
+    the walk. ``LintRuleError`` is the documented signal a rule
+    author uses to say "I detected a condition I want to surface as
+    a warning, not as a finding, and I want the rest of the walk to
+    proceed."
+
+    The catch tuple is documented in the engine's source; at minimum
+    it includes ``(SystemExit, ValueError, TypeError, KeyError,
+    AttributeError, LookupError, LintRuleError)``.
+
+    **Escape hatch for "abort the run".** Rule authors who want to
+    halt the entire lint pass (e.g., catastrophic schema corruption
+    detected; sentinel value indicating downstream rules cannot
+    proceed) should raise an ``Exception`` subclass NOT in the
+    engine's catch tuple — ``RuntimeError`` is the canonical pick.
+    Such exceptions propagate uncaught, tearing down
+    ``LintEngine.run`` and surfacing to the caller. Note that
+    ``sys.exit()`` (and ``pytest.exit()``, which subclasses
+    ``SystemExit``) are caught by the engine and converted to
+    runtime warnings — a deliberate divergence from D1's R16 to
+    prevent rules from silently terminating the calling process. See
+    the D2 plan's Key Technical Decisions for the full rationale.
+
+    No fields beyond ``Exception``'s; the engine reads
+    ``str(exc)`` into ``LintRuntimeWarning.message`` and
+    ``exc.__class__.__name__`` into ``exception_type``.
+    """
