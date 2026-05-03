@@ -1,0 +1,61 @@
+// Fixture proto exercising all 8 ElementKinds for D2 walk-coverage tests.
+//
+// Per ElementKind, this file declares:
+//   FILE       — this file itself (1)
+//   SERVICE    — DemoService (1)
+//   METHOD     — DemoService.GetDemo (1)
+//   ENUM       — DemoEnum (top-level) + Outer.NestedEnum (nested) = 2
+//   ENUM_VALUE — DEMO_UNSPECIFIED, DEMO_FIRST in DemoEnum +
+//                NESTED_UNSPECIFIED, NESTED_INNER in NestedEnum = 4
+//   MESSAGE    — Outer (top-level) + Outer.Nested (nested) +
+//                DemoRequest + DemoResponse = 4
+//   FIELD      — Outer.demo_field, Outer.choice_a, Outer.choice_b
+//                (oneof members), Outer.Nested.nested_field,
+//                DemoRequest.req_field, DemoResponse.resp_field = 6
+//                (oneof members count as fields in descriptor.fields)
+//   ONEOF      — Outer.outer_choice (1)
+//
+// Note: oneof fields participate in BOTH the oneof's member list AND
+// the parent message's `fields` collection. The walk-coverage test
+// counts fields via `descriptor.fields` (which includes oneof
+// members) and oneofs via `descriptor.oneofs`. Synthetic map-entry
+// types are not introduced here to keep the counts predictable.
+
+syntax = "proto3";
+
+package allkinds;
+
+enum DemoEnum {
+  DEMO_UNSPECIFIED = 0;
+  DEMO_FIRST = 1;
+}
+
+message DemoRequest {
+  string req_field = 1;
+}
+
+message DemoResponse {
+  string resp_field = 1;
+}
+
+message Outer {
+  string demo_field = 1;
+
+  oneof outer_choice {
+    string choice_a = 2;
+    int32 choice_b = 3;
+  }
+
+  enum NestedEnum {
+    NESTED_UNSPECIFIED = 0;
+    NESTED_INNER = 1;
+  }
+
+  message Nested {
+    string nested_field = 1;
+  }
+}
+
+service DemoService {
+  rpc GetDemo(DemoRequest) returns (DemoResponse);
+}
