@@ -27,6 +27,7 @@ from protokit.formatters._registry import (
     FormatterKind,
     _register_builtin,
 )
+from protokit.schema.compile import LintCompileDiagnostic
 from protokit.schema.lint.model import LintFinding, LintReport, LintRuleSpec
 
 
@@ -58,6 +59,15 @@ def _render_message(finding: LintFinding, spec: LintRuleSpec | None) -> str:
     if not template_str:
         return f"{finding.rule_id}"
 
+    # TODO(D6): when user `--rule-pack`s ship, sandbox this format()
+    # call. ``str.format(**params)`` lets a template author specify
+    # large width specifiers (``{name:>1000000}`` produces a 1M-char
+    # string — memory DoS) and traverse attributes
+    # (``{name.__class__.__bases__}`` walks Python's type hierarchy).
+    # For D3-D5 this is internal-pack-only (we control the templates),
+    # so the threat surface is bounded. D6's brainstorm should design
+    # the holistic plugin-security model alongside the `--rule-pack`
+    # flag's user contract.
     try:
         return template_str.format(**finding.params)
     except (KeyError, IndexError, ValueError, AttributeError, TypeError):
@@ -92,7 +102,7 @@ def _render_finding_line(finding: LintFinding, spec: LintRuleSpec | None) -> str
     return f"{severity} {location} [{finding.rule_id}] {message}"
 
 
-def _render_human(report: LintReport, _ctx: FormatterContext) -> str:
+def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     """Render a LintReport as human-readable plaintext.
 
     Output shape: one finding per line in walk-emission order.
@@ -118,6 +128,12 @@ def _render_human(report: LintReport, _ctx: FormatterContext) -> str:
     counts in their structured payloads can reuse the same
     ``LintReport`` input without footer-stripping logic.
 
+    The function is named ``lint_human`` (not ``_render_human``)
+    to match the sibling-pattern parity convention established by
+    ``_builtin_diff.diff_human`` / ``_builtin_compat.compat_human`` /
+    ``_builtin_history.history_human`` / ``_builtin_bisect.bisect_human``
+    — see ``docs/solutions/best-practices/audit-wire-format-before-claiming-sibling-parity-2026-05-03.md``.
+
     Args:
         report: The lint pass result to render.
         _ctx: Reserved for future per-CLI-flag rendering. Currently
@@ -128,11 +144,14 @@ def _render_human(report: LintReport, _ctx: FormatterContext) -> str:
 
     # Compile diagnostics first (when source-mode compile produced
     # info / warning / error notes). Findings come after so they're
-    # the focus when both are present.
+    # the focus when both are present. The loop variable's static
+    # type is ``LintCompileDiagnostic`` (not ``Any``-via-getattr) so
+    # mypy narrows correctly and any future shape change to the type
+    # surfaces as a static error rather than silently masking via
+    # defensive fallbacks.
+    diag: LintCompileDiagnostic
     for diag in report.diagnostics:
-        category = getattr(diag, "category", "diagnostic")
-        message = getattr(diag, "message", str(diag))
-        lines.append(f"diagnostic[{category}]: {message}")
+        lines.append(f"diagnostic[{diag.category}]: {diag.message}")
 
     for finding in report.findings:
         spec = report.specs.get(finding.rule_id)
@@ -143,10 +162,4 @@ def _render_human(report: LintReport, _ctx: FormatterContext) -> str:
 
 # Idempotent registration at module import. The lint subcommand
 # module imports this module at its top — see module docstring.
-_register_builtin(name="human", fn=_render_human, kind=FormatterKind.LINT_REPORT)
-
-
-# Re-export sparingly — these are the only names CLI callers need.
-# Helper functions stay private (underscore-prefixed); _render_human
-# is what the registry holds.
-__all__ = ["_render_human"]
+_register_builtin(name="human", fn=lint_human, kind=FormatterKind.LINT_REPORT)

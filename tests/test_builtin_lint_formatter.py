@@ -1,6 +1,6 @@
 """Tests for ``protokit.formatters._builtin_lint`` — D3 human formatter.
 
-Exercises ``_render_human`` against synthetic ``LintReport``
+Exercises ``lint_human`` against synthetic ``LintReport``
 inputs. Covers happy paths (single + multi finding), edge cases
 (empty report, missing spec, multi-kind template), and
 defensive paths (malformed template, missing param key).
@@ -24,7 +24,7 @@ from protokit.formatters import (
     clear_user_formatters,
     get_formatter,
 )
-from protokit.formatters._builtin_lint import _render_human
+from protokit.formatters._builtin_lint import lint_human
 from protokit.schema.lint.model import (
     ElementKind,
     FieldLocation,
@@ -102,12 +102,12 @@ class TestRegistryRegistration:
         # callable on success; raises KeyError on miss.
         fn = get_formatter("human", FormatterKind.LINT_REPORT)
         # Verify it's the same callable we exported
-        assert fn is _render_human
+        assert fn is lint_human
 
     def test_re_import_is_idempotent(self) -> None:
         # _register_builtin is idempotent under reload; reloading
         # _builtin_lint should NOT raise FormatterError. After reload,
-        # the registry holds the freshly-imported _render_human (not
+        # the registry holds the freshly-imported lint_human (not
         # the stale module-level reference from this test file).
         import sys
 
@@ -119,9 +119,9 @@ class TestRegistryRegistration:
         # Identity check: the registered fn is the post-reload function
         # in sys.modules, NOT the stale top-level import in this test
         # module's namespace.
-        post_reload_fn = sys.modules[bl.__name__]._render_human
+        post_reload_fn = sys.modules[bl.__name__].lint_human
         assert fn is post_reload_fn, (
-            "After reload, registry should hold the new _render_human "
+            "After reload, registry should hold the new lint_human "
             "from sys.modules, not a stale reference"
         )
 
@@ -130,55 +130,14 @@ class TestRenderHumanEmpty:
     def test_empty_report_renders_empty_string(self) -> None:
         report = LintReport()
         ctx = FormatterContext(subcommand="lint")
-        assert _render_human(report, ctx) == ""
-
-    def test_report_with_diagnostics_only(self) -> None:
-        # A LintCompileDiagnostic-shaped duck — _render_human reads
-        # category and message via getattr so any object with those
-        # attributes works.
-        class _FakeDiag:
-            category = "protoc_subprocess"
-            message = "protoc returned 1"
-
-        report = LintReport(diagnostics=(_FakeDiag(),))
-        ctx = FormatterContext(subcommand="lint")
-        out = _render_human(report, ctx)
-        assert "diagnostic[protoc_subprocess]" in out
-        assert "protoc returned 1" in out
-
-    def test_diagnostic_without_category_attribute_falls_back(self) -> None:
-        # Defensive getattr fallback: if a diag-shaped object lacks
-        # ``category`` (e.g., a future variant or a wrapper), the
-        # formatter renders with the "diagnostic" placeholder rather
-        # than raising AttributeError.
-        class _PartialDiag:
-            message = "no category attr"
-
-        report = LintReport(diagnostics=(_PartialDiag(),))
-        out = _render_human(report, FormatterContext(subcommand="lint"))
-        assert "diagnostic[diagnostic]" in out
-        assert "no category attr" in out
-
-    def test_diagnostic_without_message_attribute_falls_back(self) -> None:
-        # Defensive getattr fallback: if a diag-shaped object lacks
-        # ``message`` (e.g., a stub object), the formatter falls back
-        # to ``str(diag)`` rather than raising AttributeError.
-        class _NoMessageDiag:
-            category = "weird"
-
-            def __str__(self) -> str:
-                return "stringified-form"
-
-        report = LintReport(diagnostics=(_NoMessageDiag(),))
-        out = _render_human(report, FormatterContext(subcommand="lint"))
-        assert "diagnostic[weird]" in out
-        assert "stringified-form" in out
+        assert lint_human(report, ctx) == ""
 
     def test_real_lint_compile_diagnostic_renders(self) -> None:
         # Pin the contract against the actual LintCompileDiagnostic
-        # type — the duck-typed _FakeDiag tests pass even if the real
-        # class adds __slots__ / __getattr__ / shape changes. This
-        # locks the formatter against drift in D2's locked type.
+        # type. lint_human accesses .category and .message directly
+        # (no getattr fallbacks) — any future shape change to D2's
+        # locked type surfaces as a static / runtime error rather
+        # than being silently masked by defensive duck-typing.
         from protokit.schema.compile import LintCompileDiagnostic
 
         diag = LintCompileDiagnostic(
@@ -191,7 +150,7 @@ class TestRenderHumanEmpty:
             exception_type=None,
         )
         report = LintReport(diagnostics=(diag,))
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "diagnostic[protoc_subprocess]" in out
         assert "protoc exited 1" in out
 
@@ -203,18 +162,21 @@ class TestDiagnosticOrdering:
         # ordering as a stable contract. A swapped for-loop refactor
         # would not be caught by isolated diagnostic-only or
         # findings-only tests.
-        class _Diag:
-            category = "protoc_subprocess"
-            message = "protoc warning"
+        from protokit.schema.compile import LintCompileDiagnostic
 
+        diag = LintCompileDiagnostic(
+            category="protoc_subprocess",
+            level="warning",
+            message="protoc warning",
+        )
         spec = _make_spec()
         finding = _make_finding(name="BadField")
         report = LintReport(
-            diagnostics=(_Diag(),),
+            diagnostics=(diag,),
             findings=(finding,),
             specs={"naming/snake-case-fields": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         diag_pos = out.index("diagnostic[")
         finding_pos = out.index("WARNING ")
         assert diag_pos < finding_pos, (
@@ -231,7 +193,7 @@ class TestRenderHumanFindings:
             findings=(finding,),
             specs={"naming/snake-case-fields": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
 
         assert "WARNING" in out
         assert "acme/user.proto" in out
@@ -248,7 +210,7 @@ class TestRenderHumanFindings:
             findings=(f1, f2),
             specs={"naming/snake-case-fields": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         lines = out.splitlines()
         assert len(lines) == 2
         assert "BadField" in lines[0]
@@ -267,7 +229,7 @@ class TestRenderHumanFindings:
             findings=(finding,),
             specs={"naming/snake-case-fields": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert out.startswith("ERROR ")
 
     def test_finding_without_spec_falls_back_to_rule_id(self) -> None:
@@ -277,7 +239,7 @@ class TestRenderHumanFindings:
         # NOT crash; it should render the rule_id as the message.
         finding = _make_finding(name="BadField")
         report = LintReport(findings=(finding,), specs={})
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         # No template available, so message falls back to rule_id
         assert "naming/snake-case-fields" in out
         # Severity + location still render
@@ -308,7 +270,7 @@ class TestRenderMessageEdgeCases:
             findings=(f_a, f_b),
             specs={"multi/kind-rule": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "Found kind-a violation: X" in out
         assert "Found kind-b violation: Y" in out
 
@@ -329,7 +291,7 @@ class TestRenderMessageEdgeCases:
             findings=(finding,),
             specs={"multi/kind-rule": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         # The rule_id always appears in the [rule_id] segment, so
         # the meaningful assertion is on the message body: the
         # declared-kind template's interpolated string ("Found X")
@@ -371,7 +333,7 @@ class TestRenderMessageEdgeCases:
             specs={"bad/template": spec},
         )
         # Should not raise; falls back gracefully
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "bad/template" in out
 
     def test_template_positional_placeholder_does_not_crash(self) -> None:
@@ -394,7 +356,7 @@ class TestRenderMessageEdgeCases:
             findings=(finding,),
             specs={"bad/positional": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "bad/positional" in out
         # Template was NOT interpolated (would have raised IndexError)
         assert "Positional value placeholder" not in out
@@ -419,7 +381,7 @@ class TestRenderMessageEdgeCases:
             findings=(finding,),
             specs={"bad/spec": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "bad/spec" in out
 
     def test_template_attribute_traversal_does_not_crash(self) -> None:
@@ -444,7 +406,7 @@ class TestRenderMessageEdgeCases:
             specs={"bad/attribute": spec},
         )
         # Should not raise; the AttributeError is in the catch tuple
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "bad/attribute" in out
 
     def test_template_subscript_type_mismatch_does_not_crash(self) -> None:
@@ -468,7 +430,7 @@ class TestRenderMessageEdgeCases:
             specs={"bad/subscript": spec},
         )
         # Should not raise; the TypeError is in the catch tuple
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "bad/subscript" in out
 
     def test_empty_template_falls_back_to_rule_id(self) -> None:
@@ -478,7 +440,7 @@ class TestRenderMessageEdgeCases:
             findings=(finding,),
             specs={"empty/template": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert "empty/template" in out
 
 
@@ -499,7 +461,7 @@ class TestRenderHumanLocationVariants:
             findings=(finding,),
             specs={"msg/rule": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         # Location stringification per LintLocation.__str__
         assert "x.proto:X.Y" in out
 
@@ -519,7 +481,7 @@ class TestRenderHumanLocationVariants:
             findings=(finding,),
             specs={"file/rule": spec},
         )
-        out = _render_human(report, FormatterContext(subcommand="lint"))
+        out = lint_human(report, FormatterContext(subcommand="lint"))
         assert out.startswith("INFO ")
         assert "x.proto" in out
         assert "File-level violation" in out

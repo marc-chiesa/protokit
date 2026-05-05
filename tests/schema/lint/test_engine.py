@@ -396,7 +396,31 @@ class TestRunPopulatesSpecs:
                 min_severity=LintSeverity.INFO,
             ),
         )
-        assert report.specs == {}
+        assert dict(report.specs) == {}
+
+    def test_specs_is_immutable_post_construction(
+        self, tmp_path: Path,
+    ) -> None:
+        # ``LintReport.specs`` wraps the snapshot in ``MappingProxyType``
+        # (``__post_init__``) so post-construction mutation raises
+        # TypeError. Matches the immutability guarantee of sibling
+        # tuple fields (findings, runtime_warnings).
+        result = _compile(tmp_path, {"types.proto": _TWO_MSG_PROTO})
+        rule = _decorated_field_rule("pack/rule")
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack("test_pack", (rule,)))
+        report = engine.run(
+            result,
+            profile=LintProfile(
+                name="x",
+                rule_ids=frozenset({"pack/rule"}),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+        with pytest.raises(TypeError):
+            report.specs["new_rule"] = None  # type: ignore[index]
+        with pytest.raises(TypeError):
+            del report.specs["pack/rule"]  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

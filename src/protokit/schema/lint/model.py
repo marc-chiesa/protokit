@@ -45,10 +45,10 @@ Types defined here, in declaration order:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 from google.protobuf import descriptor as proto_descriptor
@@ -475,11 +475,15 @@ class LintReport:
             without re-walking the engine's loaded-rule registry —
             critical for D3's ``human`` formatter and D4's machine
             formatters. Engine passes its ``self._loaded_specs`` map;
-            ``__post_init__`` snapshots via ``dict(...)`` so post-
-            construction mutation of the engine's registry does NOT
-            affect the report. Defaults to an empty dict for backward
-            compatibility with D2 callers that constructed
-            ``LintReport`` positionally.
+            ``__post_init__`` snapshots via ``dict(...)`` then wraps
+            the snapshot in ``types.MappingProxyType`` so the result
+            is **immutable post-construction** — `report.specs[k] = v`
+            raises ``TypeError``. This matches the immutability
+            guarantee of the sibling tuple fields (``findings``,
+            ``runtime_warnings``) so all consumers of the frozen
+            ``LintReport`` see consistent semantics. Defaults to an
+            empty mapping for backward compatibility with D2 callers
+            that constructed ``LintReport`` positionally.
 
             **Note**: this is the loaded-rule registry (every rule
             registered with the engine), NOT the active subset. The
@@ -496,15 +500,21 @@ class LintReport:
     rules_run: tuple[str, ...] = ()
     runtime_warnings: tuple[LintRuntimeWarning, ...] = ()
     filtered_count: int = 0
-    specs: dict[str, LintRuleSpec] = field(default_factory=dict)
+    specs: Mapping[str, LintRuleSpec] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Snapshot caller-supplied sequences into immutable tuples.
+        """Snapshot caller-supplied sequences into immutable views.
 
         The dataclass is ``frozen=True``, but a caller can still pass
         a ``list`` and mutate it later to alter what looks like an
         immutable report. Mirrors
         ``schema/profiles.py:CompatibilityPolicy.__post_init__``.
+
+        For ``specs``, snapshot via ``dict(...)`` then wrap in
+        ``MappingProxyType`` to extend the immutability guarantee
+        across mutable mappings (``findings``/``runtime_warnings``
+        are already tuple-immutable; ``specs`` would otherwise allow
+        ``report.specs[k] = v`` post-construction).
         """
         object.__setattr__(self, "findings", tuple(self.findings))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
@@ -513,7 +523,9 @@ class LintReport:
         object.__setattr__(
             self, "runtime_warnings", tuple(self.runtime_warnings),
         )
-        object.__setattr__(self, "specs", dict(self.specs))
+        object.__setattr__(
+            self, "specs", MappingProxyType(dict(self.specs)),
+        )
 
 
 @dataclass(frozen=True)
