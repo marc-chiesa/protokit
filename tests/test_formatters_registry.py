@@ -37,9 +37,14 @@ def _isolate_registry() -> None:
 
 
 class TestFormatterKind:
-    def test_all_four_kinds_present(self) -> None:
+    def test_all_kinds_present(self) -> None:
+        # D3 added LINT_REPORT for the protokit lint subcommand.
+        # Adding new kinds requires updating this assertion AND
+        # adding a corresponding entry to the FormatterKind enum
+        # docstring's Members list.
         assert {k.value for k in FormatterKind} == {
             "DIFF", "COMPAT", "COMPAT_HISTORY", "COMPAT_BISECT",
+            "LINT_REPORT",
         }
 
     def test_is_plain_enum_not_intenum(self) -> None:
@@ -158,9 +163,27 @@ class TestBuiltinReservation:
 
 class TestListFormatters:
     def test_returns_built_ins_when_no_user_formatters(self) -> None:
-        # Built-ins are registered at protokit.formatters import.
-        # Each kind ships at least human and json.
-        for kind in FormatterKind:
+        # Built-ins for DIFF / COMPAT / COMPAT_HISTORY / COMPAT_BISECT
+        # are registered at ``protokit.formatters`` import (eager-load
+        # tuple at ``__init__.py:60-71``). Each ships at least
+        # ``human`` and ``json`` (Phase 1.5b).
+        #
+        # ``LINT_REPORT`` is intentionally NOT in the eager-load tuple
+        # (cold-import preservation per D1's P0 finding); D3 ships
+        # only ``human`` and registers it via ``_builtin_lint`` which
+        # the lint subcommand module imports at its top. This test
+        # only verifies the eagerly-loaded kinds — ``LINT_REPORT``
+        # registration is covered in
+        # ``tests/test_builtin_lint_formatter.py`` and the cold-import
+        # contract is verified by the CI YAML smoke step extended in
+        # D3 Unit 5.
+        eagerly_loaded_kinds = (
+            FormatterKind.DIFF,
+            FormatterKind.COMPAT,
+            FormatterKind.COMPAT_HISTORY,
+            FormatterKind.COMPAT_BISECT,
+        )
+        for kind in eagerly_loaded_kinds:
             names = list_formatters(kind)
             assert "human" in names, f"missing human for {kind.value}"
             assert "json" in names, f"missing json for {kind.value}"

@@ -469,6 +469,16 @@ class LintReport:
             profile's ``min_severity``. Lets D3+ tooling render
             ``--statistics`` / ``--max-warnings`` flows without
             re-walking at a lower threshold. Defaults to ``0``.
+        specs: Snapshot of ``rule_id → LintRuleSpec`` for every rule
+            loaded into the engine at run time. Lets formatters
+            render messages from ``LintRuleSpec.message_template``
+            without re-walking the engine's loaded-rule registry —
+            critical for D3's ``human`` formatter and D4's machine
+            formatters. Engine populates this from
+            ``self._loaded_specs.copy()`` at ``run()`` return time.
+            Defaults to an empty dict for backward compatibility
+            with D2 callers that constructed ``LintReport``
+            positionally.
     """
 
     findings: tuple[LintFinding, ...] = ()
@@ -477,6 +487,7 @@ class LintReport:
     rules_run: tuple[str, ...] = ()
     runtime_warnings: tuple[LintRuntimeWarning, ...] = ()
     filtered_count: int = 0
+    specs: dict[str, LintRuleSpec] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Snapshot caller-supplied sequences into immutable tuples.
@@ -493,6 +504,7 @@ class LintReport:
         object.__setattr__(
             self, "runtime_warnings", tuple(self.runtime_warnings),
         )
+        object.__setattr__(self, "specs", dict(self.specs))
 
 
 @dataclass(frozen=True)

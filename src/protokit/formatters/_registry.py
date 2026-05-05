@@ -37,6 +37,8 @@ class FormatterKind(Enum):
         COMPAT_BISECT: ``protokit.schema.BisectReport`` —
             range-bisect result produced by
             ``protokit compat bisect``.
+        LINT_REPORT: ``protokit.schema.lint.LintReport`` —
+            lint pass output produced by ``protokit lint``.
 
     Naming convention for future kinds: noun form (e.g.
     ``LINT_REPORT``, ``SCHEMA_DIFF``) for consistency with the
@@ -49,6 +51,7 @@ class FormatterKind(Enum):
     COMPAT = "COMPAT"
     COMPAT_HISTORY = "COMPAT_HISTORY"
     COMPAT_BISECT = "COMPAT_BISECT"
+    LINT_REPORT = "LINT_REPORT"
 
 
 @dataclass(frozen=True)
