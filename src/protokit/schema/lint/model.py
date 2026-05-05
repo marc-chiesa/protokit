@@ -474,11 +474,20 @@ class LintReport:
             render messages from ``LintRuleSpec.message_template``
             without re-walking the engine's loaded-rule registry —
             critical for D3's ``human`` formatter and D4's machine
-            formatters. Engine populates this from
-            ``self._loaded_specs.copy()`` at ``run()`` return time.
-            Defaults to an empty dict for backward compatibility
-            with D2 callers that constructed ``LintReport``
-            positionally.
+            formatters. Engine passes its ``self._loaded_specs`` map;
+            ``__post_init__`` snapshots via ``dict(...)`` so post-
+            construction mutation of the engine's registry does NOT
+            affect the report. Defaults to an empty dict for backward
+            compatibility with D2 callers that constructed
+            ``LintReport`` positionally.
+
+            **Note**: this is the loaded-rule registry (every rule
+            registered with the engine), NOT the active subset. The
+            active subset is in ``rules_run`` (filtered by
+            ``profile.rule_ids``). A formatter rendering a finding
+            looks up by ``finding.rule_id`` — the rule was active by
+            definition (it produced a finding), so the divergence is
+            harmless for rendering.
     """
 
     findings: tuple[LintFinding, ...] = ()

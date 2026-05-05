@@ -67,8 +67,8 @@ class FormatterContext:
     Attributes:
         subcommand: Human-readable subcommand identifier
             (``"diff"``, ``"compat-check"``, ``"compat-history"``,
-            ``"compat-bisect"``, ``"compat-ci"``). Used for suite
-            naming and operator identification.
+            ``"compat-bisect"``, ``"compat-ci"``, ``"lint"``). Used
+            for suite naming and operator identification.
         target_type: Fully-qualified protobuf message type FQN
             when the user passed ``--type NAME`` and both sides
             agree. ``None`` for cross-type comparisons (use

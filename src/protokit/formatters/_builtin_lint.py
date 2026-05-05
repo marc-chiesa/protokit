@@ -22,8 +22,6 @@ which would raise ``FormatterError`` on the second import.
 
 from __future__ import annotations
 
-from typing import Any
-
 from protokit.formatters._registry import (
     FormatterContext,
     FormatterKind,
@@ -62,8 +60,17 @@ def _render_message(finding: LintFinding, spec: LintRuleSpec | None) -> str:
 
     try:
         return template_str.format(**finding.params)
-    except (KeyError, IndexError, ValueError):
-        # Defensive: missing param key, malformed template, etc.
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+        # Defensive: every exception ``str.format`` can raise from a
+        # rule-author template + caller-supplied params:
+        #   - ``KeyError``: missing param key (``"{missing}"``).
+        #   - ``IndexError``: positional placeholder out of range
+        #     (``"{0}"`` with empty params).
+        #   - ``ValueError``: malformed format spec (``"{x:invalid}"``).
+        #   - ``AttributeError``: dotted access on a value lacking
+        #     the attribute (``"{name.bad}"`` against a string).
+        #   - ``TypeError``: format-protocol mismatch (``"{name[0]}"``
+        #     against an int) or ``__format__`` returning non-str.
         # Surface the rule_id + raw params rather than crashing the
         # whole render. Rule-author bugs become visible findings,
         # not lint-tool crashes.
@@ -85,7 +92,7 @@ def _render_finding_line(finding: LintFinding, spec: LintRuleSpec | None) -> str
     return f"{severity} {location} [{finding.rule_id}] {message}"
 
 
-def _render_human(report: LintReport, ctx: FormatterContext) -> str:
+def _render_human(report: LintReport, _ctx: FormatterContext) -> str:
     """Render a LintReport as human-readable plaintext.
 
     Output shape: one finding per line in walk-emission order.
@@ -110,9 +117,13 @@ def _render_human(report: LintReport, ctx: FormatterContext) -> str:
     so that machine formats (D4 json/junit/sarif) which embed
     counts in their structured payloads can reuse the same
     ``LintReport`` input without footer-stripping logic.
-    """
-    del ctx  # currently unused; reserved for future per-CLI-flag rendering
 
+    Args:
+        report: The lint pass result to render.
+        _ctx: Reserved for future per-CLI-flag rendering. Currently
+            unused; underscore prefix marks the parameter as
+            intentionally ignored without forcing a ``del``.
+    """
     lines: list[str] = []
 
     # Compile diagnostics first (when source-mode compile produced

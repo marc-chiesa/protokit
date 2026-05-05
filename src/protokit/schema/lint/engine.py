@@ -354,11 +354,14 @@ class LintEngine:
                     continue
                 self._dispatch_file(fd, group_by_kind, profile)
 
-            # Step 7: build report. Snapshot loaded specs into the
+            # Step 7: build report. Pass loaded specs into the
             # report so formatters can render messages from
             # LintRuleSpec.message_template without reaching back into
             # engine internals (critical for D3's human formatter and
-            # D4's machine formatters).
+            # D4's machine formatters). LintReport.__post_init__
+            # snapshots the dict, so we don't need a defensive
+            # dict(...) here — same convention findings/runtime_warnings
+            # use (engine passes raw sequence; post-init re-tuples).
             return LintReport(
                 findings=tuple(self._findings),
                 diagnostics=compile_diagnostics,
@@ -366,7 +369,7 @@ class LintEngine:
                 rules_run=tuple(spec.rule_id for spec in active_specs),
                 runtime_warnings=tuple(self._runtime_warnings),
                 filtered_count=self._filtered_count,
-                specs=dict(self._loaded_specs),
+                specs=self._loaded_specs,
             )
         finally:
             # Clear _current_profile so the reentrancy guard works for the

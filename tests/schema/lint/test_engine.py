@@ -297,6 +297,109 @@ class TestRunEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# Run: LintReport.specs population (D3 substrate for formatter spec access)
+# ---------------------------------------------------------------------------
+
+
+class TestRunPopulatesSpecs:
+    """Engine populates ``LintReport.specs`` from ``self._loaded_specs``.
+
+    The field exists so formatters can render messages from
+    ``LintRuleSpec.message_template`` without reaching back into
+    engine internals — critical for D3's human formatter and D4's
+    machine formatters.
+    """
+
+    def test_run_populates_specs_with_every_loaded_spec(
+        self, tmp_path: Path,
+    ) -> None:
+        result = _compile(tmp_path, {"types.proto": _TWO_MSG_PROTO})
+        rule_a = _decorated_field_rule("pack/rule-a")
+        rule_b = _decorated_field_rule("pack/rule-b")
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack("test_pack", (rule_a, rule_b)))
+        report = engine.run(
+            result,
+            profile=LintProfile(
+                name="x",
+                rule_ids=frozenset({"pack/rule-a", "pack/rule-b"}),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+        # Every loaded rule is in specs, keyed by rule_id
+        assert set(report.specs.keys()) == {"pack/rule-a", "pack/rule-b"}
+        # Each value is the actual LintRuleSpec
+        assert report.specs["pack/rule-a"].rule_id == "pack/rule-a"
+        assert report.specs["pack/rule-b"].rule_id == "pack/rule-b"
+
+    def test_specs_contains_inactive_rules_too(
+        self, tmp_path: Path,
+    ) -> None:
+        # Specs is the LOADED registry, not the active subset. A rule
+        # that's loaded but not in the profile's rule_ids still
+        # appears in specs (the divergence is documented in
+        # LintReport.specs's docstring). This matters for D5+ where
+        # pyproject config may want to introspect available rules.
+        result = _compile(tmp_path, {"types.proto": _TWO_MSG_PROTO})
+        active = _decorated_field_rule("pack/active")
+        inactive = _decorated_field_rule("pack/inactive")
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack("test_pack", (active, inactive)))
+        report = engine.run(
+            result,
+            profile=LintProfile(
+                name="x",
+                rule_ids=frozenset({"pack/active"}),  # only active
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+        # Both loaded rules are in specs
+        assert set(report.specs.keys()) == {"pack/active", "pack/inactive"}
+        # But only the active one is in rules_run
+        assert set(report.rules_run) == {"pack/active"}
+
+    def test_specs_isolated_from_engine_loaded_specs(
+        self, tmp_path: Path,
+    ) -> None:
+        # Defensive snapshot: __post_init__ does dict(self.specs) so
+        # post-construction mutation of the engine's _loaded_specs
+        # MUST NOT affect the report. This is the load-bearing
+        # immutability claim for cached / replayed reports.
+        result = _compile(tmp_path, {"types.proto": _TWO_MSG_PROTO})
+        rule = _decorated_field_rule("pack/rule")
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack("test_pack", (rule,)))
+        report = engine.run(
+            result,
+            profile=LintProfile(
+                name="x",
+                rule_ids=frozenset({"pack/rule"}),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+        snapshot = set(report.specs.keys())
+        # Mutate the engine's registry post-run
+        engine._loaded_specs.clear()
+        # Report's view is unchanged
+        assert set(report.specs.keys()) == snapshot
+
+    def test_empty_engine_produces_empty_specs(
+        self, tmp_path: Path,
+    ) -> None:
+        result = _compile(tmp_path, {"types.proto": _TWO_MSG_PROTO})
+        engine = LintEngine()  # no rule pack loaded
+        report = engine.run(
+            result,
+            profile=LintProfile(
+                name="x",
+                rule_ids=frozenset(),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+        assert report.specs == {}
+
+
+# ---------------------------------------------------------------------------
 # Run: severity resolution + min-severity filter + filtered_count
 # ---------------------------------------------------------------------------
 

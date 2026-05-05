@@ -1,17 +1,18 @@
 """Pluggable output formatter system for ``protokit``.
 
-Built-in formatters render :class:`protokit.message.DiffResult` and
+Built-in formatters render :class:`protokit.message.DiffResult`,
 the schema-side report dataclasses (``CompatibilityReport``,
-``HistoryReport``, ``BisectReport``) into ``human``, ``json``,
-``junit``, and (for compat kinds) ``sarif`` output. User-supplied
-formatters register through :func:`register_formatter` or via the
-``--formatter-module`` CLI flag.
+``HistoryReport``, ``BisectReport``), and (for ``LINT_REPORT``)
+:class:`protokit.schema.lint.LintReport` into ``human``, ``json``,
+``junit``, and (for compat + lint kinds) ``sarif`` output. User-
+supplied formatters register through :func:`register_formatter`
+or via the ``--formatter-module`` CLI flag.
 
 Public surface:
 
-- :class:`FormatterKind` — discriminator for the four report
+- :class:`FormatterKind` — discriminator for the five report
   shapes (``DIFF``, ``COMPAT``, ``COMPAT_HISTORY``,
-  ``COMPAT_BISECT``).
+  ``COMPAT_BISECT``, ``LINT_REPORT``).
 - :class:`FormatterContext` — frozen dataclass carrying CLI
   invocation context (subcommand, target type, level, range,
   refs, proto file).
