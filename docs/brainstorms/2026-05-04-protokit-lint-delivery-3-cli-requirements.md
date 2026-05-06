@@ -8,7 +8,7 @@ topic: protokit-lint-delivery-3-cli
 Created: 2026-05-04
 Source roadmap: `TODOS.md` lines 103-114 ("D3 — `protokit lint` CLI subcommand").
 Foundation landed: D1 (commits `0b82fc3`, `e85faea`, `31c0bb1`) + D2 engine + canary (commits `26bd312`, `3fe3b8c`, `8c4ba9c`, `329b22f`, `8927d1f`, `b26cb5d`, `3252918`, `a0b7692`).
-Sequence: depends on D2; precedes D4 (`_builtin_lint` json/junit/sarif formatters), D5 (pyproject config), D6 (more rule packs), D7 (plugin API).
+Sequence: depends on D2; precedes pyproject config (formerly D5; D4 absorbed into D3 — see KD-5), then more rule packs (formerly D6 — KD-9 promotion-policy decision lives here), then plugin API parity (formerly D7, including `--compat-rule-pack` rename).
 
 ## Problem Frame
 
@@ -26,15 +26,49 @@ would force ad-hoc decisions in D5 (which reads pyproject config
 that overrides CLI defaults) and D6 (which adds more built-in
 packs that need a load story).
 
-**Slicing rationale revisited.** D2 noted the staged D1→D7 approach
-should be revisited after D3+D4 merge. D3 chooses a deliberate
-middle path: ship the CLI now, register a `human` lint formatter
-through the existing `protokit.formatters` registry (no inline
-throwaway renderer), and let D4 add `json`/`junit`/`sarif` by
-extending the same `_builtin_lint.py` module. This preserves the
-staged-review property while eliminating the awkward
-"replace-the-renderer-in-D4" code churn the strict-minimal D3
-shape would have created.
+**Slicing rationale revisited (REVISED during D3 brainstorm
+pressure-test pass).** D2's original staging put `human` in
+D3 and `json`/`junit`/`sarif` in D4. The pressure-test pass
+surfaced that splitting the formatter delivery damages the
+identity bet: a CI-positioned linter that fails the obvious
+`--format=sarif` invocation directly contradicts its own
+"CI auditability" claim every time a user tries it during
+the D3-only window, and the `PROTOKIT_FORMAT` cross-subcommand
+collision (compat supports json/junit/sarif since Phase 1.5b)
+puts that contradiction in front of every CI shell that
+exports the envvar globally. **D3 absorbs D4's machine
+formatters.** All four lint formatters (`human`, `json`,
+`junit`, `sarif`) ship together in D3, registered via
+`_register_builtin` in `src/protokit/formatters/_builtin_lint.py`
+under `FormatterKind.LINT_REPORT`. The original "preserves
+the staged-review property" framing is reversed: shipping
+half-formatter parity is the worse-than-staged outcome.
+D3's delivery shape grows to include U4's machine-formatter
+registration; the original "D4 — formatters" delivery is
+absorbed and removed from the roadmap.
+
+**Net scope honesty** (added during round-2 pressure-test —
+the round-1 cuts framing implied D3 shrank, but the
+absorption added more scope than the cuts removed): the D3
+spec is now **larger** than the original D3+D4 combined
+spec. The round-1 cuts (R7 deferral, R10 single-pack skip,
+R25 gating, R16 default-OFF, R20a merge, KD-9 policy
+deferral, help-text rendering drop) are spec
+simplifications — they trimmed roughly 1-2 implementation
+units of complexity. The D4 absorption added three formatter
+implementations + their tests + a new `lint-missing-imports`
+error code + the D3-Present Security Risks section + the
+catch-tuple widening — approximately 2-3 units of growth.
+Net direction: growth, not shrinkage. The growth is justified
+(identity-bet damage > scope concern), but planning should
+budget for the full scope rather than treating the cuts as
+a counterweight to the absorption. The next-delivery
+(pyproject config) brainstorm inherits a CLI surface that's
+already at compat-feature-parity for formatters — config
+bugs in pyproject will surface across all four formats
+simultaneously rather than being caught in a narrower D4
+window. Test fixtures and review attention should weight
+format-cross-config interactions accordingly.
 
 ## Requirements
 
@@ -91,15 +125,18 @@ shape would have created.
   `--rule-pack <module>`. The auto-load list is *not* "all packs
   that ship with protokit"; it is "all packs that fire without
   explicit opt-in."
-- R7. `--no-builtin-rules` (boolean flag) opts out of step R6.
-  When set, no built-in pack loads; only user packs from
-  `--rule-pack` load. *Forward-looking note*: with one built-in
-  pack at D3 ship time, this flag's user-visible value is small
-  (the same effect can be achieved by `--rule-pack mypkg` with a
-  pack that doesn't redeclare `naming/snake-case-fields`). The
-  flag exists Day-1 as the *only* opt-out for auto-load (KD-2),
-  preserving symmetry now rather than introducing the flag at D6
-  when its value materializes.
+- R7. **DEFERRED to D6** (during D3 brainstorm pressure-test
+  pass). `--no-builtin-rules` was originally drafted to opt
+  out of step R6's auto-load. With one built-in pack at D3
+  ship time, the flag's user-visible value is admitted-zero
+  (the same effect is reachable via `--rule-pack mypkg` with
+  a pack that doesn't redeclare `naming/snake-case-fields`).
+  Standard just-in-time pattern: the flag earns its keep in
+  D6 when a second built-in pack lands. Adding the flag in
+  D6 is purely additive — D3 has no users to break.
+  R9 zero-rules loud failure remains in scope: if all loaded
+  `--rule-pack`s declare zero rules under the active profile,
+  exit 2 with `error[lint-no-rules]:`.
 - R8. `--rule-pack MODULE` (repeatable string) loads additional
   rule packs on top of (or, with R7, instead of) the built-ins.
   **`MODULE` is a fully-qualified dotted Python module name**
@@ -120,52 +157,84 @@ shape would have created.
   `DuplicateRuleError` on cross-pack `rule_id` collision (per
   D2's locked behavior; diverges from compat which silently
   shadows). A user who wants to override a built-in rule MUST
-  pair `--no-builtin-rules` with a `--rule-pack` that
-  reimplements the desired built-ins under the same or different
-  ids. D3 does NOT introduce a `--disable-rule RULE_ID` or
-  `--override-rule-pack` escape valve; that is a future-delivery
-  concern. The constraint is documented in the audit table so
-  users discover it before hitting `DuplicateRuleError`.
-- R9. Loud failure when zero rules load. If after R6+R7+R8
-  resolution the engine's loaded-rule registry is empty, OR the
-  composed active profile (R10) has zero rule_ids, exit code 2
-  with stderr text identifying which path was taken
-  (`--no-builtin-rules` set without `--rule-pack`, or `--profile X`
-  matched zero rules across all loaded packs). Prevents silent
+  pair (in D6+ when `--no-builtin-rules` ships) with a
+  `--rule-pack` that reimplements the desired built-ins under
+  the same or different ids. D3 does NOT introduce a
+  `--disable-rule RULE_ID` or `--override-rule-pack` escape
+  valve.
+
+  *Concrete promotion trigger for `--disable-rule`* (REVISED
+  during round-2 pressure-test — original numeric threshold
+  ">5 rules" was reviewed and recognized as delayed-deferral
+  disguised as a measurable expiration): ship `--disable-rule
+  RULE_ID` (repeatable; filters from the loaded set after
+  composition) when **a user files an issue requesting
+  per-rule suppression** — the only honest decisive signal.
+  Additionally, **D6's brainstorm MUST address `--disable-rule`
+  explicitly**: deferring further requires a written rationale
+  in the D6 brainstorm doc rather than a quiet rollover. This
+  converts the deferral from "we'll add it if someone
+  complains" into a procedural gate that surfaces at every
+  D6+ brainstorm.
+- R9. Loud failure when zero rules load. The check fires
+  CLI-side AFTER profile composition completes but BEFORE
+  `engine.run` is called. Two predicates, evaluated in order:
+  (a) `not engine._loaded_specs` — no rules loaded across any
+  pack (typically: `--no-builtin-rules` set with no
+  `--rule-pack`, OR all `--rule-pack`s declared empty `RULES`).
+  (b) `not composed_profile.rule_ids` — packs loaded rules but
+  none match the active profile (typically: `--profile X`
+  typo, or all loaded packs declare zero rules under `X`).
+  When BOTH would fire, **(a) wins** — the user can't
+  meaningfully fix profile selection until they have rules
+  to select from. Predicate (a) routes through
+  `error[lint-no-rules]:`; predicate (b) routes through
+  `error[lint-unknown-profile]:`. Exit code 2 with stderr
+  text identifying which path was taken. Prevents silent
   green CI from misconfiguration.
 
 **Profile resolution**
 
-- R10. `--profile NAME` (string, default `"default"`). Resolution:
-  for each loaded pack (built-ins + `--rule-pack`s), call
-  `LintProfile.from_pack(pack, name)`; compose all results via
-  `LintProfile.compose(*per_pack_profiles)`; pass the composed
-  profile to `engine.run`. The composed profile's `rule_ids` is
-  the union of every pack's matching rule_ids; `min_severity` is
-  the strictest (highest rank); severity overrides merge per
-  D2's documented `compose` semantics.
+- R10. `--profile NAME` (string, default `"default"`).
+  Resolution: D3 has exactly one auto-loaded pack
+  (`BUILTIN_PACKS = (naming,)`); `--rule-pack` adds
+  user-supplied packs on top. Resolution path:
+  - **Single-pack case (D3 default)**: call
+    `LintProfile.from_pack(pack, name)` directly. No
+    `compose` call.
+  - **Multi-pack case (`--rule-pack` adds 1+ packs)**: build
+    per-pack profiles via `from_pack` and call
+    `LintProfile.compose(*per_pack_profiles)`. Composed
+    profile's `rule_ids` is the union of every pack's
+    matching rule_ids; `min_severity` is the strictest
+    (highest rank); severity overrides merge per D2's
+    documented `compose` semantics.
 
-  *Implementation note*: `LintProfile.from_pack` does not propagate
-  per-rule severity into the profile-level `min_severity` (it
-  uses the dataclass default `LintSeverity.WARNING` per
-  `lint/model.py:522`), so composing N `from_pack` profiles
-  always yields `min_severity = WARNING` regardless of pack
-  declarations. The strictest-wins semantics is exercised only
-  when callers construct `LintProfile` directly with non-default
-  `min_severity` — e.g., D5's pyproject config. For D3 the
-  user-facing knob is R12's `--min-severity`.
-- R11. Empty composed profile (no rule_ids match `name` across
-  all loaded packs) is the loud-failure case in R9 — exit 2 with
-  stderr listing the profile names each loaded pack declares.
+  *Why skip compose in the single-pack case*: `from_pack`
+  always returns `min_severity = LintSeverity.WARNING` (per
+  `lint/model.py:522`), so a single-pack `compose()` is a
+  no-op identity reduction with carrying cost. The
+  strictest-wins semantics is exercised only when callers
+  construct `LintProfile` directly with non-default
+  `min_severity` — e.g., the next delivery's pyproject
+  config. Lifting `compose` back into the always-on path is
+  a one-line change when that delivery introduces the first
+  non-default-floor caller.
+- R11. Empty resolved profile (no rule_ids match `name`
+  across all loaded packs) is the loud-failure case in R9 —
+  exit 2 with stderr listing the profile names each loaded
+  pack declares.
 
-  *Introspection mechanism*: after rule loading, the CLI
-  computes `declared_profiles_per_pack: dict[str, frozenset[str]]`
-  by iterating each loaded pack's module-level `RULES` tuple and
-  unioning each `fn._lint_spec.profiles` (via
-  `protokit.schema.lint.decorator.get_lint_spec`). The R11
-  stderr message renders this dict so users see, e.g.,
-  `pack 'mine' declares profiles: {strict, ci}` and can fix the
-  typo without re-reading source.
+  *Behavioral specification*: the exit-2 stderr message must
+  list every profile name declared across all loaded packs,
+  grouped by pack module name (e.g.,
+  `protokit.schema.lint.rules.naming declares profiles:
+  {default}; acme.lint_rules declares profiles: {strict,
+  ci}`). Implementation chooses the access path — planning
+  decides whether to walk each loaded pack's `RULES` tuple
+  client-side or extend the engine's introspection API. The
+  requirement is the user-visible message shape, not the
+  algorithm.
 - R12. `--min-severity LEVEL` (choice: `info` / `warning` /
   `error`, default unset) overrides the composed profile's
   `min_severity` before passing to `engine.run`. When unset, the
@@ -192,26 +261,21 @@ shape would have created.
 - R13. `--format NAME` (string, default `human`, envvar
   `PROTOKIT_FORMAT`). The flag value resolves via the existing
   `protokit.formatters.get_formatter` registry against the new
-  `FormatterKind.LINT_REPORT` discriminator (per the existing
-  `_registry.py:41-42` naming convention which recommends noun
-  form like `LINT_REPORT` / `SCHEMA_DIFF` for new kinds) (R15).
-  For D3 only `human` resolves; `--format json|junit|sarif`
-  raises `KeyError` from `get_formatter` (per its documented
-  contract at `_registry.py:213-218`). The CLI catches that
-  `KeyError` via lint's own helper and routes to
-  `error_exit_with_code("format-unavailable", ...)` (R20a) which
-  emits stderr beginning `error[lint-format-unavailable]:` and
-  lists the available LINT_REPORT formatter names from
-  `list_formatters(FormatterKind.LINT_REPORT)`. The error
-  text is delivery-agnostic — it lists what IS available, not
-  internal roadmap labels. `PROTOKIT_FORMAT` env var support
-  matches compat's pattern; the error message explicitly notes
-  that `PROTOKIT_FORMAT` is **shared across all `protokit`
-  subcommands** and recommends `env -u PROTOKIT_FORMAT protokit
-  lint ...` for users whose CI shell exports it for compat
-  (which supports json/junit/sarif since Phase 1.5b). This
-  cross-subcommand interaction window closes when D4 lands
-  matching lint formatters.
+  `FormatterKind.LINT_REPORT` discriminator. **D3 ships all
+  four formatters: `human`, `json`, `junit`, `sarif`** (see
+  KD-5; D4's machine-formatter delivery is absorbed into D3).
+  Unknown values raise `KeyError` from `get_formatter` per
+  its documented contract at `_registry.py:213-218`; the CLI
+  catches via lint's helper and routes to
+  `error_exit_with_code("format-unavailable", ...)` (R20a)
+  which emits `error[lint-format-unavailable]:` and lists the
+  available formatter names from
+  `list_formatters(FormatterKind.LINT_REPORT)`.
+  `PROTOKIT_FORMAT` envvar support matches compat's pattern.
+  Because D3 ships full-formatter parity with compat, no
+  cross-subcommand collision exists for the four standard
+  formats — `PROTOKIT_FORMAT=json` works uniformly across
+  `protokit compat` and `protokit lint`.
 - R14. D3 adds `FormatterKind.LINT_REPORT` to the
   `protokit.formatters._registry.FormatterKind` enum. The four
   existing kinds (`DIFF`, `COMPAT`, `COMPAT_HISTORY`,
@@ -219,8 +283,12 @@ shape would have created.
   surface changes.
 - R15. New module `src/protokit/formatters/_builtin_lint.py`
   registers a `human` lint formatter via the **internal**
-  helper `_register_builtin(name="human", fn=_render_human,
-  kind=FormatterKind.LINT_REPORT)` (per `_registry.py:183-200`). Using
+  helper `_register_builtin(name="human", fn=lint_human,
+  kind=FormatterKind.LINT_REPORT)` (per `_registry.py:183-200`). The
+  formatter callable is named `lint_human` (sibling-parity with
+  `diff_human` / `compat_human` / `history_human` / `bisect_human`
+  per the audit-wire-format learning; resolved during Unit 1
+  ce:review). Using
   `_register_builtin` rather than the public
   `register_formatter` (a) makes registration idempotent under
   module reload (test suites, dev REPL, importlib.reload —
@@ -237,13 +305,17 @@ shape would have created.
   the first `protokit lint` invocation specifically. The
   cold-import contract is preserved because `protokit.schema`
   does not import `protokit.cli` and `_builtin_lint` is not in
-  the eager-load tuple. D4 will extend this same module with
-  `json`/`junit`/`sarif` lint formatters under the same
-  `FormatterKind.LINT_REPORT` discriminator (per the existing `_registry.py:41-42` naming convention which recommends noun form like `LINT_REPORT` / `SCHEMA_DIFF` for new kinds) (also via
-  `_register_builtin`).
-- R16. `--statistics` (boolean flag, default ON when
-  `--format=human` and not `--quiet`; ignored otherwise) emits a
-  human-format footer with: per-severity finding counts
+  the eager-load tuple. **D3 absorbs D4** (KD-5 revised) — all
+  three additional lint formatters (`lint_json`, `lint_junit`,
+  `lint_sarif`) are registered in this same `_builtin_lint.py`
+  module alongside `lint_human`, all under
+  `FormatterKind.LINT_REPORT` (also via `_register_builtin`).
+- R16. `--statistics` (boolean flag, **default OFF** —
+  REVISED during D3 brainstorm pressure-test; aligns with
+  ruff/eslint/buf-lint convention of silent-on-clean) emits a
+  human-format footer when explicitly passed and `--format=human`
+  and not `--quiet` (ignored otherwise) with: per-severity
+  finding counts
   (computed by iterating `report.findings` and bucketing by
   `finding.severity` — there is no precomputed `severity_counts`
   field on `LintReport`), filtered count (from
@@ -310,14 +382,79 @@ shape would have created.
   - `error[lint-format-unavailable]:` — R13 `--format` value not
     registered for `FormatterKind.LINT_REPORT` in the registry.
   - `error[lint-compile-failed]:` — R4 source-mode compile
-    produced `CompileResult.diagnostics` of category `error`.
+    produced `CompileResult.diagnostics` containing entries with
+    `level == 'error'` (matching `LintCompileDiagnostic.level:
+    Literal['info', 'error']`). Note: a successful compile via
+    protoxy→protoc fallback emits an `info`-level diagnostic
+    that must NOT trigger this code — the predicate is
+    explicitly `any(d.level == 'error' for d in
+    result.diagnostics)`.
   - `error[lint-formatter-exception]:` — formatter callable
     raised under `run_formatter_safely`.
   - `error[lint-bad-input]:` — descriptor-set bytes failed to
     parse (R24 helper).
   - `error[lint-pool-conflict]:` — R24 pool.Add raised
     TypeError on a cross-set symbol-level collision (NOT a
-    duplicate filename — those are deduped pre-Add).
+    duplicate filename — those are deduped pre-Add; NOT a
+    missing-imports failure — that's `lint-missing-imports`).
+  - `error[lint-missing-imports]:` — R24 pool.Add raised
+    TypeError matching the `has not been declared` pattern,
+    indicating the descriptor_set was produced without
+    `protoc --include_imports` or omits well-known-type
+    descriptor files. Discriminates from the
+    cross-set-collision case to give first-time users a
+    diagnostic that points at the protoc invocation rather
+    than at "symbol collision" they may not recognize.
+  - `error[lint-rule-collision]:` — `engine.load_rule_pack`
+    raised `DuplicateRuleError` when a `--rule-pack` declares
+    a `rule_id` colliding with a built-in or another loaded
+    pack (per D2's no-shadow contract).
+  - `error[lint-rule-pack-load]:` — `--rule-pack MODULE`
+    failed to load. Covers the full failure surface in a
+    single code: (a) `importlib.import_module` raised any
+    `Exception` (module path typo, missing install, broken
+    `__init__.py`, or any top-level exception raised during
+    the user pack's module body — `NameError`, `RuntimeError`,
+    `ZeroDivisionError`); (b) the import succeeded but the
+    module's `RULES` tuple has the wrong wire format
+    (`TypeError` from `LintProfile.from_pack` /
+    `LintEngine.load_rule_pack` — most commonly the user
+    wrote compat-style `RULES = ((rule_id, fn), ...)`
+    instead of lint's `RULES = (decorated_fn, ...)`); (c)
+    a user pack's module body called `sys.exit(...)` (or
+    raised `SystemExit` directly) — without an explicit
+    `except SystemExit` guard, the standalone-mode click
+    runner re-raises with the user pack's exit code,
+    silently producing a false-green CI exit (exit 0)
+    when the user pack called `sys.exit(0)`. The catch
+    pattern is therefore `except SystemExit as exc:` first
+    (routing to `rule-pack-load` with message naming the
+    user-supplied exit code), then `except Exception`
+    second (routing all other Exception subclasses).
+    `BaseException`/`KeyboardInterrupt` still propagates.
+    Matches compat's `run_formatter_safely` SystemExit
+    guard pattern (`src/protokit/_cli_utils.py:521-529`)
+    extended to compat's `load_formatter_packs` import
+    pattern (`src/protokit/_cli_utils.py:402-413`).
+
+    **Discrimination via message text, not code split**: the
+    stderr message body distinguishes the two failure modes
+    explicitly. Import failures: `error[lint-rule-pack-load]:
+    failed to import 'acme.lint_rules': ModuleNotFoundError:
+    No module named 'acme.lint_rules'`. Shape failures:
+    `error[lint-rule-pack-load]: 'acme.lint_rules' has wrong
+    wire format: ('snake_case', <function fn>) is not
+    @lint_rule-decorated. lint expects RULES =
+    (decorated_fn, ...); compat's RULES = ((rule_id, fn),
+    ...) is incompatible. See
+    audit-wire-format-before-claiming-sibling-parity-2026-05-03.`
+    The single-code design follows compat's pattern (Phase
+    1.5b shipped without per-failure-mode error codes and no
+    user pain has been reported); reversibility-favorable
+    (additive split is non-breaking; merge-after-split would
+    break CI scripts). If a real CI consumer requests the
+    split later, add `lint-rule-pack-shape` as a strictly-additive
+    new code.
 
   *Coverage gap acknowledged*: the existing top-level
   `error_exit()` in `protokit._cli_utils.py:68` writes
@@ -331,27 +468,33 @@ shape would have created.
   prefix specifically; click-side errors carry click's own
   prefix and are reachable independently of `error_exit_with_code`.
 
-  The stable-prefix list above lives in the help text of
-  `protokit lint` (rendered from a module-level
-  `_LINT_ERROR_CODES: tuple[str, ...]` constant — single source
-  of truth, no help-text drift) so CI authors can reference it
-  without reading source.
+  The stable-prefix list lives in a module-level
+  `_LINT_ERROR_CODES: tuple[str, ...]` constant in
+  `src/protokit/schema/lint/_cli_utils.py` as a single source
+  of truth for the helper's input validation and for tests.
+  **The constant is NOT rendered into `protokit lint --help`**
+  (REVISED during D3 brainstorm pressure-test pass): help
+  text rendering would add a dual-maintenance test obligation
+  ("help must contain every code") that compat doesn't have,
+  and the discoverability win is better served by
+  documentation in `CLAUDE.md` or a future
+  `protokit lint --list-error-codes` flag if CI authors ask
+  for it. Promote help-text rendering to a hard requirement
+  in D6 if the code list grows past ~10 and discoverability
+  pressure materializes.
 
 **D2 ce:review residuals folded in**
 
-- R21. *DEFERRED to D4*. **REL-03** —
-  `LintRuntimeWarning.emit_count_before_exception: int = 0` was
-  considered for D3 but deferred to D4. Rationale: the field's
-  only consumer is the human formatter's runtime-warning footer
-  (statistics row "rule X raised after emitting K findings"),
-  and D4 owns the formatter ecosystem. Folding it into D3
-  required (a) extending a frozen D2 type, (b) modifying
-  `_invoke_rule` in `LintEngine` to snapshot per-rule emit
-  counts, and (c) wiring the human formatter to render it.
-  That's a three-file engine + model + formatter change for a
-  field whose only output channel is the formatter being added
-  in D4. Cleaner to land it together with the json/junit/sarif
-  formatters that also benefit from the structured field.
+- R21. *DEFERRED to future delivery* (REVISED after D3
+  brainstorm pressure-test absorbed D4 into D3). **REL-03** —
+  `LintRuntimeWarning.emit_count_before_exception: int = 0`
+  was considered for D3 but stays deferred. Rationale: the
+  field requires (a) extending a frozen D2 type, (b)
+  modifying `_invoke_rule` in `LintEngine` to snapshot
+  per-rule emit counts, and (c) wiring formatters to render
+  it. D3 absorbed D4 but no concrete consumer is asking for
+  the field; lands when a real per-rule emit-count debugging
+  need surfaces.
 - R22. **AC-05** — add `ctx.pool` mutation contract to the
   `_LintContextEmitMixin` and per-kind context docstrings in
   `lint/model.py`: rules MUST NOT mutate `ctx.pool` during the
@@ -408,21 +551,70 @@ shape would have created.
   input sets: {names}`. Suppressed under `--quiet`. Audit-trail
   only; does not change exit code.
 
-  *Symbol-level collisions across different files* (e.g.,
-  `a.descriptor_set` defines `acme.User`, `b.descriptor_set`
-  also defines `acme.User` with different fields under a
-  different `fd.name`): pool.Add raises TypeError; the helper
-  exits 2 with `error[lint-pool-conflict]:` (R20a) listing the
-  conflicting input file. This is undefined behavior for the
-  lint walk; users must pre-merge or namespace-separate.
+  *Disambiguating `pool.Add` TypeErrors*: `pool.Add(fd)`
+  raises `TypeError` for several distinct failure modes that
+  share the exception type. The helper inspects the message
+  text (verified empirically against the protobuf Python
+  C++ runtime — see Forward-Looking Risks for the
+  fragility-against-protobuf-version-upgrade caveat) to
+  route to the right error code:
+  - **Missing transitive imports** (descriptor_set produced
+    without `protoc --include_imports`, or referencing
+    `google.protobuf.Timestamp`/`Duration`/`Any` without
+    bundling the WKT files): TypeError message contains
+    either `has not been loaded` (the dependency-file case:
+    `Depends on file '<path>', but it has not been loaded`)
+    OR `couldn't resolve name` (the dangling-symbol case:
+    `couldn't resolve name '<fqn>'`). Routes to
+    `error[lint-missing-imports]:` with stderr message
+    naming the requirement: `descriptor_set
+    '{input_path}' references types not present in the
+    set; rebuild with 'protoc --include_imports' or include
+    the WKT descriptor file. Underlying: {exc}`. This is
+    the most common protoc footgun for first-time users
+    and deserves its own discriminating diagnostic.
+  - **Cross-set symbol collision** (e.g., `a.descriptor_set`
+    defines `acme.User`, `b.descriptor_set` also defines
+    `acme.User` with different fields under a different
+    `fd.name`): TypeError message contains
+    `duplicate symbol`. Routes to
+    `error[lint-pool-conflict]:` listing the conflicting
+    input file. Undefined behavior for the lint walk;
+    users must pre-merge or namespace-separate.
+  - **Unmatched TypeError** (protobuf upgrade changed the
+    message text, or a new failure mode emerged): falls
+    through to `error[lint-pool-conflict]:` with the raw
+    exception text — preserves the legacy behavior so
+    users still get a stable error code.
+
+  *Test obligation*: U2's tests MUST exercise actual
+  `descriptor_pool.Add` output for all three observed
+  message shapes (loaded-dependency-missing,
+  resolve-name-failure, duplicate-symbol) so a
+  protobuf-version upgrade that changes wording becomes a
+  CI failure rather than silent misrouting.
+
+  *Trust model on inputs*: descriptor-set files are trusted
+  build artifacts from the operator's own build system. No
+  size cap is enforced before `read_bytes()` /
+  `FileDescriptorSet.FromString()`. Operators using
+  protokit-lint against descriptor sets from untrusted
+  remote sources (extremely uncommon — descriptor_sets are
+  not typically distributed) should configure shell-level
+  resource limits on the lint invocation. Stderr error
+  messages may include proto file paths and FQN type names
+  from the analyzed schemas; operators treating these as
+  sensitive should redirect stderr to a secured log sink.
 
 **Profile composition observability**
 
 - R25. The CLI emits a one-line stderr provenance note before
-  running: `protokit lint: profile 'default' from
-  protokit.schema.lint.rules.naming=[naming/snake-case-fields]`.
-  When the active profile is composed from ≥2 loaded packs the
-  line lists each pack and its contributing rule_ids:
+  running when **two or more rule packs are loaded** (REVISED
+  during D3 brainstorm pressure-test pass — original
+  unconditional emission was speculative future-proofing with
+  zero D3 user benefit and three-persona consensus to gate).
+  When `len(loaded_packs) >= 2`, the line lists each pack and
+  its contributing rule_ids:
   `protokit lint: profile 'default' from
   protokit.schema.lint.rules.naming=[naming/snake-case-fields];
   acme.lint_rules=[acme/no-leading-underscore]`. The line uses
@@ -430,30 +622,47 @@ shape would have created.
   the user's `naming` module being a different pack than the
   built-in `protokit.schema.lint.rules.naming`). Rule_ids are
   rendered verbatim (no prefix stripping). Suppressed under
-  `--quiet`. The line fires unconditionally — even on the D3
-  one-pack case — to make the composition mechanism visible
-  from day one rather than appearing as a "regression" the
-  first time a second pack loads.
+  `--quiet`. **Single-pack case (D3 default with no
+  `--rule-pack`): no provenance line emitted** — the user is
+  not composing anything; printing the "composition mechanism"
+  for a non-composition is noise. Reversibility-favorable: the
+  threshold is one constant in the CLI; promoting back to
+  unconditional-emit is a one-line change if a real
+  multi-pack-mechanism-discoverability complaint surfaces.
+
+  *Source for per-pack rule_ids*: reuse R11's pre-computed
+  introspection dict (extending it from "profiles-by-pack" to
+  "rule_ids-by-pack") rather than reaching into engine
+  internals. One CLI-side data structure shared by R11 and
+  R25 — `pack_to_active_rules: dict[str, list[str]]` built
+  by iterating each loaded pack's `RULES` and intersecting
+  with the resolved `profile.rule_ids`.
 
 ## Success Criteria
 
 - `protokit lint a.descriptor_set` runs the auto-loaded `naming`
   pack against `a.descriptor_set`'s root files, prints
-  human-readable findings (one per line) and a `--statistics`
-  footer, exits 0/1/2 per R20.
+  human-readable findings (one per line), exits 0/1/2 per R20.
+  No `--statistics` footer by default (R16 revised — opt-in
+  via explicit `--statistics`).
 - `protokit lint --proto foo.proto -I src/` compiles `foo.proto`
   through the D1 `compile_protos_to_result` entry, runs auto-loaded
   rules, behaves identically to descriptor-set mode otherwise.
-- `PROTOKIT_FORMAT=json protokit lint a.descriptor_set` exits 2
-  with stderr beginning `error[lint-format-unavailable]:` and
-  lists the available LINT formatter names from
-  `list_formatters(FormatterKind.LINT_REPORT)` (just `human` in D3).
-  Verifies the discriminator-error path; D4 will flip this to a
-  passing render once `_builtin_lint` adds the additional
-  formatters.
-- `protokit lint --no-builtin-rules a.descriptor_set` exits 2 with
-  a clear "no rules loaded" message and lists `--rule-pack`
-  syntax.
+- `PROTOKIT_FORMAT=json protokit lint a.descriptor_set`
+  produces JSON-formatted lint output and exits 0/1 per the
+  R20 ladder (D3 absorbed D4's machine formatters per KD-5
+  revised; `json`/`junit`/`sarif` all resolve in D3).
+  `--format=does-not-exist` exits 2 with stderr beginning
+  `error[lint-format-unavailable]:` listing the four
+  available formatter names from
+  `list_formatters(FormatterKind.LINT_REPORT)`.
+- `protokit lint --rule-pack=test_pack_with_zero_rules
+  a.descriptor_set` (a user pack with empty `RULES`) exits 2
+  with `error[lint-no-rules]:` and lists `--rule-pack`
+  troubleshooting hints. (Note: `--no-builtin-rules` is
+  deferred to D6 per R7 revised — the only D3 path to
+  zero rules is via `--rule-pack`s that all declare empty
+  `RULES`.)
 - `protokit lint --profile typo a.descriptor_set` exits 2 with
   "profile 'typo' matched 0 rules across loaded packs" and lists
   the profile names each pack declares.
@@ -475,14 +684,18 @@ shape would have created.
   including `LINT_REPORT`. `list_formatters` / `get_formatter`
   tests continue to pass for the four pre-existing kinds.
 - New tests cover: each input mode, each flag, each exit code,
-  each stable error-prefix code (`error[lint-no-rules]:`,
+  each of the 10 stable error-prefix codes
+  (`error[lint-no-rules]:`,
   `error[lint-unknown-profile]:`, `error[lint-format-unavailable]:`,
   `error[lint-compile-failed]:`, `error[lint-formatter-exception]:`,
-  `error[lint-bad-input]:`, `error[lint-pool-conflict]:`), each
-  loud-failure path, the cold-import quarantine, R25
-  composition-stderr provenance (single + multi pack), R24
-  descriptor-set ingestion (single + multi-path + duplicate
-  filename + cross-set symbol collision).
+  `error[lint-bad-input]:`, `error[lint-pool-conflict]:`,
+  `error[lint-missing-imports]:`, `error[lint-rule-collision]:`,
+  `error[lint-rule-pack-load]:`), each loud-failure path, the
+  cold-import quarantine, R25 composition-stderr provenance
+  (multi-pack only — single-pack is silent per R25 revised),
+  R24 descriptor-set ingestion (single + multi-path +
+  duplicate filename + cross-set symbol collision +
+  missing-imports discrimination).
 
 ## Scope Boundaries
 
@@ -491,18 +704,30 @@ shape would have created.
 - Git input modes (`--since`, `--against-base`) — deferred. Reuse
   `_load_pools_git` + `_validate_git_mode_flags` from compat when
   they land in a future delivery; no D3 work to prepare for them.
-- `json`, `junit`, `sarif` lint formatters — D4. D3 ships only
-  `human`. The `_builtin_lint.py` module is the shared landing
-  zone D4 extends.
-- pyproject `[tool.protokit.lint]` config — D5. D3's flags are
-  the only configuration channel; CLI defaults cannot be
-  overridden by pyproject yet.
-- `--ignore PATH` suppression flag — deferred to D5 (R17).
-  Co-design with pyproject `[tool.protokit.lint] exclude` globs;
-  per-variant `LintLocation` match-target is a design question
-  the pyproject config will need to resolve anyway.
+- pyproject `[tool.protokit.lint]` config — next delivery
+  (formerly D5; renumbered after D4 absorption — see KD-5).
+  D3's flags are the only configuration channel; CLI defaults
+  cannot be overridden by pyproject yet.
+- `--ignore PATH` suppression flag — deferred to next-delivery
+  (pyproject config). Co-design with `[tool.protokit.lint]
+  exclude` globs; per-variant `LintLocation` match-target is a
+  design question the pyproject config will need to resolve
+  anyway.
+- `--no-builtin-rules` flag (R7) — **deferred to D6** when the
+  second built-in pack lands. The flag's user-visible value at
+  D3 is admitted-near-zero (the same effect is reachable via
+  `--rule-pack mypkg` with a pack that doesn't redeclare
+  built-in rule_ids). Standard just-in-time pattern; D3 has no
+  users to break by deferring. R9 zero-rules loud failure
+  remains for the case where all loaded `--rule-pack`s declare
+  zero rules under the active profile.
 - `LintRuntimeWarning.emit_count_before_exception` (REL-03,
-  R21) — deferred to D4 where the formatter consumes it.
+  R21) — deferred to **future delivery**. Was originally
+  deferred to D4 because the formatter is the only consumer;
+  D4 is now absorbed but R21 still requires extending D2's
+  frozen type plus engine instrumentation, and no concrete
+  consumer is asking for it. Land when a real per-rule
+  emit-count debugging need surfaces.
 - `--disable-rule RULE_ID` / `--override-rule-pack` shadowing
   escape valves — deferred. D3 documents the
   `DuplicateRuleError` contract and the
@@ -561,22 +786,26 @@ users — a typo in `--profile` would yield green CI on any input.
 Loud failure is the user-correcting path; cost is a few extra
 test cases and stderr-message wording.
 
-**KD-5. CI gating flags ship Day-1; machine-format outputs land in D4.**
-`--max-warnings`, `--statistics`, `--min-severity` all ship in
-D3 (`--ignore` deferred to D5 — see Scope Boundaries). Engine-
-side substrate exists (`filtered_count`, `runtime_warnings`); 
-per-severity counts are computed CLI-side at render time by
-iterating `report.findings` (there is no precomputed
-`severity_counts` field on `LintReport`, contrary to an earlier
-draft of this decision). The incremental review surface is
-small and front-loads CI-gating-via-exit-codes (`--max-warnings 0
---quiet` is fully usable for binary CI gating in D3 without
-machine output). Tradeoff acknowledged: CI engineers who need
-SARIF for code-scanning or JUnit for test-result panels must
-wait for D4 — D3+D4 are intentionally staged separately for
-review tractability, but the gap is real and should be
-explicitly messaged in release notes ("D3 = exit-code gating;
-D4 = machine output formats").
+**KD-5. D3 ships full CLI surface: gating flags + all four
+formatters together (REVISED).** `--max-warnings`,
+`--statistics`, `--min-severity` all ship in D3
+(`--ignore` deferred to D5 — see Scope Boundaries). All
+four lint formatters (`human`, `json`, `junit`, `sarif`)
+ship together in D3 via `_register_builtin`; the original
+"D4 — machine formatters" delivery is absorbed (see Slicing
+Rationale Revisited above). Engine-side substrate exists
+(`filtered_count`, `runtime_warnings`); per-severity counts
+are computed CLI-side at render time by iterating
+`report.findings` (there is no precomputed `severity_counts`
+field on `LintReport`). Rationale for absorbing D4: shipping
+half-formatter parity damaged the identity bet — the
+"D3 = exit-code gating; D4 = machine output" staging put
+the contradiction in front of every CI user during the
+D3-only window. Full-formatter parity at D3 closes the gap.
+Cost: D3's delivery scope grows by three formatter
+implementations (`json`, `junit`, `sarif`) plus their tests;
+D4's slot in the roadmap is absorbed and the next delivery
+becomes pyproject config (formerly D5).
 
 **KD-6. Mirror compat's exit-code ladder, extend with --max-warnings.**
 0/1/2 stays uniform. `--max-warnings` adds an internal axis
@@ -620,21 +849,25 @@ stderr line (no `LintRuntimeWarning` emission). The Literal
 type stays at its D2-locked two values through the entire D3
 delivery.
 
-**KD-9. Auto-load upgrade-safety policy: D6+ packs default to opt-in registered.**
+**KD-9. D3 establishes `BUILTIN_PACKS` anchor; auto-load
+promotion policy decision deferred to D6 (REVISED).**
 Today (D3) the auto-load list contains exactly one pack:
-`naming`. As D6+ adds packs, the default policy is **NOT** to
-append them to the auto-load list automatically. Each new pack
-ships *registered-but-not-active* by default. Promotion of a
-pack into the auto-load tuple is an explicit decision tied to
-a major-version release with changelog notes. Users who upgrade
-protokit get new packs available via `--rule-pack` opt-in, but
-auto-load behavior on previously-green CI does not silently
-expand. This decouples "protokit ships a new pack" from "every
-user's CI surfaces new findings" — addresses the upgrade-trust
-concern surfaced by reviewers comparing protokit-lint to
-buf/api-linter (which solved this with explicit version pinning
-and opt-in lists). A small, conservative auto-load set (today
-just `naming`) compounds well.
+`naming`. The structural anchor (`BUILTIN_PACKS` constant +
+membership-pin test in `tests/schema/lint/test_builtin_packs.py`)
+ships in D3 to make the surface discoverable and to force
+explicit intent for any future change. **The promotion
+policy itself — whether D6+ packs default to opt-in
+registered (auto-load is conservative) or default to
+auto-loaded (auto-load is opinionated) — is a D6 brainstorm
+decision when concrete evidence about user expectations is
+available**. Original D3 framing committed to "default
+opt-in" by analogy to buf/api-linter, but those tools earned
+that posture from production upgrade-pain incidents that
+protokit-lint has no evidence base for yet. The opposite
+policy (opt-out: auto-load by default, users disable noisy
+ones) is plausibly what early dogfood users want for
+maximum coverage on a new tool. D6's brainstorm decides
+based on real signal, not analogy.
 
 *Q1 resolved inline*: the auto-load list lives on
 `src/protokit/schema/lint/rules/__init__.py` as a typed
@@ -650,6 +883,96 @@ preserved: `protokit.schema.lint.rules.__init__.py` is loaded
 only when something inside the lint subpackage imports it (no
 external code touches it during `import protokit.schema`).
 
+*KD-9 enforcement honesty*: the membership-pin test in
+`tests/schema/lint/test_builtin_packs.py` enforces the
+*test-must-be-updated-when-`BUILTIN_PACKS`-changes* invariant
+— a structural CI gate that forces explicit intent for any
+change to the auto-load tuple. The test does NOT enforce
+"CHANGELOG entry in the same commit"; that remains a soft
+norm enforced via PR review. Promotion to a hard CHANGELOG
+gate (a pre-commit/CI hook diffing `BUILTIN_PACKS` ↔
+`CHANGELOG.md`) is correctly deferred until the second pack
+is added (D6) — the carrying cost of the hook substrate
+exceeds present value at one pack.
+
+**KD-10. Unit staging: every D3 unit lands a runnable
+`protokit lint`.** Selected over the original "Unit 2 ships
+scaffold-only" framing. After D2, the project's pattern is
+"land units incrementally to `main` for review tractability".
+That worked for D2 because every D2 unit was library-only —
+no user-facing surface appeared mid-delivery. D3 Unit 2 is
+the inflection point because it registers the `protokit lint`
+click subcommand on the top-level CLI group, making the
+command appear in `protokit --help` and shell tab-completion
+the moment it merges. To keep `main` healthy throughout the
+remaining delivery, each unit must end in a state where
+`protokit lint <input>` produces defensible output — even
+if successive units add user-visible knobs around it.
+
+Concretely:
+
+- **U2 lands a minimal end-to-end pipeline** with hard-coded
+  defaults: iterate `BUILTIN_PACKS` to auto-load the canary
+  pack, derive the active profile via
+  `LintProfile.from_pack(naming, "default")`, run
+  `engine.run`, and render via the `lint_human` formatter.
+  After U2 merges: `protokit lint a.descriptor_set` actually
+  produces a findings list. U2's surface is "the default case
+  works"; the only user-visible flags are `--proto` and
+  `-I`/`--proto-path` from R4.
+- **U3 introduces configurability** by refactoring U2's
+  hard-coded auto-load + profile derivation into the
+  flag-driven version: adds `--rule-pack`, `--profile`,
+  `--min-severity`, plus the R9/R11 loud-failure paths and
+  R25 provenance line (gated on `len(loaded_packs) >= 2`).
+  R7 `--no-builtin-rules` deferred to D6. After U3 merges:
+  zero-flag invocation behavior is unchanged from U2; users
+  gain the configuration knobs.
+- **U4 adds CI gating + output-shape control**:
+  `--max-warnings`, `--statistics`/`--no-statistics`,
+  `--quiet`, `--format`, the exit-code ladder (R20), and the
+  format-unavailable error path. After U4 merges: `protokit
+  lint` with no flags continues to behave exactly as it did
+  after U3 (R16 `--statistics` is default-OFF, so no
+  footer noise on bare invocation);
+  CI users gain the gating surface.
+- **U5 stays as written**: D2 docstring fold-ins (R22, R23),
+  end-to-end integration tests, CI cold-import gate
+  extension.
+
+The forcing function (REVISED with checkable invariants
+during round-2 pressure-test pass — replaces the original
+"defensible output" framing which was too vague to enforce):
+
+Three checkable invariants every unit must preserve:
+
+1. **Exit-code stability for canary inputs**: `protokit
+   lint <descriptor_set>` exits 0 or 1 (never 2 from
+   internal CLI errors) for inputs the auto-loaded
+   `naming` canary handles cleanly. From U2 onward.
+2. **Cold-import smoke remains green**: `import
+   protokit.schema` does NOT load
+   `protokit.schema.lint.cli` or
+   `protokit.formatters._builtin_lint`. From U1 onward
+   (U1 already shipped with this preserved).
+3. **Subcommand discoverability**: `protokit --help`
+   lists `lint` with a non-empty short-help string. From
+   U2 onward.
+
+Successive units may legitimately add advertised behaviors
+(R25 provenance line, statistics footer, exit-code gating,
+new flags) — those are not regressions and do not violate
+the invariants above. This is *not* a byte-stability
+contract on zero-flag stdout — that would over-constrain
+U3/U4's legitimate additions.
+
+Tradeoff: U2's plan-text grows by ~6 lines of code (engine
+instantiation + load_rule_pack + from_pack + run +
+formatter call + echo). U3 reframes from "add rule loading"
+to "lift hard-coded defaults into flags". The total work is
+the same; the unit boundaries shift to match what `main`
+can defensibly carry between landings.
+
 ## Sibling-Parity Audit (per `audit-wire-format-before-claiming-sibling-parity-2026-05-03`)
 
 The 3-layer check (signature, wire format, operational semantics)
@@ -661,41 +984,43 @@ across every "mirrors compat" claim in TODOS.md:103-114:
 | Positional inputs | OLD + NEW (two paths) | one or more paths | **Signature** — lint is single-input. |
 | `--proto` flag | switches to source mode | switches to source mode | Same. |
 | `-I` / `--proto-path` | repeatable | repeatable | Same. |
-| `--rule-pack MODULE` | `RULES = ((rule_id, fn), ...)` | `RULES = (decorated_fn, ...)` | **Wire format** — same flag name, incompatible payloads. Already documented in D2's plan + learning. |
+| `--rule-pack MODULE` | `RULES = ((rule_id, fn), ...)` | `RULES = (decorated_fn, ...)` | **Wire format** — same flag name, incompatible payloads. **D7's brainstorm MUST evaluate three options** (REVISED during round-2 pressure-test — the original "permanent divergence + rename in D7" framing was unfalsifiable directional commitment foreclosing the convergence design path before evaluation): (a) rename compat's flag to `--compat-rule-pack` (preserves divergence syntactically; current direction); (b) converge wire formats via a unified `@rule(kind='lint'\|'compat')` decorator with compat's tuple form deprecated-but-supported; (c) accept permanent divergence and document as such. Until D7 lands, `lint-rule-pack-load` error message text discriminates the two formats explicitly so users hitting the divergence get a diagnostic that points at the wire-format issue. The directional commitment is reframed as "D7 evaluates options"; the choice itself waits for D7's brainstorm with concrete user-pack-ecosystem evidence. |
 | Profile selector | `--level wire/consumer-safe/producer-safe/strict` | `--profile NAME` (default `"default"`) | **Operational semantics** — compat's level is a closed enum baked in; lint's profile is per-rule-pack and composes. |
-| Auto-load built-ins | not applicable (built-ins compiled in) | yes; `--no-builtin-rules` opts out | **Operational semantics** — lint introduces auto-load, compat has nothing analogous. |
+| Auto-load built-ins | not applicable (built-ins compiled in) | yes; `--no-builtin-rules` opt-out deferred to D6 (R7 revised) | **Operational semantics** — lint introduces auto-load; opt-out flag earns its keep when second pack lands. |
 | `--max-warnings N` | n/a (binary "any incompatibility = exit 1") | new in lint | **New** — lint-only flag. |
 | `--min-severity LEVEL` | n/a (`--level` controls *which findings exist*, not severity floor) | new in lint | **New** — lint-only flag. |
 | `--statistics` | n/a (compat output is compact) | new in lint | **New** — lint-only flag. |
 | `--ignore PATH` | dotted message-path prefix filter | n/a in D3 — deferred to D5 alongside pyproject `exclude` | **Absence (temporary)** — co-design with config rather than ship a CLI-only path-filter today. |
 | Rule shadowing | silent shadowing — second pack's same `rule_id` registers, both fire | `DuplicateRuleError` raised at `engine.load_rule_pack` time | **Operational semantics + behavior** — same wire (loading two packs with overlapping ids); compat tolerates, lint refuses. Escape valve: `--no-builtin-rules + --rule-pack` to reimplement. |
-| `--max-warnings N` upgrade safety | n/a | new built-in packs default opt-in registered, NOT auto-loaded (KD-9) | **New** — lint introduces an upgrade-safety policy compat does not need (compat has no rule-pack auto-load). |
+| Auto-load upgrade safety | n/a | `BUILTIN_PACKS` constant + membership-pin test ship in D3 as the structural anchor; promotion policy decision deferred to D6 (KD-9 revised) | **New** — lint introduces an upgrade-safety substrate compat does not need (compat has no rule-pack auto-load). The policy itself (opt-in vs opt-out by default) is deferred until D6 has concrete user-expectation evidence. |
 | `--dedupe-by-type` | exists (path-completeness opt-out) | n/a (lint emits at defining sites only) | **Absence** — flag deliberately not present in lint. |
 | `--type NAME` | narrows to one message type | n/a | **Absence** — lint walks the whole root-files set. |
 | `--quiet` | exists | exists, mutex with non-human formats | Same shape. |
-| `--format NAME` | `human` / `json` / `junit` / `sarif` | `human` only in D3; D4 adds the others | **Operational semantics** — same registry, different per-kind population. |
+| `--format NAME` | `human` / `json` / `junit` / `sarif` | `human` / `json` / `junit` / `sarif` (D3 absorbs D4 — see KD-5) | **Same** — full-formatter parity at D3. |
 | `PROTOKIT_FORMAT` envvar | yes | yes | Same. |
 | Exit codes | 0/1/2 ladder | 0/1/2 ladder, with internal `--max-warnings` axis | Same external ladder. |
-| `FormatterKind` | `DIFF` / `COMPAT` / `COMPAT_HISTORY` / `COMPAT_BISECT` | + `LINT` (new fifth value) | **Additive** — extends the enum. |
-| `--formatter-module` | exists | deferred until D4 | **Absence** — temporary, will land alongside D4. |
+| `FormatterKind` | `DIFF` / `COMPAT` / `COMPAT_HISTORY` / `COMPAT_BISECT` | + `LINT_REPORT` (new fifth value) | **Additive** — extends the enum. |
+| `--formatter-module` | exists | deferred to future delivery | **Absence** — D3 absorbed the formatter delivery (KD-5 revised); user-formatter-pack support deferred until plugin API parity (formerly D7). |
 | Git modes | `--since` / `--against-base` | n/a in D3 | **Absence** — temporary, future delivery. |
 | Cold-import contract | `import protokit.schema` does not load `lint` | preserved in D3 | Same. |
 
-Net assessment: D3 introduces 4 new flags (`--no-builtin-rules`,
-`--max-warnings`, `--min-severity`, `--statistics`); reuses
-`--profile` with different semantics from compat's `--level`;
-diverges on `--rule-pack` wire format and on rule-shadowing
-behavior (compat silently shadows; lint raises
-`DuplicateRuleError`); omits 5 compat flags by design or
-deferral (`--type`, `--dedupe-by-type`, git modes,
-`--formatter-module`, `--ignore`); preserves 4 mirrors verbatim
-(`--proto`, `-I`, `--quiet`, `PROTOKIT_FORMAT`). Every divergence
-is intentional and explained in Key Decisions or Scope Boundaries
-above; none of them silently differ in a way that would surprise
-a user who already knows compat. The shared `PROTOKIT_FORMAT`
-envvar gap (compat supports json/junit/sarif; lint D3 supports
-only human) is documented loud-and-clear at first run via the
-`error[lint-format-unavailable]:` stderr code.
+Net assessment (REVISED after D3 brainstorm pressure-test):
+D3 introduces 3 new flags (`--max-warnings`, `--min-severity`,
+`--statistics` default-OFF); reuses `--profile` with different
+semantics from compat's `--level`; diverges on `--rule-pack`
+wire format and on rule-shadowing behavior (compat silently
+shadows; lint raises `DuplicateRuleError`); omits 6 compat
+flags by design or deferral (`--type`, `--dedupe-by-type`,
+git modes, `--formatter-module`, `--ignore`,
+`--no-builtin-rules` deferred to D6); preserves 4 mirrors
+verbatim (`--proto`, `-I`, `--quiet`, `PROTOKIT_FORMAT`).
+Every divergence is intentional and explained in Key
+Decisions or Scope Boundaries above; none of them silently
+differ in a way that would surprise a user who already knows
+compat. **D3 ships full-formatter parity with compat
+(`human`/`json`/`junit`/`sarif`), so no `PROTOKIT_FORMAT`
+cross-subcommand gap exists** — the original D3-only-human
+window is closed by absorbing D4 into D3 (KD-5).
 
 ## Dependencies / Assumptions
 
@@ -711,7 +1036,120 @@ only human) is documented loud-and-clear at first run via the
 - Click is the CLI framework (compat uses it; the top-level CLI
   group at `src/protokit/cli.py` is click).
 - No new dependencies beyond what D2 already has. `tomli` is
-  D5's, not D3's.
+  the next delivery's (pyproject config), not D3's.
+
+**Why the cold-import contract matters** (added during
+D3 brainstorm pressure-test pass — the contract was invoked
+5x as a load-bearing constraint without an articulated cost
+of violation):
+
+`import protokit.schema` is the entry point downstream
+library consumers use when they want lint's
+`CompileResult` / `LintReport` types without paying for the
+CLI subcommand machinery. D1's brainstorm identified
+`protokit-coverage` (a downstream tool that imports
+`protokit.schema` to consume `CompileResult` for
+schema-coverage analysis) as the concrete consumer; the
+imported subpackage stays small (model + decorator + engine,
+no click, no formatter registry) so library users don't pay
+~30ms of click + formatter eager-load every time they
+`import protokit.schema`. That cost is small in absolute
+terms but compounds in test suites that import the package
+hundreds of times. The contract also keeps the CLI surface
+isolated from the library surface — a refactor that
+accidentally pulls click into `protokit.schema` would be
+a measurable regression for the downstream consumer. The
+membership-pin smoke test in CI catches such regressions
+structurally.
+
+**Lint-side formatter wrapper design** (REVISED during
+round-2 pressure-test pass — the original "share OR
+duplicate" framing was a punt that left security substrate
+consistency to planner judgment):
+
+`protokit._cli_utils.run_formatter_safely` provides four
+distinct security-relevant guards (SystemExit, generic
+Exception, stdout-leak, non-str return) that all lint
+formatters need. The lint-side wrapper that produces
+`error[lint-formatter-exception]:` prefix MUST share
+`run_formatter_safely`'s body via an `error_exit_fn`
+parameter — the refactor is small (signature change + all
+callers updated, single PR) and the security-substrate
+consistency benefit is durable. **Duplication is rejected**
+unless the planning-stage refactor demonstrably introduces
+>50 lines of churn in compat OR breaks a Phase-1.5b-locked
+public signature; the planner must justify duplication
+against this criterion, not choose freely between
+equivalent options. Sharing is the default; duplication
+requires written justification.
+
+## D3-Present Security Risks
+
+Risks that are present in D3 (not deferred to a future
+delivery) and that the implementation must address:
+
+- **`--rule-pack MODULE` is a D3-present code-execution
+  channel.** R8's `importlib.import_module(MODULE)` evaluates
+  arbitrary user Python at import time. D3 trusts the local
+  operator (the user typing the flag = the user running the
+  CLI). **In CI pipelines where `--rule-pack` is interpolated
+  from YAML/Makefile config that is not root-operator-controlled,
+  the trust assumption silently degrades to whoever can write
+  that config.** Operators using `--rule-pack` in CI must
+  ensure MODULE values come from a vetted, pinned source —
+  not interpolated from user-supplied or PR-author-controlled
+  inputs. D3 keeps the channel a single, well-named importlib
+  edge so the trust boundary is greppable; the brainstorm
+  doc names the operator responsibility explicitly so
+  implementors know to mention it in user-facing
+  documentation.
+- **Format-injection in `template_str.format(**finding.params)`
+  is D3-present**, not D6-future. R8 lets users load `--rule-pack`
+  modules in D3, and those modules control `LintRuleSpec.message_template`
+  strings. The `lint_human` formatter calls
+  `template_str.format(**finding.params)` with the
+  user-controlled template. Width specifiers
+  (`{name:>1000000000}` → multi-GB string memory DoS) and
+  attribute traversal (`{name.__class__.__mro__}` walks
+  Python type hierarchy → information disclosure about
+  internal types) are reachable today. **D3 mitigations**:
+  (a) widen the Unit 1 try/except catch tuple in
+  `_builtin_lint.py:_render_message` to include `MemoryError`
+  and `RecursionError` so a width-specifier DoS attempt
+  doesn't crash the formatter mid-render and drop subsequent
+  findings (cheap defensive fix, lands in this delivery's
+  source edits); (b) document the D3-present trust assumption
+  ("`--rule-pack`-supplied templates run with the operator's
+  privileges; only load packs from trusted sources"). The
+  TODO(D6) marker on the format call carries the holistic
+  plugin-security design (whitelist of safe format specs
+  vs. safe-eval substitute) forward to D6 when user
+  ecosystems form, but the present-D3 hardening lands now.
+
+## Forward-Looking Risks (Future Deliveries)
+
+These do not change D3 mechanics. Recorded so future-delivery
+brainstorms inherit the context.
+
+- **Pyproject trust surface (next delivery).** When
+  `[tool.protokit.lint] rule_packs = [...]` lands in the
+  pyproject config delivery (formerly D5), rule_pack values
+  become "trust-the-pyproject-checked-into-the-repo" data —
+  anyone with push access controls a code-execution config.
+  **The next-delivery brainstorm MUST answer "what is the
+  allowlist/integrity strategy for `rule_packs` entries"
+  before any implementation lands**. Candidate mechanisms to
+  evaluate: (a) explicit `trusted_rule_packs = [...]` allowlist
+  separate from the auto-load list, (b) hash-pin the module
+  distribution to a known-good version, (c) require a
+  first-use confirmation prompt with human-actionable
+  messaging. At minimum, do not ship pyproject `rule_packs`
+  without choosing one of these.
+- **Plugin API trust surface (D7).** A formalized third-party
+  rule_pack distribution channel widens trust further. D7's
+  brainstorm must include a holistic plugin security review
+  starting from a clean threat model rather than inheriting
+  D3's "local operator trust" assumption transitively.
 
 ## Verified Codebase Context
 
@@ -727,7 +1165,8 @@ only human) is documented loud-and-clear at first run via the
   `_builtin_lint` nor any other lint module to this tuple
   (cold-import preservation).
 - `src/protokit/formatters/_registry.py` — `FormatterKind` enum.
-  D3 adds `LINT` as the fifth value.
+  D3 adds `LINT_REPORT` as the fifth value (per the
+  `_registry.py:41-42` noun-form convention).
 - `src/protokit/schema/lint/model.py:75-115` — `LintSeverity`
   enum (INFO/WARNING/ERROR) and `_SEVERITY_RANK` map. D3 maps
   `--min-severity LEVEL` choice values to these.
@@ -743,6 +1182,31 @@ only human) is documented loud-and-clear at first run via the
   — AC-05/AC-06 are folded in (R22/R23); REL-03 (R21) is
   deferred to D4 (formatter delivery is the only consumer);
   PERF-01 remains deferred per KD-8.
+- **Unit 1 inline addition** (already on `main` per
+  `c610dae` + ce:review follow-ups `50acd02`, `75b2430`):
+  `LintReport` gained an additive `specs: Mapping[str,
+  LintRuleSpec]` field, frozen post-construction via
+  `MappingProxyType`. Engine populates it from
+  `self._loaded_specs` at return time. The `lint_human`
+  formatter consumes `report.specs[finding.rule_id].message_template`
+  for message rendering; the additional machine formatters
+  (`lint_json`/`lint_junit`/`lint_sarif`, shipped in D3 per
+  KD-5 revised) use the same channel. U4's `--statistics`
+  footer does NOT read `specs` (per-severity counts come
+  from iterating `report.findings`).
+- **Unit 1 format-injection TODO** (in
+  `_builtin_lint.py:_render_message`): the
+  `template_str.format(**finding.params)` call ships
+  user-controlled-template support in D3 once R8's
+  `--rule-pack` flag lands in U3. The trust boundary is
+  D3-present (not D6-deferred) — see "D3-Present Security
+  Risks" section. The Unit 1 module docstring (currently
+  saying "D3 ships human only. D4 will extend...") is stale
+  after the D4-absorption decision and is updated as part
+  of U4's scope (alongside the three new formatter
+  registrations). The TODO(D6) on the format() call carries
+  forward the holistic plugin-security model design (template
+  whitelist/sandbox), which remains future-delivery work.
 
 ## Outstanding Questions
 
@@ -783,50 +1247,93 @@ only human) is documented loud-and-clear at first run via the
 
 ## Next Steps
 
-Hand off to `/ce:plan` with this requirements doc. Suggested
-unit decomposition (5 units, matching D2's granularity for an
-effort=M delivery):
+Hand off to `/ce:plan` with this requirements doc. Unit
+decomposition (5 units, matching D2's granularity for an
+effort=M delivery; Unit 1 already shipped on `main` per
+commits `c610dae` + `50acd02` + `75b2430`). Per KD-10, every
+unit lands in a state where `protokit lint <input>` produces
+defensible output:
 
-1. **Formatter substrate + auto-load list anchor** —
+1. **[SHIPPED] Formatter substrate + auto-load list anchor** —
    `FormatterKind.LINT_REPORT` enum value added to `_registry.py`;
    `src/protokit/formatters/_builtin_lint.py` created with
-   `_register_builtin` of the `human` lint formatter (R14, R15);
-   `BUILTIN_PACKS = (naming,)` constant added to
-   `src/protokit/schema/lint/rules/__init__.py` (Q1 resolution +
-   KD-9 anchor). NOT in eager-load tuple. Tests parametrize
-   `FormatterKind` including `LINT_REPORT`; updates
-   `test_all_four_kinds_present` to the five-kind set.
-2. **CLI scaffold + input modes** — `src/protokit/schema/lint/cli.py`
-   click subcommand registered on `protokit/cli.py`'s top-level
-   group; positional inputs + `--proto` source mode wired via
+   `_register_builtin` of the `human` lint formatter named
+   `lint_human` (R14, R15); `BUILTIN_PACKS = (naming,)`
+   constant added to `src/protokit/schema/lint/rules/__init__.py`
+   (Q1 resolution + KD-9 anchor). `LintReport.specs:
+   Mapping[str, LintRuleSpec]` added inline as a frozen
+   `MappingProxyType` field. NOT in eager-load tuple. Tests
+   parametrize `FormatterKind` including `LINT_REPORT`;
+   `test_all_four_kinds_present` renamed to
+   `test_all_kinds_present` and asserts the 5-kind set.
+2. **CLI scaffold + minimal end-to-end pipeline** —
+   `src/protokit/schema/lint/cli.py` click subcommand
+   registered on `protokit/cli.py`'s top-level group;
+   positional inputs + `--proto` source mode wired via
    `compile_protos_to_result` (D1) and the new
    `_load_descriptor_sets_to_result` helper (R24, with
    dedupe-before-Add ordering and cross-set symbol-collision
-   handling). Cold-import smoke step extended (R3). Covers R1,
-   R2, R4, R24.
-3. **Rule loading + profile resolution** — auto-load via
-   `BUILTIN_PACKS` (R6), `--no-builtin-rules` (R7), `--rule-pack`
-   with full-module-name semantics + shadow contract (R8),
-   `--profile` resolution + `LintProfile.compose` + R11
-   introspection, R25 composition stderr provenance,
+   handling); `_cli_utils.py` with `error_exit_with_code`,
+   `_LINT_ERROR_CODES`, and the input-side error codes
+   (`bad-input`, `pool-conflict`, `compile-failed`).
+   **Hard-coded happy path wired**: iterate `BUILTIN_PACKS`,
+   `LintProfile.from_pack(naming, "default")`, `engine.run`,
+   render via `lint_human`, `click.echo`. After this unit:
+   `protokit lint a.descriptor_set` produces a real findings
+   list. Cold-import smoke step extended (R3). Covers R1,
+   R2, R4, R24, R20a (helper + initial codes), and the
+   default case of R6.
+3. **Rule loading configurability + profile resolution** —
+   refactors U2's hard-coded auto-load + default profile
+   into the flag-driven version: `--rule-pack` with
+   full-module-name semantics + shadow contract (R8),
+   `--profile` resolution (single-pack from_pack only;
+   `LintProfile.compose` lifts back when `--rule-pack`
+   actually adds a second pack — see R10 revised),
+   R11 behavioral introspection on unknown-profile,
    `--min-severity` as a pure numeric override (no
-   LintRuntimeWarning emission — that's deferred to D5), R9
-   loud failure.
-4. **CI gating + exit codes + statistics footer + stable error prefixes** —
-   `--max-warnings`, `--statistics`, `--quiet`, exit-code ladder
-   (R20), `error_exit_with_code` helper in
-   `lint/_cli_utils.py` + `_LINT_ERROR_CODES` constant + stable
-   prefix codes (R20a), per-severity counts computed CLI-side
-   at render time, R16 footer.
+   `LintRuntimeWarning` emission — deferred to next
+   delivery), R9 loud failure. **R7 `--no-builtin-rules`
+   deferred to D6**. **R25 provenance gated on
+   `len(loaded_packs) >= 2`**. Extends `_LINT_ERROR_CODES`
+   with `no-rules`, `unknown-profile`, `rule-collision`,
+   `rule-pack-load`, `missing-imports`. After this unit:
+   zero-flag invocation behavior is unchanged from U2;
+   users gain the configuration knobs.
+4. **CI gating + statistics + all four formatters + stable error prefixes** —
+   `--max-warnings`, `--statistics` (default-OFF, opt-in),
+   `--quiet`, `--format` (resolves all four:
+   `human`/`json`/`junit`/`sarif`), exit-code ladder (R20),
+   per-severity counts computed CLI-side at render time
+   only when `--statistics` passed, lint-side formatter
+   wrapper that produces `error[lint-formatter-exception]:`
+   (sharing `run_formatter_safely`'s body via an
+   `error_exit_fn` parameter, OR duplicating with mirrored
+   guards — plan decides). **D3 absorbs D4's machine-format
+   formatters**: register `lint_json` / `lint_junit` /
+   `lint_sarif` via `_register_builtin` in
+   `_builtin_lint.py` alongside `lint_human`. Extends
+   `_LINT_ERROR_CODES` with `format-unavailable`,
+   `formatter-exception`. After this unit: zero-flag
+   invocation behavior is preserved (default-OFF statistics
+   means no footer noise); CI users gain the gating + full
+   formatter surface.
 5. **D2 residual docstring fold-ins (AC-05/AC-06) + integration tests + CI cold-import gate extension** — R22, R23,
    end-to-end coverage of every flag combination, every
    loud-failure path, every stable error-prefix code, the
-   cold-import quarantine.
+   cold-import quarantine. **Source-side D3-present
+   security hardening**: widen the `_render_message` catch
+   tuple in `_builtin_lint.py` to include `MemoryError` +
+   `RecursionError` (per Forward-Looking Risks D3-present
+   security entry).
 
-After D3 lands, the slicing-rationale revisit point from D2's
-brainstorm is reached. At that moment evaluate: did the staged
-review approach pay off, or should D5 + D6 fuse to compress
-remaining deliveries? D4 (machine-format formatters) is
-expected to land in close sequence with D3 to close the
-exit-code-only-gating gap; this is the most important
-sequencing decision to confirm during planning.
+D3's delivery shape (after the brainstorm pressure-test
+pass): U1 shipped, U2-U5 remain. The "what comes after D3"
+roadmap renumbers because D3 absorbed D4's machine
+formatters: the next delivery is pyproject config
+(`[tool.protokit.lint]`, formerly D5), then more rule packs
+(formerly D6 — promotion policy decision lives here per
+KD-9 revised), then plugin API parity (formerly D7,
+including `--compat-rule-pack` rename per the audit table's
+directional commitment). TODOS.md should be updated to
+reflect this renumbering before planning begins.
