@@ -1,8 +1,13 @@
 """Built-in LINT_REPORT formatters.
 
-D3 ships ``human`` only. D4 will extend this module with
-``json`` / ``junit`` / ``sarif`` formatters under the same
-``FormatterKind.LINT_REPORT`` discriminator.
+D3 ships all four lint formatters: ``human``, ``json``,
+``junit``, ``sarif`` (the original D3+D4 split was reversed
+during D3 brainstorm pressure-test pass per KD-5 — half-formatter
+parity damaged the CI-auditability identity bet, so D3 absorbs
+the original D4 scope). All four are registered under the same
+``FormatterKind.LINT_REPORT`` discriminator. Unit 1 shipped
+``human`` first (commit ``c610dae``); the three machine
+formatters land in U4.
 
 Cold-import contract: this module is **NOT** in the eager-load
 tuple at ``src/protokit/formatters/__init__.py`` — preserves
@@ -59,28 +64,62 @@ def _render_message(finding: LintFinding, spec: LintRuleSpec | None) -> str:
     if not template_str:
         return f"{finding.rule_id}"
 
-    # TODO(D6): when user `--rule-pack`s ship, sandbox this format()
-    # call. ``str.format(**params)`` lets a template author specify
-    # large width specifiers (``{name:>1000000}`` produces a 1M-char
-    # string — memory DoS) and traverse attributes
-    # (``{name.__class__.__bases__}`` walks Python's type hierarchy).
-    # For D3-D5 this is internal-pack-only (we control the templates),
-    # so the threat surface is bounded. D6's brainstorm should design
-    # the holistic plugin-security model alongside the `--rule-pack`
-    # flag's user contract.
+    # ``str.format(**params)`` is a D3-present trust-boundary: R8
+    # lets users load `--rule-pack` modules whose `LintRuleSpec`
+    # objects control these templates AND ``LintFinding.params``
+    # is typed ``dict[str, Any]`` so a user pack can store
+    # objects with custom ``__format__`` methods that can raise
+    # arbitrary ``Exception`` subclasses (``OverflowError``,
+    # ``ZeroDivisionError``, ``StopIteration``, etc.). The catch
+    # is a bare ``except Exception`` rather than a named tuple
+    # so that buggy or malicious user-pack templates produce a
+    # graceful rule_id fallback rather than crashing the
+    # formatter mid-render and dropping every subsequent
+    # finding.
+    #
+    # Threats acknowledged but NOT fully mitigated by this catch:
+    #   - Width-specifier OS OOM-kill: ``"{x:>10000000000}"`` may
+    #     allocate a large string before any Python exception
+    #     fires; the OS OOM-killer terminates the process before
+    #     the catch runs. Defense requires a width-cap pre-check
+    #     (deferred to D6 holistic plugin-security model).
+    #   - Attribute-traversal information disclosure:
+    #     ``"{name.__class__.__mro__}"`` returns successfully
+    #     and renders into output. No exception fires; the
+    #     catch is irrelevant. Defense requires template
+    #     validation/sanitization (deferred to D6).
+    #
+    # TODO(D6): the holistic plugin-security model — whitelist
+    # of safe format specs / pre-flight regex rejection of
+    # unsafe traversal patterns / safe-eval substitute — lands
+    # alongside the `--rule-pack` user-contract design. The
+    # broad ``except Exception`` here is defense-in-depth
+    # against crash-recovery, not a complete solution.
     try:
         return template_str.format(**finding.params)
-    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
-        # Defensive: every exception ``str.format`` can raise from a
-        # rule-author template + caller-supplied params:
+    except Exception:
+        # Defensive: any Exception from str.format or a user
+        # pack's custom __format__ method routes through a
+        # graceful rule_id + raw params fallback. Common cases:
         #   - ``KeyError``: missing param key (``"{missing}"``).
-        #   - ``IndexError``: positional placeholder out of range
-        #     (``"{0}"`` with empty params).
-        #   - ``ValueError``: malformed format spec (``"{x:invalid}"``).
-        #   - ``AttributeError``: dotted access on a value lacking
-        #     the attribute (``"{name.bad}"`` against a string).
-        #   - ``TypeError``: format-protocol mismatch (``"{name[0]}"``
-        #     against an int) or ``__format__`` returning non-str.
+        #   - ``IndexError``: positional placeholder out of range.
+        #   - ``ValueError``: malformed format spec or excess
+        #     nesting (``"{x:{y:{z}}}"``).
+        #   - ``AttributeError``: dotted access on a value
+        #     lacking the attribute.
+        #   - ``TypeError``: format-protocol mismatch or
+        #     ``__format__`` returning non-str.
+        #   - ``MemoryError``: rare; user-pack ``__format__``
+        #     allocates internally and exhausts memory before
+        #     OS OOM-kill.
+        #   - ``RecursionError``: deeply-recursive user-pack
+        #     ``__format__``.
+        #   - Any other ``Exception`` subclass from a custom
+        #     ``__format__`` implementation in user-pack params.
+        # ``BaseException`` (KeyboardInterrupt, SystemExit) is
+        # NOT caught — those propagate normally so users can
+        # cancel with Ctrl-C and the run_formatter_safely outer
+        # SystemExit guard catches sys.exit() bypass attempts.
         # Surface the rule_id + raw params rather than crashing the
         # whole render. Rule-author bugs become visible findings,
         # not lint-tool crashes.
@@ -124,8 +163,9 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 
     The ``--statistics`` footer is rendered by the CLI callback
     (Unit 4), NOT by this formatter — keeps the formatter pure
-    so that machine formats (D4 json/junit/sarif) which embed
-    counts in their structured payloads can reuse the same
+    so that machine formats (``lint_json`` / ``lint_junit`` /
+    ``lint_sarif``, also shipped in D3 per KD-5 revised) which
+    embed counts in their structured payloads can reuse the same
     ``LintReport`` input without footer-stripping logic.
 
     The function is named ``lint_human`` (not ``_render_human``)

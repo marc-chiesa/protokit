@@ -43,11 +43,15 @@ via ``--rule-pack <module>``. Promotion of a pack into
 
 Enforcement: ``tests/schema/lint/test_builtin_packs.py`` pins the
 exact membership of ``BUILTIN_PACKS``. Any change to the tuple
-fails the test, forcing the contributor to (a) update the test to
-match (signaling intent), (b) add a CHANGELOG entry (signaling
-release-note responsibility), and (c) coordinate with a major
-version bump. The hard CI gate replaces the soft-norm
-documentation policy with a structural guarantee.
+fails the test, forcing the contributor to update the test to
+match — a hard CI gate on **test consistency** that signals
+explicit intent for any change to the auto-load surface. The
+test does NOT enforce CHANGELOG-update-in-same-commit or
+major-version coordination; those remain **soft norms enforced
+via PR review**, not structural gates. The right time to invest
+in a structural CHANGELOG-diff hook is when the second pack is
+added (D6) — at one pack, the carrying cost of the hook
+substrate exceeds present value.
 """
 
 from __future__ import annotations
