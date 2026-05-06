@@ -1,0 +1,21 @@
+// Missing-imports fixture exercising the protoc footgun.
+//
+// Imports `google/protobuf/timestamp.proto` and uses
+// `google.protobuf.Timestamp` in a field. When compiled WITHOUT
+// `--include_imports`, the resulting `.descriptor_set` carries
+// only this user file (not the WKT dependency). Adding the file
+// to a fresh `DescriptorPool()` (no WKTs pre-loaded) raises a
+// `TypeError` whose message matches the
+// `has not been loaded` / `couldn't resolve name` predicate,
+// which routes to `error[lint-missing-imports]:`.
+
+syntax = "proto3";
+
+package cli_missing;
+
+import "google/protobuf/timestamp.proto";
+
+message Event {
+  string event_id = 1;
+  google.protobuf.Timestamp occurred_at = 2;
+}

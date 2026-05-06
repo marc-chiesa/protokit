@@ -1,0 +1,20 @@
+// Clean fixture for U2 happy-path CLI tests.
+//
+// Field names all match AIP-122 snake_case so the auto-loaded
+// canary (`naming/snake-case-fields`) fires zero findings against
+// this fixture. Verifies the "no findings" rendering path of
+// `protokit lint`.
+
+syntax = "proto3";
+
+package cli_clean;
+
+message User {
+  string user_id = 1;
+  string display_name = 2;
+}
+
+message Workspace {
+  string workspace_id = 1;
+  repeated User members = 2;
+}

@@ -1,0 +1,20 @@
+// Fixture exercising the canary `naming/snake-case-fields` rule.
+//
+// Two field names violate AIP-122 snake_case:
+//   - `BadCamelCase`: starts with uppercase
+//   - `with__double`: consecutive underscores
+//
+// `good_field_name` is valid and should NOT trigger.
+//
+// Used by U2 happy-path tests to verify findings render in
+// `lint_human` output.
+
+syntax = "proto3";
+
+package cli_badnaming;
+
+message ProblemMessage {
+  string good_field_name = 1;
+  string BadCamelCase = 2;
+  string with__double = 3;
+}

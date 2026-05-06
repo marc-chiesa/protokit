@@ -1,0 +1,16 @@
+// Cross-set symbol-collision fixture A.
+//
+// Compiles to its own `.descriptor_set` (different `fd.name` than
+// `pool_conflict_b.proto`), but defines the same message FQN
+// `cli_collision.Item`. When both `.descriptor_set` files are
+// passed to `protokit lint`, the second call to `pool.Add(fd)`
+// raises a TypeError matching "duplicate symbol", which routes
+// to `error[lint-pool-conflict]:`.
+
+syntax = "proto3";
+
+package cli_collision;
+
+message Item {
+  string field_a = 1;
+}

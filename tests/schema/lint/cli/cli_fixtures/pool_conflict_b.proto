@@ -1,0 +1,14 @@
+// Cross-set symbol-collision fixture B.
+//
+// Pairs with `pool_conflict_a.proto`. Defines the same message
+// FQN `cli_collision.Item` with a different field set, so the
+// merged-pool insert collides on the symbol name. See
+// `pool_conflict_a.proto` for the test rationale.
+
+syntax = "proto3";
+
+package cli_collision;
+
+message Item {
+  string field_b = 1;
+}
