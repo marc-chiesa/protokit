@@ -76,10 +76,15 @@ def error_exit_with_code(code: str, message: str) -> NoReturn:
             undeclared prefix.
         SystemExit: Always (exit code 2).
     """
-    assert code in _LINT_ERROR_CODES, (
-        f"undeclared lint error code: {code!r} "
-        f"(known: {_LINT_ERROR_CODES})"
-    )
+    # Use an explicit raise (not assert) so the validation survives
+    # `python -O` / `PYTHONOPTIMIZE=1` — assertions are stripped under
+    # optimization mode and the guard would silently degrade in
+    # production CI containers that pass `-O`.
+    if code not in _LINT_ERROR_CODES:
+        raise AssertionError(
+            f"undeclared lint error code: {code!r} "
+            f"(known: {_LINT_ERROR_CODES})"
+        )
     click.echo(f"error[lint-{code}]: {message}", err=True)
     sys.exit(2)
 
@@ -97,11 +102,6 @@ _MISSING_IMPORT_MARKERS = (
     "has not been loaded",
     "couldn't resolve name",
 )
-
-# Substring that confirms a TypeError is a same-symbol collision —
-# the canonical pool-conflict case.
-_DUPLICATE_SYMBOL_MARKER = "duplicate symbol"
-
 
 def _load_descriptor_sets_to_result(
     paths: tuple[Path, ...],
@@ -212,7 +212,16 @@ def _load_descriptor_sets_to_result(
             seen_names.add(fd.name)
             try:
                 pool.Add(fd)
-            except TypeError as exc:
+            except (TypeError, ValueError) as exc:
+                # protobuf-python's C++ runtime raises TypeError for
+                # the documented failure shapes (missing-imports,
+                # duplicate-symbol). The (TypeError, ValueError) catch
+                # mirrors compile.py:403's defensive over-catch — if a
+                # future protobuf release narrows or widens the
+                # exception type, lint's stable-prefix path stays
+                # intact rather than letting ValueError escape to
+                # click as exit 1 + traceback (no error[lint-...]
+                # prefix).
                 msg = str(exc)
                 if any(marker in msg for marker in _MISSING_IMPORT_MARKERS):
                     error_exit_with_code(

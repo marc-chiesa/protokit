@@ -5,15 +5,39 @@ multi-path dedup, and the four input-side error codes
 (``bad-input``, ``pool-conflict``, ``missing-imports``,
 ``compile-failed``). U3 adds rule-loading flag tests; U4a adds
 gating + format flag tests; U4b adds machine-formatter tests.
+
+Per the plan's U2 test obligation, the error-code dispatch tests
+exercise actual ``descriptor_pool.Add`` output for all three
+observed message shapes:
+
+- ``has not been loaded`` (missing transitive dependency file —
+  the protoc-without-include_imports footgun) — covered by the
+  ``missing_imports.descriptor_set`` fixture.
+- ``couldn't resolve name`` (dangling-symbol reference: a field
+  type_name references a FQN whose defining file is not present
+  in any descriptor in the set) — covered by the inline
+  FileDescriptorProto test below.
+- ``duplicate symbol`` (two descriptor sets define the same FQN
+  under different file names) — covered by the
+  ``pool_conflict_a/b`` fixtures.
+
+If a future protobuf version changes any of these substrings,
+the corresponding test fails CI rather than silently misroutes.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
+from google.protobuf import descriptor_pb2
 
 from protokit.cli import main as protokit_main
+from protokit.schema.lint import _cli_utils as lint_cli_utils
 from protokit.schema.lint.cli import main as lint_main
 
 # ---------------------------------------------------------------------------
@@ -49,7 +73,7 @@ class TestHappyPaths:
         # Rule_id appears in the rendered line.
         assert "naming/snake-case-fields" in result.output
 
-    def test_proto_source_mode(
+    def test_proto_source_mode_clean(
         self, fixtures_proto_dir: Path,
     ) -> None:
         clean_proto = fixtures_proto_dir / "clean.proto"
@@ -62,7 +86,27 @@ class TestHappyPaths:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert result.output == ""
+        assert result.stdout == ""
+
+    def test_proto_source_mode_with_findings(
+        self, fixtures_proto_dir: Path,
+    ) -> None:
+        """--proto pipeline produces non-empty findings (full chain)."""
+        bad_proto = fixtures_proto_dir / "bad_naming.proto"
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto",
+                str(bad_proto),
+                "-I", str(fixtures_proto_dir),
+            ],
+        )
+        # Exit 0 in U2 (R20 ladder is U4a's job).
+        assert result.exit_code == 0, result.output
+        # Both bad fields fire via the --proto pipeline:
+        assert "BadCamelCase" in result.stdout
+        assert "with__double" in result.stdout
+        assert "naming/snake-case-fields" in result.stdout
 
     def test_multi_path_descriptor_set_dedupes_first_wins(
         self, clean_descriptor_set: Path,
@@ -112,6 +156,15 @@ class TestClickUsageErrors:
 
 
 class TestErrorCodes:
+    """Stable `error[lint-CODE]:` prefix codes route to stderr.
+
+    Each test asserts the prefix lands on stderr (the contract:
+    CI scripts grep stderr for `error[lint-` prefixes) and that
+    the message body contains the protobuf-runtime substring
+    that drove the dispatch decision (per plan U2 test
+    obligation: pin against actual descriptor_pool output).
+    """
+
     def test_malformed_bytes_routes_to_bad_input(
         self, tmp_path: Path,
     ) -> None:
@@ -119,9 +172,10 @@ class TestErrorCodes:
         bad.write_bytes(b"this is not a FileDescriptorSet")
         result = CliRunner().invoke(lint_main, [str(bad)])
         assert result.exit_code == 2
-        assert "error[lint-bad-input]:" in result.output
+        # Code lands on stderr (NOT merged stdout):
+        assert "error[lint-bad-input]:" in result.stderr
         # Path is part of the message body.
-        assert str(bad) in result.output
+        assert str(bad) in result.stderr
 
     def test_cross_set_symbol_collision_routes_to_pool_conflict(
         self,
@@ -136,22 +190,107 @@ class TestErrorCodes:
             ],
         )
         assert result.exit_code == 2
-        assert "error[lint-pool-conflict]:" in result.output
-        # The duplicate-symbol marker should appear in the message body.
-        assert "duplicate symbol" in result.output.lower() or (
-            "Item" in result.output
-        )
+        assert "error[lint-pool-conflict]:" in result.stderr
+        # Pin against actual descriptor_pool wording so a future
+        # protobuf release that changes "duplicate symbol" surfaces
+        # as a CI failure (not a silent misroute).
+        assert "duplicate symbol" in result.stderr.lower()
 
-    def test_missing_imports_routes_to_missing_imports(
+    def test_missing_imports_routes_to_missing_imports_loaded_marker(
         self, missing_imports_descriptor_set: Path,
     ) -> None:
+        """`has not been loaded` shape — descriptor_set built without
+        ``protoc --include_imports``, leaving WKT deps unbundled.
+        """
         result = CliRunner().invoke(
             lint_main, [str(missing_imports_descriptor_set)],
         )
         assert result.exit_code == 2
-        assert "error[lint-missing-imports]:" in result.output
+        assert "error[lint-missing-imports]:" in result.stderr
         # User-actionable hint appears in the message body.
-        assert "include_imports" in result.output
+        assert "include_imports" in result.stderr
+        # Pin the protobuf-runtime substring that drove dispatch:
+        assert "has not been loaded" in result.stderr.lower()
+
+    def test_missing_imports_routes_to_missing_imports_resolve_name_marker(
+        self, tmp_path: Path,
+    ) -> None:
+        """`couldn't resolve name` shape — a FieldDescriptorProto
+        references a type FQN whose defining file is not in any
+        descriptor in the set.
+
+        Constructed inline (no .proto fixture) because the failure
+        mode requires a hand-built FileDescriptorProto: a field
+        with type=TYPE_MESSAGE and type_name pointing at an FQN
+        that no other descriptor in the set defines.
+        """
+        # Build a FileDescriptorProto with a field referencing
+        # `.unknown.MissingType` — no other file declares it.
+        fd = descriptor_pb2.FileDescriptorProto()
+        fd.name = "dangling.proto"
+        fd.package = "dangling"
+        fd.syntax = "proto3"
+        msg = fd.message_type.add()
+        msg.name = "Holder"
+        field = msg.field.add()
+        field.name = "missing_type_field"
+        field.number = 1
+        field.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+        field.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
+        field.type_name = ".unknown.MissingType"
+
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.add().CopyFrom(fd)
+
+        bad = tmp_path / "dangling.descriptor_set"
+        bad.write_bytes(fds.SerializeToString())
+
+        result = CliRunner().invoke(lint_main, [str(bad)])
+        assert result.exit_code == 2
+        assert "error[lint-missing-imports]:" in result.stderr
+        # Pin the protobuf-runtime substring that drove dispatch:
+        assert "couldn't resolve name" in result.stderr.lower()
+
+    def test_unmatched_typeerror_falls_through_to_pool_conflict(
+        self,
+        clean_descriptor_set: Path,
+        capsys: object,
+    ) -> None:
+        """Unmatched TypeError text routes to pool-conflict (legacy
+        fallthrough).
+
+        Future protobuf versions that change either the
+        missing-imports wording or the duplicate-symbol wording
+        without matching either marker should surface as
+        ``lint-pool-conflict`` with the raw exception text
+        rather than escape as an unhandled exception.
+
+        ``descriptor_pool.DescriptorPool.Add`` is a C-extension
+        method that resists ``unittest.mock.patch`` at the method
+        level. Patch the class accessor in the helper's import
+        namespace and call the helper directly (bypassing the
+        click runner, which would otherwise see SystemExit and
+        swallow the exit code rendering).
+        """
+        fake_pool = MagicMock()
+        fake_pool.Add.side_effect = TypeError("synthetic novel TypeError text")
+
+        with patch.object(
+            lint_cli_utils.descriptor_pool,
+            "DescriptorPool",
+            return_value=fake_pool,
+        ), pytest.raises(SystemExit) as exc_info:
+            lint_cli_utils._load_descriptor_sets_to_result(
+                (clean_descriptor_set,),
+            )
+        assert exc_info.value.code == 2
+
+        captured = capsys.readouterr()
+        assert "error[lint-pool-conflict]:" in captured.err
+        # Raw text passes through (not pinned to a specific phrase
+        # since the whole point of this test is that unmatched text
+        # still routes correctly).
+        assert "synthetic novel TypeError text" in captured.err
 
     def test_proto_mode_syntax_error_routes_to_compile_failed(
         self, tmp_path: Path,
@@ -167,7 +306,12 @@ class TestErrorCodes:
             ["--proto", str(bad_proto), "-I", str(tmp_path)],
         )
         assert result.exit_code == 2
-        assert "error[lint-compile-failed]:" in result.output
+        assert "error[lint-compile-failed]:" in result.stderr
+        # The diagnostic echo loop emits per-error diagnostic lines
+        # to stderr BEFORE the stable error-prefix code. Verify the
+        # echo loop runs (regression-protection — a refactor that
+        # drops the echo would silence the actionable detail).
+        assert "diagnostic[" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +325,6 @@ class TestColdImportContract:
     def test_protokit_schema_does_not_load_lint_cli(self) -> None:
         # Run in a subprocess so this test isn't polluted by other
         # tests that have already imported the lint CLI.
-        import subprocess
-        import sys
         result = subprocess.run(
             [
                 sys.executable,

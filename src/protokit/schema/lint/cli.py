@@ -39,11 +39,11 @@ from pathlib import Path
 
 import click
 
-# Side-effect import: registers lint_human (and, post-U4b,
-# lint_json/lint_junit/lint_sarif) in the formatter registry.
-# MUST happen at module top so registration runs at protokit.cli
-# load time, before click dispatches the subcommand callback.
-import protokit.formatters._builtin_lint  # noqa: F401  -- import for side effect
+# Importing ``lint_human`` registers all four lint formatters in the
+# formatter registry as a side effect — the ``_builtin_lint`` module
+# body runs ``_register_builtin`` calls at import time. This MUST
+# happen at module top so registration runs at ``protokit.cli`` load
+# time, before click dispatches the subcommand callback.
 from protokit.formatters import FormatterContext
 from protokit.formatters._builtin_lint import lint_human
 from protokit.schema.compile import compile_protos_to_result
@@ -59,6 +59,22 @@ from protokit.schema.lint.rules import BUILTIN_PACKS
 @click.command(
     "lint",
     short_help="Lint a protobuf schema for style and policy violations.",
+    epilog=(
+        "EXAMPLES:\n\n"
+        "  Lint a pre-built descriptor set:\n"
+        "    protokit lint schema.descriptor_set\n\n"
+        "  Lint .proto sources directly (compiled at invocation):\n"
+        "    protokit lint --proto api.proto -I src/\n\n"
+        "  Lint multiple descriptor sets merged into one pool:\n"
+        "    protokit lint a.descriptor_set b.descriptor_set\n\n"
+        "EXIT CODES (D3 Unit 2 — interim contract):\n\n"
+        "  0 = pipeline ran (regardless of finding count; the R20\n"
+        "      ladder ships in U4a where 0/1/2 will reflect findings\n"
+        "      vs --max-warnings vs internal errors).\n"
+        "  2 = lint-internal error (see error[lint-CODE]: stderr line\n"
+        "      for the stable-prefix code, or click's Usage: prefix\n"
+        "      for flag-validation errors)."
+    ),
 )
 @click.argument(
     "inputs",
@@ -81,8 +97,10 @@ from protokit.schema.lint.rules import BUILTIN_PACKS
     "proto_paths",
     multiple=True,
     metavar="DIR",
+    type=click.Path(exists=True, file_okay=False, path_type=str),
     help="Import path for .proto compilation (repeatable). "
-         "Only applies with --proto. Analogous to protoc -I.",
+         "Only applies with --proto. Analogous to protoc -I. "
+         "Must be an existing directory.",
 )
 def main(
     inputs: tuple[Path, ...],
@@ -125,11 +143,25 @@ def main(
         result = _load_descriptor_sets_to_result(inputs)
 
     # Auto-load BUILTIN_PACKS and derive the default profile.
-    # U3 lifts these hard-coded values into flag-driven equivalents.
+    # U3 lifts the hard-coded "default" name into a flag-driven
+    # equivalent (--profile NAME) per the plan's R10. Multi-pack
+    # composition is structurally correct here: a single-pack default
+    # short-circuits to the from_pack result; multi-pack inputs (e.g.,
+    # via --rule-pack in U3, or D6 promoting a second built-in pack)
+    # union rule_ids via LintProfile.compose. This avoids the silent
+    # rule-drop that would occur if BUILTIN_PACKS[0]'s profile alone
+    # were used at multi-pack scale.
     engine = LintEngine()
     for pack in BUILTIN_PACKS:
         engine.load_rule_pack(pack)
-    profile = LintProfile.from_pack(BUILTIN_PACKS[0], "default")
+    per_pack_profiles = [
+        LintProfile.from_pack(pack, "default") for pack in BUILTIN_PACKS
+    ]
+    profile = (
+        per_pack_profiles[0]
+        if len(per_pack_profiles) == 1
+        else LintProfile.compose(*per_pack_profiles)
+    )
 
     # Run the engine and render via lint_human.
     report = engine.run(result, profile=profile)
