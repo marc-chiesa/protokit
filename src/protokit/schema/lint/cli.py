@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+from collections import Counter
 from pathlib import Path
 from types import ModuleType
 
@@ -89,6 +90,7 @@ from protokit.schema.lint.model import (
     SEVERITY_RANK,
     DuplicateRuleError,
     LintProfile,
+    LintReport,
     LintSeverity,
 )
 from protokit.schema.lint.rules import BUILTIN_PACKS
@@ -108,21 +110,21 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     short_help="Lint a protobuf schema for style and policy violations.",
     epilog=(
         "EXAMPLES:\n\n"
-        "  Lint a pre-built descriptor set:\n"
+        "  Lint a pre-built descriptor set:\n\n"
         "    protokit lint schema.descriptor_set\n\n"
-        "  Lint .proto sources directly (compiled at invocation):\n"
+        "  Lint .proto sources directly (compiled at invocation):\n\n"
         "    protokit lint --proto api.proto -I src/\n\n"
-        "  Lint multiple descriptor sets merged into one pool:\n"
+        "  Lint multiple descriptor sets merged into one pool:\n\n"
         "    protokit lint a.descriptor_set b.descriptor_set\n\n"
-        "  Load a user rule pack on top of the built-in canary:\n"
+        "  Load a user rule pack on top of the built-in canary:\n\n"
         "    protokit lint --rule-pack acme.lint_rules schema.descriptor_set\n\n"
         "EXIT CODES (R20 ladder):\n\n"
         "  0 = clean run (no findings, or only INFO findings, or "
         "WARNINGs with --max-warnings unset / not exceeded).\n\n"
         "  1 = ERROR-severity finding present, OR WARNING count "
         "exceeds --max-warnings.\n\n"
-        "  2 = lint-internal error (see error[lint-CODE]: on stderr) "
-        "or click usage error."
+        "  2 = lint-internal error (`error[lint-CODE]:` prefix on stderr) "
+        "or click usage error (`Error:` or `Usage:` prefix on stderr)."
     ),
 )
 @click.argument(
@@ -191,12 +193,12 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     envvar="PROTOKIT_FORMAT",
     default="human",
     show_default=True,
+    show_envvar=True,
     metavar="NAME",
     help="Output format. 'human' is the default and only format "
          "registered in U4a; 'json', 'junit', and 'sarif' arrive "
          "in U4b and currently exit 2 via "
-         "error[lint-format-unavailable]:. Reads PROTOKIT_FORMAT "
-         "environment variable when the flag is omitted.",
+         "error[lint-format-unavailable]:.",
 )
 @click.option(
     "--max-warnings",
@@ -208,7 +210,7 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
          "findings (post --min-severity filter) exceed N. "
          "ERROR-severity findings always exit 1 regardless of N. "
          "Omit the flag to skip the WARNING gate entirely (exit 0 "
-         "on findings without ERROR).",
+         "on findings without ERROR). Must be >= 0.",
 )
 @click.option(
     "--statistics/--no-statistics",
@@ -217,7 +219,9 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     help="Append a per-severity finding-count footer to human "
          "output. Default OFF; pass --statistics to opt in. Footer "
          "is human-only — machine formats embed counts in their "
-         "structured payloads natively (in U4b).",
+         "structured payloads natively (in U4b). "
+         "Zero-count severity rows are suppressed; only non-zero "
+         "severities appear below the `statistics:` marker.",
 )
 @click.option(
     "--quiet",
@@ -252,18 +256,20 @@ def main(
     with first-occurrence-wins deduplication on ``fd.name``.
 
     """
+    format_name = format_name.lower()
     if quiet and format_name != "human":
         raise click.UsageError(
             f"--quiet is incompatible with --format={format_name!r}; "
             "use --quiet only with the human format (the default)."
         )
+    effective_statistics: bool | None = statistics
     if quiet and statistics:
         click.echo(
             "warning[lint-cli]: --quiet suppresses --statistics footer "
             "(--quiet wins)",
             err=True,
         )
-        statistics = False
+        effective_statistics = False
     _main_impl(
         inputs=inputs,
         use_proto=use_proto,
@@ -273,7 +279,7 @@ def main(
         min_severity=min_severity,
         format_name=format_name,
         max_warnings=max_warnings,
-        statistics=statistics,
+        statistics=effective_statistics,
         quiet=quiet,
     )
 
@@ -363,7 +369,8 @@ def _main_impl(
         # Stderr load-banner: every --rule-pack invocation emits
         # an advisory line so the trust delegation is observable.
         # Per the round-1 plan-review P1 finding on --rule-pack
-        # security mitigation. Future U4a `--quiet` will gate this.
+        # security mitigation. Stderr diagnostic; not gated by
+        # --quiet (which suppresses findings stdout only).
         safe_module_name = module_name.replace("\n", " ").replace("\r", " ")
         click.echo(
             f"protokit lint: loading user-supplied rule pack "
@@ -416,7 +423,8 @@ def _main_impl(
         )
         # Emit a relaxation breadcrumb when the override is more
         # lenient (lower SEVERITY_RANK = lower severity = more
-        # lenient). U4a's --quiet will gate this.
+        # lenient). Stderr diagnostic; not gated by --quiet (which
+        # suppresses findings stdout only).
         if (
             SEVERITY_RANK[override_severity]
             < SEVERITY_RANK[composed_floor]
@@ -484,8 +492,8 @@ def _main_impl(
     # `rule_exception` (a rule callable raised an exception caught
     # by the engine's narrow catch tuple) and `unloaded_rule` (the
     # active profile names a rule_id not loaded into the engine —
-    # reachable now that --rule-pack ships). Future U4a `--quiet`
-    # will gate this.
+    # reachable now that --rule-pack ships). Stderr diagnostic; not
+    # gated by --quiet (which suppresses findings stdout only).
     for warning in report.runtime_warnings:
         safe_message = warning.message.replace("\n", " ").replace("\r", " ")
         click.echo(
@@ -528,21 +536,18 @@ def _main_impl(
             sys.exit(1)
 
 
-def _emit_statistics_footer(report: object) -> None:
+def _emit_statistics_footer(report: LintReport) -> None:
     """Emit a per-severity finding-count footer to stdout.
 
     Empty rows (zero counts) are suppressed; the footer marker line
-    always emits when --statistics is set so an agent can detect
-    whether the flag was honored.
+    always emits when --statistics is set. Agents can verify the flag
+    was honored by checking for the `statistics:` marker line, but
+    should not parse individual rows as a stable contract — machine-readable
+    counts arrive in U4b's structured formats.
     """
-    findings = report.findings  # type: ignore[attr-defined]
-    counts: dict[LintSeverity, int] = {
-        LintSeverity.ERROR: 0,
-        LintSeverity.WARNING: 0,
-        LintSeverity.INFO: 0,
-    }
-    for finding in findings:
-        counts[finding.severity] += 1
+    counts: Counter[LintSeverity] = Counter(
+        finding.severity for finding in report.findings
+    )
 
     click.echo("statistics:")
     if counts[LintSeverity.ERROR]:
@@ -551,9 +556,7 @@ def _emit_statistics_footer(report: object) -> None:
         click.echo(f"  warnings: {counts[LintSeverity.WARNING]}")
     if counts[LintSeverity.INFO]:
         click.echo(f"  info: {counts[LintSeverity.INFO]}")
-    filtered = report.filtered_count  # type: ignore[attr-defined]
-    if filtered:
-        click.echo(f"  filtered: {filtered}")
-    runtime_warning_count = len(report.runtime_warnings)  # type: ignore[attr-defined]
-    if runtime_warning_count:
-        click.echo(f"  runtime-warnings: {runtime_warning_count}")
+    if report.filtered_count:
+        click.echo(f"  filtered: {report.filtered_count}")
+    if report.runtime_warnings:
+        click.echo(f"  runtime-warnings: {len(report.runtime_warnings)}")

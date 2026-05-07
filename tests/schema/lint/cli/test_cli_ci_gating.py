@@ -250,6 +250,7 @@ class TestMaxWarningsExitLadder:
             ],
         )
         assert result.exit_code == 1, result.output
+        assert "error-pack/always-error" in result.stdout
 
     def test_max_warnings_negative_is_click_validation_error(
         self, clean_descriptor_set: Path,
@@ -332,6 +333,7 @@ class TestStatisticsFooter:
             ["--statistics", str(clean_descriptor_set)],
         )
         assert result.exit_code == 0, result.output
+        assert "statistics:" in result.stdout
         # No severity rows because zero findings.
         assert "warning" not in result.stdout.lower()
         assert "error" not in result.stdout.lower()
@@ -405,3 +407,100 @@ class TestQuietFlag:
         assert "warning[lint-cli]:" in result.stderr
         assert "--quiet" in result.stderr
         assert "--statistics" in result.stderr
+
+    def test_statistics_footer_emits_before_exit_1_on_max_warnings_violation(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """The footer emits to stdout BEFORE sys.exit(1) fires when
+        --max-warnings is exceeded. An agent reading exit 1 + the
+        footer can both gate AND see counts in the same invocation."""
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--statistics",
+                "--max-warnings", "0",
+                str(bad_naming_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 1
+        assert "statistics:" in result.stdout
+        assert "warning" in result.stdout.lower()
+
+
+class TestFormatCaseNormalization:
+    """Case normalization for --format / PROTOKIT_FORMAT."""
+
+    def test_format_human_mixed_case_normalizes(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """--format=Human resolves identically to --format=human:
+        statistics gate fires and quiet mutex does NOT fire."""
+        result = CliRunner().invoke(
+            lint_main,
+            ["--format", "Human", "--statistics",
+             str(bad_naming_descriptor_set)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "statistics:" in result.stdout
+
+    def test_format_envvar_mixed_case_with_quiet_does_not_misfire(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """PROTOKIT_FORMAT=Human + --quiet should NOT raise the
+        quiet/non-human mutex — both resolve to human."""
+        result = CliRunner().invoke(
+            lint_main, ["--quiet", str(clean_descriptor_set)],
+            env={"PROTOKIT_FORMAT": "HUMAN"},
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_format_envvar_unknown_value_routes_to_format_unavailable(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """PROTOKIT_FORMAT=<unknown> exits 2 via lint-format-unavailable."""
+        result = CliRunner().invoke(
+            lint_main, [str(clean_descriptor_set)],
+            env={"PROTOKIT_FORMAT": "junk-format"},
+        )
+        assert result.exit_code == 2
+        assert "error[lint-format-unavailable]:" in result.stderr
+        assert "junk-format" in result.stderr
+
+
+class TestStatisticsRows:
+    """Coverage for filtered: and runtime-warnings: rows in the footer."""
+
+    def test_statistics_emits_filtered_row_when_min_severity_filters_findings(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """--min-severity=error filters WARNINGs out; the filtered count
+        appears in the statistics footer's filtered: row."""
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--statistics",
+                "--min-severity", "error",
+                str(bad_naming_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "statistics:" in result.stdout
+        assert "filtered:" in result.stdout
+
+    def test_statistics_emits_runtime_warnings_row(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """A rule that raises produces a runtime warning; --statistics
+        surfaces it in the runtime-warnings: row."""
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--statistics",
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_rule_raises",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "statistics:" in result.stdout
+        assert "runtime-warnings:" in result.stdout

@@ -11,14 +11,11 @@ import itertools
 import sys
 import textwrap
 from pathlib import Path
+from typing import TYPE_CHECKING, NoReturn
 
-import click
 import pytest
 from click.testing import CliRunner
-
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
-
-from typing import TYPE_CHECKING, NoReturn
 
 from protokit._cli_utils import run_formatter_safely
 from protokit.formatters import FormatterContext, clear_user_formatters
@@ -499,7 +496,7 @@ class TestRunFormatterSafelyErrorExitFn:
     def _make_ctx(self) -> FormatterContext:
         return FormatterContext(subcommand="diff")
 
-    def _record_calls(self) -> tuple[list[str], "Callable[[str], NoReturn]"]:
+    def _record_calls(self) -> tuple[list[str], Callable[[str], NoReturn]]:
         calls: list[str] = []
 
         def custom(msg: str) -> NoReturn:
@@ -508,13 +505,18 @@ class TestRunFormatterSafelyErrorExitFn:
 
         return calls, custom
 
-    def test_default_uses_error_exit_when_kwarg_omitted(self) -> None:
+    def test_default_uses_error_exit_when_kwarg_omitted(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         def boom(report: object, ctx: object) -> str:
-            raise RuntimeError("boom")
+            raise RuntimeError("raised RuntimeError")
 
         with pytest.raises(SystemExit) as exc_info:
             run_formatter_safely(boom, object(), self._make_ctx(), name="boom")
         assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert captured.err.startswith("Error: ")
+        assert "raised RuntimeError" in captured.err
 
     def test_custom_error_exit_fn_replaces_default_on_exception(
         self,

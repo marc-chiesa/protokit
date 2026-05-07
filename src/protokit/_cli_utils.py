@@ -526,6 +526,7 @@ def run_formatter_safely(
         for echoing it (:func:`click.echo`).
     """
     buffer = io.StringIO()
+    output: str | None = None
     try:
         with redirect_stdout(buffer):
             output = fn(report, ctx)
@@ -534,11 +535,13 @@ def run_formatter_safely(
             f"formatter '{name}' called sys.exit({exc.code!r}); "
             "formatters must return str only"
         )
+        raise SystemExit(2) from None  # backstop: error_exit_fn contract is NoReturn
     except Exception as exc:
         error_exit_fn(
             f"formatter '{name}' raised {type(exc).__name__}: "
             f"{_scrub_exc_message(exc)}"
         )
+        raise SystemExit(2) from None  # backstop: error_exit_fn contract is NoReturn
     leaked = buffer.getvalue()
     if leaked:
         error_exit_fn(
@@ -546,9 +549,11 @@ def run_formatter_safely(
             "(low-level fd writes such as os.write(1, ...) are not "
             "intercepted); formatters must return str only"
         )
+        raise SystemExit(2)  # backstop: error_exit_fn contract is NoReturn
     if not isinstance(output, str):
         error_exit_fn(
             f"formatter '{name}' returned {type(output).__name__}, "
             "expected str"
         )
+        raise SystemExit(2)  # backstop: error_exit_fn contract is NoReturn
     return output

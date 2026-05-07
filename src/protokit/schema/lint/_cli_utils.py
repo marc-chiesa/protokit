@@ -17,15 +17,17 @@ import importlib
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.message import DecodeError
 
 from protokit._cli_utils import _scrub_exc_message, run_formatter_safely
-from protokit.formatters import Formatter, FormatterContext
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
+
+if TYPE_CHECKING:
+    from protokit.formatters import Formatter, FormatterContext
 from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import DuplicateRuleError
