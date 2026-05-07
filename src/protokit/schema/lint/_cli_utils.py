@@ -13,8 +13,10 @@ The cold-import contract from D1 is preserved because
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import NoReturn
 
 import click
@@ -23,6 +25,9 @@ from google.protobuf.message import DecodeError
 
 from protokit._cli_utils import _scrub_exc_message
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
+from protokit.schema.lint.decorator import get_lint_spec
+from protokit.schema.lint.engine import LintEngine
+from protokit.schema.lint.model import DuplicateRuleError
 
 # ---------------------------------------------------------------------------
 # Stable error-prefix codes (R20a)
@@ -33,16 +38,21 @@ from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 #: lint-internal failures vs. click-side flag errors (which keep their
 #: own ``Usage:`` prefix per click's defaults).
 #:
-#: This is U2's initial set; U3 extends with rule-loading codes
-#: (``no-rules``, ``unknown-profile``, ``rule-collision``,
-#: ``rule-pack-load``); U4a extends with ``format-unavailable`` and
-#: ``formatter-exception``. The full D3 list (10 codes) lives in the
-#: plan's R20a Reachability Matrix.
+#: U2 shipped the input-side codes (bad-input, pool-conflict,
+#: missing-imports, compile-failed); U3 adds the rule-loading codes
+#: (no-rules, unknown-profile, rule-collision, rule-pack-load);
+#: U4a will add format-unavailable and formatter-exception.
+#: The full D3 list (10 codes) lives in the plan's R20a
+#: Reachability Matrix.
 _LINT_ERROR_CODES: tuple[str, ...] = (
     "bad-input",
     "pool-conflict",
     "missing-imports",
     "compile-failed",
+    "no-rules",
+    "unknown-profile",
+    "rule-collision",
+    "rule-pack-load",
 )
 
 
@@ -248,3 +258,153 @@ def _load_descriptor_sets_to_result(
         root_files=tuple(root_files),
         diagnostics=tuple(duplicates),
     )
+
+
+# ---------------------------------------------------------------------------
+# User rule-pack loading (R8)
+# ---------------------------------------------------------------------------
+
+
+def _load_user_rule_pack(
+    module_name: str, engine: LintEngine,
+) -> ModuleType:
+    """Import ``module_name`` and load its ``RULES`` into ``engine``.
+
+    Wraps three failure modes into the single ``rule-pack-load``
+    stable error code with a discriminating ``kind=`` token in the
+    message body so CI scripts can branch on the failure mode
+    without parsing freeform text:
+
+    - ``kind=import``: ``importlib.import_module`` raised any
+      ``Exception`` (module path typo, missing install, broken
+      ``__init__.py``, top-level ``NameError`` /
+      ``ZeroDivisionError`` / etc.) OR raised ``SystemExit`` —
+      the latter would otherwise bypass the broad ``except
+      Exception`` and produce a false-green CI exit if a user
+      pack's module body called ``sys.exit(0)``. The
+      ``except SystemExit`` guard is FIRST in the chain.
+    - ``kind=shape``: import succeeded but
+      ``engine.load_rule_pack`` raised ``TypeError`` (most
+      commonly because ``RULES`` contains compat-style
+      ``(rule_id, fn)`` tuples instead of ``@lint_rule``-decorated
+      callables — or any entry without a ``_lint_spec``
+      attribute).
+
+    Plus ``DuplicateRuleError`` from ``engine.load_rule_pack``
+    routes to the separate ``rule-collision`` code, since that's
+    a different remediation (rename a rule_id, not fix a wire
+    format).
+
+    Args:
+        module_name: Fully-qualified Python module path (e.g.,
+            ``acme.lint_rules``). Passed to
+            ``importlib.import_module``.
+        engine: The ``LintEngine`` to register the pack into.
+
+    Returns:
+        The successfully-imported module object (so the caller
+        can introspect ``module.RULES`` or ``module.__name__``
+        for downstream rendering, e.g., R25 provenance).
+
+    Raises:
+        SystemExit: Via :func:`error_exit_with_code` for any of:
+            ``rule-pack-load`` (import or wire-format failure),
+            ``rule-collision`` (cross-pack rule_id collision).
+    """
+    try:
+        module = importlib.import_module(module_name)
+    except SystemExit as exc:
+        error_exit_with_code(
+            "rule-pack-load",
+            f"kind=import: pack {module_name!r} called sys.exit("
+            f"{exc.code!r}) at module-body load time",
+        )
+    except Exception as exc:  # noqa: BLE001 -- mirrors compat's load_formatter_packs broad catch
+        error_exit_with_code(
+            "rule-pack-load",
+            f"kind=import: failed to import pack {module_name!r}: "
+            f"{type(exc).__name__}: {_scrub_exc_message(exc)}",
+        )
+
+    try:
+        engine.load_rule_pack(module)
+    except DuplicateRuleError as exc:
+        error_exit_with_code(
+            "rule-collision",
+            f"pack {module_name!r}: {_scrub_exc_message(exc)}",
+        )
+    except TypeError as exc:
+        error_exit_with_code(
+            "rule-pack-load",
+            f"kind=shape: pack {module_name!r} has wrong RULES wire "
+            f"format: {_scrub_exc_message(exc)}. lint expects "
+            f"RULES = (decorated_fn, ...); compat's "
+            f"RULES = ((rule_id, fn), ...) is incompatible. See "
+            f"docs/solutions/best-practices/audit-wire-format-"
+            f"before-claiming-sibling-parity-2026-05-03.md",
+        )
+
+    return module
+
+
+def _declared_profiles_per_pack(
+    packs: tuple[ModuleType, ...],
+) -> dict[str, frozenset[str]]:
+    """Map ``module.__name__`` to the set of profile names its rules declare.
+
+    Used by R11's unknown-profile error message (``Pack X declares
+    profiles: {a, b}``) and by R25's provenance line (which lists
+    contributing rule_ids per pack — see
+    :func:`_active_rule_ids_per_pack`).
+
+    Args:
+        packs: Successfully-loaded pack module objects (each
+            exposing a ``RULES`` tuple of ``@lint_rule``-decorated
+            callables).
+
+    Returns:
+        Dict from ``module.__name__`` to the union of all profile
+        names declared by any rule in that pack's ``RULES`` tuple.
+    """
+    result: dict[str, frozenset[str]] = {}
+    for pack in packs:
+        declared: set[str] = set()
+        for fn in getattr(pack, "RULES", ()):
+            spec = get_lint_spec(fn)
+            declared.update(spec.profiles)
+        result[pack.__name__] = frozenset(declared)
+    return result
+
+
+def _active_rule_ids_per_pack(
+    packs: tuple[ModuleType, ...],
+    active_rule_ids: frozenset[str],
+) -> dict[str, list[str]]:
+    """Map ``module.__name__`` to the rule_ids contributing to the active profile.
+
+    Walks each pack's ``RULES`` tuple and intersects the rule_id
+    set with ``active_rule_ids`` (the resolved profile's
+    ``rule_ids``). Used by R25's provenance line to render
+    ``PACK=[rid1,rid2]`` per loaded pack.
+
+    Args:
+        packs: Successfully-loaded pack module objects.
+        active_rule_ids: The composed profile's ``rule_ids``
+            field — only rule_ids in this set are "active" in
+            the run.
+
+    Returns:
+        Dict from ``module.__name__`` to a sorted list of
+        rule_ids from that pack that contribute to the active
+        profile. Packs with zero active rule_ids appear with an
+        empty list.
+    """
+    result: dict[str, list[str]] = {}
+    for pack in packs:
+        contributing: list[str] = []
+        for fn in getattr(pack, "RULES", ()):
+            spec = get_lint_spec(fn)
+            if spec.rule_id in active_rule_ids:
+                contributing.append(spec.rule_id)
+        result[pack.__name__] = sorted(contributing)
+    return result
