@@ -23,7 +23,8 @@ import click
 from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.message import DecodeError
 
-from protokit._cli_utils import _scrub_exc_message
+from protokit._cli_utils import _scrub_exc_message, run_formatter_safely
+from protokit.formatters import Formatter, FormatterContext
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.engine import LintEngine
@@ -39,11 +40,11 @@ from protokit.schema.lint.model import DuplicateRuleError
 #: own ``Usage:`` prefix per click's defaults).
 #:
 #: U2 shipped the input-side codes (bad-input, pool-conflict,
-#: missing-imports, compile-failed); U3 adds the rule-loading codes
+#: missing-imports, compile-failed); U3 added the rule-loading codes
 #: (no-rules, unknown-profile, rule-collision, rule-pack-load);
-#: U4a will add format-unavailable and formatter-exception.
-#: The full D3 list (10 codes) lives in the plan's R20a
-#: Reachability Matrix.
+#: U4a closes the set with format-unavailable and formatter-exception.
+#: Order is the R20a Reachability Matrix order — stable for
+#: documentation and CI grep contracts.
 #:
 #: Prefix family (stable, closed set per delivery):
 #:   info[lint-compile]:    backend info/warning diagnostics in --proto mode
@@ -52,12 +53,14 @@ from protokit.schema.lint.model import DuplicateRuleError
 #:   warning[lint-cli]:     CLI-layer advisories (e.g. ignored flags)
 #:   error[lint-CODE]:      exit-2 paths; CODE must be in this tuple
 _LINT_ERROR_CODES: tuple[str, ...] = (
+    "no-rules",
+    "unknown-profile",
+    "format-unavailable",
+    "compile-failed",
+    "formatter-exception",
     "bad-input",
     "pool-conflict",
     "missing-imports",
-    "compile-failed",
-    "no-rules",
-    "unknown-profile",
     "rule-collision",
     "rule-pack-load",
 )
@@ -104,6 +107,24 @@ def error_exit_with_code(code: str, message: str) -> NoReturn:
         )
     click.echo(f"error[lint-{code}]: {message}", err=True)
     sys.exit(2)
+
+
+def _run_lint_formatter_safely(
+    fn: Formatter, report: object, ctx: FormatterContext, *, name: str,
+) -> str:
+    """Lint-side wrapper around ``run_formatter_safely``.
+
+    Routes the four formatter contract violations (SystemExit,
+    generic Exception, stdout-leak, non-str return) through
+    ``error_exit_with_code("formatter-exception", ...)`` so they
+    land under the lint stable-prefix family on stderr.
+    """
+    def lint_error_exit(msg: str) -> NoReturn:
+        error_exit_with_code("formatter-exception", msg)
+
+    return run_formatter_safely(
+        fn, report, ctx, name=name, error_exit_fn=lint_error_exit,
+    )
 
 
 # ---------------------------------------------------------------------------

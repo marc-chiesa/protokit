@@ -53,6 +53,7 @@ on successful pipeline runs (the KD-10 invariant requires only
 from __future__ import annotations
 
 import dataclasses
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -64,14 +65,22 @@ import click
 # happen at module top so registration runs at ``protokit.cli`` load
 # time, before click dispatches the subcommand callback.
 from protokit._cli_utils import _scrub_exc_message
-from protokit.formatters import FormatterContext
-from protokit.formatters._builtin_lint import lint_human
+from protokit.formatters import (
+    FormatterContext,
+    FormatterKind,
+    get_formatter,
+    list_formatters,
+)
+from protokit.formatters._builtin_lint import (
+    lint_human,  # noqa: F401 -- import side-effect: registers lint formatters in the registry
+)
 from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint._cli_utils import (
     _active_rule_ids_per_pack,
     _declared_profiles_per_pack,
     _load_descriptor_sets_to_result,
     _load_user_rule_pack,
+    _run_lint_formatter_safely,
     _safe_module_name,
     error_exit_with_code,
 )
@@ -107,10 +116,13 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
         "    protokit lint a.descriptor_set b.descriptor_set\n\n"
         "  Load a user rule pack on top of the built-in canary:\n"
         "    protokit lint --rule-pack acme.lint_rules schema.descriptor_set\n\n"
-        "EXIT CODES (D3 U2/U3 interim contract):\n\n"
-        "  0 = pipeline completed (U2/U3: always 0; R20 ladder in U4a).\n\n"
-        "  1 = reserved; not yet emitted by this version (see U4a).\n\n"
-        "  2 = lint-internal error (see error[lint-CODE]: on stderr)."
+        "EXIT CODES (R20 ladder):\n\n"
+        "  0 = clean run (no findings, or only INFO findings, or "
+        "WARNINGs with --max-warnings unset / not exceeded).\n\n"
+        "  1 = ERROR-severity finding present, OR WARNING count "
+        "exceeds --max-warnings.\n\n"
+        "  2 = lint-internal error (see error[lint-CODE]: on stderr) "
+        "or click usage error."
     ),
 )
 @click.argument(
@@ -173,6 +185,52 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
          "advisory line when the override is more lenient than the "
          "composed floor.",
 )
+@click.option(
+    "--format",
+    "format_name",
+    envvar="PROTOKIT_FORMAT",
+    default="human",
+    show_default=True,
+    metavar="NAME",
+    help="Output format. 'human' is the default and only format "
+         "registered in U4a; 'json', 'junit', and 'sarif' arrive "
+         "in U4b and currently exit 2 via "
+         "error[lint-format-unavailable]:. Reads PROTOKIT_FORMAT "
+         "environment variable when the flag is omitted.",
+)
+@click.option(
+    "--max-warnings",
+    "max_warnings",
+    type=click.IntRange(min=0),
+    default=None,
+    metavar="N",
+    help="CI gate threshold. When set, exit 1 if WARNING-severity "
+         "findings (post --min-severity filter) exceed N. "
+         "ERROR-severity findings always exit 1 regardless of N. "
+         "Omit the flag to skip the WARNING gate entirely (exit 0 "
+         "on findings without ERROR).",
+)
+@click.option(
+    "--statistics/--no-statistics",
+    "statistics",
+    default=None,
+    help="Append a per-severity finding-count footer to human "
+         "output. Default OFF; pass --statistics to opt in. Footer "
+         "is human-only — machine formats embed counts in their "
+         "structured payloads natively (in U4b).",
+)
+@click.option(
+    "--quiet",
+    "quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress findings on stdout; exit code still reflects "
+         "the R20 ladder (0 clean, 1 ERROR or WARNING > "
+         "--max-warnings, 2 lint-internal error). Hard mutex with "
+         "--format=json/junit/sarif (click usage error). Soft "
+         "mutex with --statistics — emits a stderr advisory line "
+         "and --quiet wins (no footer).",
+)
 def main(
     inputs: tuple[Path, ...],
     use_proto: bool,
@@ -180,6 +238,10 @@ def main(
     rule_packs: tuple[str, ...],
     profile_name: str,
     min_severity: str | None,
+    format_name: str,
+    max_warnings: int | None,
+    statistics: bool | None,
+    quiet: bool,
 ) -> None:
     """Lint INPUTS for style and policy violations.
 
@@ -188,6 +250,48 @@ def main(
     treat them as ``.proto`` source files compiled at invocation
     time. Multiple inputs are merged into a single descriptor pool
     with first-occurrence-wins deduplication on ``fd.name``.
+
+    """
+    if quiet and format_name != "human":
+        raise click.UsageError(
+            f"--quiet is incompatible with --format={format_name!r}; "
+            "use --quiet only with the human format (the default)."
+        )
+    if quiet and statistics:
+        click.echo(
+            "warning[lint-cli]: --quiet suppresses --statistics footer "
+            "(--quiet wins)",
+            err=True,
+        )
+        statistics = False
+    _main_impl(
+        inputs=inputs,
+        use_proto=use_proto,
+        proto_paths=proto_paths,
+        rule_packs=rule_packs,
+        profile_name=profile_name,
+        min_severity=min_severity,
+        format_name=format_name,
+        max_warnings=max_warnings,
+        statistics=statistics,
+        quiet=quiet,
+    )
+
+
+def _main_impl(
+    *,
+    inputs: tuple[Path, ...],
+    use_proto: bool,
+    proto_paths: tuple[str, ...],
+    rule_packs: tuple[str, ...],
+    profile_name: str,
+    min_severity: str | None,
+    format_name: str,
+    max_warnings: int | None,
+    statistics: bool | None,
+    quiet: bool,
+) -> None:
+    """Implementation body of ``protokit lint`` after flag validation.
 
     Auto-loads ``BUILTIN_PACKS`` (the canonical ``naming`` canary
     today). User packs supplied via ``--rule-pack`` load on top.
@@ -389,7 +493,67 @@ def main(
             err=True,
         )
 
+    try:
+        formatter = get_formatter(format_name, FormatterKind.LINT_REPORT)
+    except KeyError:
+        available = ", ".join(sorted(list_formatters(FormatterKind.LINT_REPORT)))
+        error_exit_with_code(
+            "format-unavailable",
+            f"unknown format {format_name!r} for lint output "
+            f"(available: {available})",
+        )
+
     ctx = FormatterContext(subcommand="lint")
-    output = lint_human(report, ctx)
-    if output:
+    output = _run_lint_formatter_safely(
+        formatter, report, ctx, name=format_name,
+    )
+    if output and not quiet:
         click.echo(output)
+
+    if statistics and format_name == "human" and not quiet:
+        _emit_statistics_footer(report)
+
+    has_error = any(
+        finding.severity is LintSeverity.ERROR
+        for finding in report.findings
+    )
+    if has_error:
+        sys.exit(1)
+    if max_warnings is not None:
+        warning_count = sum(
+            1 for finding in report.findings
+            if finding.severity is LintSeverity.WARNING
+        )
+        if warning_count > max_warnings:
+            sys.exit(1)
+
+
+def _emit_statistics_footer(report: object) -> None:
+    """Emit a per-severity finding-count footer to stdout.
+
+    Empty rows (zero counts) are suppressed; the footer marker line
+    always emits when --statistics is set so an agent can detect
+    whether the flag was honored.
+    """
+    findings = report.findings  # type: ignore[attr-defined]
+    counts: dict[LintSeverity, int] = {
+        LintSeverity.ERROR: 0,
+        LintSeverity.WARNING: 0,
+        LintSeverity.INFO: 0,
+    }
+    for finding in findings:
+        counts[finding.severity] += 1
+
+    click.echo("statistics:")
+    if counts[LintSeverity.ERROR]:
+        click.echo(f"  errors: {counts[LintSeverity.ERROR]}")
+    if counts[LintSeverity.WARNING]:
+        click.echo(f"  warnings: {counts[LintSeverity.WARNING]}")
+    if counts[LintSeverity.INFO]:
+        click.echo(f"  info: {counts[LintSeverity.INFO]}")
+    filtered = report.filtered_count  # type: ignore[attr-defined]
+    if filtered:
+        click.echo(f"  filtered: {filtered}")
+    runtime_warning_count = len(report.runtime_warnings)  # type: ignore[attr-defined]
+    if runtime_warning_count:
+        click.echo(f"  runtime-warnings: {runtime_warning_count}")

@@ -18,9 +18,15 @@ from click.testing import CliRunner
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from protokit.formatters import clear_user_formatters
+from typing import TYPE_CHECKING, NoReturn
+
+from protokit._cli_utils import run_formatter_safely
+from protokit.formatters import FormatterContext, clear_user_formatters
 from protokit.message.cli import main as diff_main
 from protokit.schema.cli import main as compat_main
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @pytest.fixture(autouse=True)
@@ -479,3 +485,99 @@ class TestCompatFormatDispatch:
         assert result.exit_code == 2
         assert "unknown formatter 'sarif'" in result.output
         assert "DIFF" in result.output
+
+
+class TestRunFormatterSafelyErrorExitFn:
+    """Direct unit tests for the U4a additive ``error_exit_fn`` kwarg.
+
+    The shared body's four guards (SystemExit, generic Exception,
+    stdout-leak, non-str return) all route through ``error_exit_fn``
+    when set; default preserves the legacy ``error_exit`` prefix
+    used by compat callsites.
+    """
+
+    def _make_ctx(self) -> FormatterContext:
+        return FormatterContext(subcommand="diff")
+
+    def _record_calls(self) -> tuple[list[str], "Callable[[str], NoReturn]"]:
+        calls: list[str] = []
+
+        def custom(msg: str) -> NoReturn:
+            calls.append(msg)
+            raise SystemExit(99)
+
+        return calls, custom
+
+    def test_default_uses_error_exit_when_kwarg_omitted(self) -> None:
+        def boom(report: object, ctx: object) -> str:
+            raise RuntimeError("boom")
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_formatter_safely(boom, object(), self._make_ctx(), name="boom")
+        assert exc_info.value.code == 2
+
+    def test_custom_error_exit_fn_replaces_default_on_exception(
+        self,
+    ) -> None:
+        calls, custom = self._record_calls()
+
+        def boom(report: object, ctx: object) -> str:
+            raise RuntimeError("boom")
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_formatter_safely(
+                boom, object(), self._make_ctx(),
+                name="boom", error_exit_fn=custom,
+            )
+        assert exc_info.value.code == 99
+        assert len(calls) == 1
+        assert "raised RuntimeError" in calls[0]
+
+    def test_custom_error_exit_fn_replaces_default_on_systemexit(
+        self,
+    ) -> None:
+        calls, custom = self._record_calls()
+
+        def evil(report: object, ctx: object) -> str:
+            sys.exit(0)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_formatter_safely(
+                evil, object(), self._make_ctx(),
+                name="evil", error_exit_fn=custom,
+            )
+        assert exc_info.value.code == 99
+        assert "called sys.exit" in calls[0]
+
+    def test_custom_error_exit_fn_replaces_default_on_stdout_leak(
+        self,
+    ) -> None:
+        calls, custom = self._record_calls()
+
+        def leaky(report: object, ctx: object) -> str:
+            sys.stdout.write("leaked")
+            return "ok"
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_formatter_safely(
+                leaky, object(), self._make_ctx(),
+                name="leaky", error_exit_fn=custom,
+            )
+        assert exc_info.value.code == 99
+        assert "wrote to sys.stdout directly" in calls[0]
+
+    def test_custom_error_exit_fn_replaces_default_on_non_str_return(
+        self,
+    ) -> None:
+        calls, custom = self._record_calls()
+
+        def bad(report: object, ctx: object) -> str:
+            return 42  # type: ignore[return-value]
+
+        with pytest.raises(SystemExit) as exc_info:
+            run_formatter_safely(
+                bad, object(), self._make_ctx(),
+                name="bad", error_exit_fn=custom,
+            )
+        assert exc_info.value.code == 99
+        assert "returned int" in calls[0]

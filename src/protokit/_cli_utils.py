@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, NoReturn
@@ -490,6 +490,7 @@ def run_formatter_safely(
     ctx: FormatterContext,
     *,
     name: str,
+    error_exit_fn: Callable[[str], NoReturn] = error_exit,
 ) -> str:
     """Invoke a formatter with stdout-capture and exception fail-fast.
 
@@ -504,11 +505,21 @@ def run_formatter_safely(
        duration of the call; non-empty buffer triggers a
        contract-violation error (exit 2).
     2. **Exception fail-fast.** Any exception from ``fn``
-       converts to ``error_exit("formatter '{name}' raised
+       converts to ``error_exit_fn("formatter '{name}' raised
        {ExceptionType}: {message}")``. No traceback. The
        project doesn't have a ``--verbose`` flag today, so
        there's no opt-in for tracebacks; the one-line error
        matches every other CLI failure path.
+
+    Args:
+        error_exit_fn: Routing target for all four contract
+            violations (SystemExit, generic Exception,
+            stdout-leak, non-str return). Default is the
+            module-level ``error_exit`` (legacy compat-side
+            ``Error: …`` exit-2 prefix). Lint-side callers pass
+            a closure over ``error_exit_with_code(
+            "formatter-exception", …)`` so failures land under
+            the lint stable-prefix family.
 
     Returns:
         The formatter's returned string. Caller is responsible
@@ -519,30 +530,24 @@ def run_formatter_safely(
         with redirect_stdout(buffer):
             output = fn(report, ctx)
     except SystemExit as exc:
-        # SystemExit subclasses BaseException, not Exception, so
-        # the general handler below would let it through. A
-        # formatter calling sys.exit(0) would otherwise flip the
-        # CI exit code from 1 (incompatible) to 0 (compatible),
-        # defeating the gate. Forced through error_exit so
-        # exit code stays the report's verdict.
-        error_exit(
+        error_exit_fn(
             f"formatter '{name}' called sys.exit({exc.code!r}); "
             "formatters must return str only"
         )
     except Exception as exc:
-        error_exit(
+        error_exit_fn(
             f"formatter '{name}' raised {type(exc).__name__}: "
             f"{_scrub_exc_message(exc)}"
         )
     leaked = buffer.getvalue()
     if leaked:
-        error_exit(
+        error_exit_fn(
             f"formatter '{name}' wrote to sys.stdout directly "
             "(low-level fd writes such as os.write(1, ...) are not "
             "intercepted); formatters must return str only"
         )
     if not isinstance(output, str):
-        error_exit(
+        error_exit_fn(
             f"formatter '{name}' returned {type(output).__name__}, "
             "expected str"
         )
