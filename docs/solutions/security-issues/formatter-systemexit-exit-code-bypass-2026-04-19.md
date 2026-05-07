@@ -1,6 +1,7 @@
 ---
 title: "Formatter SystemExit bypass flips CLI exit code from 1 to 0"
 date: 2026-04-19
+last_updated: 2026-05-07
 category: docs/solutions/security-issues
 module: protokit.formatters
 problem_type: security_issue
@@ -211,13 +212,19 @@ caller interprets the process exit code), be explicit about the
 full `BaseException` tree. `except Exception` alone is insufficient.
 Choose one of:
 
-- **Explicit `except SystemExit` (and possibly `KeyboardInterrupt`)
-  before the general handler** — preferred when you want
-  fine-grained per-escape messaging. This is what this fix does.
+- **Explicit `except SystemExit` (and `KeyboardInterrupt` on
+  trust-delegation surfaces) before the general handler** —
+  preferred when you want fine-grained per-escape messaging. This is
+  what this fix does for the formatter dispatch surface; the
+  rule-pack module-body load surface needs both, see the per-surface
+  guidance in
+  `docs/solutions/security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`.
 - **`except BaseException` with deliberate re-raise** — appropriate
   when all escapes should be treated uniformly. Be careful: this
   also catches `KeyboardInterrupt`, which usually means the user
-  wanted to stop the process.
+  wanted to stop the process — fine on dispatch surfaces, NOT fine
+  on user-code-loading surfaces where a pack body raising
+  `KeyboardInterrupt` is adversarial input rather than user intent.
 
 Never assume `except Exception` is a catch-all. The name
 "Exception" is a *category*, not a synonym for "anything
@@ -234,6 +241,31 @@ any formatter or rule registers) would also escape and flip the
 exit code. Verify whether to extend the `except (SystemExit,
 Exception)` treatment to the pack-loading path, or document that
 pack modules must not call `sys.exit()` at import time.
+
+**Update (2026-05-07):** Both halves of this prediction were
+confirmed and closed in protokit-lint D3 Unit 3.
+
+- The `SystemExit` half landed in commit `4a17632` (`_load_user_rule_pack`
+  in `src/protokit/schema/lint/_cli_utils.py` adopts the
+  `except SystemExit` first / `except Exception` next pattern from
+  this learning).
+- The `KeyboardInterrupt` half — predicted parenthetically in this
+  doc's Prevention section as "possibly `KeyboardInterrupt`" — turned
+  out to be REQUIRED on the rule-pack surface (not "possibly"). The
+  D3 ce:review adversarial reviewer constructed the bypass and the
+  fix landed in commit `1249b10`. The full per-surface rationale is
+  captured in `docs/solutions/security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`.
+- A second, distinct vector was discovered on the same surface
+  (`module.__name__` newline injection forging fake `error[lint-…]:`
+  lines on stderr); see
+  `docs/solutions/security-issues/module-name-newline-injection-stderr-forge-2026-05-07.md`.
+
+The lesson for future similar predictions: when a "Symmetric
+surface" callout names a parenthetical "possibly," re-evaluate the
+parenthetical against the new surface's trust boundary at the time
+the new surface ships, not in a follow-up pass. The trust boundary
+of a *dispatch* surface (formatter rendering) and a *load* surface
+(plugin module-body execution) is not the same.
 
 ### Architectural posture
 
