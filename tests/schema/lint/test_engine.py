@@ -149,6 +149,14 @@ class TestLoadRulePack:
         engine.load_rule_pack(_make_pack("pack_reset", (rule_a,)))
         assert "a/one" in engine._loaded_specs
 
+    def test_has_rules_false_before_load_true_after(self) -> None:
+        rule_a = _decorated_field_rule("hr/one")
+        pack = _make_pack("pack_has_rules", (rule_a,))
+        engine = LintEngine()
+        assert not engine.has_rules
+        engine.load_rule_pack(pack)
+        assert engine.has_rules
+
 
 # ---------------------------------------------------------------------------
 # Run: walk semantics + sort order

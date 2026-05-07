@@ -254,7 +254,7 @@ class TestErrorCodes:
     def test_unmatched_typeerror_falls_through_to_pool_conflict(
         self,
         clean_descriptor_set: Path,
-        capsys: object,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Unmatched TypeError text routes to pool-conflict (legacy
         fallthrough).
@@ -380,3 +380,97 @@ class TestRegressionExistingSubcommands:
     def test_compat_help_unchanged(self) -> None:
         result = CliRunner().invoke(protokit_main, ["compat", "--help"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Non-error compile diagnostics in --proto mode (Fix X)
+# ---------------------------------------------------------------------------
+
+
+class TestProtoModeNonErrorDiagnostics:
+    def test_info_compile_diagnostic_surfaces_to_stderr(
+        self, fixtures_proto_dir: Path,
+    ) -> None:
+        """info/warning-level compile diagnostics from the backend appear on
+        stderr as ``info[lint-compile]:`` / ``warning[lint-compile]:`` lines.
+
+        Mocks ``compile_protos_to_result`` in the cli module's namespace to
+        return a ``CompileResult`` with a synthetic info-level diagnostic.
+        The actual compile pipeline is not exercised — this test pins the
+        CLI's diagnostic-emission loop, not the backend's diagnostic
+        production.
+        """
+        from protokit.schema.compile import CompileResult, LintCompileDiagnostic
+        from protokit.schema.lint import cli as lint_cli_module
+
+        clean_proto = fixtures_proto_dir / "clean.proto"
+
+        # Build a real CompileResult first so we have a valid pool/root_files:
+        from protokit.schema.compile import compile_protos_to_result as real_compile
+
+        real_result = real_compile(
+            paths=[clean_proto],
+            proto_paths=[str(fixtures_proto_dir)],
+        )
+        synthetic_info = LintCompileDiagnostic(
+            level="info",
+            category="protoxy_fallback",
+            message="synthetic-info-diagnostic-for-cli-test",
+        )
+        mocked_result = CompileResult(
+            pool=real_result.pool,
+            root_files=real_result.root_files,
+            diagnostics=(synthetic_info,),
+        )
+
+        with patch.object(
+            lint_cli_module,
+            "compile_protos_to_result",
+            return_value=mocked_result,
+        ):
+            result = CliRunner().invoke(
+                lint_main,
+                ["--proto", str(clean_proto), "-I", str(fixtures_proto_dir)],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "info[lint-compile]:" in result.stderr
+        assert "protoxy_fallback" in result.stderr
+        assert "synthetic-info-diagnostic-for-cli-test" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Fix D: --proto-path advisory in descriptor-set mode
+# ---------------------------------------------------------------------------
+
+
+class TestProtoPathAdvisory:
+    def test_proto_path_in_descriptor_set_mode_emits_advisory(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """-I in descriptor-set mode emits warning[lint-cli]: advisory on stderr."""
+        result = CliRunner().invoke(
+            lint_main,
+            ["-I", "/tmp", str(clean_descriptor_set)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "warning[lint-cli]:" in result.stderr
+        assert "--proto-path ignored" in result.stderr
+        assert "descriptor-set mode" in result.stderr
+
+    def test_proto_path_in_proto_mode_does_not_emit_advisory(
+        self, fixtures_proto_dir: Path,
+    ) -> None:
+        """-I in --proto mode is expected and must NOT emit the advisory."""
+        clean_proto = fixtures_proto_dir / "clean.proto"
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto",
+                str(clean_proto),
+                "-I", str(fixtures_proto_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "warning[lint-cli]:" not in result.stderr
+        assert "--proto-path ignored" not in result.stderr

@@ -76,7 +76,7 @@ class LintSeverity(Enum):
     """Severity ladder for lint findings.
 
     Ordering (least to most severe) is encoded by the
-    ``_SEVERITY_RANK`` table below for ``LintProfile.compose()``
+    ``SEVERITY_RANK`` table below for ``LintProfile.compose()``
     most-strict-wins semantics. The string values match the values
     used by ``LintCompileDiagnostic.level`` so formatters can render
     findings and diagnostics through the same code path.
@@ -106,10 +106,11 @@ class ElementKind(Enum):
 
 
 # Ordering table for ``LintProfile.compose()`` most-strict-wins
-# semantics. Higher number == more strict. ``Enum.value`` lexical
-# ordering ("error" < "info" < "warning") would be wrong, so we use
-# this explicit mapping instead.
-_SEVERITY_RANK: dict[LintSeverity, int] = {
+# semantics and CLI severity comparisons. Higher number == more strict.
+# ``Enum.value`` lexical ordering ("error" < "info" < "warning") would
+# be wrong, so we use this explicit mapping instead. Public so formatters
+# and CLI layers can rank severities without reaching into private symbols.
+SEVERITY_RANK: dict[LintSeverity, int] = {
     LintSeverity.INFO: 0,
     LintSeverity.WARNING: 1,
     LintSeverity.ERROR: 2,
@@ -616,17 +617,17 @@ class LintProfile:
             *(p.rule_ids for p in profiles)
         )
 
-        # Strictest min_severity = highest rank in _SEVERITY_RANK.
+        # Strictest min_severity = highest rank in SEVERITY_RANK.
         merged_min_severity: LintSeverity = max(
             (p.min_severity for p in profiles),
-            key=lambda s: _SEVERITY_RANK[s],
+            key=lambda s: SEVERITY_RANK[s],
         )
 
         merged_overrides: dict[str, LintSeverity] = {}
         for prof in profiles:
             for rule_id, sev in prof.rule_severity_overrides.items():
                 existing = merged_overrides.get(rule_id)
-                if existing is None or _SEVERITY_RANK[sev] > _SEVERITY_RANK[existing]:
+                if existing is None or SEVERITY_RANK[sev] > SEVERITY_RANK[existing]:
                     merged_overrides[rule_id] = sev
 
         return cls(

@@ -48,7 +48,12 @@ class TestProfileResolution:
         """--profile=strict resolves user pack's strict-only rule.
 
         Built-in canary doesn't declare 'strict' so it contributes
-        nothing; the user pack's one rule fires under that profile.
+        nothing; the user pack's one rule is selected under that profile.
+        ``clean.proto`` field names (``user_id``, ``workspace_id``,
+        ``display_name``, ``members``) contain no digit characters, so
+        ``strict-only/no-numbers`` fires zero findings — stdout is empty.
+        The R25 provenance line confirms ``strict-only/no-numbers`` was
+        the active rule, pinning that the profile was resolved correctly.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -60,14 +65,17 @@ class TestProfileResolution:
             ],
         )
         assert result.exit_code == 0, result.output
+        # No findings — clean.proto field names have no digit characters:
+        assert result.stdout == ""
+        # R25 provenance confirms the strict-only/no-numbers rule was active:
+        assert "strict-only/no-numbers" in result.stderr
 
     def test_unknown_profile_routes_to_unknown_profile_with_introspection(
         self, clean_descriptor_set: Path,
     ) -> None:
         """--profile=typo → R11 loud failure + per-pack introspection.
 
-        Lists declared profiles for every loaded pack so the user
-        sees what names ARE available.
+        Per-pack info lines appear before the single-line error.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -78,11 +86,19 @@ class TestProfileResolution:
         )
         assert result.exit_code == 2
         assert "error[lint-unknown-profile]:" in result.stderr
-        # R11 introspection: built-in canary's declared profile listed:
-        assert "protokit.schema.lint.rules.naming" in result.stderr
-        assert "default" in result.stderr  # the canary's profile
-        # The typo'd profile name appears in the message body:
-        assert "typo-not-real" in result.stderr
+        # R11 introspection: built-in canary's declared profile listed
+        # as a parseable info[lint-pack-profiles]: line:
+        assert (
+            "info[lint-pack-profiles]: pack=protokit.schema.lint.rules.naming "
+            "profiles=[default]"
+            in result.stderr
+        )
+        # Single-line error body:
+        assert (
+            "error[lint-unknown-profile]: profile 'typo-not-real' is not "
+            "declared by any loaded pack"
+            in result.stderr
+        )
 
     def test_unknown_profile_with_user_pack_lists_pack_profiles(
         self, clean_descriptor_set: Path,
@@ -99,9 +115,24 @@ class TestProfileResolution:
         )
         assert result.exit_code == 2
         assert "error[lint-unknown-profile]:" in result.stderr
-        # Both packs' declared profiles surface:
-        assert "default" in result.stderr  # from built-in canary
-        assert "strict" in result.stderr  # from pack_strict_only
+        # Both packs appear as parseable info[lint-pack-profiles]: lines:
+        assert (
+            "info[lint-pack-profiles]: pack=protokit.schema.lint.rules.naming "
+            "profiles=[default]"
+            in result.stderr
+        )
+        assert (
+            "info[lint-pack-profiles]: "
+            "pack=tests.schema.lint.cli.user_packs.pack_strict_only "
+            "profiles=[strict]"
+            in result.stderr
+        )
+        # Single-line error body:
+        assert (
+            "error[lint-unknown-profile]: profile 'nonexistent' is not "
+            "declared by any loaded pack"
+            in result.stderr
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +270,35 @@ class TestR25Provenance:
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile" in result.stderr
         assert "protokit lint: profile" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Runtime-warning emission (Fix W)
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeWarningEmission:
+    def test_rule_exception_surfaces_as_warning_lint_runtime(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """A rule that raises an exception produces ``warning[lint-runtime]:``
+        on stderr.
+
+        ``pack_rule_raises`` declares a rule that unconditionally raises
+        ``ValueError("synthetic-failure")``. The engine catches the
+        exception (its narrow-catch tuple includes ``Exception``),
+        records a ``LintRuntimeWarning(category="rule_exception")``,
+        and the CLI emits it to stderr.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_rule_raises",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "warning[lint-runtime]:" in result.stderr
+        assert "rule_exception" in result.stderr
+        assert "synthetic-failure" in result.stderr

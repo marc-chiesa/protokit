@@ -39,7 +39,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from protokit.schema.lint.model import (
-    _SEVERITY_RANK,
+    SEVERITY_RANK,
     DuplicateRuleError,
     ElementKind,
     EnumLintContext,
@@ -123,6 +123,19 @@ class LintEngine:
         self._runtime_warnings: list[LintRuntimeWarning] = []
         self._filtered_count: int = 0
         self._current_profile: LintProfile | None = None
+
+    # ------------------------------------------------------------------
+    # Public accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def has_rules(self) -> bool:
+        """True iff at least one rule has been loaded.
+
+        Public accessor for the R9 zero-rules CLI guard. Replaces the
+        prior ``_loaded_specs`` dict-truthiness check used by callers.
+        """
+        return bool(self._loaded_specs)
 
     # ------------------------------------------------------------------
     # Pack loading and reset
@@ -508,8 +521,8 @@ class LintEngine:
                 "ctx.emit() after run() returned. ctx is only valid for "
                 "the duration of the rule's invocation."
             )
-        min_rank = _SEVERITY_RANK[self._current_profile.min_severity]
-        finding_rank = _SEVERITY_RANK[finding.severity]
+        min_rank = SEVERITY_RANK[self._current_profile.min_severity]
+        finding_rank = SEVERITY_RANK[finding.severity]
         if finding_rank < min_rank:
             self._filtered_count += 1
             return

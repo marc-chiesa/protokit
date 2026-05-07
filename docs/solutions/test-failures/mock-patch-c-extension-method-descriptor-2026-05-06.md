@@ -1,7 +1,7 @@
 ---
 title: "unittest.mock.patch silently no-ops on protobuf-python C-extension methods (DescriptorPool.Add)"
 date: "2026-05-06"
-category: test-failures
+category: docs/solutions/test-failures
 module: protokit-lint
 problem_type: test_failure
 component: testing_framework

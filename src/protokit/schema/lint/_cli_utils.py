@@ -44,6 +44,13 @@ from protokit.schema.lint.model import DuplicateRuleError
 #: U4a will add format-unavailable and formatter-exception.
 #: The full D3 list (10 codes) lives in the plan's R20a
 #: Reachability Matrix.
+#:
+#: Prefix family (stable, closed set per delivery):
+#:   info[lint-compile]:    backend info/warning diagnostics in --proto mode
+#:   warning[lint-compile]: backend warning diagnostics in --proto mode
+#:   warning[lint-runtime]: engine runtime warnings (rule_exception, unloaded_rule)
+#:   warning[lint-cli]:     CLI-layer advisories (e.g. ignored flags)
+#:   error[lint-CODE]:      exit-2 paths; CODE must be in this tuple
 _LINT_ERROR_CODES: tuple[str, ...] = (
     "bad-input",
     "pool-conflict",
@@ -108,10 +115,21 @@ def error_exit_with_code(code: str, message: str) -> NoReturn:
 # ``error[lint-pool-conflict]:``. Verified empirically against
 # google.protobuf-python's C++ runtime output (see plan U2 test
 # obligation).
-_MISSING_IMPORT_MARKERS = (
+_MISSING_IMPORT_MARKERS: tuple[str, ...] = (
     "has not been loaded",
     "couldn't resolve name",
 )
+
+def _safe_module_name(module: ModuleType) -> str:
+    """Return ``module.__name__`` with embedded newlines collapsed to spaces.
+
+    Defense-in-depth against attacker-controlled module names flowing
+    into ``click.echo`` output lines. Newlines in a module ``__name__``
+    are pathological but theoretically injectable; collapsing them
+    prevents multi-line injection into single-line output fields.
+    """
+    return module.__name__.replace("\n", " ").replace("\r", " ")
+
 
 def _load_descriptor_sets_to_result(
     paths: tuple[Path, ...],
@@ -319,6 +337,12 @@ def _load_user_rule_pack(
             f"kind=import: pack {module_name!r} called sys.exit("
             f"{exc.code!r}) at module-body load time",
         )
+    except KeyboardInterrupt:
+        error_exit_with_code(
+            "rule-pack-load",
+            f"kind=import: pack {module_name!r} raised KeyboardInterrupt "
+            f"at module-body load time",
+        )
     except Exception as exc:  # noqa: BLE001 -- mirrors compat's load_formatter_packs broad catch
         error_exit_with_code(
             "rule-pack-load",
@@ -332,6 +356,12 @@ def _load_user_rule_pack(
         error_exit_with_code(
             "rule-collision",
             f"pack {module_name!r}: {_scrub_exc_message(exc)}",
+        )
+    except AttributeError as exc:
+        error_exit_with_code(
+            "rule-pack-load",
+            f"kind=shape: pack {module_name!r} has no RULES attribute "
+            f"(engine reported: {_scrub_exc_message(exc)})",
         )
     except TypeError as exc:
         error_exit_with_code(
@@ -397,7 +427,9 @@ def _active_rule_ids_per_pack(
         Dict from ``module.__name__`` to a sorted list of
         rule_ids from that pack that contribute to the active
         profile. Packs with zero active rule_ids appear with an
-        empty list.
+        empty list. Packs appear in argv insertion order:
+        BUILTIN_PACKS first, then ``--rule-pack`` argv order.
+        Within each pack, rule_ids are sorted lexicographically.
     """
     result: dict[str, list[str]] = {}
     for pack in packs:

@@ -63,6 +63,7 @@ import click
 # body runs ``_register_builtin`` calls at import time. This MUST
 # happen at module top so registration runs at ``protokit.cli`` load
 # time, before click dispatches the subcommand callback.
+from protokit._cli_utils import _scrub_exc_message
 from protokit.formatters import FormatterContext
 from protokit.formatters._builtin_lint import lint_human
 from protokit.schema.compile import compile_protos_to_result
@@ -71,11 +72,13 @@ from protokit.schema.lint._cli_utils import (
     _declared_profiles_per_pack,
     _load_descriptor_sets_to_result,
     _load_user_rule_pack,
+    _safe_module_name,
     error_exit_with_code,
 )
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
-    _SEVERITY_RANK,
+    SEVERITY_RANK,
+    DuplicateRuleError,
     LintProfile,
     LintSeverity,
 )
@@ -104,13 +107,10 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
         "    protokit lint a.descriptor_set b.descriptor_set\n\n"
         "  Load a user rule pack on top of the built-in canary:\n"
         "    protokit lint --rule-pack acme.lint_rules schema.descriptor_set\n\n"
-        "EXIT CODES (D3 U2/U3 — interim contract):\n\n"
-        "  0 = pipeline ran (regardless of finding count; the R20\n"
-        "      ladder ships in U4a where 0/1/2 will reflect findings\n"
-        "      vs --max-warnings vs internal errors).\n"
-        "  2 = lint-internal error (see error[lint-CODE]: stderr line\n"
-        "      for the stable-prefix code, or click's Usage: prefix\n"
-        "      for flag-validation errors)."
+        "EXIT CODES (D3 U2/U3 interim contract):\n\n"
+        "  0 = pipeline completed (U2/U3: always 0; R20 ladder in U4a).\n\n"
+        "  1 = reserved; not yet emitted by this version (see U4a).\n\n"
+        "  2 = lint-internal error (see error[lint-CODE]: on stderr)."
     ),
 )
 @click.argument(
@@ -168,7 +168,6 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     "min_severity",
     type=click.Choice(["info", "warning", "error"], case_sensitive=False),
     default=None,
-    metavar="LEVEL",
     help="Override the composed profile's severity floor. Findings "
          "below this severity are filtered. Emits a stderr "
          "advisory line when the override is more lenient than the "
@@ -193,10 +192,10 @@ def main(
     Auto-loads ``BUILTIN_PACKS`` (the canonical ``naming`` canary
     today). User packs supplied via ``--rule-pack`` load on top.
     See ``BUILTIN_PACKS`` in ``protokit.schema.lint.rules`` for the
-    auto-load surface (KD-9 anchor) and the plan's R8 for the
-    user-pack wire-format contract.
+    auto-load surface. Each ``--rule-pack`` module must expose
+    ``RULES = (decorated_fn, ...)`` where each callable is
+    ``@lint_rule``-decorated.
     """
-    # Resolve inputs into a CompileResult.
     if use_proto:
         result = compile_protos_to_result(
             paths=list(inputs),
@@ -208,26 +207,32 @@ def main(
         # / ADV-05 — agents in --proto mode now see all backend
         # diagnostics, not just errors). Error diagnostics are
         # rendered below right before the exit-2 stable-prefix line.
-        for diag in result.diagnostics:
-            if diag.level in ("info", "warning"):
+        info_warnings = [d for d in result.diagnostics if d.level != "error"]
+        errors = [d for d in result.diagnostics if d.level == "error"]
+        for diag in info_warnings:
+            click.echo(
+                f"{diag.level}[lint-compile]: "
+                f"{diag.category}: {diag.message}",
+                err=True,
+            )
+        if errors:
+            for diag in errors:
                 click.echo(
-                    f"{diag.level}[lint-compile]: "
-                    f"{diag.category}: {diag.message}",
+                    f"diagnostic[{diag.category}]: {diag.message}",
                     err=True,
                 )
-        if any(d.level == "error" for d in result.diagnostics):
-            for diag in result.diagnostics:
-                if diag.level == "error":
-                    click.echo(
-                        f"diagnostic[{diag.category}]: {diag.message}",
-                        err=True,
-                    )
             error_exit_with_code(
                 "compile-failed",
                 "source compile produced error-level diagnostics; "
                 "see stderr for details.",
             )
     else:
+        if proto_paths:
+            click.echo(
+                "warning[lint-cli]: --proto-path ignored in descriptor-set "
+                "mode (only applies with --proto)",
+                err=True,
+            )
         result = _load_descriptor_sets_to_result(inputs)
 
     # Build the engine and load BUILTIN_PACKS first, then any user
@@ -235,27 +240,36 @@ def main(
     # user packs collide on rule_id with built-in packs surface as
     # DuplicateRuleError → error[lint-rule-collision]:.
     engine = LintEngine()
-    for pack in BUILTIN_PACKS:
-        engine.load_rule_pack(pack)
-
     # Track every successfully-loaded pack (built-ins + user packs)
     # so we can introspect declared profiles for R11 and contributing
     # rule_ids for R25.
-    loaded_packs: list[ModuleType] = list(BUILTIN_PACKS)
+    loaded_packs: list[ModuleType] = []
+    for pack in BUILTIN_PACKS:
+        try:
+            engine.load_rule_pack(pack)
+        except (DuplicateRuleError, TypeError, AttributeError) as exc:
+            error_exit_with_code(
+                "rule-pack-load",
+                f"kind=builtin: built-in pack {pack.__name__!r} failed "
+                f"to load: {_scrub_exc_message(exc)}",
+            )
+        loaded_packs.append(pack)
+
     for module_name in rule_packs:
         # Stderr load-banner: every --rule-pack invocation emits
         # an advisory line so the trust delegation is observable.
         # Per the round-1 plan-review P1 finding on --rule-pack
         # security mitigation. Future U4a `--quiet` will gate this.
+        safe_module_name = module_name.replace("\n", " ").replace("\r", " ")
         click.echo(
             f"protokit lint: loading user-supplied rule pack "
-            f"{module_name!r} (executes arbitrary Python from the "
+            f"{safe_module_name!r} (executes arbitrary Python from the "
             f"named module)",
             err=True,
         )
         loaded_packs.append(_load_user_rule_pack(module_name, engine))
 
-    loaded_packs_tuple = tuple(loaded_packs)
+    loaded_packs_tuple: tuple[ModuleType, ...] = tuple(loaded_packs)
 
     # Profile resolution per origin R10 revised: derive each pack's
     # profile via LintProfile.from_pack, then compose if multi-pack.
@@ -270,10 +284,16 @@ def main(
     # uniformly. Today the branch is correct because from_pack always
     # returns min_severity = WARNING; the divergence only matters once
     # callers construct LintProfile with a non-default floor.
-    per_pack_profiles = [
-        LintProfile.from_pack(pack, profile_name)
-        for pack in loaded_packs_tuple
-    ]
+    per_pack_profiles: list[LintProfile] = []
+    for pack in loaded_packs_tuple:
+        try:
+            per_pack_profiles.append(LintProfile.from_pack(pack, profile_name))
+        except TypeError as exc:
+            error_exit_with_code(
+                "rule-pack-load",
+                f"kind=shape: pack {_safe_module_name(pack)!r} has malformed "
+                f"RULES (engine reported: {_scrub_exc_message(exc)})",
+            )
     composed_profile = (
         per_pack_profiles[0]
         if len(per_pack_profiles) == 1
@@ -291,11 +311,11 @@ def main(
             composed_profile, min_severity=override_severity,
         )
         # Emit a relaxation breadcrumb when the override is more
-        # lenient (lower _SEVERITY_RANK = lower severity = more
+        # lenient (lower SEVERITY_RANK = lower severity = more
         # lenient). U4a's --quiet will gate this.
         if (
-            _SEVERITY_RANK[override_severity]
-            < _SEVERITY_RANK[composed_floor]
+            SEVERITY_RANK[override_severity]
+            < SEVERITY_RANK[composed_floor]
         ):
             click.echo(
                 f"protokit lint: --min-severity={min_severity.lower()} "
@@ -308,7 +328,7 @@ def main(
     # Loud-failure checks per origin R9 + R11. R9 wins over R11 when
     # both predicates would fire — the user can't meaningfully fix
     # profile selection without rules to select from.
-    if not engine._loaded_specs:
+    if not engine.has_rules:
         error_exit_with_code(
             "no-rules",
             "no lint rules loaded — supply --rule-pack with a pack "
@@ -316,18 +336,22 @@ def main(
             "(see protokit.schema.lint.rules.BUILTIN_PACKS).",
         )
     if not composed_profile.rule_ids:
-        # Render per-pack declared profiles so the user sees what
-        # profile names ARE available across the loaded packs.
-        declared = _declared_profiles_per_pack(loaded_packs_tuple)
-        per_pack_lines = [
-            f"  {pack_name}: declared profiles = "
-            f"{{{', '.join(sorted(profiles)) or '(none)'}}}"
-            for pack_name, profiles in declared.items()
-        ]
+        # Emit per-pack introspection as parseable info lines, then the
+        # single-line error. Parseable prefix info[lint-pack-profiles]:
+        # lets agents extract available profile names without parsing
+        # freeform error text.
+        declared_per_pack = _declared_profiles_per_pack(loaded_packs_tuple)
+        for pack_name, profiles in declared_per_pack.items():
+            profiles_str = ", ".join(sorted(profiles)) if profiles else "(none)"
+            safe_pack_name = pack_name.replace("\n", " ").replace("\r", " ")
+            click.echo(
+                f"info[lint-pack-profiles]: pack={safe_pack_name} "
+                f"profiles=[{profiles_str}]",
+                err=True,
+            )
         error_exit_with_code(
             "unknown-profile",
-            f"profile {profile_name!r} matched 0 rules across "
-            f"loaded packs.\n" + "\n".join(per_pack_lines),
+            f"profile {profile_name!r} is not declared by any loaded pack",
         )
 
     # R25 multi-pack composition stderr provenance line. Gated on
@@ -338,8 +362,10 @@ def main(
             loaded_packs_tuple, composed_profile.rule_ids,
         )
         per_pack_segments = [
-            f"{pack_name}=[{','.join(rule_ids)}]"
-            for pack_name, rule_ids in active_per_pack.items()
+            f"{_safe_module_name(pack)}=[{','.join(rule_ids)}]"
+            for pack, rule_ids in zip(
+                loaded_packs_tuple, active_per_pack.values(), strict=True,
+            )
         ]
         click.echo(
             f"protokit lint: profile {profile_name!r} from "
@@ -347,7 +373,6 @@ def main(
             err=True,
         )
 
-    # Run the engine.
     report = engine.run(result, profile=composed_profile)
 
     # Emit runtime warnings to stderr (closes U2 ce:review CLR-U2-03
@@ -358,13 +383,12 @@ def main(
     # reachable now that --rule-pack ships). Future U4a `--quiet`
     # will gate this.
     for warning in report.runtime_warnings:
+        safe_message = warning.message.replace("\n", " ").replace("\r", " ")
         click.echo(
-            f"warning[lint-runtime]: {warning.category}: "
-            f"{warning.message}",
+            f"warning[lint-runtime]: {warning.category}: {safe_message}",
             err=True,
         )
 
-    # Render via lint_human to stdout.
     ctx = FormatterContext(subcommand="lint")
     output = lint_human(report, ctx)
     if output:

@@ -21,10 +21,12 @@ Plus the stderr load-banner advisory line emitted on every
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from protokit.schema.lint.cli import main as lint_main
+from protokit.schema.lint.model import LintProfile
 
 # ---------------------------------------------------------------------------
 # Happy paths
@@ -184,6 +186,30 @@ class TestRulePackLoadErrors:
 # ---------------------------------------------------------------------------
 
 
+class TestRulePackNoRules:
+    def test_pack_with_no_rules_attribute_routes_to_rule_pack_load_shape(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """Module with no RULES attribute → rule-pack-load with kind=shape.
+
+        Imports successfully but engine.load_rule_pack raises AttributeError
+        because the module has no RULES attribute at all.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_no_rules",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 2
+        assert "error[lint-rule-pack-load]:" in result.stderr
+        assert "kind=shape:" in result.stderr
+        assert "no RULES attribute" in result.stderr
+        assert "pack_no_rules" in result.stderr
+
+
 class TestRuleCollision:
     def test_user_pack_redeclares_builtin_rule_id_routes_to_rule_collision(
         self, clean_descriptor_set: Path,
@@ -202,3 +228,32 @@ class TestRuleCollision:
         assert "naming/snake-case-fields" in result.stderr
         # Pack name appears in the message body:
         assert "pack_collision" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Fix C: LintProfile.from_pack TypeError defense-in-depth (kind=shape)
+# ---------------------------------------------------------------------------
+
+
+class TestFromPackTypeErrorGuard:
+    def test_from_pack_typeerror_routes_to_rule_pack_load_shape(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """If LintProfile.from_pack raises TypeError, routes to rule-pack-load
+        kind=shape.
+
+        Simulates the defense-in-depth guard: from_pack is monkeypatched to
+        raise TypeError. In practice the engine validates at load_rule_pack
+        time, so this path is not user-reachable — the guard is defense-in-depth.
+        """
+        with patch.object(
+            LintProfile,
+            "from_pack",
+            side_effect=TypeError("synthetic-from-pack-error"),
+        ):
+            result = CliRunner().invoke(
+                lint_main, [str(clean_descriptor_set)],
+            )
+        assert result.exit_code == 2
+        assert "error[lint-rule-pack-load]:" in result.stderr
+        assert "kind=shape:" in result.stderr
