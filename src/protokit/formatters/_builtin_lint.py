@@ -28,6 +28,7 @@ which would raise ``FormatterError`` on the second import.
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from protokit.formatters import _junit_xml as junit
@@ -141,8 +142,11 @@ def _render_finding_line(finding: LintFinding, spec: LintRuleSpec | None) -> str
     Format:
         ``{SEVERITY} {location} [{rule_id}] {message}``
 
-    Example:
-        ``WARNING acme/user.proto:acme.User.bad_field [naming/snake-case-fields] Field 'bad_field' is not snake_case (AIP-122)``
+    Example::
+
+        WARNING acme/user.proto:acme.User.bad_field
+            [naming/snake-case-fields] Field 'bad_field' is not
+            snake_case (AIP-122)
     """
     severity = finding.severity.name  # "INFO" / "WARNING" / "ERROR"
     location = str(finding.location)
@@ -180,8 +184,9 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     The function is named ``lint_human`` (not ``_render_human``)
     to match the sibling-pattern parity convention established by
     ``_builtin_diff.diff_human`` / ``_builtin_compat.compat_human`` /
-    ``_builtin_history.history_human`` / ``_builtin_bisect.bisect_human``
-    — see ``docs/solutions/best-practices/audit-wire-format-before-claiming-sibling-parity-2026-05-03.md``.
+    ``_builtin_history.history_human`` /
+    ``_builtin_bisect.bisect_human`` — see
+    ``docs/solutions/best-practices/audit-wire-format-before-claiming-sibling-parity-2026-05-03.md``.
 
     Args:
         report: The lint pass result to render.
@@ -288,7 +293,7 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
 
 def _build_lint_testsuite(
     report: LintReport, _ctx: FormatterContext,
-) -> junit.ET.Element:
+) -> ET.Element:
     """Construct the LINT testsuite element.
 
     Per-finding ``<testcase>`` with ``<failure>`` body. Compile

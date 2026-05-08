@@ -106,17 +106,19 @@ jobs:
           print('cold-import OK')
           "
 
-      - name: Run mypy (scoped to D1 surface)
+      - name: Run mypy (scoped to D1+D3 ratcheted surface)
         # Strict-mode mypy is configured in pyproject.toml but the
         # broader codebase has ~30 pre-existing strict-mode errors.
-        # This step gates ONLY the modules introduced or refactored in
-        # protokit-lint Delivery 1 so the strict signal is enforced for
-        # new code without forcing pre-existing modules to clear strict
-        # mode in the same PR. Future deliveries can widen the scope by
-        # extending the path list here.
+        # This step gates ONLY the modules currently in
+        # tests/test_static_analysis.py:_TYPE_CHECK_PATHS — the lockstep
+        # is enforced by that test (any divergence between this list
+        # and the ratchet trips the ratchet test). Future deliveries
+        # widen the scope by extending BOTH the path list here AND
+        # _TYPE_CHECK_PATHS in tests/test_static_analysis.py.
         run: |
           python -m mypy \
             src/protokit/_cli_utils.py \
+            src/protokit/formatters/_builtin_lint.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/
 

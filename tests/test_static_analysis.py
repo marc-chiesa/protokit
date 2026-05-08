@@ -30,10 +30,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 # under both tools, add it to BOTH lists.
 _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
+    "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "tests/schema/lint",
     "tests/test_cli_utils.py",
+    "tests/test_formatters_cli.py",
     "tests/test_static_analysis.py",
 )
 
@@ -42,6 +44,7 @@ _LINT_PATHS: tuple[str, ...] = (
 # here also update CI so local and CI stay in lockstep.
 _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
+    "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
 )
