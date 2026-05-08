@@ -1,6 +1,7 @@
 ---
 title: "Normalize user-supplied names at the input boundary when any downstream consumer normalizes at lookup"
 date: 2026-05-07
+last_updated: 2026-05-08
 category: docs/solutions/best-practices
 module: tooling/cli
 problem_type: best_practice
@@ -329,6 +330,14 @@ immediately.
   "normalize at the INPUT boundary, not at comparison sites."
   Together they define the two boundary-discipline rules:
   normalize early (inputs), sanitize late (outputs).
+- `docs/solutions/best-practices/cross-format-enum-string-parity-2026-05-08.md`.
+  Output-side sibling discipline: where this doc covers
+  input-boundary normalization for string values, that doc
+  covers output-boundary serialization consistency for enum
+  values across sibling formatters (JSON, SARIF, JUnit). Same
+  family — boundary discipline — different direction.
+  Together: normalize early at inputs (this doc); serialize
+  consistently across sibling outputs (the new doc).
 - Anchor commits: `530010e` (the one-line `format_name.lower()`
   fix + `TestFormatCaseNormalization`); `e86ee0d` (the U4a feat
   delivery where the bug was latent).
