@@ -257,6 +257,7 @@ def main(
 
     """
     format_name = format_name.lower()
+    profile_name = profile_name.lower()
     if quiet and format_name != "human":
         raise click.UsageError(
             f"--quiet is incompatible with --format={format_name!r}; "

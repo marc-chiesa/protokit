@@ -302,3 +302,54 @@ class TestRuntimeWarningEmission:
         assert "warning[lint-runtime]:" in result.stderr
         assert "rule_exception" in result.stderr
         assert "synthetic-failure" in result.stderr
+
+
+class TestProfileCaseNormalization:
+    """Case normalization for ``--profile``.
+
+    Mirrors ``TestFormatCaseNormalization`` from
+    ``test_cli_ci_gating.py``. Pack authors declare lowercase
+    profile names by convention (``@lint_rule(profiles=("default",))``);
+    users typing ``--profile Default`` should resolve identically
+    rather than firing R11 unknown-profile. See
+    ``docs/solutions/best-practices/normalize-at-input-boundary-2026-05-07.md``.
+    """
+
+    def test_profile_default_mixed_case_resolves(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """--profile=Default resolves identically to --profile=default."""
+        result = CliRunner().invoke(
+            lint_main,
+            ["--profile", "Default", str(clean_descriptor_set)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "error[lint-unknown-profile]:" not in result.stderr
+
+    def test_profile_uppercase_resolves(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """--profile=DEFAULT (all caps) also resolves to default."""
+        result = CliRunner().invoke(
+            lint_main,
+            ["--profile", "DEFAULT", str(clean_descriptor_set)],
+        )
+        assert result.exit_code == 0, result.output
+        assert "error[lint-unknown-profile]:" not in result.stderr
+
+    def test_profile_mixed_case_strict_resolves_against_strict_only_pack(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """--profile=Strict resolves identically to --profile=strict
+        when a pack declares profiles=('strict',)."""
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_strict_only",
+                "--profile", "Strict",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "error[lint-unknown-profile]:" not in result.stderr
