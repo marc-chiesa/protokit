@@ -453,6 +453,7 @@ class TestFormatCaseNormalization:
             env={"PROTOKIT_FORMAT": "HUMAN"},
         )
         assert result.exit_code == 0, result.output
+        assert "--quiet is incompatible" not in result.output
 
     def test_format_envvar_unknown_value_routes_to_format_unavailable(
         self, clean_descriptor_set: Path,

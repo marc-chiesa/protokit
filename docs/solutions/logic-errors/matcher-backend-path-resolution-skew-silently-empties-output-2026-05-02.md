@@ -1,6 +1,7 @@
 ---
 title: "Matcher-vs-backend path resolution skew silently empties root_files on symlinked workspaces"
 date: 2026-05-02
+last_updated: 2026-05-08
 category: docs/solutions/logic-errors
 module: protokit/_cli_utils
 problem_type: logic_error
@@ -135,3 +136,4 @@ The deeper lesson: **the matcher must use the same resolution policy as the sour
 - `docs/solutions/best-practices/pytest-static-analysis-gate-ratchet-2026-05-02.md` — the static-analysis gate that would have caught some `.resolve()`-related type issues but not this logic bug; static analysis can't see across the boundary to "what does the external tool actually do."
 - `docs/solutions/test-failures/pytestmark-does-not-guard-module-top-imports-2026-05-02.md` — companion bug from the same review pass; both are "code looks correct AND unit tests pass AND CI passes, but production fails silently" cases. The shared lesson is that `tmp_path` and clean Ubuntu CI hide environment-specific bugs.
 - `docs/brainstorms/2026-04-30-protokit-lint-delivery-1-foundation-requirements.md` (F1 false-positive section) — the requirements doc flagged the original `endswith("/" + p.name)` matcher as wrong because of basename collisions, and proposed pre-computing expected `fd.name` via resolution. The proposal landed; the resolution policy was the half that needed more thought.
+- `docs/solutions/best-practices/normalize-at-input-boundary-2026-05-07.md` — concrete in-codebase instance of the same transformation-skew class (Prevention #5) applied to a registry lookup: the formatter registry normalized names to lowercase at lookup while CLI comparisons did not, silently suppressing `--statistics` and misfiring the `--quiet` mutex. Same root cause, different transformation (`.lower()` instead of `.resolve()`); same fix shape (normalize at the input boundary so caller and consumer agree).
