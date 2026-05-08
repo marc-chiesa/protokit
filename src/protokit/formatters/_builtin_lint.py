@@ -27,13 +27,22 @@ which would raise ``FormatterError`` on the second import.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
+from protokit.formatters import _junit_xml as junit
 from protokit.formatters._registry import (
     FormatterContext,
     FormatterKind,
     _register_builtin,
 )
 from protokit.schema.compile import LintCompileDiagnostic
-from protokit.schema.lint.model import LintFinding, LintReport, LintRuleSpec
+from protokit.schema.lint.model import (
+    LintFinding,
+    LintReport,
+    LintRuleSpec,
+    LintSeverity,
+)
 
 
 def _render_message(finding: LintFinding, spec: LintRuleSpec | None) -> str:
@@ -200,6 +209,309 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     return "\n".join(lines)
 
 
+def _severity_counts(findings: tuple[LintFinding, ...]) -> dict[str, int]:
+    """Return per-severity counts as a dict keyed by enum name."""
+    counts = {"errors": 0, "warnings": 0, "info": 0}
+    for finding in findings:
+        if finding.severity is LintSeverity.ERROR:
+            counts["errors"] += 1
+        elif finding.severity is LintSeverity.WARNING:
+            counts["warnings"] += 1
+        elif finding.severity is LintSeverity.INFO:
+            counts["info"] += 1
+    return counts
+
+
+def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
+    """Render a LintReport as pretty-printed JSON.
+
+    Top-level keys (stable schema):
+
+    - ``findings``: list of finding dicts (rule_id, severity,
+      location, violation_kind, message).
+    - ``filtered_count``: int (count of findings dropped by
+      ``--min-severity`` filtering).
+    - ``runtime_warnings``: list of warning dicts (category,
+      rule_id, message, exception_type, descriptor_path).
+    - ``diagnostics``: list of compile-time diagnostic dicts
+      (level, category, message); empty unless ``--proto`` mode
+      surfaced backend notices.
+    - ``summary``: per-severity counts (errors, warnings, info,
+      total) plus filtered_count and runtime_warning_count. Embeds
+      what the human-format ``--statistics`` footer would have
+      shown, so machine-format consumers don't need ``--statistics``
+      and the flag is silently ignored when ``--format=json``.
+    """
+    del _ctx
+    findings_payload: list[dict[str, Any]] = [
+        {
+            "rule_id": finding.rule_id,
+            "severity": finding.severity.name,
+            "location": str(finding.location),
+            "violation_kind": finding.violation_kind,
+            "message": _render_message(
+                finding, report.specs.get(finding.rule_id),
+            ),
+        }
+        for finding in report.findings
+    ]
+    runtime_warnings_payload: list[dict[str, Any]] = [
+        {
+            "category": w.category,
+            "rule_id": w.rule_id,
+            "message": w.message,
+            "exception_type": w.exception_type,
+            "descriptor_path": w.descriptor_path,
+        }
+        for w in report.runtime_warnings
+    ]
+    diagnostics_payload: list[dict[str, Any]] = [
+        {"level": d.level, "category": d.category, "message": d.message}
+        for d in report.diagnostics
+    ]
+    counts = _severity_counts(report.findings)
+    summary: dict[str, int] = {
+        **counts,
+        "total": len(report.findings),
+        "filtered_count": report.filtered_count,
+        "runtime_warning_count": len(report.runtime_warnings),
+    }
+    payload: dict[str, Any] = {
+        "findings": findings_payload,
+        "filtered_count": report.filtered_count,
+        "runtime_warnings": runtime_warnings_payload,
+        "diagnostics": diagnostics_payload,
+        "summary": summary,
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _build_lint_testsuite(
+    report: LintReport, _ctx: FormatterContext,
+) -> junit.ET.Element:
+    """Construct the LINT testsuite element.
+
+    Per-finding ``<testcase>`` with ``<failure>`` body. Compile
+    error diagnostics become ``<error>`` testcases; non-error
+    diagnostics surface in ``<system-out>`` so they don't inflate
+    the failure count. Empty-suite fallback emits a single passing
+    ``<testcase classname="lint" name="clean"/>`` so CI consumers
+    don't read "no tests ran."
+    """
+    del _ctx
+    error_diags = [d for d in report.diagnostics if d.level == "error"]
+    warning_diags = [d for d in report.diagnostics if d.level != "error"]
+    findings_count = len(report.findings)
+    errors_count = len(error_diags)
+
+    has_real_cases = findings_count > 0 or errors_count > 0
+    tests_count = findings_count + errors_count if has_real_cases else 1
+    failures_count = findings_count
+
+    suite = junit.make_testsuite(
+        name="protokit-lint",
+        tests=tests_count,
+        failures=failures_count,
+        errors=errors_count,
+    )
+
+    for finding in report.findings:
+        spec = report.specs.get(finding.rule_id)
+        message = _render_message(finding, spec)
+        case = junit.make_testcase(
+            classname=finding.rule_id,
+            name=str(finding.location),
+        )
+        junit.append_failure(
+            case,
+            message=message,
+            type_=finding.severity.name.lower(),
+            body=message,
+        )
+        junit.add_testcase(suite, case)
+
+    for diag in error_diags:
+        case = junit.make_testcase(
+            classname="diagnostic",
+            name=diag.category or "(global)",
+        )
+        junit.append_error(
+            case, message=diag.message, type_="error", body=diag.message,
+        )
+        junit.add_testcase(suite, case)
+
+    if not has_real_cases:
+        junit.add_testcase(
+            suite, junit.make_testcase(classname="lint", name="clean"),
+        )
+
+    if warning_diags:
+        junit.append_system_out(
+            suite,
+            "\n".join(
+                f"{d.level} [{d.category}]: {d.message}" for d in warning_diags
+            ),
+        )
+    return suite
+
+
+def lint_junit(report: LintReport, ctx: FormatterContext) -> str:
+    """Render a LintReport as JUnit XML.
+
+    Returns a standalone ``<testsuite>`` root suitable for CI
+    test-result panels. Each finding becomes a ``<failure>``
+    element under a ``<testcase>`` whose classname is the rule_id
+    and whose name is the finding's location. Mirrors compat's
+    ``compat_junit`` shape; see ``_build_lint_testsuite`` for
+    per-element semantics and the empty-suite fallback.
+    """
+    return junit.serialize(_build_lint_testsuite(report, ctx))
+
+
+def _lint_severity_to_sarif_level(severity: LintSeverity) -> str:
+    """Map a LintSeverity to SARIF's level enum.
+
+    SARIF defines four levels: ``"none" | "note" | "warning" | "error"``.
+    LintSeverity has three; INFO maps to ``"note"`` (SARIF's
+    informational level), WARNING and ERROR map directly.
+    """
+    if severity is LintSeverity.ERROR:
+        return "error"
+    if severity is LintSeverity.WARNING:
+        return "warning"
+    return "note"
+
+
+def _lint_result_for_finding(
+    finding: LintFinding, message: str,
+) -> dict[str, Any]:
+    """Build one SARIF ``result`` object from a LintFinding.
+
+    Lint findings have no proto-file / partial-fingerprints
+    context (the location string is the canonical address), so
+    this is a narrower shape than compat's ``_result_for_finding``.
+    """
+    return {
+        "ruleId": finding.rule_id,
+        "level": _lint_severity_to_sarif_level(finding.severity),
+        "message": {"text": message},
+        "locations": [{
+            "logicalLocations": [{
+                "fullyQualifiedName": str(finding.location),
+            }],
+        }],
+    }
+
+
+def _lint_rules_catalog(
+    rule_ids: set[str], specs: dict[str, LintRuleSpec],
+) -> list[dict[str, Any]]:
+    """Build the ``run.tool.driver.rules`` array for fired rules.
+
+    SARIF requires every ``result.ruleId`` to have a corresponding
+    rule entry in ``tool.driver.rules`` (or a ``$ref``-style
+    ``rule.index`` form). Use rule_id as both id and name; pull
+    the short description from the spec when available, fall back
+    to a generic stub when the spec wasn't passed through (e.g.
+    a future report shape that omits ``specs``).
+    """
+    out: list[dict[str, Any]] = []
+    for rule_id in sorted(rule_ids):
+        spec = specs.get(rule_id)
+        if spec is not None and isinstance(spec.message_template, str):
+            description = spec.message_template
+        else:
+            description = f"Lint rule: {rule_id}"
+        out.append({
+            "id": rule_id,
+            "name": rule_id,
+            "shortDescription": {"text": description},
+        })
+    return out
+
+
+def _protokit_version() -> str:
+    """Best-effort lookup of the installed protokit version.
+
+    Falls back to ``"0.0.0"`` if the package isn't installed
+    (uninstalled checkout). Used in SARIF ``tool.driver.version``.
+    Mirrors compat's ``_builtin_compat._protokit_version``.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("protokit")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
+    """Render a LintReport as SARIF 2.1.0 JSON.
+
+    Single ``run`` containing one ``result`` per finding, with
+    every fired rule_id declared in ``run.tool.driver.rules``.
+    Compile-time error diagnostics surface in
+    ``invocations[0].toolExecutionNotifications`` with level
+    ``"error"`` and flip ``executionSuccessful`` to false; non-error
+    diagnostics surface in the same array with level ``"warning"``.
+    Reuses ``_sarif_json`` constants (TOOL_NAME, schema URL,
+    build_document) for sibling-pattern parity with ``compat_sarif``.
+    """
+    del _ctx
+    from protokit.formatters import _sarif_json as sarif
+
+    error_diags = [d for d in report.diagnostics if d.level == "error"]
+    warning_diags = [d for d in report.diagnostics if d.level != "error"]
+
+    results = [
+        _lint_result_for_finding(
+            finding,
+            _render_message(finding, report.specs.get(finding.rule_id)),
+        )
+        for finding in report.findings
+    ]
+
+    rule_ids = {f.rule_id for f in report.findings}
+    rules = _lint_rules_catalog(rule_ids, dict(report.specs))
+
+    notifications: list[dict[str, Any]] = []
+    for diag in error_diags:
+        notifications.append({
+            "level": "error",
+            "message": {"text": diag.message},
+            "properties": {"category": diag.category},
+        })
+    for diag in warning_diags:
+        notifications.append({
+            "level": "warning",
+            "message": {"text": diag.message},
+            "properties": {"category": diag.category},
+        })
+
+    invocation: dict[str, Any] = {
+        "executionSuccessful": not error_diags,
+    }
+    if notifications:
+        invocation["toolExecutionNotifications"] = notifications
+
+    run: dict[str, Any] = {
+        "tool": {
+            "driver": {
+                "name": sarif.TOOL_NAME,
+                "version": _protokit_version(),
+                "informationUri": sarif.TOOL_INFORMATION_URI,
+                "rules": rules,
+            },
+        },
+        "results": results,
+        "invocations": [invocation],
+    }
+
+    return json.dumps(sarif.build_document(runs=[run]), indent=2)
+
+
 # Idempotent registration at module import. The lint subcommand
 # module imports this module at its top — see module docstring.
 _register_builtin(name="human", fn=lint_human, kind=FormatterKind.LINT_REPORT)
+_register_builtin(name="json", fn=lint_json, kind=FormatterKind.LINT_REPORT)
+_register_builtin(name="junit", fn=lint_junit, kind=FormatterKind.LINT_REPORT)
+_register_builtin(name="sarif", fn=lint_sarif, kind=FormatterKind.LINT_REPORT)

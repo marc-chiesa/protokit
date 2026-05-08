@@ -70,35 +70,46 @@ class TestFormatFlagResolution:
         )
         assert result.exit_code == 0, result.output
 
-    def test_format_json_unavailable_until_u4b(
+    def test_format_json_produces_json_output(
         self, clean_descriptor_set: Path,
     ) -> None:
+        """U4b: --format=json now resolves; output is parseable JSON
+        with the documented top-level keys."""
+        import json
+
         result = CliRunner().invoke(
             lint_main, ["--format", "json", str(clean_descriptor_set)],
         )
-        assert result.exit_code == 2
-        assert "error[lint-format-unavailable]:" in result.stderr
-        # Available list MUST mention 'human' so an agent reading the
-        # error knows what IS supported. Machine formats arrive in U4b.
-        assert "human" in result.stderr
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert "findings" in payload
+        assert "filtered_count" in payload
+        assert "summary" in payload
 
-    def test_format_junit_unavailable_until_u4b(
+    def test_format_junit_produces_junit_xml_output(
         self, clean_descriptor_set: Path,
     ) -> None:
+        """U4b: --format=junit produces JUnit XML."""
         result = CliRunner().invoke(
             lint_main, ["--format", "junit", str(clean_descriptor_set)],
         )
-        assert result.exit_code == 2
-        assert "error[lint-format-unavailable]:" in result.stderr
+        assert result.exit_code == 0, result.output
+        assert "<testsuite" in result.stdout
+        assert 'name="protokit-lint"' in result.stdout
 
-    def test_format_sarif_unavailable_until_u4b(
+    def test_format_sarif_produces_sarif_2_1_0_output(
         self, clean_descriptor_set: Path,
     ) -> None:
+        """U4b: --format=sarif produces SARIF 2.1.0."""
+        import json
+
         result = CliRunner().invoke(
             lint_main, ["--format", "sarif", str(clean_descriptor_set)],
         )
-        assert result.exit_code == 2
-        assert "error[lint-format-unavailable]:" in result.stderr
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["version"] == "2.1.0"
+        assert "runs" in payload
 
     def test_format_unknown_value(
         self, clean_descriptor_set: Path,
@@ -111,17 +122,112 @@ class TestFormatFlagResolution:
         assert "error[lint-format-unavailable]:" in result.stderr
         assert "does-not-exist" in result.stderr
 
-    def test_format_unavailable_lists_available_formats(
+    def test_format_unavailable_lists_all_four_available_formats(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """Error message must enumerate what IS available so an
-        agent or user can pick a working value without grep-ing."""
+        """Error message must enumerate what IS available. At U4b's
+        ship, all four formats (human, json, junit, sarif) are
+        registered and must appear in the available list."""
         result = CliRunner().invoke(
-            lint_main, ["--format", "json", str(clean_descriptor_set)],
+            lint_main,
+            ["--format", "does-not-exist", str(clean_descriptor_set)],
         )
         assert result.exit_code == 2
-        # Available list — at U4a's ship this is just `human`.
         assert "human" in result.stderr
+        assert "json" in result.stderr
+        assert "junit" in result.stderr
+        assert "sarif" in result.stderr
+
+    def test_format_envvar_resolves_json(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """PROTOKIT_FORMAT=json (no --format flag) resolves identically."""
+        import json
+
+        result = CliRunner().invoke(
+            lint_main, [str(clean_descriptor_set)],
+            env={"PROTOKIT_FORMAT": "json"},
+        )
+        assert result.exit_code == 0, result.output
+        json.loads(result.stdout)
+
+
+class TestMachineFormatStatistics:
+    """``--statistics`` interaction with machine formats.
+
+    Closes U4a ce:review Cluster B: machine formats embed
+    per-severity counts in their structured payload natively, so
+    ``--statistics`` is silently redundant rather than emitting an
+    advisory. The agent reading JSON gets the counts in
+    ``summary.errors`` / ``summary.warnings`` / ``summary.info``;
+    no information loss.
+    """
+
+    def test_statistics_with_format_json_silently_ignored(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """--statistics + --format=json: no advisory; counts in JSON."""
+        import json
+
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--statistics",
+                "--format", "json",
+                str(bad_naming_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # No human-format footer leaked into stdout.
+        assert "statistics:" not in result.stdout
+        # No advisory on stderr — machine formats embed counts natively.
+        assert "warning[lint-cli]:" not in result.stderr
+        # Counts surface in the JSON payload's summary block.
+        payload = json.loads(result.stdout)
+        assert "summary" in payload
+        assert payload["summary"]["warnings"] >= 1
+
+    def test_statistics_with_format_junit_silently_ignored(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """--statistics + --format=junit: no advisory; counts in
+        the testsuite element's tests/failures attributes."""
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--statistics",
+                "--format", "junit",
+                str(bad_naming_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "statistics:" not in result.stdout
+        assert "warning[lint-cli]:" not in result.stderr
+        # JUnit XML embeds the count in <testsuite ... failures="N">.
+        assert "<testsuite" in result.stdout
+        assert "failures=" in result.stdout
+
+    def test_statistics_with_format_sarif_silently_ignored(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """--statistics + --format=sarif: no advisory; counts inferred
+        from results[] length in the SARIF payload."""
+        import json
+
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--statistics",
+                "--format", "sarif",
+                str(bad_naming_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "statistics:" not in result.stdout
+        assert "warning[lint-cli]:" not in result.stderr
+        payload = json.loads(result.stdout)
+        # SARIF results array carries one entry per finding.
+        assert len(payload["runs"][0]["results"]) >= 1
 
 
 class TestFormatterExceptionWrapper:

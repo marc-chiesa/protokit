@@ -28,7 +28,6 @@ from protokit.schema.model import (
     Severity,
 )
 
-
 _SEVERITY_COLORS: dict[Severity, str] = {
     Severity.WIRE: "red",
     Severity.SEMANTIC: "yellow",

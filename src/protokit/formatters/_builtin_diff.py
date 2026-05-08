@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import json
 import math
-import xml.etree.ElementTree as ET
 from typing import Any
 
 import click
@@ -36,7 +35,6 @@ from protokit.message.model import (
     DiffResult,
     EnumValue,
 )
-
 
 _CHANGE_SYMBOLS = {
     ChangeType.ADDED: ("+", "green"),

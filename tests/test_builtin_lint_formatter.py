@@ -15,8 +15,13 @@ does NOT transitively load this module — that gate runs in
 from __future__ import annotations
 
 import importlib
+import json
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
+import jsonschema
 import pytest
+import xmlschema
 
 from protokit.formatters import (
     FormatterContext,
@@ -24,7 +29,12 @@ from protokit.formatters import (
     clear_user_formatters,
     get_formatter,
 )
-from protokit.formatters._builtin_lint import lint_human
+from protokit.formatters._builtin_lint import (
+    lint_human,
+    lint_json,
+    lint_junit,
+    lint_sarif,
+)
 from protokit.schema.lint.model import (
     ElementKind,
     FieldLocation,
@@ -485,3 +495,351 @@ class TestRenderHumanLocationVariants:
         assert out.startswith("INFO ")
         assert "x.proto" in out
         assert "File-level violation" in out
+
+
+class TestLintJson:
+    """``lint_json`` machine formatter — stable JSON schema."""
+
+    def _ctx(self) -> FormatterContext:
+        return FormatterContext(subcommand="lint")
+
+    def test_empty_report_produces_well_formed_json(self) -> None:
+        report = LintReport()
+        out = lint_json(report, self._ctx())
+        payload = json.loads(out)
+        assert payload["findings"] == []
+        assert payload["filtered_count"] == 0
+        assert payload["runtime_warnings"] == []
+        assert payload["diagnostics"] == []
+        assert payload["summary"]["total"] == 0
+        assert payload["summary"]["errors"] == 0
+        assert payload["summary"]["warnings"] == 0
+        assert payload["summary"]["info"] == 0
+
+    def test_single_finding_renders_to_findings_list(self) -> None:
+        spec = _make_spec()
+        finding = _make_finding()
+        report = LintReport(
+            findings=(finding,),
+            specs={"naming/snake-case-fields": spec},
+        )
+        payload = json.loads(lint_json(report, self._ctx()))
+        assert len(payload["findings"]) == 1
+        entry = payload["findings"][0]
+        assert entry["rule_id"] == "naming/snake-case-fields"
+        assert entry["severity"] == "WARNING"
+        assert "acme/user.proto" in entry["location"]
+        assert "BadField" in entry["message"]
+
+    def test_summary_counts_per_severity(self) -> None:
+        spec = _make_spec()
+        f_warn = _make_finding(name="WarnField")
+        f_err = LintFinding(
+            rule_id="naming/snake-case-fields",
+            severity=LintSeverity.ERROR,
+            location=FieldLocation(
+                file="x.proto", message="X", field="ErrField",
+            ),
+            violation_kind="naming/snake-case-fields",
+            params={"name": "ErrField"},
+        )
+        f_info = LintFinding(
+            rule_id="naming/snake-case-fields",
+            severity=LintSeverity.INFO,
+            location=FieldLocation(
+                file="x.proto", message="X", field="InfoField",
+            ),
+            violation_kind="naming/snake-case-fields",
+            params={"name": "InfoField"},
+        )
+        report = LintReport(
+            findings=(f_warn, f_err, f_info),
+            specs={"naming/snake-case-fields": spec},
+        )
+        payload = json.loads(lint_json(report, self._ctx()))
+        assert payload["summary"]["errors"] == 1
+        assert payload["summary"]["warnings"] == 1
+        assert payload["summary"]["info"] == 1
+        assert payload["summary"]["total"] == 3
+
+    def test_filtered_count_surfaces_in_payload_and_summary(self) -> None:
+        report = LintReport(filtered_count=5)
+        payload = json.loads(lint_json(report, self._ctx()))
+        assert payload["filtered_count"] == 5
+        assert payload["summary"]["filtered_count"] == 5
+
+    def test_diagnostics_in_payload(self) -> None:
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="warning", message="protoxy fallback", category="protoxy_fallback",
+        )
+        report = LintReport(diagnostics=(diag,))
+        payload = json.loads(lint_json(report, self._ctx()))
+        assert len(payload["diagnostics"]) == 1
+        assert payload["diagnostics"][0]["level"] == "warning"
+        assert payload["diagnostics"][0]["category"] == "protoxy_fallback"
+
+    def test_output_is_pretty_printed(self) -> None:
+        report = LintReport()
+        out = lint_json(report, self._ctx())
+        # Pretty-print with indent=2 produces newlines.
+        assert "\n" in out
+
+    def test_lint_json_registered_under_lint_report_kind(self) -> None:
+        # Use sys.modules to dodge the stale-reference trap from
+        # test_re_import_is_idempotent (which reloads _builtin_lint
+        # and rebinds the registry to fresh function objects).
+        import sys
+
+        importlib.import_module("protokit.formatters._builtin_lint")
+        bl = sys.modules["protokit.formatters._builtin_lint"]
+        fn = get_formatter("json", FormatterKind.LINT_REPORT)
+        assert fn is bl.lint_json
+
+
+_JUNIT_XSD = Path(__file__).parent / "fixtures" / "junit-xml" / "JUnit.xsd"
+
+
+@pytest.fixture(scope="module")
+def junit_validator() -> xmlschema.XMLSchema:
+    """Vendored Apache Ant JUnit xsd loaded once per module."""
+    return xmlschema.XMLSchema(str(_JUNIT_XSD))
+
+
+def _validate_junit(validator: xmlschema.XMLSchema, xml: str) -> None:
+    """Validate an XML string against the vendored xsd."""
+    ET.fromstring(xml)  # well-formedness first
+    validator.validate(xml)
+
+
+class TestLintJunit:
+    """``lint_junit`` machine formatter — JUnit XSD validation."""
+
+    def _ctx(self) -> FormatterContext:
+        return FormatterContext(subcommand="lint")
+
+    def test_empty_report_emits_clean_passing_suite(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        report = LintReport()
+        out = lint_junit(report, self._ctx())
+        _validate_junit(junit_validator, out)
+        assert "protokit-lint" in out
+        assert 'classname="lint"' in out
+        assert 'name="clean"' in out
+        assert 'failures="0"' in out
+
+    def test_single_finding_emits_failure_under_testcase(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        spec = _make_spec()
+        finding = _make_finding()
+        report = LintReport(
+            findings=(finding,),
+            specs={"naming/snake-case-fields": spec},
+        )
+        out = lint_junit(report, self._ctx())
+        _validate_junit(junit_validator, out)
+        assert 'tests="1"' in out
+        assert 'failures="1"' in out
+        assert 'classname="naming/snake-case-fields"' in out
+        assert "<failure" in out
+        assert "BadField" in out
+
+    def test_multiple_findings_aggregate_into_one_suite(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        spec = _make_spec()
+        f1 = _make_finding(name="BadOne")
+        f2 = _make_finding(name="BadTwo")
+        report = LintReport(
+            findings=(f1, f2),
+            specs={"naming/snake-case-fields": spec},
+        )
+        out = lint_junit(report, self._ctx())
+        _validate_junit(junit_validator, out)
+        assert 'tests="2"' in out
+        assert 'failures="2"' in out
+        assert "BadOne" in out
+        assert "BadTwo" in out
+
+    def test_compile_error_diagnostic_renders_as_error_testcase(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="error", message="protoc fail", category="protoc_subprocess",
+        )
+        report = LintReport(diagnostics=(diag,))
+        out = lint_junit(report, self._ctx())
+        _validate_junit(junit_validator, out)
+        assert 'errors="1"' in out
+        assert "<error" in out
+        assert "protoc fail" in out
+
+    def test_warning_diagnostics_in_system_out(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="warning",
+            message="protoxy unavailable, falling back to protoc",
+            category="protoxy_fallback",
+        )
+        report = LintReport(diagnostics=(diag,))
+        out = lint_junit(report, self._ctx())
+        _validate_junit(junit_validator, out)
+        # Non-error diagnostics surface in <system-out>, not as failures.
+        assert 'failures="0"' in out
+        assert "protoxy_fallback" in out
+
+    def test_lint_junit_registered_under_lint_report_kind(self) -> None:
+        import sys
+
+        importlib.import_module("protokit.formatters._builtin_lint")
+        bl = sys.modules["protokit.formatters._builtin_lint"]
+        fn = get_formatter("junit", FormatterKind.LINT_REPORT)
+        assert fn is bl.lint_junit
+
+
+_SARIF_SCHEMA = Path(__file__).parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
+
+
+@pytest.fixture(scope="module")
+def sarif_validator() -> jsonschema.Draft7Validator:
+    """Vendored SARIF 2.1.0 schema loaded once per module."""
+    with open(_SARIF_SCHEMA) as f:
+        return jsonschema.Draft7Validator(json.load(f))
+
+
+class TestLintSarif:
+    """``lint_sarif`` machine formatter — SARIF 2.1.0 schema validation.
+
+    Critical for the CI-auditability identity bet (KD-5):
+    schema-drift bugs in SARIF output cause silent rejection by
+    GitHub code scanning, so every shape is gated by the official
+    OASIS schema.
+    """
+
+    def _ctx(self) -> FormatterContext:
+        return FormatterContext(subcommand="lint")
+
+    def test_empty_report_validates_against_sarif_2_1_0(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        out = lint_sarif(LintReport(), self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        assert doc["version"] == "2.1.0"
+        assert doc["runs"][0]["results"] == []
+        assert doc["runs"][0]["tool"]["driver"]["name"] == "protokit"
+        assert doc["runs"][0]["invocations"][0]["executionSuccessful"] is True
+
+    def test_single_finding_renders_to_results_array(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        spec = _make_spec()
+        finding = _make_finding()
+        report = LintReport(
+            findings=(finding,),
+            specs={"naming/snake-case-fields": spec},
+        )
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        results = doc["runs"][0]["results"]
+        assert len(results) == 1
+        assert results[0]["ruleId"] == "naming/snake-case-fields"
+        assert results[0]["level"] == "warning"
+        assert "BadField" in results[0]["message"]["text"]
+
+    def test_severity_levels_map_correctly(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        spec = _make_spec()
+        f_err = LintFinding(
+            rule_id="naming/snake-case-fields",
+            severity=LintSeverity.ERROR,
+            location=FieldLocation(
+                file="x.proto", message="X", field="ErrField",
+            ),
+            violation_kind="naming/snake-case-fields",
+            params={"name": "ErrField"},
+        )
+        f_warn = _make_finding(name="WarnField")
+        f_info = LintFinding(
+            rule_id="naming/snake-case-fields",
+            severity=LintSeverity.INFO,
+            location=FieldLocation(
+                file="x.proto", message="X", field="InfoField",
+            ),
+            violation_kind="naming/snake-case-fields",
+            params={"name": "InfoField"},
+        )
+        report = LintReport(
+            findings=(f_err, f_warn, f_info),
+            specs={"naming/snake-case-fields": spec},
+        )
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        levels = [r["level"] for r in doc["runs"][0]["results"]]
+        # SARIF: ERROR -> "error", WARNING -> "warning", INFO -> "note"
+        assert levels == ["error", "warning", "note"]
+
+    def test_rules_catalog_includes_every_fired_rule_id(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        spec = _make_spec()
+        finding = _make_finding()
+        report = LintReport(
+            findings=(finding,),
+            specs={"naming/snake-case-fields": spec},
+        )
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        rule_ids = {r["id"] for r in rules}
+        assert "naming/snake-case-fields" in rule_ids
+
+    def test_compile_error_diagnostic_flips_execution_successful(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="error", message="protoc fail", category="protoc_subprocess",
+        )
+        report = LintReport(diagnostics=(diag,))
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        invocation = doc["runs"][0]["invocations"][0]
+        assert invocation["executionSuccessful"] is False
+        notifications = invocation["toolExecutionNotifications"]
+        assert len(notifications) == 1
+        assert notifications[0]["level"] == "error"
+
+    def test_warning_diagnostic_does_not_flip_execution_successful(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="warning",
+            message="protoxy fallback",
+            category="protoxy_fallback",
+        )
+        report = LintReport(diagnostics=(diag,))
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        invocation = doc["runs"][0]["invocations"][0]
+        assert invocation["executionSuccessful"] is True
+
+    def test_lint_sarif_registered_under_lint_report_kind(self) -> None:
+        import sys
+
+        importlib.import_module("protokit.formatters._builtin_lint")
+        bl = sys.modules["protokit.formatters._builtin_lint"]
+        fn = get_formatter("sarif", FormatterKind.LINT_REPORT)
+        assert fn is bl.lint_sarif

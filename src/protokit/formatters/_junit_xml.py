@@ -26,7 +26,6 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 
-
 # Control characters that are not legal in XML 1.0 text or
 # attribute values. The valid set is: tab (\x09), newline (\x0a),
 # carriage return (\x0d), and the printable range (\x20..).
