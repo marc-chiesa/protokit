@@ -163,6 +163,26 @@ class TestMachineFormatStatistics:
     no information loss.
     """
 
+    def test_format_json_with_max_warnings_exceeded_exits_1_with_valid_json(
+        self, bad_naming_descriptor_set: Path,
+    ) -> None:
+        """R20 ladder applies regardless of format. --format=json
+        --max-warnings 0 with WARNINGs produces valid JSON output AND
+        exit 1."""
+        import json as _json
+
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--format", "json",
+                "--max-warnings", "0",
+                str(bad_naming_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 1
+        payload = _json.loads(result.stdout)
+        assert payload["summary"]["warnings"] >= 1
+
     def test_statistics_with_format_json_silently_ignored(
         self, bad_naming_descriptor_set: Path,
     ) -> None:

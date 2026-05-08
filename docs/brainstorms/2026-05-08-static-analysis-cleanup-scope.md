@@ -160,8 +160,10 @@ ce:brainstorm + ce:plan when scheduled. Not before D3 ships.
   — example of incremental cleanup driven by ce:review +
   ce:compound (the `--profile` case-normalization fix).
 - `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`
-  Unit 5 — the in-flight delivery; widens the ratchet for
-  `tests/test_formatters_cli.py` per U4a ce:review advisory A1.
+  Unit 5 — the in-flight delivery. The ratchet widening for
+  `tests/test_formatters_cli.py` originally noted as U5 work
+  (per U4a ce:review advisory A1) was pulled forward into U4b's
+  follow-up commit `5108b23` and is no longer outstanding.
 - D3 U4a ce:review — flagged the ratchet-widening for
   `tests/test_formatters_cli.py`, which Path 1 addressed in
   the U4b follow-up commit.

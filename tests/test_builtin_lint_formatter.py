@@ -527,9 +527,59 @@ class TestLintJson:
         assert len(payload["findings"]) == 1
         entry = payload["findings"][0]
         assert entry["rule_id"] == "naming/snake-case-fields"
-        assert entry["severity"] == "WARNING"
+        assert entry["severity"] == "warning"
         assert "acme/user.proto" in entry["location"]
         assert "BadField" in entry["message"]
+        # Structured location fields (added in U4b ce:review follow-up
+        # to give agents file/kind without parsing the location string).
+        assert entry["location_file"] == "acme/user.proto"
+        assert entry["location_kind"] == "field"
+
+    def test_location_kind_per_location_variant(self) -> None:
+        """Each LintLocation variant maps to a stable lowercase kind."""
+        spec = _make_spec(rule_id="x/y", template="msg")
+        cases = [
+            (FieldLocation(file="a.proto", message="M", field="f"), "field"),
+            (MessageLocation(file="a.proto", message="M"), "message"),
+            (FileLocation(file="a.proto"), "file"),
+        ]
+        for loc, expected_kind in cases:
+            finding = LintFinding(
+                rule_id="x/y", severity=LintSeverity.WARNING,
+                location=loc, violation_kind="x/y", params={},
+            )
+            report = LintReport(findings=(finding,), specs={"x/y": spec})
+            payload = json.loads(lint_json(report, self._ctx()))
+            assert payload["findings"][0]["location_kind"] == expected_kind
+            assert payload["findings"][0]["location_file"] == "a.proto"
+
+    def test_non_json_serializable_param_does_not_suppress_output(
+        self,
+    ) -> None:
+        """A finding whose params contains a non-JSON-serializable
+        value (here: a Path) renders via default=str rather than
+        raising TypeError and suppressing all findings."""
+        from pathlib import Path as _Path
+        spec = _make_spec(template="Got {bad}")
+        finding = LintFinding(
+            rule_id="naming/snake-case-fields",
+            severity=LintSeverity.WARNING,
+            location=FieldLocation(
+                file="x.proto", message="X", field="Bad",
+            ),
+            violation_kind="naming/snake-case-fields",
+            params={"bad": _Path("/tmp/example")},
+        )
+        report = LintReport(
+            findings=(finding,),
+            specs={"naming/snake-case-fields": spec},
+        )
+        # Should not raise — default=str handles the Path.
+        payload = json.loads(lint_json(report, self._ctx()))
+        assert len(payload["findings"]) == 1
+        # Path renders via str() in the message interpolation; payload
+        # is well-formed JSON.
+        assert "/tmp/example" in payload["findings"][0]["message"]
 
     def test_summary_counts_per_severity(self) -> None:
         spec = _make_spec()
@@ -579,11 +629,35 @@ class TestLintJson:
         assert payload["diagnostics"][0]["level"] == "warning"
         assert payload["diagnostics"][0]["category"] == "protoxy_fallback"
 
-    def test_output_is_pretty_printed(self) -> None:
-        report = LintReport()
-        out = lint_json(report, self._ctx())
-        # Pretty-print with indent=2 produces newlines.
-        assert "\n" in out
+    def test_output_is_pretty_printed_with_2_space_indent(self) -> None:
+        """Stable contract: lint_json uses indent=2."""
+        out = lint_json(LintReport(), self._ctx())
+        # First-level field starts with 2 spaces in pretty-printed JSON.
+        assert "\n  " in out
+
+    def test_runtime_warnings_serialized_with_per_warning_fields(self) -> None:
+        """A non-empty LintRuntimeWarning round-trips through lint_json
+        with all five fields (category, rule_id, message, exception_type,
+        descriptor_path)."""
+        from protokit.schema.lint.model import LintRuntimeWarning
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="ValueError: synthetic",
+            exception_type="ValueError",
+            descriptor_path="acme.User.bad_field",
+        )
+        report = LintReport(runtime_warnings=(warning,))
+        payload = json.loads(lint_json(report, self._ctx()))
+        assert len(payload["runtime_warnings"]) == 1
+        entry = payload["runtime_warnings"][0]
+        assert entry["category"] == "rule_exception"
+        assert entry["rule_id"] == "naming/snake-case-fields"
+        assert entry["message"] == "ValueError: synthetic"
+        assert entry["exception_type"] == "ValueError"
+        assert entry["descriptor_path"] == "acme.User.bad_field"
+        # Summary block surfaces the count.
+        assert payload["summary"]["runtime_warning_count"] == 1
 
     def test_lint_json_registered_under_lint_report_kind(self) -> None:
         # Use sys.modules to dodge the stale-reference trap from
@@ -835,6 +909,121 @@ class TestLintSarif:
         sarif_validator.validate(doc)
         invocation = doc["runs"][0]["invocations"][0]
         assert invocation["executionSuccessful"] is True
+
+    def test_multi_kind_dict_template_rule_renders_joined_descriptions(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """A multi-kind LintRuleSpec (dict template) joins kinds in
+        SARIF shortDescription instead of falling through to the
+        generic stub."""
+        spec = LintRuleSpec(
+            rule_id="multi/kind-rule",
+            severity={"k1": LintSeverity.WARNING, "k2": LintSeverity.WARNING},
+            profiles=("default",),
+            element=ElementKind.FIELD,
+            message_template={"k1": "First kind text", "k2": "Second kind text"},
+        )
+        finding = LintFinding(
+            rule_id="multi/kind-rule",
+            severity=LintSeverity.WARNING,
+            location=FieldLocation(file="x.proto", message="X", field="f"),
+            violation_kind="k1",
+            params={},
+        )
+        report = LintReport(findings=(finding,), specs={"multi/kind-rule": spec})
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        description = rules[0]["shortDescription"]["text"]
+        assert "First kind text" in description
+        assert "Second kind text" in description
+
+    def test_finding_with_unknown_rule_id_renders_with_generic_stub(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """A finding whose rule_id is not in report.specs falls back
+        to the 'Lint rule: {rule_id}' stub in shortDescription."""
+        finding = LintFinding(
+            rule_id="orphan/no-spec",
+            severity=LintSeverity.WARNING,
+            location=FieldLocation(file="x.proto", message="X", field="f"),
+            violation_kind="orphan/no-spec",
+            params={},
+        )
+        report = LintReport(findings=(finding,), specs={})
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        assert rules[0]["shortDescription"]["text"] == "Lint rule: orphan/no-spec"
+
+    def test_tool_driver_version_field_populated(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """tool.driver.version is non-empty (real version or 0.0.0
+        fallback for uninstalled checkouts)."""
+        out = lint_sarif(LintReport(), self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        version = doc["runs"][0]["tool"]["driver"]["version"]
+        assert isinstance(version, str)
+        assert len(version) > 0
+
+    def test_multi_rule_catalog_is_sorted_deterministic(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """When multiple rules fire, tool.driver.rules entries are
+        sorted by rule_id for deterministic SARIF output."""
+        spec_a = _make_spec(rule_id="aaa/rule", template="A")
+        spec_z = _make_spec(rule_id="zzz/rule", template="Z")
+        f_z = LintFinding(
+            rule_id="zzz/rule", severity=LintSeverity.WARNING,
+            location=FieldLocation(file="x.proto", message="X", field="f"),
+            violation_kind="zzz/rule", params={},
+        )
+        f_a = LintFinding(
+            rule_id="aaa/rule", severity=LintSeverity.WARNING,
+            location=FieldLocation(file="x.proto", message="X", field="g"),
+            violation_kind="aaa/rule", params={},
+        )
+        report = LintReport(
+            findings=(f_z, f_a),  # Reversed insertion order.
+            specs={"aaa/rule": spec_a, "zzz/rule": spec_z},
+        )
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        rules = doc["runs"][0]["tool"]["driver"]["rules"]
+        rule_ids = [r["id"] for r in rules]
+        assert rule_ids == sorted(rule_ids)
+        assert rule_ids == ["aaa/rule", "zzz/rule"]
+
+    def test_info_level_diagnostic_emits_warning_notification_known_quirk(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """Documents the current behavior: info-level compile diagnostics
+        (e.g. protoxy_fallback) emit SARIF notifications with level
+        'warning'. SARIF spec recommends 'note' for informational, but
+        the binary error/non-error split here mirrors compat's pattern.
+        Pin the current behavior so any future correction is visible.
+        """
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="info", message="protoxy fallback", category="protoxy_fallback",
+        )
+        report = LintReport(diagnostics=(diag,))
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        notifications = doc["runs"][0]["invocations"][0][
+            "toolExecutionNotifications"
+        ]
+        assert len(notifications) == 1
+        # Documented quirk: info level → SARIF "warning" not "note".
+        # Mirrors compat's _sarif_json.build_run binary error-vs-other
+        # split. If/when this is corrected, this assertion flips.
+        assert notifications[0]["level"] == "warning"
 
     def test_lint_sarif_registered_under_lint_report_kind(self) -> None:
         import sys
