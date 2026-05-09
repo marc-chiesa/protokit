@@ -396,10 +396,28 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     embedded exception text — collisions with reserved built-in
     names are conceptually different from "the pack failed to
     load" and benefit from their own surface.
+
+    The ``except SystemExit`` guard is FIRST in the chain. Without
+    it, a formatter-pack module body that calls ``sys.exit(0)``
+    would raise ``SystemExit`` — a ``BaseException`` subclass that
+    bypasses the broad ``except Exception`` catch — and silently
+    flip the CLI's exit code from the diff verdict to ``0``. CI
+    pipelines watching for incompatible-schema verdicts would
+    then false-green. Sibling-parity with
+    :func:`protokit.schema.lint._cli_utils._load_user_rule_pack`,
+    which closes the same vulnerability for ``--rule-pack``
+    imports on the lint side. ``KeyboardInterrupt`` keeps
+    propagating so an operator's Ctrl-C still tears the process
+    down.
     """
     for name in module_names:
         try:
             module = importlib.import_module(name)
+        except SystemExit as exc:
+            error_exit(
+                f"failed to import formatter pack '{name}': "
+                f"called sys.exit({exc.code!r}) at module-body load time"
+            )
         except Exception as exc:
             error_exit(f"failed to import formatter pack '{name}': {exc}")
         try:

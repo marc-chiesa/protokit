@@ -921,14 +921,14 @@ class TestLintRuleError:
         # delivery adds an exception class to the catch tuple, this
         # test will trip — and the docstring update MUST land in the
         # same commit.
-        assert _RULE_EXCEPTION_TUPLE == (
+        assert (
             SystemExit,
             ValueError,
             TypeError,
             AttributeError,
             LookupError,
             LintRuleError,
-        )
+        ) == _RULE_EXCEPTION_TUPLE
 
 
 # ---------------------------------------------------------------------------

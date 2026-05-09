@@ -292,6 +292,76 @@ class TestFormatterModule:
         assert result.exit_code == 2
         assert "failed to import formatter pack" in result.output
 
+    def test_pack_module_body_sys_exit_does_not_false_green(
+        self, tmp_path: Path,
+    ) -> None:
+        # U5 sibling-parity hardening: a formatter pack whose module
+        # body calls ``sys.exit(0)`` at import time used to raise
+        # ``SystemExit`` past compat's broad ``except Exception``,
+        # silently terminating the CLI with code 0 — false-greening
+        # CI pipelines that depended on the diff's verdict. The
+        # explicit ``except SystemExit`` guard now routes the same
+        # failure through ``error_exit`` (exit 2, ``Error:`` prefix),
+        # mirroring lint's ``_load_user_rule_pack`` pattern.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            import sys
+            sys.exit(0)
+        """))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+        ])
+        # Must NOT silently exit 0 — that's the regression we're
+        # closing. Compat surfaces this through its legacy
+        # ``Error:`` prefix (exit 2), distinct from lint's
+        # ``error[lint-rule-pack-load]:`` code-prefix.
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "failed to import formatter pack" in result.output
+        assert "called sys.exit" in result.output
+        # The actual exit code argument propagates so operators can
+        # see what value the pack tried to force.
+        assert "sys.exit(0)" in result.output
+
+    def test_pack_module_body_sys_exit_nonzero_also_caught(
+        self, tmp_path: Path,
+    ) -> None:
+        # The guard catches every ``SystemExit``, regardless of code
+        # value — a non-zero exit would have produced exit-2 even
+        # without the fix (since ``sys.exit(2)`` would have happened
+        # to match the CLI's error-path code), but the false-green
+        # vulnerability was specifically about exit 0. We pin the
+        # broader guard to prevent a future "narrow to exit==0"
+        # regression.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            import sys
+            sys.exit("custom message")
+        """))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+        ])
+        assert result.exit_code == 2, result.output
+        assert "called sys.exit('custom message')" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Formatter exception & stdout-write guard
