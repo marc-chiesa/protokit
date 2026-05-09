@@ -83,16 +83,25 @@ jobs:
       - name: Cold-import smoke test
         # Validates the cold-import contract for `protokit compat`:
         # importing `protokit.schema` MUST NOT transitively load
-        # `protokit.schema.lint` OR `protokit.schema.compile`. The
-        # compile module's placement (LintCompileDiagnostic lives there
-        # rather than in lint/model.py per S2-2) only preserves the
-        # contract if `protokit.schema` itself doesn't pull compile in
-        # eagerly. A regression in any future delivery that adds an
-        # eager import of either submodule would surface here.
+        # `protokit.schema.lint`, `protokit.schema.compile`, OR
+        # `protokit.formatters._builtin_lint`. The compile module's
+        # placement (LintCompileDiagnostic lives there rather than
+        # in lint/model.py per S2-2) only preserves the contract if
+        # `protokit.schema` itself doesn't pull compile in eagerly.
+        # The `_builtin_lint` module lives under `protokit.formatters`
+        # (not `protokit.schema.lint`) so the substring match below
+        # would miss it without the explicit exact-match — it
+        # registers all four lint formatters at module load time and
+        # MUST stay quarantined behind the lint subcommand entry
+        # point per KD-10 invariant 2. A regression in any future
+        # delivery that adds an eager import of any of these surfaces
+        # here.
         #
         # NOTE: this is a SNAPSHOT of today's transitive imports; future
         # deliveries that add eager imports may need to update this
-        # assertion target. Per pass-3 doc-review F7.
+        # assertion target. Per pass-3 doc-review F7. Mirrored in
+        # tests/schema/lint/test_cold_import_extended.py for
+        # local feedback before push.
         run: |
           python -c "
           import protokit.schema
@@ -101,6 +110,7 @@ jobs:
               k for k in sys.modules
               if 'protokit.schema.lint' in k
               or k == 'protokit.schema.compile'
+              or k == 'protokit.formatters._builtin_lint'
           )
           assert not eager, f'lazy-load contract broken: {eager}'
           print('cold-import OK')
