@@ -813,6 +813,17 @@ class _LintContextEmitMixin:
 
     Subclasses MUST override :meth:`location` to return the correct
     ``LintLocation`` variant for their element kind.
+
+    **Pool mutation contract (AC-05).** Rules MUST NOT mutate
+    ``ctx.pool`` during the walk. The descriptor pool is shared across
+    every rule invocation in a single ``LintEngine.run`` and any in-walk
+    mutation would surface as cross-rule action-at-a-distance: rules
+    that walk after the mutation would see a different schema than
+    rules that walked before, breaking the engine's read-only-walk
+    contract. The mixin itself has no ``pool`` attribute; the
+    prohibition is enforced by convention (not Python-level
+    immutability) and is repeated on each concrete context's ``pool``
+    attribute docstring.
     """
 
     # The engine-injected attributes live on the concrete dataclass;
@@ -877,6 +888,7 @@ class FileLintContext(_LintContextEmitMixin):
         file: The proto file's descriptor.
         pool: Descriptor pool the file was resolved from. Useful for
             cross-file lookups (e.g., resolving imported types).
+            Rules MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile (e.g., ``"default"``).
             Rules can branch on this for profile-specific behavior.
         _emit_fn: Engine-injected closure that records findings into
@@ -907,7 +919,8 @@ class ServiceLintContext(_LintContextEmitMixin):
     Attributes:
         service: The service's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the service was resolved from.
+        pool: Descriptor pool the service was resolved from. Rules
+            MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -938,7 +951,8 @@ class MethodLintContext(_LintContextEmitMixin):
         method: The method's descriptor.
         service: The parent service's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the method was resolved from.
+        pool: Descriptor pool the method was resolved from. Rules
+            MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -970,7 +984,8 @@ class EnumLintContext(_LintContextEmitMixin):
     Attributes:
         enum: The enum's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the enum was resolved from.
+        pool: Descriptor pool the enum was resolved from. Rules MUST
+            NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -1001,7 +1016,8 @@ class EnumValueLintContext(_LintContextEmitMixin):
         value: The enum value's descriptor.
         enum: The parent enum's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the enum value was resolved from.
+        pool: Descriptor pool the enum value was resolved from. Rules
+            MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -1033,7 +1049,8 @@ class MessageLintContext(_LintContextEmitMixin):
     Attributes:
         message: The message's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the message was resolved from.
+        pool: Descriptor pool the message was resolved from. Rules
+            MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -1064,7 +1081,8 @@ class FieldLintContext(_LintContextEmitMixin):
         field: The field's descriptor.
         message: The parent message's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the field was resolved from.
+        pool: Descriptor pool the field was resolved from. Rules MUST
+            NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -1097,7 +1115,8 @@ class OneofLintContext(_LintContextEmitMixin):
         oneof: The oneof's descriptor.
         message: The parent message's descriptor.
         file: The parent file's descriptor.
-        pool: Descriptor pool the oneof was resolved from.
+        pool: Descriptor pool the oneof was resolved from. Rules MUST
+            NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
@@ -1172,9 +1191,11 @@ class LintRuleError(Exception):
     a warning, not as a finding, and I want the rest of the walk to
     proceed."
 
-    The catch tuple is documented in the engine's source; at minimum
-    it includes ``(SystemExit, ValueError, TypeError, KeyError,
-    AttributeError, LookupError, LintRuleError)``.
+    The catch tuple is documented in the engine's source; it is
+    exactly ``(SystemExit, ValueError, TypeError, AttributeError,
+    LookupError, LintRuleError)``. ``KeyError`` is intentionally
+    omitted — it is a subclass of ``LookupError``, which is already
+    in the tuple, so listing it would be dead coverage. (AC-06.)
 
     **Escape hatch for "abort the run".** Rule authors who want to
     halt the entire lint pass (e.g., catastrophic schema corruption

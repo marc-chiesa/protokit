@@ -557,6 +557,80 @@ class TestContextInstantiation:
 
 
 # ---------------------------------------------------------------------------
+# AC-05: ctx.pool mutation prohibition is documented on every context
+# ---------------------------------------------------------------------------
+
+
+_POOL_BEARING_CONTEXTS = [
+    FileLintContext,
+    ServiceLintContext,
+    MethodLintContext,
+    EnumLintContext,
+    EnumValueLintContext,
+    MessageLintContext,
+    FieldLintContext,
+    OneofLintContext,
+]
+
+
+class TestPoolMutationDocstringContract:
+    """AC-05: lock the ``ctx.pool`` mutation prohibition into every docstring.
+
+    The engine relies on rules treating ``ctx.pool`` as read-only;
+    in-walk mutation surfaces as cross-rule action-at-a-distance.
+    The contract is enforced by convention only (the descriptor pool
+    is not Python-level immutable), so the docstrings ARE the
+    contract — these assertions catch any future docstring edit
+    that would silently weaken the contract.
+    """
+
+    @staticmethod
+    def _normalize(doc: str | None) -> str:
+        """Collapse docstring whitespace so line-wrapping doesn't hide phrases.
+
+        Python preserves the verbatim docstring text including leading
+        indentation and line breaks. ``"MUST NOT"`` legitimately wraps
+        across a line boundary in the wrapped 80-col attribute
+        descriptions, so substring checks would miss it. Collapsing
+        whitespace makes the assertions resilient to harmless
+        re-flowing while still catching meaning-changing edits.
+        """
+        assert doc is not None
+        return " ".join(doc.split())
+
+    def test_mixin_class_docstring_documents_pool_mutation_prohibition(
+        self,
+    ) -> None:
+        from protokit.schema.lint.model import _LintContextEmitMixin
+
+        doc = self._normalize(_LintContextEmitMixin.__doc__)
+        assert "AC-05" in doc
+        # The mixin has no ``pool`` attribute itself; the prohibition
+        # must point readers to the per-kind contexts.
+        assert "MUST NOT mutate" in doc
+        assert "ctx.pool" in doc
+
+    @pytest.mark.parametrize(
+        "context_cls",
+        _POOL_BEARING_CONTEXTS,
+        ids=lambda c: c.__name__,
+    )
+    def test_each_context_pool_attribute_documents_prohibition(
+        self,
+        context_cls: type,
+    ) -> None:
+        """All eight per-kind contexts repeat the prohibition on ``pool``."""
+        doc = self._normalize(context_cls.__doc__)
+        assert "MUST NOT mutate" in doc, (
+            f"{context_cls.__name__}.pool docstring missing the AC-05 "
+            f"mutation prohibition"
+        )
+        assert "AC-05" in doc, (
+            f"{context_cls.__name__}.pool docstring missing the AC-05 anchor"
+        )
+
+
+# ---------------------------------------------------------------------------
 # DuplicateRuleError
 # ---------------------------------------------------------------------------
 
@@ -807,6 +881,54 @@ class TestLintRuleError:
         """LintRuleError(msg) carries the message via str()."""
         err = LintRuleError("rule bailed because ...")
         assert str(err) == "rule bailed because ..."
+
+    def test_lint_rule_error_docstring_locks_exact_catch_tuple(self) -> None:
+        """AC-06: the docstring states the catch tuple "is exactly".
+
+        The previous wording ("at minimum includes") implied the engine
+        could widen the tuple silently, leaving rule authors to discover
+        new caught exceptions empirically. The corrected wording locks
+        the contract at the documented set, and the listed tuple
+        matches ``engine.py:_RULE_EXCEPTION_TUPLE`` byte-for-byte
+        (six items: ``KeyError`` is omitted because ``LookupError``
+        already covers it).
+        """
+        doc = LintRuleError.__doc__
+        assert doc is not None
+        normalized = " ".join(doc.split())
+        assert "is exactly" in normalized, (
+            "LintRuleError docstring must say the catch tuple 'is exactly' "
+            "(the previous 'at minimum includes' wording let the engine "
+            "drift unnoticed)"
+        )
+        assert "at minimum includes" not in normalized, (
+            "stale wording 'at minimum includes' must be removed"
+        )
+        for member in (
+            "SystemExit", "ValueError", "TypeError",
+            "AttributeError", "LookupError", "LintRuleError",
+        ):
+            assert member in normalized, (
+                f"docstring missing tuple member {member!r}"
+            )
+        assert "AC-06" in normalized
+
+    def test_lint_rule_error_docstring_matches_engine_catch_tuple(self) -> None:
+        """The docstring's listed tuple matches ``_RULE_EXCEPTION_TUPLE``."""
+        from protokit.schema.lint.engine import _RULE_EXCEPTION_TUPLE
+
+        # Pin: six items, in exactly this order. If a future engine
+        # delivery adds an exception class to the catch tuple, this
+        # test will trip — and the docstring update MUST land in the
+        # same commit.
+        assert _RULE_EXCEPTION_TUPLE == (
+            SystemExit,
+            ValueError,
+            TypeError,
+            AttributeError,
+            LookupError,
+            LintRuleError,
+        )
 
 
 # ---------------------------------------------------------------------------
