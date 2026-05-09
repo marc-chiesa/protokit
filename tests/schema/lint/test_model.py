@@ -55,6 +55,7 @@ from protokit.schema.lint.model import (
     OneofLocation,
     ServiceLintContext,
     ServiceLocation,
+    _LintContextEmitMixin,
 )
 
 # ---------------------------------------------------------------------------
@@ -561,7 +562,7 @@ class TestContextInstantiation:
 # ---------------------------------------------------------------------------
 
 
-_POOL_BEARING_CONTEXTS = [
+_POOL_BEARING_CONTEXTS: list[type[_LintContextEmitMixin]] = [
     FileLintContext,
     ServiceLintContext,
     MethodLintContext,
@@ -571,6 +572,20 @@ _POOL_BEARING_CONTEXTS = [
     FieldLintContext,
     OneofLintContext,
 ]
+
+
+def _normalize_docstring(doc: str) -> str:
+    """Collapse docstring whitespace so line-wrapping doesn't hide phrases.
+
+    Python preserves the verbatim docstring text including leading
+    indentation and line breaks. ``"MUST NOT"`` legitimately wraps
+    across a line boundary in the wrapped 80-col attribute
+    descriptions, so substring checks would miss it. Collapsing
+    whitespace makes the assertions resilient to harmless
+    re-flowing while still catching meaning-changing edits. Used
+    by both the AC-05 and AC-06 docstring-contract tests.
+    """
+    return " ".join(doc.split())
 
 
 class TestPoolMutationDocstringContract:
@@ -584,26 +599,12 @@ class TestPoolMutationDocstringContract:
     that would silently weaken the contract.
     """
 
-    @staticmethod
-    def _normalize(doc: str | None) -> str:
-        """Collapse docstring whitespace so line-wrapping doesn't hide phrases.
-
-        Python preserves the verbatim docstring text including leading
-        indentation and line breaks. ``"MUST NOT"`` legitimately wraps
-        across a line boundary in the wrapped 80-col attribute
-        descriptions, so substring checks would miss it. Collapsing
-        whitespace makes the assertions resilient to harmless
-        re-flowing while still catching meaning-changing edits.
-        """
-        assert doc is not None
-        return " ".join(doc.split())
-
     def test_mixin_class_docstring_documents_pool_mutation_prohibition(
         self,
     ) -> None:
-        from protokit.schema.lint.model import _LintContextEmitMixin
-
-        doc = self._normalize(_LintContextEmitMixin.__doc__)
+        raw = _LintContextEmitMixin.__doc__
+        assert raw is not None
+        doc = _normalize_docstring(raw)
         assert "AC-05" in doc
         # The mixin has no ``pool`` attribute itself; the prohibition
         # must point readers to the per-kind contexts.
@@ -617,13 +618,25 @@ class TestPoolMutationDocstringContract:
     )
     def test_each_context_pool_attribute_documents_prohibition(
         self,
-        context_cls: type,
+        context_cls: type[_LintContextEmitMixin],
     ) -> None:
         """All eight per-kind contexts repeat the prohibition on ``pool``."""
-        doc = self._normalize(context_cls.__doc__)
+        raw = context_cls.__doc__
+        assert raw is not None, f"{context_cls.__name__} missing docstring"
+        doc = _normalize_docstring(raw)
         assert "MUST NOT mutate" in doc, (
             f"{context_cls.__name__}.pool docstring missing the AC-05 "
             f"mutation prohibition"
+        )
+        # Pool-specificity guard: the prohibition must mention ``pool``
+        # specifically. A future weakening reword to "MUST NOT mutate
+        # any attribute" would otherwise pass the substring check
+        # while silently broadening the contract beyond the engine's
+        # actual invariant.
+        assert "pool" in doc, (
+            f"{context_cls.__name__}.pool docstring weakens AC-05: the "
+            f"prohibition must reference 'pool' specifically, not a "
+            f"generic 'any attribute'"
         )
         assert "AC-05" in doc, (
             f"{context_cls.__name__}.pool docstring missing the AC-05 anchor"
@@ -891,44 +904,44 @@ class TestLintRuleError:
         the contract at the documented set, and the listed tuple
         matches ``engine.py:_RULE_EXCEPTION_TUPLE`` byte-for-byte
         (six items: ``KeyError`` is omitted because ``LookupError``
-        already covers it).
+        already covers it). The structural tuple-value pin lives in
+        ``test_engine.py`` adjacent to ``_RULE_EXCEPTION_TUPLE`` so
+        engine renames trip the test next door rather than across
+        modules.
         """
-        doc = LintRuleError.__doc__
-        assert doc is not None
-        normalized = " ".join(doc.split())
-        assert "is exactly" in normalized, (
+        raw = LintRuleError.__doc__
+        assert raw is not None
+        doc = _normalize_docstring(raw)
+        assert "is exactly" in doc, (
             "LintRuleError docstring must say the catch tuple 'is exactly' "
             "(the previous 'at minimum includes' wording let the engine "
             "drift unnoticed)"
         )
-        assert "at minimum includes" not in normalized, (
+        assert "at minimum includes" not in doc, (
             "stale wording 'at minimum includes' must be removed"
         )
         for member in (
             "SystemExit", "ValueError", "TypeError",
             "AttributeError", "LookupError", "LintRuleError",
         ):
-            assert member in normalized, (
+            assert member in doc, (
                 f"docstring missing tuple member {member!r}"
             )
-        assert "AC-06" in normalized
-
-    def test_lint_rule_error_docstring_matches_engine_catch_tuple(self) -> None:
-        """The docstring's listed tuple matches ``_RULE_EXCEPTION_TUPLE``."""
-        from protokit.schema.lint.engine import _RULE_EXCEPTION_TUPLE
-
-        # Pin: six items, in exactly this order. If a future engine
-        # delivery adds an exception class to the catch tuple, this
-        # test will trip — and the docstring update MUST land in the
-        # same commit.
+        # The LISTED tuple must NOT contain KeyError — its omission is
+        # the load-bearing R23 correction; a future re-insertion would
+        # silently weaken the catch-tuple pin to dead coverage. The
+        # *explanatory* prose may mention KeyError (it explains WHY
+        # KeyError is omitted), so we check the verbatim tuple
+        # listing rather than the whole docstring.
         assert (
-            SystemExit,
-            ValueError,
-            TypeError,
-            AttributeError,
-            LookupError,
-            LintRuleError,
-        ) == _RULE_EXCEPTION_TUPLE
+            "(SystemExit, ValueError, TypeError, "
+            "AttributeError, LookupError, LintRuleError)"
+        ) in doc, (
+            "LintRuleError docstring must list the catch tuple verbatim "
+            "(6 items, no KeyError). A re-insertion of KeyError or any "
+            "wording drift trips this pin."
+        )
+        assert "AC-06" in doc
 
 
 # ---------------------------------------------------------------------------

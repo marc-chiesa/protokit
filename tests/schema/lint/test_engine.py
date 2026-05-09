@@ -17,7 +17,7 @@ import pytest
 
 from protokit.schema.compile import LintCompileDiagnostic, compile_protos_to_result
 from protokit.schema.lint.decorator import lint_rule
-from protokit.schema.lint.engine import LintEngine
+from protokit.schema.lint.engine import _RULE_EXCEPTION_TUPLE, LintEngine
 from protokit.schema.lint.model import (
     DuplicateRuleError,
     ElementKind,
@@ -485,6 +485,29 @@ class TestSeverityAndFilter:
 
 class TestFailureContainment:
     """Narrow catch tuple including SystemExit (R16 amendment)."""
+
+    def test_rule_exception_tuple_pinned_to_documented_six(self) -> None:
+        """AC-06 structural pin: ``_RULE_EXCEPTION_TUPLE`` is exactly 6 items.
+
+        ``LintRuleError.__doc__`` claims the catch tuple "is exactly"
+        ``(SystemExit, ValueError, TypeError, AttributeError, LookupError,
+        LintRuleError)``. A future engine delivery that adds a 7th
+        exception class to the tuple MUST also update the docstring in
+        the same commit; this pin trips otherwise. Lives next to
+        ``_RULE_EXCEPTION_TUPLE`` in ``test_engine.py`` (the engine
+        symbol's home test module) so renames trip the test adjacent
+        to the rename rather than across modules. The companion
+        docstring-wording test lives in ``test_model.py`` next to
+        ``LintRuleError``.
+        """
+        assert (
+            SystemExit,
+            ValueError,
+            TypeError,
+            AttributeError,
+            LookupError,
+            LintRuleError,
+        ) == _RULE_EXCEPTION_TUPLE
 
     def test_value_error_caught_records_runtime_warning(
         self, tmp_path: Path,

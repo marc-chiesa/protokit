@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit._cli_utils import run_formatter_safely
@@ -292,6 +292,31 @@ class TestFormatterModule:
         assert result.exit_code == 2
         assert "failed to import formatter pack" in result.output
 
+    @staticmethod
+    def _invoke_diff_with_pack(
+        tmp_path: Path, pack: str,
+    ) -> Result:
+        """Helper: build minimal diff inputs and invoke ``protokit diff``.
+
+        All of the load-phase ``--formatter-module`` regression tests
+        share the same fixture shape (two minimal proto messages, a
+        descriptor set, a ``CliRunner`` invocation) — extract once
+        rather than repeat per-test.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        return CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+        ])
+
     def test_pack_module_body_sys_exit_does_not_false_green(
         self, tmp_path: Path,
     ) -> None:
@@ -307,19 +332,7 @@ class TestFormatterModule:
             import sys
             sys.exit(0)
         """))
-        pool = descriptor_pool.DescriptorPool()
-        cls = _build_msg_class(pool)
-        left = tmp_path / "a.pb"
-        right = tmp_path / "b.pb"
-        left.write_bytes(cls(name="A").SerializeToString())
-        right.write_bytes(cls(name="A").SerializeToString())
-        desc = tmp_path / "schema.descriptor_set"
-        _write_descriptor_set(desc, "M")
-        result = CliRunner().invoke(diff_main, [
-            str(left), str(right),
-            "--desc", str(desc), "--message-type", "M",
-            "--formatter-module", pack,
-        ])
+        result = self._invoke_diff_with_pack(tmp_path, pack)
         # Must NOT silently exit 0 — that's the regression we're
         # closing. Compat surfaces this through its legacy
         # ``Error:`` prefix (exit 2), distinct from lint's
@@ -346,21 +359,71 @@ class TestFormatterModule:
             import sys
             sys.exit("custom message")
         """))
-        pool = descriptor_pool.DescriptorPool()
-        cls = _build_msg_class(pool)
-        left = tmp_path / "a.pb"
-        right = tmp_path / "b.pb"
-        left.write_bytes(cls(name="A").SerializeToString())
-        right.write_bytes(cls(name="A").SerializeToString())
-        desc = tmp_path / "schema.descriptor_set"
-        _write_descriptor_set(desc, "M")
-        result = CliRunner().invoke(diff_main, [
-            str(left), str(right),
-            "--desc", str(desc), "--message-type", "M",
-            "--formatter-module", pack,
-        ])
+        result = self._invoke_diff_with_pack(tmp_path, pack)
         assert result.exit_code == 2, result.output
         assert "called sys.exit('custom message')" in result.output
+
+    def test_pack_module_body_keyboard_interrupt_does_not_bypass_guard(
+        self, tmp_path: Path,
+    ) -> None:
+        # U5 ce:review follow-up: parity with U3's KeyboardInterrupt
+        # guard on ``_load_user_rule_pack``. Without an explicit
+        # ``except KeyboardInterrupt`` arm a pack body that raises
+        # ``KeyboardInterrupt`` (legitimate Ctrl-C during import OR
+        # an adversarial ``raise KeyboardInterrupt()`` to escape the
+        # exit-2 contract) propagates past ``except Exception``
+        # (KeyboardInterrupt is BaseException, not Exception) and
+        # exits via Click's ``Aborted!`` banner at code 1 —
+        # indistinguishable from a legitimate "diff found
+        # incompatibilities" exit 1 by the CI grep contract.
+        # Per the keyboardinterrupt-baseexception-bypass learning,
+        # both SystemExit AND KeyboardInterrupt are required on
+        # trust-delegation surfaces (anywhere user-supplied Python
+        # is loaded and executed).
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            raise KeyboardInterrupt()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "failed to import formatter pack" in result.output
+        assert "KeyboardInterrupt" in result.output
+
+    def test_pack_name_with_embedded_newline_does_not_forge_stderr_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        # U5 ce:review follow-up: closes the module-name newline-
+        # injection vector documented in
+        # docs/solutions/security-issues/module-name-newline-injection-stderr-forge-2026-05-07.md
+        # Bare f-string interpolation of the user-supplied
+        # ``--formatter-module`` argument let a name like
+        # ``no.such.module\nError: schema is compatible (forged)``
+        # forge a second physical line beginning with ``Error:``
+        # on stderr, fooling CI parsers that key on the prefix.
+        # The fix uses ``{name!r}`` (Python's repr escaping) which
+        # converts embedded newlines to the literal escape sequence
+        # ``\\n`` rather than passing the raw byte through to
+        # ``click.echo``. The lint sibling closes the same vector
+        # via ``_safe_module_name``.
+        forged = "no.such.module\nError: schema is compatible (forged)"
+        result = self._invoke_diff_with_pack(tmp_path, forged)
+        assert result.exit_code == 2
+        # Exactly one line on stderr begins with ``Error:`` — the
+        # legitimate one. The forged continuation line must NOT
+        # appear as its own line.
+        error_lines = [
+            line for line in result.output.splitlines()
+            if line.startswith("Error:")
+        ]
+        assert len(error_lines) == 1, (
+            f"newline injection: expected one Error: line, got "
+            f"{len(error_lines)}: {error_lines!r}"
+        )
+        # Repr's escape sequence appears in the (single) error line —
+        # proving the scrub took effect — and the forged content is
+        # NOT a standalone line.
+        assert "\\n" in result.output
+        assert "schema is compatible (forged)" not in result.output.splitlines()
 
 
 # ---------------------------------------------------------------------------

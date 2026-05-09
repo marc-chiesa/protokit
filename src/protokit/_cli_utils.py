@@ -397,38 +397,66 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     names are conceptually different from "the pack failed to
     load" and benefit from their own surface.
 
-    The ``except SystemExit`` guard is FIRST in the chain. Without
-    it, a formatter-pack module body that calls ``sys.exit(0)``
-    would raise ``SystemExit`` — a ``BaseException`` subclass that
-    bypasses the broad ``except Exception`` catch — and silently
-    flip the CLI's exit code from the diff verdict to ``0``. CI
-    pipelines watching for incompatible-schema verdicts would
-    then false-green. Sibling-parity with
+    **Three-arm guard chain on import.** Both ``except SystemExit``
+    and ``except KeyboardInterrupt`` are placed BEFORE the broad
+    ``except Exception``. Without them, a formatter-pack module body
+    that calls ``sys.exit(0)`` or raises ``KeyboardInterrupt`` would
+    bypass the broad catch (both are ``BaseException`` subclasses,
+    not ``Exception`` subclasses) and silently exit the process —
+    ``SystemExit`` flipping the CLI to a false-green code 0, or
+    ``KeyboardInterrupt`` exiting via Click's ``Aborted!`` at code 1.
+    Either bypass would defeat the exit-2 + ``Error:``-prefix contract
+    operators rely on to distinguish pack-load failures from
+    legitimate diff/compat verdicts. Sibling-parity with
     :func:`protokit.schema.lint._cli_utils._load_user_rule_pack`,
-    which closes the same vulnerability for ``--rule-pack``
-    imports on the lint side. ``KeyboardInterrupt`` keeps
-    propagating so an operator's Ctrl-C still tears the process
-    down.
+    which closes the same vulnerabilities for ``--rule-pack`` imports
+    on the lint side. The two surfaces have the same trust boundary
+    (both load and execute arbitrary user-supplied Python at module
+    body), so both arms are required here per the
+    ``keyboardinterrupt-baseexception-bypass-rule-pack-load``
+    learning's per-surface framework.
+
+    **Output-contract divergences from the lint sibling** (legacy
+    compat behavior, intentionally retained):
+
+    - Compat uses :func:`error_exit` (legacy ``Error:`` prefix);
+      lint uses :func:`error_exit_with_code` with the stable
+      ``error[lint-CODE]:`` family.
+    - Compat embeds no ``kind=`` discriminator token; lint emits
+      ``kind=import:`` / ``kind=shape:`` for machine-parseable
+      classification of the failure mode.
+
+    User-supplied module names are repr-quoted (``{name!r}``) in
+    every error message — both for readability and to neutralize
+    newline-injection (a name like ``mypack\\nError: forged`` would
+    forge a fake ``Error:`` continuation line on stderr if
+    interpolated bare). Mirrors the lint side's ``_safe_module_name``
+    pattern via Python's built-in repr escaping.
     """
     for name in module_names:
         try:
             module = importlib.import_module(name)
         except SystemExit as exc:
             error_exit(
-                f"failed to import formatter pack '{name}': "
+                f"failed to import formatter pack {name!r}: "
                 f"called sys.exit({exc.code!r}) at module-body load time"
             )
+        except KeyboardInterrupt:
+            error_exit(
+                f"failed to import formatter pack {name!r}: "
+                f"raised KeyboardInterrupt at module-body load time"
+            )
         except Exception as exc:
-            error_exit(f"failed to import formatter pack '{name}': {exc}")
+            error_exit(f"failed to import formatter pack {name!r}: {exc}")
         try:
             load_formatter_pack(module)
         except FormatterError as exc:
             error_exit(
-                f"formatter pack '{name}' conflicts with a reserved "
+                f"formatter pack {name!r} conflicts with a reserved "
                 f"built-in name: {exc}"
             )
         except (AttributeError, TypeError) as exc:
-            error_exit(f"failed to load formatter pack '{name}': {exc}")
+            error_exit(f"failed to load formatter pack {name!r}: {exc}")
 
 
 def resolve_and_validate_formatter(
