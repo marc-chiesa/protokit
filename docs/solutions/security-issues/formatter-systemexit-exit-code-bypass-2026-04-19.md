@@ -242,30 +242,73 @@ exit code. Verify whether to extend the `except (SystemExit,
 Exception)` treatment to the pack-loading path, or document that
 pack modules must not call `sys.exit()` at import time.
 
-**Update (2026-05-07):** Both halves of this prediction were
-confirmed and closed in protokit-lint D3 Unit 3.
+**Update (2026-05-07 / extended 2026-05-09):** The "Symmetric
+surface" prediction named two analogous load-time surfaces.
+**Both** were eventually confirmed and closed, but in **different
+deliveries** of the protokit-lint D3 work, not a single unit.
 
-- The `SystemExit` half landed in commit `4a17632` (`_load_user_rule_pack`
-  in `src/protokit/schema/lint/_cli_utils.py` adopts the
-  `except SystemExit` first / `except Exception` next pattern from
-  this learning).
+Lint-side surface — `_load_user_rule_pack` in
+`src/protokit/schema/lint/_cli_utils.py`:
+
+- The `SystemExit` half landed in **D3 Unit 3** (commit `4a17632`):
+  the `except SystemExit` first / `except Exception` next pattern
+  from this learning.
 - The `KeyboardInterrupt` half — predicted parenthetically in this
-  doc's Prevention section as "possibly `KeyboardInterrupt`" — turned
-  out to be REQUIRED on the rule-pack surface (not "possibly"). The
-  D3 ce:review adversarial reviewer constructed the bypass and the
-  fix landed in commit `1249b10`. The full per-surface rationale is
-  captured in `docs/solutions/security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`.
+  doc's Prevention section as "possibly `KeyboardInterrupt`" —
+  turned out to be REQUIRED on the rule-pack surface (not
+  "possibly"). The D3 Unit 3 ce:review adversarial reviewer
+  constructed the bypass and the fix landed in commit `1249b10`.
+  The full per-surface rationale is captured in
+  `docs/solutions/security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`.
 - A second, distinct vector was discovered on the same surface
-  (`module.__name__` newline injection forging fake `error[lint-…]:`
-  lines on stderr); see
+  (`module.__name__` newline injection forging fake
+  `error[lint-…]:` lines on stderr); see
   `docs/solutions/security-issues/module-name-newline-injection-stderr-forge-2026-05-07.md`.
 
-The lesson for future similar predictions: when a "Symmetric
-surface" callout names a parenthetical "possibly," re-evaluate the
-parenthetical against the new surface's trust boundary at the time
-the new surface ships, not in a follow-up pass. The trust boundary
-of a *dispatch* surface (formatter rendering) and a *load* surface
-(plugin module-body execution) is not the same.
+Compat-side surface — `load_formatter_packs` in
+`src/protokit/_cli_utils.py` (this is the surface the original
+"Symmetric surface" callout explicitly named alongside
+`_load_rule_packs`):
+
+- The `SystemExit` half landed in **D3 Unit 5** (commit `53f2376`)
+  with the same `except SystemExit` first / `except Exception`
+  next pattern.
+- The `KeyboardInterrupt` half landed in the **D3 Unit 5
+  ce:review follow-up** (commit `7bebc6b`) once the rule-pack
+  learning's per-surface framework was applied to the compat
+  sibling. The deferral reasoning that originally kept
+  `KeyboardInterrupt` propagating ("operator's Ctrl-C still tears
+  the process down") was identified as the same reasoning the
+  rule-pack ce:review had to walk back; both `SystemExit` and
+  `KeyboardInterrupt` are required on every load surface where
+  user-supplied Python is executed at module body, regardless of
+  which CLI it lives behind.
+- The `module.__name__` newline injection vector (originally
+  observed on the lint side) was confirmed to apply to the
+  compat side too — the user-supplied `--formatter-module`
+  argument is interpolated into stderr error messages with the
+  identical injection shape. The mitigation (repr-quote the
+  module name via `{name!r}`) landed in the same Unit 5
+  ce:review follow-up commit.
+
+**Lesson for future similar predictions** (extended): when a
+"Symmetric surface" callout names two surfaces in different
+modules, treat each as its own delivery item with its own ship
+date. The 2026-05-07 first-pass update conflated the two and
+named only the lint surface's commits — leaving readers to
+discover (during the U5 ce:review of this same learning) that
+the compat surface had not actually shipped yet. Plan-letter
+parity (one surface) and plan-spirit parity (every analogous
+surface) diverge often enough that the doc-update step should
+explicitly enumerate every named surface, not just the first
+one closed.
+
+The original lesson still holds: when a "Symmetric surface"
+callout names a parenthetical "possibly," re-evaluate the
+parenthetical against the new surface's trust boundary at the
+time the new surface ships, not in a follow-up pass. The trust
+boundary of a *dispatch* surface (formatter rendering) and a
+*load* surface (plugin module-body execution) is not the same.
 
 ### Architectural posture
 
