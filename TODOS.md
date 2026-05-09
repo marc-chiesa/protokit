@@ -5,10 +5,12 @@ approach (when known) / Effort / Priority / Depends-on / Discovered**.
 Items within a phase should generally land before the next phase
 starts, but the groupings are intent, not strict gates.
 
-Completed phases (1, 1.5, 2, 1.5b) and protokit-lint Delivery 1
-(foundation, 2026-05-02) are not listed here — see `CHANGELOG.md`
-and git history. Lint deliveries 2–7 are still ahead and tracked
-in their own section below.
+Completed phases (1, 1.5, 2, 1.5b) and protokit-lint Deliveries 1
+(foundation, 2026-05-02), 2 (engine + canary, 2026-05-03), and 3
+(`protokit lint` CLI subcommand, 2026-05-09) are not listed here
+— see `CHANGELOG.md` and git history. D4 (formatters) was
+absorbed into D3 U4a/U4b and shipped with D3. D5–D7 are still
+ahead and tracked in their own section below.
 
 ---
 
@@ -74,111 +76,112 @@ discussion around the stdout-write guard.
 
 ---
 
-## protokit-lint — deliveries 2–7
+## protokit-lint — remaining deliveries (D5, D6, D7)
 
-D1 (foundation) landed 2026-05-02 (commits `0b82fc3`, `e85faea`,
-`31c0bb1`). The locked types live in `src/protokit/schema/lint/model.py`
-and `src/protokit/schema/compile.py`; helpers in
-`src/protokit/_cli_utils.py`. Six deliveries remain, sequenced per
-`docs/brainstorms/2026-04-30-protokit-lint-delivery-1-foundation-requirements.md`
-"Out of Scope" section.
+D1 (foundation, 2026-05-02), D2 (engine + canary, 2026-05-03), and
+D3 (`protokit lint` CLI subcommand, 2026-05-09) all landed. D4
+(formatters / `_builtin_lint.py`) was absorbed into D3 U4a/U4b and
+shipped with D3 — `lint_human` / `lint_json` / `lint_junit` /
+`lint_sarif` are all registered.
 
-### D2 — Engine implementation
+`protokit lint <descriptor_set>` works end-to-end today against
+the always-on `naming/snake-case-fields` canary. The remaining
+deliveries make the tool useful at production scale: D5 brings
+per-project config (so users don't need flag soup on every
+invocation), D6 brings the actual rule library (so the canary
+stops being the only thing that fires), and D7 closes the
+plugin-API story.
 
-**What:** `@lint_rule` decorator and `LintEngine`. Consumes the
-locked `LintRuleSpec` / `LintFinding` / `_LintContextEmitMixin`
-types from D1; walks the descriptor tree and dispatches per
-`ElementKind`. Closes the loop on `_emit_fn` injection (currently
-declared on every context but never invoked end-to-end).
-
-**Why:** First delivery that produces actual lint output. Every
-later delivery (CLI, formatters, config, rule packs, plugin API)
-sits on top of this engine.
-
-**Effort:** L. **Priority:** P1 (next in sequence).
-**Depends on:** D1 (landed). **Discovered:** brainstorm step 3.
-
----
-
-### D3 — `protokit lint` CLI subcommand
-
-**What:** First user-visible lint surface. Mirrors the shape of
-`protokit compat`: positional descriptor-set / `--proto` source
-inputs, `--profile`, `--rule-pack`, `--format`, `--quiet`, exit
-codes (0 clean / 1 findings / 2 diagnostics).
-
-**Why:** Without a CLI, lint findings only surface from library
-calls. The CLI is the dogfood path and the gate for D4 formatters.
-
-**Effort:** M. **Priority:** P1.
-**Depends on:** D2. **Discovered:** brainstorm step 4.
-
----
-
-### D4 — Formatters / `_builtin_lint.py`
-
-**What:** Register `_builtin_lint` formatters into the existing
-formatter system. Four `FormatterKind`-equivalent shapes for
-`LintReport` (human / json / junit / sarif). The
-`protokit/formatters/__init__.py` eager-load block must NOT
-register `_builtin_lint` until this delivery (codex P0 finding
-LINT-DESIGN-COLD-IMPORT-FORMATTERS); D1 deliberately did not touch
-that file.
-
-**Why:** Same machine-readable pipeline as compat (CI gates,
-SARIF for code-scanning).
-
-**Effort:** M. **Priority:** P1.
-**Depends on:** D2 (engine produces `LintReport`).
-**Discovered:** brainstorm step 5.
-
----
-
-### D5 — pyproject `[tool.protokit.lint]` config + `--exclude`
+### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(next in sequence)*
 
 **What:** Read `[tool.protokit.lint]` from `pyproject.toml`:
 profile selection, rule overrides, exclude globs. Adds `tomli` to
 required deps (Python 3.10 lacks `tomllib`; 3.11+ has it). Includes
 the `tests/schema/lint/test_perf_smoke.py` measurement that A5
-deferred from D1.
+deferred from D1. Likely also folds in:
+
+- R12's `LintRuntimeWarning(category="min_severity_relaxed")` emission
+  — D3 R12 deferred this to "next delivery (pyproject config)"; D5
+  is that delivery.
+- R17 `--ignore PATH` flag — D3 R17 was explicitly deferred to D5
+  ("co-design with `[tool.protokit.lint] exclude` globs").
 
 **Why:** Per-project config is how every other lint tool ships.
 Without it, every CLI invocation needs explicit flags.
 
-**Effort:** M. **Priority:** P2.
-**Depends on:** D3 (CLI exists to read the config).
-**Discovered:** brainstorm step 6.
+**Effort:** M. **Priority:** P1 (next in sequence after D3).
+**Depends on:** D3 (landed). **Discovered:** brainstorm step 6.
 
 ---
 
-### D6 — Rule packs (built-in rules)
+### D6 — Rule packs (built-in rules beyond the canary)
 
-**What:** First concrete rules. The brainstorm references AIP-style
-naming / linting (e.g., `naming/snake-case-fields`,
-`naming/upper-camel-messages`, `enum/zero-default-required`). Rule
-packs land grouped by category, each with their own
-`LintRuleSpec` registration.
+**What:** First concrete rules library. The brainstorm references
+AIP-style naming / linting (`naming/snake-case-fields` is the
+canary that ships with D1; `naming/upper-camel-messages`,
+`enum/zero-default-required`, and the rest of the AIP-122 family
+land here). Rule packs land grouped by category, each with their
+own `LintRuleSpec` registration.
+
+The path forward (R7 from D3): D6 ships with a second built-in
+pack so `--no-builtin-rules` becomes a non-trivial flag (D3
+deferred R7 because "admitted-zero user value with one canary";
+two packs unblocks it).
 
 **Why:** Foundation isn't useful without rules to fire. This is
 where the lint thesis (custom-option-aware Python-native rules)
-becomes a product.
+becomes a product. After D6 ships, `protokit lint` produces
+genuinely useful output on real proto schemas, not just the
+canary.
 
-**Effort:** L (depends on rule scope). **Priority:** P2.
-**Depends on:** D2 + D3 + D4. **Discovered:** brainstorm steps 7–8.
+**Effort:** L (depends on rule scope). **Priority:** P1.
+**Depends on:** D2 + D3 (both landed). **Discovered:**
+brainstorm steps 7–8.
 
 ---
 
-### D7 — Plugin API + `--lint-rule-pack` / `--compat-rule-pack` flags
+### D7 — Plugin API + `--compat-rule-pack` rename
 
-**What:** External-pack registration parity with the compat
-plugin API. Symmetric `--lint-rule-pack <module>` flag plus
-matching `--compat-rule-pack` for naming consistency.
+**What:** Closes the cross-CLI symmetric naming gap. D3 already
+shipped `--rule-pack` for `protokit lint` (R8). The remaining
+work is renaming compat's existing `--formatter-module` and
+`--rule-pack` flags to `--compat-rule-pack` for naming
+consistency, plus formalizing the plugin-API documentation in
+the README.
 
-**Why:** Closes the third-party-pack story. Compat already supports
-`--rule-pack`; lint should too.
+**Why:** With both CLIs taking `--rule-pack`-shaped flags, users
+get a coherent third-party-pack story. The rename is the only
+remaining surface; the underlying loading machinery already exists
+on both sides (with full sibling-parity hardening per the U5
+ce:review).
 
-**Effort:** M. **Priority:** P2.
-**Depends on:** D2 + D3. **Discovered:** brainstorm step 9.
+**Effort:** S–M (rename + deprecation aliases + doc updates).
+**Priority:** P2.
+**Depends on:** D3 (landed). **Discovered:** brainstorm step 9.
+
+---
+
+### Static-analysis cleanup (incremental)
+
+**What:** Pay-as-you-touch ratchet pattern keeps growing —
+`tests/test_static_analysis.py:_LINT_PATHS` and `_TYPE_CHECK_PATHS`
+add files as feature work touches them. Pre-D3 modules
+(`src/protokit/message/`, older `src/protokit/schema/*.py`,
+`src/protokit/formatters/_builtin_compat.py` /
+`_builtin_diff.py`, plus their test files) sit outside the
+ratchet and carry pre-existing static-analysis errors.
+
+**Why:** Discipline pattern from
+`docs/solutions/best-practices/pytest-static-analysis-gate-ratchet-2026-05-02.md`.
+Big-bang remediation is explicitly NOT the answer; touch a file,
+clean it, ratchet it.
+
+**Fix approach:** See `docs/brainstorms/2026-05-08-static-analysis-cleanup-scope.md`
+for the scoped approach when this becomes a deliberate cleanup
+pass instead of an incidental discipline.
+
+**Effort:** Continuous. **Priority:** low (not blocking).
+**Depends on:** none. **Discovered:** 2026-05-08 brainstorm.
 
 ---
 
