@@ -134,9 +134,21 @@ becomes a product. After D6 ships, `protokit lint` produces
 genuinely useful output on real proto schemas, not just the
 canary.
 
+**Sub-discipline — per-rule parity tests against industry tools:**
+Each rule landing in D6 with a clear analogue in `buf lint`,
+`protolint`, or Google's `api-linter` should ship with a parity
+fixture: same `.proto` input piped through both protokit and the
+analogue tool, asserting verdict equivalence on the agreed
+surface. Rules without analogues (e.g., custom-option-aware
+rules that only protokit supports) don't owe anyone parity.
+Pay-as-you-go discipline like the static-analysis ratchet —
+grows incrementally as each rule lands, not as a separate
+delivery. Standalone audit work belongs in the Phase 3
+"Cross-tool parity audit" entry below.
+
 **Effort:** L (depends on rule scope). **Priority:** P1.
 **Depends on:** D2 + D3 (both landed). **Discovered:**
-brainstorm steps 7–8.
+brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
 
 ---
 
@@ -227,6 +239,56 @@ fix-apply pipeline needs the engine producing findings.
 **Priority:** P3
 **Depends on:** Phase 1 (descriptor traversal) + Phase 2 (git ref extraction)
 **Discovered:** 2026-04-12 office hours
+
+---
+
+### Cross-tool parity audit (lint + compat)
+
+**What:** Standalone delivery that runs `protokit lint` and
+`protokit compat` against the public test corpora of established
+proto tools and produces a verdict-diff report. Three target tools,
+in priority order:
+
+- **buf** (`buf lint` + `buf breaking`) — dominant industry tool;
+  required for credibility. Go binary; CI installs via `go install`
+  or downloads the release archive.
+- **protolint** — pure-Go, AIP-aligned; smaller rule surface, easier
+  to install, fewer opinionated divergences.
+- **Google's api-linter** — AIP-122 specifically; relevant for any
+  AIP-style rules in D6.
+
+Output: a markdown report listing (rule, fixture, protokit verdict,
+peer-tool verdict, agree/diverge, divergence reason). Diverge cases
+are not failures — some are intentional design choices on either
+side; others are bugs in either tool. The report is the input to a
+human review, not a CI gate.
+
+**Why:** Per-rule parity tests in D6 are pay-as-you-go and prove
+each rule individually. This standalone audit catches the
+emergent-cross-rule behavior — e.g., when buf and protokit both
+fire on the same fixture but with different severities, or when
+one tool's verdict depends on rule-interaction order. Also
+surfaces edge cases neither tool's own tests catch (running buf's
+test corpus through protokit and vice versa is the cheapest way
+to find divergent behavior on real-world proto schemas).
+
+Bonus: produces a credibility artifact ("audited against buf X.Y,
+protolint Z, api-linter W on N fixtures") that's useful for
+README + release notes.
+
+**Boundaries:** This is NOT "achieve full parity with buf." Buf
+has a much larger rule set and some opinionated decisions
+protokit may want to diverge from intentionally. The audit
+report's job is to *characterize* the divergence, not eliminate
+it.
+
+**Effort:** M-L (CI tooling install + corpus runner +
+verdict-diff report generation; ~half a day initial, then
+maintenance per peer-tool release).
+**Priority:** P2.
+**Depends on:** D6 (at least one rule pack with industry
+analogues — meaningless audit when only the canary fires).
+**Discovered:** 2026-05-09 user question after D3 ship.
 
 ---
 
