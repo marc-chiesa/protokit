@@ -1,6 +1,7 @@
 ---
 title: "KeyboardInterrupt at rule-pack module load bypasses SystemExit and Exception guards"
 date: 2026-05-07
+last_updated: 2026-05-11
 category: docs/solutions/security-issues
 module: protokit.schema.lint
 problem_type: security_issue
@@ -325,6 +326,137 @@ contract violations; that posture is inherited unchanged. The
 `--rule-pack` flag's help text states "executes arbitrary Python
 from the named module," which transitively covers this risk for
 operators choosing whether to pass user-supplied module paths.
+
+## Symmetric surfaces — D5 U1 walk-up extension (refreshed 2026-05-11)
+
+The "per-surface judgment" rule in the Prevention section above had
+its first concrete extension during D5 U1's ce:review. The lesson
+captured: when a guard pattern is added to one I/O surface in a
+module, audit ALL I/O surfaces in the same function/module — not
+just the headline parse call.
+
+### What the D5 U1 ce:review caught
+
+D5 U1 (`src/protokit/schema/lint/_config.py`) correctly applied the
+triple-arm guard to `tomllib.loads` in `_parse_toml_bytes`. The plan
+KTD-9 named the principle ("every new D5 boundary that loads or
+evaluates user input — `tomllib.load`, `pathspec.PathSpec.from_lines`,
+`Path.resolve()`, walk-up file existence checks") but the U1 spec
+itself enumerated the guard only for the parse call.
+
+ce:review with 5-persona convergence (correctness 0.92, reliability
+0.88 HIGH, kieran-python 0.85, maintainability, adversarial) found
+two other I/O sites in the same module that produced unhandled
+tracebacks bypassing the stable `error[lint-pyproject-config-load]:`
+prefix:
+
+1. **`Path.cwd()` at the entry of `load_pyproject_config`** — raises
+   `FileNotFoundError` (OSError subclass) when CWD has been deleted
+   (rare for plain CLI but realistic in long-running wrapper processes
+   and sandboxed environments).
+2. **`Path.is_file()` and `(parent / ".git").exists()` in the
+   `_walk_up_find_pyproject` loop body** — raise `PermissionError`
+   when a mid-walk-up parent directory is unreadable (e.g. shared CI
+   workspaces, containerized environments with restricted mounts).
+
+Each escape produced a Python traceback to stderr rather than the
+stable lint prefix, making the failure invisible to CI grep gates.
+**The exception class is different from the rule-pack case** —
+`OSError` is an `Exception` subclass and IS caught by a bare
+`except Exception` arm. But the question isn't "which exception
+class?", it's "does the failure route through `error_exit_with_code`
+with the stable prefix?" An uncaught traceback bypasses the contract
+regardless of which class of exception causes it.
+
+### Fix applied
+
+```python
+# Walk-up loop — per-iteration OSError guard
+for candidate in (start, *start.parents):
+    try:
+        pyproject = candidate / "pyproject.toml"
+        if pyproject.is_file():
+            return pyproject
+        if (candidate / ".git").exists():
+            return None
+    except OSError as exc:
+        error_exit_with_code(
+            "pyproject-config-load",
+            f"walk-up filesystem error at "
+            f"{_safe_for_stderr(candidate)}: {_safe_for_stderr(exc)}",
+        )
+
+# Path.cwd() — entry-point OSError guard
+try:
+    cwd = Path.cwd()
+except OSError as exc:
+    error_exit_with_code(
+        "pyproject-config-load",
+        f"walk-up aborted: current working directory is unavailable "
+        f"(deleted or unreachable): {_safe_for_stderr(exc)}",
+    )
+```
+
+Note: the walk-up `try/except` wraps the entire for-body, not
+individual calls — if `is_file()` raises, the `.git` boundary check
+must not run (it would silently skip the boundary and continue
+walk-up into attacker-writable parent territory).
+
+### Spatial-scope-audit rule
+
+When a guard pattern is added to one I/O surface, the audit scope is
+the **entire function and module**, not the single line mentioned in
+the plan or brainstorm. Practical checklist for Python I/O modules:
+
+- Every `Path.cwd()` call → `try/except OSError` (deleted CWD, sandbox).
+- Every `Path.is_file()` / `.exists()` / `.is_dir()` call in a loop
+  that may traverse attacker-reachable directories → `try/except
+  OSError` per iteration (with the wrap scope being the iteration
+  body, not the individual call).
+- Every `path.read_bytes()` / `path.read_text()` call → discriminated
+  `OSError` handling (FileNotFoundError vs PermissionError vs
+  IsADirectoryError vs other).
+- Every `tomllib.loads` / `json.loads` / similar parse on
+  user-controlled bytes → triple-arm `(SystemExit,
+  KeyboardInterrupt, Exception)` per the headline pattern in this
+  doc.
+- Every `importlib.import_module` call → same triple-arm.
+
+The "route to stable prefix" rule (the deeper principle behind both
+this doc's original scope and the spatial-scope extension): every
+`except` arm that handles a user-reachable I/O failure MUST route
+to `error_exit_with_code("the-stable-code", ...)` rather than
+re-raise or swallow.
+
+### Why pressure-test passes miss the spatial extension
+
+Plans and brainstorms describe **primary I/O intent** ("load and
+parse the TOML file") without enumerating the implicit secondary
+I/O operations that implement it (CWD resolution, walk-up stat
+calls, symlink resolution). Pressure-test passes read intent;
+ce:review reads code. The headline I/O surface ends up in
+plan-level checklists; the implicit surfaces only become visible
+when the code exists. The institutional pattern
+(`apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.md`)
+documents this directly: ce:review is the designated stage for
+surfacing gaps the plan phase cannot see.
+
+### Companion fix — source_label parameter for shared helpers
+
+The same D5 U1 ce:review surfaced a separate-but-related pattern:
+shared error-emitting helpers must accept caller context as a
+parameter so error messages don't misattribute the failure source.
+See
+`docs/solutions/best-practices/shared-error-helper-source-label-caller-attribution-2026-05-11.md`
+for the standalone learning.
+
+### Fix commits
+
+- `c0bbf03` — D5 U1 implementation (the gap was present after this commit)
+- `89d84ff` — D5 U1 ce:review follow-ups (the 22-finding fix pass that
+  closed the gap; KTD-9 was already named in the plan but the
+  spatial-scope audit happened here)
+- ce:review run artifact: `.context/compound-engineering/ce-review/20260511-094847-1685ca47/`
 
 ## Related Issues
 
