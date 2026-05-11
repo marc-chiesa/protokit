@@ -384,7 +384,7 @@ D5 ships when **all** of the following hold (mirrors origin Success Criteria; ca
 
 ---
 
-- [ ] **U2: Schema validation (R3, R3a) + `ResolvedLintConfig` + precedence engine**
+- [x] **U2: Schema validation (R3, R3a) + `ResolvedLintConfig` + precedence engine** — SHIPPED 2026-05-11
 
 **Goal:** Validate the loaded pyproject table (key names per R3, types per R3a including list-element types per KTD-5) and compose with CLI overrides into a `ResolvedLintConfig` carrier (frozen dataclass per KTD-2) that retains per-key source attribution for R20's three message branches.
 

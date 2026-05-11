@@ -86,7 +86,7 @@ from protokit.schema.lint._cli_utils import (
     _safe_module_name,
     error_exit_with_code,
 )
-from protokit.schema.lint._config import load_pyproject_config
+from protokit.schema.lint._config import ResolvedLintConfig, load_pyproject_config
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
     SEVERITY_RANK,
@@ -280,7 +280,9 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
          "in environments without a .git boundary where walk-up "
          "may otherwise consume an unintended parent pyproject.",
 )
+@click.pass_context
 def main(
+    ctx: click.Context,
     inputs: tuple[Path, ...],
     use_proto: bool,
     proto_paths: tuple[str, ...],
@@ -303,13 +305,6 @@ def main(
     with first-occurrence-wins deduplication on ``fd.name``.
 
     """
-    format_name = format_name.lower()
-    profile_name = profile_name.lower()
-    if quiet and format_name != "human":
-        raise click.UsageError(
-            f"--quiet is incompatible with --format={format_name!r}; "
-            "use --quiet only with the human format (the default)."
-        )
     # D5 R5a + R13a-precedence: --config and --no-config are mutually
     # exclusive. Click-level mutex emits the 'Usage:' prefix and exits
     # 2 — distinct from --config's loader-side R5a errors which carry
@@ -327,11 +322,7 @@ def main(
             err=True,
         )
         effective_statistics = False
-    # D5 U1: load [tool.protokit.lint] from pyproject.toml. The loaded
-    # table is exposed to _main_impl but not yet consumed at U1 — U2
-    # introduces ResolvedLintConfig.from_dict for schema validation
-    # (R3, R3a) and precedence application (R11-R14).
-    #
+    # D5 U1: load [tool.protokit.lint] from pyproject.toml.
     # If load_pyproject_config raises SystemExit (any R5a shadow path,
     # parse error), it never returns and the CLI exits 2 with the
     # error[lint-pyproject-config-load]: stable prefix.
@@ -339,18 +330,59 @@ def main(
         explicit_path=config_path,
         no_config=no_config,
     )
+    # D5 U2: validate the pyproject table (R3, R3a/KTD-5) and merge with
+    # CLI overrides into a single ResolvedLintConfig carrier. CLI-default
+    # values for --profile and --format are indistinguishable from
+    # explicit user choices by value alone (defaults: "default" and
+    # "human"), so we rely on Click's parameter-source detection to know
+    # whether the user actually typed the flag. COMMANDLINE and
+    # ENVIRONMENT both count as "explicit" — env vars like
+    # PROTOKIT_FORMAT are first-class user intent. DEFAULT means the
+    # click default applied, in which case pyproject (then built-in
+    # defaults) take precedence.
+    explicit_sources = (
+        click.core.ParameterSource.COMMANDLINE,
+        click.core.ParameterSource.ENVIRONMENT,
+    )
+    profile_explicit = (
+        ctx.get_parameter_source("profile_name") in explicit_sources
+    )
+    format_explicit = (
+        ctx.get_parameter_source("format_name") in explicit_sources
+    )
+    cli_overrides: dict[str, Any] = {
+        "profile": (
+            (profile_name.strip().lower(),) if profile_explicit else None
+        ),
+        "min_severity": (
+            _MIN_SEVERITY_CHOICES[min_severity.lower()]
+            if min_severity is not None
+            else None
+        ),
+        "max_warnings": max_warnings,
+        "format": (
+            format_name.strip().lower() if format_explicit else None
+        ),
+        # `--exclude` arrives in D5 U3; until then no CLI source for exclude.
+        "exclude": None,
+    }
+    resolved = ResolvedLintConfig.from_dict(pyproject_config, cli_overrides)
+    # quiet + non-human-format mutex applies to the RESOLVED format so
+    # pyproject-driven non-human formats are caught alongside CLI-driven
+    # ones. Moved AFTER from_dict for that reason.
+    if quiet and resolved.format != "human":
+        raise click.UsageError(
+            f"--quiet is incompatible with format={resolved.format!r}; "
+            "use --quiet only with the human format (the default).",
+        )
     _main_impl(
         inputs=inputs,
         use_proto=use_proto,
         proto_paths=proto_paths,
         rule_packs=rule_packs,
-        profile_name=profile_name,
-        min_severity=min_severity,
-        format_name=format_name,
-        max_warnings=max_warnings,
         statistics=effective_statistics,
         quiet=quiet,
-        pyproject_config=pyproject_config,
+        resolved=resolved,
     )
 
 
@@ -360,13 +392,9 @@ def _main_impl(
     use_proto: bool,
     proto_paths: tuple[str, ...],
     rule_packs: tuple[str, ...],
-    profile_name: str,
-    min_severity: str | None,
-    format_name: str,
-    max_warnings: int | None,
     statistics: bool | None,
     quiet: bool,
-    pyproject_config: dict[str, Any] | None,
+    resolved: ResolvedLintConfig,
 ) -> None:
     """Implementation body of ``protokit lint`` after flag validation.
 
@@ -377,20 +405,19 @@ def _main_impl(
     ``RULES = (decorated_fn, ...)`` where each callable is
     ``@lint_rule``-decorated.
 
-    ``pyproject_config`` (D5 U1) is the raw parsed
-    ``[tool.protokit.lint]`` dict from pyproject.toml (or ``None``
-    when no config applies). At U1, the table is received but not
-    yet consumed — U2 introduces ``ResolvedLintConfig.from_dict`` to
-    validate the schema (R3, R3a) and apply precedence (R11-R14).
+    ``resolved`` (D5 U2) is a ``ResolvedLintConfig`` carrier: the
+    merged result of CLI flags + pyproject ``[tool.protokit.lint]`` +
+    built-in defaults, with per-key precedence already applied per
+    the plan's decision matrix. Consumers in this function:
+
+    - ``resolved.profile`` — iterated to compose multi-profile
+      pyproject configurations (single-profile is the common case).
+    - ``resolved.min_severity`` + ``resolved.min_severity_source`` —
+      drives the relaxation breadcrumb (U4 replaces this with the
+      structured ``LintRuntimeWarning`` emission).
+    - ``resolved.max_warnings``, ``resolved.format`` — replace the
+      former CLI-flag-direct usage.
     """
-    # TODO(D5 U2): pass pyproject_config through ResolvedLintConfig.from_dict
-    # to validate keys/types and apply CLI > pyproject > defaults precedence.
-    # For U1, the table is intentionally unused — the loader's
-    # correct-by-construction behavior is validated via the
-    # tests/schema/lint/_config/ suite. Until U2 lands, --config /
-    # --no-config / walk-up have no effect on resolved behavior; their
-    # error paths (R5a) are still active and tested.
-    _ = pyproject_config
     if use_proto:
         result = compile_protos_to_result(
             paths=list(inputs),
@@ -467,41 +494,46 @@ def _main_impl(
 
     loaded_packs_tuple: tuple[ModuleType, ...] = tuple(loaded_packs)
 
-    # Profile resolution per origin R10 revised: derive each pack's
-    # profile via LintProfile.from_pack, then compose if multi-pack.
-    # Single-pack short-circuits to the from_pack result (compose's
-    # len==1 path returns profiles[0] unchanged anyway, but the
-    # explicit branch communicates intent).
-    #
-    # TODO(next-delivery): when pyproject config introduces non-default
-    # min_severity callers (the relaxation-breadcrumb's first real
-    # signal), revisit whether the single-pack branch should also go
-    # through compose() so the strictest-wins path is exercised
-    # uniformly. Today the branch is correct because from_pack always
-    # returns min_severity = WARNING; the divergence only matters once
-    # callers construct LintProfile with a non-default floor.
-    per_pack_profiles: list[LintProfile] = []
-    for pack in loaded_packs_tuple:
-        try:
-            per_pack_profiles.append(LintProfile.from_pack(pack, profile_name))
-        except TypeError as exc:
-            error_exit_with_code(
-                "rule-pack-load",
-                f"kind=shape: pack {_safe_module_name(pack)!r} has malformed "
-                f"RULES (engine reported: {_scrub_exc_message(exc)})",
-            )
+    # Profile resolution: iterate resolved.profile (one name per
+    # pyproject `profile = "..."` scalar, or one name per element of
+    # `profile = [...]` list). For each name, query each loaded pack;
+    # compose pack-side per name; then compose across names.
+    # Single-profile-single-pack short-circuits to the from_pack result.
+    profiles_per_name: list[LintProfile] = []
+    for resolved_profile_name in resolved.profile:
+        per_pack_profiles: list[LintProfile] = []
+        for pack in loaded_packs_tuple:
+            try:
+                per_pack_profiles.append(
+                    LintProfile.from_pack(pack, resolved_profile_name),
+                )
+            except TypeError as exc:
+                error_exit_with_code(
+                    "rule-pack-load",
+                    f"kind=shape: pack {_safe_module_name(pack)!r} has "
+                    f"malformed RULES (engine reported: "
+                    f"{_scrub_exc_message(exc)})",
+                )
+        composed_for_name = (
+            per_pack_profiles[0]
+            if len(per_pack_profiles) == 1
+            else LintProfile.compose(*per_pack_profiles)
+        )
+        profiles_per_name.append(composed_for_name)
     composed_profile = (
-        per_pack_profiles[0]
-        if len(per_pack_profiles) == 1
-        else LintProfile.compose(*per_pack_profiles)
+        profiles_per_name[0]
+        if len(profiles_per_name) == 1
+        else LintProfile.compose(*profiles_per_name)
     )
 
-    # Apply --min-severity override (R12). Pure numeric override:
+    # Apply min_severity override (R12). Pure numeric override:
     # replaces the composed profile's min_severity; the
     # LintRuntimeWarning(category="min_severity_relaxed") emission
-    # is deferred to the next delivery (pyproject) per origin R12.
-    if min_severity is not None:
-        override_severity = _MIN_SEVERITY_CHOICES[min_severity.lower()]
+    # is deferred to D5 U4 per origin R12. At U2 the breadcrumb is
+    # source-aware (CLI vs pyproject) so pyproject-driven relaxations
+    # do not mis-attribute to --min-severity.
+    if resolved.min_severity is not None:
+        override_severity = resolved.min_severity
         composed_floor = composed_profile.min_severity
         composed_profile = dataclasses.replace(
             composed_profile, min_severity=override_severity,
@@ -514,13 +546,22 @@ def _main_impl(
             SEVERITY_RANK[override_severity]
             < SEVERITY_RANK[composed_floor]
         ):
-            click.echo(
-                f"protokit lint: --min-severity={min_severity.lower()} "
-                f"relaxes profile floor from "
-                f"{composed_floor.name.lower()} to "
-                f"{override_severity.name.lower()}",
-                err=True,
-            )
+            floor_name = composed_floor.value
+            override_name = override_severity.value
+            if resolved.min_severity_source == "cli":
+                click.echo(
+                    f"protokit lint: --min-severity={override_name} "
+                    f"relaxes profile floor from {floor_name} to "
+                    f"{override_name}",
+                    err=True,
+                )
+            elif resolved.min_severity_source == "pyproject":
+                click.echo(
+                    f"protokit lint: [tool.protokit.lint] "
+                    f"min_severity={override_name} relaxes profile "
+                    f"floor from {floor_name} to {override_name}",
+                    err=True,
+                )
 
     # Loud-failure checks per origin R9 + R11. R9 wins over R11 when
     # both predicates would fire — the user can't meaningfully fix
@@ -546,9 +587,19 @@ def _main_impl(
                 f"profiles=[{profiles_str}]",
                 err=True,
             )
+        # Multi-profile error names each profile; single-profile keeps
+        # the original singular form for back-compat with existing tests
+        # and CI grep contracts.
+        if len(resolved.profile) == 1:
+            error_exit_with_code(
+                "unknown-profile",
+                f"profile {resolved.profile[0]!r} is not declared by "
+                f"any loaded pack",
+            )
+        profile_list = ", ".join(repr(name) for name in resolved.profile)
         error_exit_with_code(
             "unknown-profile",
-            f"profile {profile_name!r} is not declared by any loaded pack",
+            f"profiles {profile_list} are not declared by any loaded pack",
         )
 
     # R25 multi-pack composition stderr provenance line. Gated on
@@ -564,8 +615,15 @@ def _main_impl(
                 loaded_packs_tuple, active_per_pack.values(), strict=True,
             )
         ]
+        # Render multi-profile as "default+strict-naming" for the
+        # provenance line so the resolved set is observable.
+        provenance_profile = (
+            resolved.profile[0]
+            if len(resolved.profile) == 1
+            else "+".join(resolved.profile)
+        )
         click.echo(
-            f"protokit lint: profile {profile_name!r} from "
+            f"protokit lint: profile {provenance_profile!r} from "
             + "; ".join(per_pack_segments),
             err=True,
         )
@@ -587,23 +645,23 @@ def _main_impl(
         )
 
     try:
-        formatter = get_formatter(format_name, FormatterKind.LINT_REPORT)
+        formatter = get_formatter(resolved.format, FormatterKind.LINT_REPORT)
     except KeyError:
         available = ", ".join(sorted(list_formatters(FormatterKind.LINT_REPORT)))
         error_exit_with_code(
             "format-unavailable",
-            f"unknown format {format_name!r} for lint output "
+            f"unknown format {resolved.format!r} for lint output "
             f"(available: {available})",
         )
 
     ctx = FormatterContext(subcommand="lint")
     output = _run_lint_formatter_safely(
-        formatter, report, ctx, name=format_name,
+        formatter, report, ctx, name=resolved.format,
     )
     if output and not quiet:
         click.echo(output)
 
-    if statistics and format_name == "human" and not quiet:
+    if statistics and resolved.format == "human" and not quiet:
         _emit_statistics_footer(report)
 
     has_error = any(
@@ -612,12 +670,12 @@ def _main_impl(
     )
     if has_error:
         sys.exit(1)
-    if max_warnings is not None:
+    if resolved.max_warnings is not None:
         warning_count = sum(
             1 for finding in report.findings
             if finding.severity is LintSeverity.WARNING
         )
-        if warning_count > max_warnings:
+        if warning_count > resolved.max_warnings:
             sys.exit(1)
 
 
