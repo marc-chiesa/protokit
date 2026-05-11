@@ -50,7 +50,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
-from protokit.schema.lint._cli_utils import error_exit_with_code
+from protokit.schema.lint._cli_utils import _safe_for_stderr, error_exit_with_code
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -110,7 +110,22 @@ def load_pyproject_config(
     if explicit_path is not None:
         return _load_explicit(explicit_path)
 
-    pyproject_path = _walk_up_find_pyproject(Path.cwd())
+    # Fix #13: Path.cwd() can raise FileNotFoundError (deleted CWD) or
+    # PermissionError (sandboxed environments). Wrap with the same
+    # pyproject-config-load surface so users see a stable error prefix
+    # rather than an uncaught OSError traceback.
+    try:
+        cwd = Path.cwd()
+    except OSError as exc:
+        error_exit_with_code(
+            "pyproject-config-load",
+            (
+                "walk-up aborted: current working directory is unavailable "
+                f"(deleted or unreachable): {_safe_for_stderr(exc)}"
+            ),
+        )
+
+    pyproject_path = _walk_up_find_pyproject(cwd)
     if pyproject_path is None:
         return None
 
@@ -145,12 +160,27 @@ def _walk_up_find_pyproject(start: Path) -> Path | None:
         boundary without finding one.
     """
     for candidate in (start, *start.parents):
-        pyproject = candidate / "pyproject.toml"
-        if pyproject.is_file():
-            return pyproject
-        # `.git` content is never read — existence check only (KTD-7).
-        if (candidate / ".git").exists():
-            return None
+        # Fix #3: Wrap each iteration's stat calls in try/except so a
+        # PermissionError on a mid-walk-up directory routes to the stable
+        # pyproject-config-load surface rather than escaping as an
+        # uncaught OSError traceback. Do NOT silently swallow — that
+        # would let an unreadable parent silently skip past the .git
+        # boundary check.
+        try:
+            pyproject = candidate / "pyproject.toml"
+            if pyproject.is_file():
+                return pyproject
+            # `.git` content is never read — existence check only (KTD-7).
+            if (candidate / ".git").exists():
+                return None
+        except OSError as exc:
+            error_exit_with_code(
+                "pyproject-config-load",
+                (
+                    f"walk-up filesystem error at "
+                    f"{_safe_for_stderr(candidate)}: {_safe_for_stderr(exc)}"
+                ),
+            )
     return None
 
 
@@ -161,7 +191,7 @@ def _walk_up_find_pyproject(start: Path) -> Path | None:
 
 def _load_explicit(path: Path) -> dict[str, Any]:
     """Load ``--config PATH`` in strict R5a mode (table-absent is an error)."""
-    table = _read_and_parse(path)
+    table = _read_and_parse(path, source_label="--config path")
     lint_table = _extract_lint_table(table)
     if lint_table is None:
         error_exit_with_code(
@@ -176,39 +206,64 @@ def _load_explicit(path: Path) -> dict[str, Any]:
 
 def _load_from_walkup(path: Path) -> dict[str, Any] | None:
     """Load walk-up-discovered pyproject (silent fallback on table-absent)."""
-    table = _read_and_parse(path)
+    table = _read_and_parse(
+        path, source_label="walk-up-discovered pyproject",
+    )
     # Walk-up: table-absent returns None silently (run with built-in defaults
     # per R5). Only parse-time errors are hard.
     return _extract_lint_table(table)
 
 
-def _read_and_parse(path: Path) -> dict[str, Any]:
+def _read_and_parse(
+    path: Path, *, source_label: str = "--config path",
+) -> dict[str, Any]:
     """Read bytes from ``path`` and parse as TOML; produce R5a shadow-path errors.
 
-    Triple-arm guard wraps the ``tomllib.loads`` call: ``SystemExit`` is
-    rerouted to ``error_exit_with_code`` (prevents malicious config
-    bodies from emitting a fake-clean exit); ``KeyboardInterrupt``
-    propagates to Python's default handler (catch-and-reraise per
-    KTD-9 / scope-guardian F5); other exceptions route to the
-    ``pyproject-config-load`` error code with sanitized stderr.
+    The ``source_label`` parameter controls the wording of OS-level
+    error messages (missing file / unreadable file) so walk-up-discovered
+    pyprojects and explicit ``--config PATH`` callers each get
+    accurate attribution. Defaults to ``"--config path"`` so any future
+    caller that forgets to pass the label still gets the strict
+    explicit-mode wording rather than a misleading walk-up message.
 
-    R5a content-safety: ``TOMLDecodeError`` is normalized to
-    ``"TOML parse error at {path}:{line}:{col}"`` so raw file bytes
-    can never leak via the error message.
+    Fix #1 (5-persona converged finding): walk-up callers used to
+    inherit the "``--config path``" wording from explicit-mode
+    error messages, which mis-attributed walk-up filesystem errors
+    (e.g., ``PermissionError`` on a walked-into parent pyproject) as
+    a flag the user never passed.
+
+    Fix #20: ``path.exists()`` is no longer pre-checked. ``OSError``
+    from ``path.read_bytes()`` discriminates ``FileNotFoundError``
+    (missing) vs other ``OSError`` (unreadable / EACCES / EISDIR).
+    This eliminates the TOCTOU window between the walk-up
+    ``is_file()`` check and the post-walk-up ``exists()`` check and
+    removes a redundant stat syscall.
+
+    Parse-time error handling (triple-arm guard for ``tomllib.loads``,
+    ``TOMLDecodeError`` content-safety normalization, UTF-8 decode
+    handling) is the responsibility of :func:`_parse_toml_bytes`. This
+    function only owns the read-bytes-from-disk surface.
     """
-    if not path.exists():
-        error_exit_with_code(
-            "pyproject-config-load",
-            f"--config path does not exist: {_safe_for_stderr(path)}",
-        )
-
+    # Fix #7: Initialize `data` so mypy's flow analysis treats it as
+    # bound on all paths reaching `_parse_toml_bytes` below. The
+    # `error_exit_with_code` call is NoReturn, but type checkers may
+    # not always infer that across an except clause.
+    data: bytes = b""
     try:
         data = path.read_bytes()
     except OSError as exc:
+        # Fix #20: discriminate missing-file vs other OSError variants
+        # (PermissionError, IsADirectoryError) via isinstance — no
+        # redundant pre-check needed.
+        if isinstance(exc, FileNotFoundError):
+            error_exit_with_code(
+                "pyproject-config-load",
+                f"{source_label} does not exist: {_safe_for_stderr(path)}",
+            )
         error_exit_with_code(
             "pyproject-config-load",
             (
-                f"--config path unreadable: {_safe_for_stderr(path)}: "
+                f"{source_label} unreadable: {_safe_for_stderr(path)}: "
                 f"{_safe_for_stderr(exc)}"
             ),
         )
@@ -252,9 +307,26 @@ def _parse_toml_bytes(data: bytes, path: Path) -> dict[str, Any]:
         # R5a content-safety: tomllib.TOMLDecodeError.args[0] may include
         # raw file bytes / fragments. NEVER expose. Use only structured
         # attributes (lineno, colno) if present on the exception.
+        #
+        # Fix #14 documentation note: the structured `at {path}:line:col`
+        # form is reachable only when the TOML library exposes lineno/
+        # colno as attributes. The two cases:
+        #   - tomli (py<3.11 backport): exposes lineno/colno → structured form.
+        #   - stdlib tomllib (py3.11+): does NOT expose lineno/colno;
+        #     args[0] contains free-form text instead → falls through
+        #     to the unstructured `"TOML parse error in {path}"` form.
+        # The fallback is correct under both libraries; the asymmetry is
+        # documented here so the structured branch isn't mistaken for
+        # dead code on py3.11+.
+        #
+        # Fix #22: tighten the precondition to require both attributes
+        # be `int`. `getattr(..., None)` could in principle return a
+        # non-int from a future tomli release with a different attr
+        # shape, and that value would otherwise be interpolated
+        # unsanitized into the stderr message.
         line = getattr(exc, "lineno", None)
         col = getattr(exc, "colno", None)
-        if line is not None and col is not None:
+        if isinstance(line, int) and isinstance(col, int):
             msg = (
                 f"TOML parse error at {_safe_for_stderr(path)}:{line}:{col}"
             )
@@ -303,19 +375,10 @@ def _extract_lint_table(table: dict[str, Any]) -> dict[str, Any] | None:
 
 # ---------------------------------------------------------------------------
 # Stderr-safe rendering helpers (KTD-9 newline sanitization)
-# ---------------------------------------------------------------------------
-
-
-def _safe_for_stderr(value: object) -> str:
-    """Collapse newlines/carriage returns in a stringified value.
-
-    Defense-in-depth against attacker-controlled strings flowing into
-    single-line ``click.echo(..., err=True)`` output. Paths, exception
-    messages, and any other stringified field that may include
-    user-controlled bytes is passed through this helper before being
-    interpolated into stderr error messages.
-
-    Mirrors ``_safe_module_name`` in ``protokit.schema.lint._cli_utils``
-    but generalized to arbitrary values (Path, Exception, str).
-    """
-    return str(value).replace("\n", " ").replace("\r", " ")
+# Per ce:review finding #9, `_safe_for_stderr` was consolidated to
+# `protokit.schema.lint._cli_utils` so the canonical implementation is
+# shared with `_safe_module_name` (which now delegates to it). The
+# import is at the top of this module alongside `error_exit_with_code`.
+# Per ce:review finding #11, the sanitization scope was extended from
+# newlines only to all ASCII control characters (\n, \r, \x00, \x1b,
+# \t, etc.) — see the helper's docstring for the threat model.

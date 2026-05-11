@@ -204,6 +204,96 @@ class TestExplicitPathR5aShadowPaths:
         assert "not valid UTF-8" in captured.err
         assert "secret bytes here" not in captured.err
 
+    def test_path_unreadable_explicit_mode(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """File exists but read_bytes raises PermissionError → exit 2
+        with strict-mode message.
+
+        Fix #5: explicit OSError-branch coverage in ``_read_and_parse``.
+        Pairs with :meth:`test_walkup_unreadable_pyproject_uses_walkup_label`
+        below which verifies the Fix #1 source_label attribution.
+        """
+        path = _write_pyproject(tmp_path, "[tool.protokit.lint]\n")
+
+        def raise_perm(self: Path) -> bytes:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "read_bytes", raise_perm)
+
+        with pytest.raises(SystemExit) as exc_info:
+            load_pyproject_config(explicit_path=path, no_config=False)
+
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "error[lint-pyproject-config-load]:" in captured.err
+        assert "unreadable" in captured.err
+        # Fix #1: explicit-mode source_label.
+        assert "--config path" in captured.err
+
+    def test_walkup_unreadable_pyproject_uses_walkup_label(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Walk-up discovers an unreadable pyproject → error message
+        says 'walk-up...' NOT '--config path'.
+
+        Fix #1 attribution check: locks in that walk-up callers no
+        longer mis-attribute filesystem errors as if the user passed
+        ``--config``. Catches the Fix #1 attribution bug if Fix #1
+        is ever regressed.
+        """
+        _write_pyproject(tmp_path, "[tool.protokit.lint]\n")
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        def raise_perm(self: Path) -> bytes:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "read_bytes", raise_perm)
+
+        with pytest.raises(SystemExit) as exc_info:
+            load_pyproject_config(explicit_path=None, no_config=False)
+
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "error[lint-pyproject-config-load]:" in captured.err
+        # KEY: walk-up errors must NOT claim '--config' was passed.
+        assert "--config" not in captured.err
+        assert "walk-up" in captured.err
+
+    def test_tomllib_error_message_form_on_python_311_plus(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Document: stdlib tomllib (py3.11+) has no lineno/colno
+        attributes → unstructured "in {path}" form.
+
+        Fix #14 locks in the py-version-specific behavior so the
+        structured-branch dead-code on py3.11+ isn't mistaken for a
+        bug. On py<3.11 (tomli backport), lineno/colno ARE exposed
+        and the structured "at {path}:line:col" form is reachable.
+        """
+        import sys
+        if sys.version_info < (3, 11):
+            pytest.skip(
+                "tomli backport exposes lineno/colno; "
+                "stdlib tomllib does not"
+            )
+        path = tmp_path / "bad.toml"
+        path.write_text("[tool.protokit.lint]\nnot valid toml = = =\n")
+        with pytest.raises(SystemExit):
+            load_pyproject_config(explicit_path=path, no_config=False)
+        captured = capsys.readouterr()
+        # On py3.11+: unstructured "in {path}" form (no line:col).
+        assert "TOML parse error in" in captured.err
+        # NOT "at {path}:line:col" form.
+        assert "TOML parse error at" not in captured.err
+
 
 class TestExplicitPathContentSafety:
     """R5a content-safety: tomllib parse errors emit path:line:col only,
@@ -346,7 +436,9 @@ class TestExtractLintTable:
 
 
 class TestSafeForStderr:
-    """KTD-9 defense-in-depth: newline collapse on stderr-bound strings."""
+    """KTD-9 defense-in-depth: control-character sanitization on stderr-bound
+    strings. Scope extended per ce:review finding #11 to cover null bytes
+    and ANSI escape sequences in addition to newlines."""
 
     def test_collapses_linefeed(self) -> None:
         assert _safe_for_stderr("a\nb") == "a b"
@@ -367,3 +459,50 @@ class TestSafeForStderr:
         exc = OSError("some\nmulti\nline\nmessage")
         result = _safe_for_stderr(exc)
         assert "\n" not in result
+
+    def test_collapses_null_byte(self) -> None:
+        """Null bytes truncate stderr lines in syslog / log-ingestion
+        pipelines that treat NUL as string terminator. Must be replaced.
+
+        Defends against attacker-controlled paths like
+        ``--config /tmp/evil\\x00.toml`` flowing into the bare-Exception
+        arm of `_parse_toml_bytes` and surfacing in stderr via
+        `_safe_for_stderr(path)`.
+        """
+        result = _safe_for_stderr("before\x00after")
+        assert "\x00" not in result
+        assert result == "before after"
+
+    def test_collapses_ansi_escape(self) -> None:
+        """ANSI escape sequences (ESC, 0x1b) can inject terminal color
+        or cursor control that obscures the `error[lint-` stable prefix
+        CI scripts grep for. Must be replaced.
+        """
+        # ESC[31m would normally turn the following text red on an ANSI terminal.
+        result = _safe_for_stderr("normal\x1b[31mred-text\x1b[0m")
+        assert "\x1b" not in result
+
+    def test_collapses_tab(self) -> None:
+        """Tab characters can shift line layout in fixed-width stderr
+        parsers. Same defense-in-depth posture as newlines."""
+        result = _safe_for_stderr("a\tb")
+        assert "\t" not in result
+        assert result == "a b"
+
+    def test_collapses_del(self) -> None:
+        """The DEL character (0x7f) is the one non-0x00-0x1f control
+        char in 7-bit ASCII. Helper must cover it too."""
+        result = _safe_for_stderr("a\x7fb")
+        assert "\x7f" not in result
+
+    def test_preserves_printable_ascii(self) -> None:
+        """Sanitization must not touch the normal printable range."""
+        s = "abc XYZ 123 !@#$%^&*()_+-=[]{}|;:',.<>/?`~"
+        assert _safe_for_stderr(s) == s
+
+    def test_preserves_non_ascii_unicode(self) -> None:
+        """Unicode characters above 0x7f are NOT control chars in the
+        relevant sense. Paths with valid UTF-8 names containing
+        non-ASCII characters should round-trip unchanged."""
+        s = "/repo/プロジェクト/config.toml"
+        assert _safe_for_stderr(s) == s

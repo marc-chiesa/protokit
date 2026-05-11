@@ -79,12 +79,16 @@ _LINT_ERROR_CODES: tuple[str, ...] = (
     # elements (KTD-5). Distinct from `pyproject-config-load` (parse-time
     # failure) — this code surfaces post-parse-success validation
     # failures.
+    # Wired in D5 U2 (schema validation); declared here so the closed-set
+    # contract advances atomically with U1's tuple expansion.
     "pyproject-config-invalid",
     # D5 U3: `--exclude PATTERN` (CLI) or pyproject `exclude = [...]`
     # contains a pattern that `pathspec.PathSpec.from_lines` rejects.
     # Distinct from `pyproject-config-invalid` because exclude patterns
     # can come from CLI flags, not just pyproject — reusing the
     # pyproject-specific code would mis-attribute the source.
+    # Wired in D5 U3 (pathspec compilation); declared here for the same
+    # reason as `pyproject-config-invalid` above.
     "exclude-pattern-invalid",
 )
 
@@ -164,15 +168,62 @@ _MISSING_IMPORT_MARKERS: tuple[str, ...] = (
     "couldn't resolve name",
 )
 
+#: Translation table that maps every ASCII control character
+#: (``0x00``–``0x1f`` plus ``0x7f`` DEL) to a single space. Used by
+#: :func:`_safe_for_stderr` so attacker-controlled strings flowing into
+#: per-line ``click.echo`` output can never:
+#:
+#: - Forge a fake error line via embedded ``\n`` / ``\r`` (the original
+#:   ``module-name-newline-injection-stderr-forge-2026-05-07.md`` concern).
+#: - Truncate the stderr line via embedded ``\x00`` (NUL terminates
+#:   strings in syslog / many log-ingestion pipelines).
+#: - Smuggle ANSI escape sequences via embedded ``\x1b`` (terminal
+#:   color/cursor injection that can obscure the ``error[lint-`` prefix
+#:   CI scripts grep for).
+#:
+#: Built once at module-load time (cheap; lazy import via ``str.translate``).
+_CONTROL_CHAR_TABLE: dict[int, int] = {
+    codepoint: ord(" ") for codepoint in range(0x20)
+}
+_CONTROL_CHAR_TABLE[0x7F] = ord(" ")
+
+
+def _safe_for_stderr(value: object) -> str:
+    """Collapse all ASCII control characters in a stringified value to spaces.
+
+    Defense-in-depth against attacker-controlled strings flowing into
+    single-line ``click.echo(..., err=True)`` output. Paths, exception
+    messages, module names, and any other stringified field that may
+    include user-controlled bytes is passed through this helper before
+    being interpolated into stderr error messages.
+
+    Sanitization scope (extended beyond the original
+    ``module-name-newline-injection-stderr-forge-2026-05-07.md`` rule):
+
+    - Newlines (``\\n``, ``\\r``) — prevent forged error-line injection.
+    - Null bytes (``\\x00``) — prevent stderr-line truncation in syslog
+      and log-ingestion pipelines that treat NUL as string terminator.
+    - ANSI escape sequences (``\\x1b...``) — prevent terminal color/cursor
+      injection that can obscure stable error prefixes for CI grep.
+    - Other ASCII control characters (``\\t``, ``\\b``, etc.) — same
+      defense-in-depth reasoning.
+
+    Single source of truth for stderr-safe stringification across the
+    lint subpackage; :func:`_safe_module_name` is a thin wrapper that
+    extracts ``module.__name__`` first.
+    """
+    return str(value).translate(_CONTROL_CHAR_TABLE)
+
+
 def _safe_module_name(module: ModuleType) -> str:
-    """Return ``module.__name__`` with embedded newlines collapsed to spaces.
+    """Return ``module.__name__`` with embedded control characters replaced.
 
     Defense-in-depth against attacker-controlled module names flowing
-    into ``click.echo`` output lines. Newlines in a module ``__name__``
-    are pathological but theoretically injectable; collapsing them
-    prevents multi-line injection into single-line output fields.
+    into ``click.echo`` output lines. Delegates to :func:`_safe_for_stderr`
+    so the sanitization scope (newlines, null bytes, ANSI escapes,
+    other control chars) stays in lockstep with the canonical helper.
     """
-    return module.__name__.replace("\n", " ").replace("\r", " ")
+    return _safe_for_stderr(module.__name__)
 
 
 def _load_descriptor_sets_to_result(

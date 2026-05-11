@@ -66,7 +66,16 @@ class TestConfigNoConfigMutex:
     def test_config_and_no_config_both_set_is_usage_error(
         self, tmp_path: Path, descriptor_set: Path,
     ) -> None:
-        """--config and --no-config together → click UsageError, exit 2."""
+        """--config and --no-config together → click UsageError, exit 2.
+
+        Fix #4: assert on ``result.stderr`` (where Click writes
+        UsageError output) so the test is symmetric with the
+        R5a shadow-path tests in :class:`TestConfigShadowPaths`
+        (which assert on ``result.stderr``). On Click 8.3+, the
+        ``CliRunner`` constructor no longer accepts ``mix_stderr=False``
+        because stderr is captured separately by default; ``result.stderr``
+        is already populated for UsageError.
+        """
         config = _write_minimal_pyproject(tmp_path)
 
         result = CliRunner().invoke(
@@ -75,9 +84,10 @@ class TestConfigNoConfigMutex:
         )
 
         assert result.exit_code == 2
-        # Click usage errors carry the 'Usage:' prefix, distinct from
-        # the lint-internal 'error[lint-...]:' prefix.
-        assert "mutually exclusive" in result.output
+        # Click usage errors carry the 'Usage:' prefix on stderr,
+        # distinct from the lint-internal 'error[lint-...]:' prefix.
+        assert "mutually exclusive" in result.stderr
+        assert "Usage:" in result.stderr
 
 
 # ---------------------------------------------------------------------------

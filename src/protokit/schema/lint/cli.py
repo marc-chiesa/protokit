@@ -120,6 +120,11 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
         "    protokit lint a.descriptor_set b.descriptor_set\n\n"
         "  Load a user rule pack on top of the built-in canary:\n\n"
         "    protokit lint --rule-pack acme.lint_rules schema.descriptor_set\n\n"
+        "  Use project-specific config from pyproject.toml:\n\n"
+        "    protokit lint --config ./pyproject.toml schema.descriptor_set\n\n"
+        "  Bypass pyproject discovery (containerized CI without "
+        ".git boundary):\n\n"
+        "    protokit lint --no-config schema.descriptor_set\n\n"
         "EXIT CODES (R20 ladder):\n\n"
         "  0 = clean run (no findings, or only INFO findings, or "
         "WARNINGs with --max-warnings unset / not exceeded).\n\n"
@@ -243,6 +248,14 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     default=None,
     metavar="PATH",
     type=click.Path(path_type=Path),
+    # Fix #2: expand `~` to the home directory at the Click input
+    # boundary (per the normalize-at-input-boundary-2026-05-07
+    # learning). Without this, `--config ~/config.toml` would fail
+    # with "does not exist" because Click's Path() does not expand
+    # tildes itself.
+    callback=lambda ctx, param, value: (
+        value.expanduser() if value is not None else value
+    ),
     # Existence + readability + format checks are performed by
     # protokit.schema.lint._config.load_pyproject_config so they
     # produce the error[lint-pyproject-config-load]: stable prefix
@@ -250,10 +263,11 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     # exists=True here.
     help="Path to a pyproject.toml-style file to load "
          "[tool.protokit.lint] from. Overrides walk-up discovery. "
-         "All R5a shadow paths (missing file, unreadable, missing "
-         "[tool.protokit.lint] table, invalid TOML) exit 2 with "
+         "If the file is missing, unreadable, or has no "
+         "[tool.protokit.lint] table, exits 2 with "
          "error[lint-pyproject-config-load]:. Mutually exclusive "
-         "with --no-config.",
+         "with --no-config. When given multiple times, the last "
+         "value wins.",
 )
 @click.option(
     "--no-config",

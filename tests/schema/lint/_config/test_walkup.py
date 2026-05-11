@@ -71,19 +71,29 @@ class TestWalkupGitBoundary:
     both directory and file shapes)."""
 
     def test_terminates_at_git_directory(self, tmp_path: Path) -> None:
-        """Standard git checkout: ``.git`` is a directory."""
-        (tmp_path / ".git").mkdir()
-        # No pyproject.toml at or below tmp_path; one exists above but is
-        # outside the .git boundary.
-        outer_pyproject = tmp_path.parent / "pyproject.toml"
+        """Standard git checkout: ``.git`` is a directory.
+
+        Fix #19: restructured to stay within ``tmp_path`` to eliminate
+        the pytest-xdist race where two parallel workers shared the
+        same ``tmp_path.parent``. The walk-up starts at
+        ``tmp_path/inner/src``, climbs into ``tmp_path/inner`` (which
+        contains ``.git``), and must terminate there — never reaching
+        the sibling ``outer_pyproject.toml`` placed at ``tmp_path``.
+        """
+        inner = tmp_path / "inner"
+        inner.mkdir()
+        (inner / ".git").mkdir()
+        # Sibling-of-inner pyproject (NOT inside inner; would only be
+        # found if walk-up crossed the .git boundary into tmp_path).
+        outer_pyproject = tmp_path / "outer_pyproject.toml"
         outer_pyproject.write_text("[tool.protokit.lint]\n")
-        subdir = tmp_path / "src"
+        # ALSO place a pyproject.toml in tmp_path so an unbounded walk
+        # would find it. Use a name that matches the canonical lookup.
+        (tmp_path / "pyproject.toml").write_text("[tool.protokit.lint]\n")
+        subdir = inner / "src"
         subdir.mkdir()
 
-        try:
-            result = _walk_up_find_pyproject(subdir)
-        finally:
-            outer_pyproject.unlink(missing_ok=True)
+        result = _walk_up_find_pyproject(subdir)
 
         # Must NOT return the outer pyproject — walk-up stops at .git.
         assert result is None
@@ -95,22 +105,23 @@ class TestWalkupGitBoundary:
         correctly terminates at file-shaped ``.git``. A buggy
         implementation using ``.is_dir()`` would silently skip past
         the worktree root and walk into attacker-writable parents.
+
+        Fix #19: restructured to stay within ``tmp_path`` (xdist-safe).
         """
+        inner = tmp_path / "inner"
+        inner.mkdir()
         # Create a `.git` FILE (worktree pointer shape).
-        git_file = tmp_path / ".git"
+        git_file = inner / ".git"
         git_file.write_text(
             "gitdir: /path/to/main/.git/worktrees/test-worktree\n",
         )
-        # Place a pyproject ABOVE the worktree boundary.
-        outer_pyproject = tmp_path.parent / "pyproject.toml"
-        outer_pyproject.write_text("[tool.protokit.lint]\n")
-        subdir = tmp_path / "src"
+        # Place pyprojects ABOVE the worktree boundary (in tmp_path)
+        # to verify walk-up truly stops at the worktree boundary.
+        (tmp_path / "pyproject.toml").write_text("[tool.protokit.lint]\n")
+        subdir = inner / "src"
         subdir.mkdir()
 
-        try:
-            result = _walk_up_find_pyproject(subdir)
-        finally:
-            outer_pyproject.unlink(missing_ok=True)
+        result = _walk_up_find_pyproject(subdir)
 
         # Walk-up must STOP at the .git FILE, not skip past it.
         assert result is None, (
@@ -137,27 +148,51 @@ class TestWalkupGitBoundary:
         # Pyproject wins over .git termination at the SAME level.
         assert result == pyproject
 
+    def test_pyproject_first_then_git_file_at_same_level(
+        self, tmp_path: Path,
+    ) -> None:
+        """KTD-7 plan scenario 4: ``.git`` FILE (worktree pointer) AND
+        pyproject at same level → returns pyproject (pyproject FIRST,
+        .git is OUTER bound).
+
+        Fix #18: symmetric with
+        :meth:`test_pyproject_first_then_git_at_same_level` which uses
+        ``.git`` as a directory. Locks in that the file-vs-directory
+        shape of ``.git`` does not change the pyproject-FIRST ordering.
+        """
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[tool.protokit.lint]\n")
+        # .git as a FILE (worktree pointer shape).
+        git_file = tmp_path / ".git"
+        git_file.write_text(
+            "gitdir: /path/to/main/.git/worktrees/test\n",
+        )
+
+        result = _walk_up_find_pyproject(tmp_path)
+
+        assert result == pyproject
+
 
 class TestWalkupNoConfig:
     def test_no_pyproject_no_git_reaches_root(self, tmp_path: Path) -> None:
-        """Walk-up traverses to filesystem root and returns None when no
-        ``pyproject.toml`` and no ``.git`` exist anywhere in the chain.
+        """Walk-up traverses up to a ``.git`` boundary and returns None
+        when no ``pyproject.toml`` exists below the boundary.
 
-        Note: this test relies on the real filesystem above tmp_path
-        not having ``pyproject.toml`` at any ancestor up to ``/``. If
-        the harness CWD happens to be inside a project tree, the test
-        may inadvertently discover that project's pyproject. Use
-        tmp_path which is under ``/tmp`` (no expected ancestor
-        pyproject on standard CI environments).
+        Fix #15: previously this test walked the real filesystem above
+        ``tmp_path`` (typically ``/tmp``, then ``/``), which made it
+        dependent on the harness's ancestor directories NOT containing
+        a ``pyproject.toml``. Inject a ``.git`` sentinel at
+        ``tmp_path`` so the walk-up is bounded entirely within the
+        test fixture — no reliance on real-filesystem ancestor state.
         """
-        # tmp_path itself has no pyproject and no .git.
+        # Bound the walk-up at tmp_path with a `.git` sentinel.
+        (tmp_path / ".git").mkdir()
+        # No pyproject.toml at tmp_path or any descendant.
         deep = tmp_path / "a" / "b"
         deep.mkdir(parents=True)
 
         result = _walk_up_find_pyproject(deep)
 
-        # tmp_path's ancestors (/tmp, /) typically have no pyproject
-        # or .git on a clean CI environment.
         assert result is None
 
     def test_terminates_at_git_with_no_pyproject_at_boundary(
