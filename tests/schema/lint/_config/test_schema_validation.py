@@ -167,6 +167,18 @@ class TestR3aProfileTypeMismatches:
             substring="profile[1]",
         )
 
+    def test_profile_empty_list_rejected(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # KTD-5: an empty `profile = []` list is structurally well-typed
+        # but semantically meaningless — there is no profile to resolve.
+        # Reject at the schema-validation boundary so the user sees a
+        # specific message instead of `lint-unknown-profile` later.
+        _expect_invalid(
+            {"profile": []}, {}, capsys,
+            substring="profile must not be empty",
+        )
+
 
 class TestR3aExcludeTypeMismatches:
     def test_exclude_scalar_rejected(

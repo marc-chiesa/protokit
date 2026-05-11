@@ -60,6 +60,7 @@ from types import ModuleType
 from typing import Any
 
 import click
+from click.core import ParameterSource as _ParameterSource
 
 # Importing ``lint_human`` registers all four lint formatters in the
 # formatter registry as a side effect — the ``_builtin_lint`` module
@@ -122,6 +123,11 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
         "    protokit lint --rule-pack acme.lint_rules schema.descriptor_set\n\n"
         "  Use project-specific config from pyproject.toml:\n\n"
         "    protokit lint --config ./pyproject.toml schema.descriptor_set\n\n"
+        "  Use a multi-profile composition (pyproject only — single "
+        "value via CLI):\n\n"
+        "    # pyproject.toml: [tool.protokit.lint]\n\n"
+        "    #                  profile = [\"default\", \"strict-naming\"]\n\n"
+        "    protokit lint schema.descriptor_set\n\n"
         "  Bypass pyproject discovery (containerized CI without "
         ".git boundary):\n\n"
         "    protokit lint --no-config schema.descriptor_set\n\n"
@@ -180,9 +186,15 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     default="default",
     show_default=True,
     metavar="NAME",
-    help="Profile name to resolve across all loaded packs. Each "
-         "pack's rules with this profile in their declared "
-         "profiles tuple are selected.",
+    help=(
+        "Profile name to resolve across all loaded packs. Each pack's "
+        "rules with this profile in their declared profiles tuple are "
+        "selected. When --profile is not explicitly passed, "
+        "`[tool.protokit.lint] profile` in pyproject.toml is used if "
+        "present (scalar string or list of strings for multi-profile "
+        "composition). Explicitly passing this flag — including "
+        "`--profile default` — overrides any pyproject profile value."
+    ),
 )
 @click.option(
     "--min-severity",
@@ -202,10 +214,15 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     show_default=True,
     show_envvar=True,
     metavar="NAME",
-    help="Output format. 'human' is the default and only format "
-         "registered in U4a; 'json', 'junit', and 'sarif' arrive "
-         "in U4b and currently exit 2 via "
-         "error[lint-format-unavailable]:.",
+    help=(
+        "Output format. 'human' is the default and only format "
+        "registered in U4a; 'json', 'junit', and 'sarif' arrive "
+        "in U4b and currently exit 2 via "
+        "error[lint-format-unavailable]:. Precedence: CLI --format > "
+        "PROTOKIT_FORMAT envvar > [tool.protokit.lint] format in "
+        "pyproject.toml > built-in default ('human'). Envvar and CLI "
+        "flag are treated as explicit and override pyproject."
+    ),
 )
 @click.option(
     "--max-warnings",
@@ -335,14 +352,18 @@ def main(
     # values for --profile and --format are indistinguishable from
     # explicit user choices by value alone (defaults: "default" and
     # "human"), so we rely on Click's parameter-source detection to know
-    # whether the user actually typed the flag. COMMANDLINE and
-    # ENVIRONMENT both count as "explicit" — env vars like
-    # PROTOKIT_FORMAT are first-class user intent. DEFAULT means the
-    # click default applied, in which case pyproject (then built-in
-    # defaults) take precedence.
+    # whether the user actually typed the flag. COMMANDLINE, ENVIRONMENT,
+    # and DEFAULT_MAP all count as "explicit" — env vars like
+    # PROTOKIT_FORMAT are first-class user intent, and programmatic
+    # callers using ``click.Context(default_map=...)`` are similarly
+    # asserting user-level override intent (e.g., embedding the CLI in
+    # a test harness or wrapper that injects overrides). DEFAULT means
+    # only the click flag's built-in default applied, in which case
+    # pyproject (then built-in defaults) take precedence.
     explicit_sources = (
-        click.core.ParameterSource.COMMANDLINE,
-        click.core.ParameterSource.ENVIRONMENT,
+        _ParameterSource.COMMANDLINE,
+        _ParameterSource.ENVIRONMENT,
+        _ParameterSource.DEFAULT_MAP,
     )
     profile_explicit = (
         ctx.get_parameter_source("profile_name") in explicit_sources
@@ -369,10 +390,19 @@ def main(
     resolved = ResolvedLintConfig.from_dict(pyproject_config, cli_overrides)
     # quiet + non-human-format mutex applies to the RESOLVED format so
     # pyproject-driven non-human formats are caught alongside CLI-driven
-    # ones. Moved AFTER from_dict for that reason.
+    # ones. Moved AFTER from_dict for that reason. The error message is
+    # source-aware so users see the actual flag/key name that set the
+    # offending format — `--format=X` for CLI (or PROTOKIT_FORMAT envvar)
+    # source, `[tool.protokit.lint] format=X` for pyproject source.
     if quiet and resolved.format != "human":
+        if format_explicit:
+            source_desc = f"--format={resolved.format!r}"
+        else:
+            source_desc = (
+                f"[tool.protokit.lint] format={resolved.format!r}"
+            )
         raise click.UsageError(
-            f"--quiet is incompatible with format={resolved.format!r}; "
+            f"--quiet is incompatible with {source_desc}; "
             "use --quiet only with the human format (the default).",
         )
     _main_impl(
@@ -654,9 +684,9 @@ def _main_impl(
             f"(available: {available})",
         )
 
-    ctx = FormatterContext(subcommand="lint")
+    fmt_ctx = FormatterContext(subcommand="lint")
     output = _run_lint_formatter_safely(
-        formatter, report, ctx, name=resolved.format,
+        formatter, report, fmt_ctx, name=resolved.format,
     )
     if output and not quiet:
         click.echo(output)

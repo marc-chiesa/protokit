@@ -49,20 +49,28 @@ class TestFrozen:
         with pytest.raises(dataclasses.FrozenInstanceError):
             resolved.profile = ("other",)  # type: ignore[misc]
 
-    def test_assignment_raises_for_every_field(self) -> None:
+    @pytest.mark.parametrize("field_name", [
+        "profile",
+        "exclude",
+        "min_severity",
+        "max_warnings",
+        "format",
+        "min_severity_source",
+        "pyproject_min_severity",
+    ])
+    def test_assignment_raises(self, field_name: str) -> None:
         # Every field should refuse mutation; this protects against
         # accidental ``field(default_factory=list)`` regressions that
-        # would silently re-introduce mutability.
+        # would silently re-introduce mutability. Parametrized so each
+        # field gets its own test node (failures localize cleanly to
+        # the specific field that regressed, instead of the test
+        # stopping at the first AssertionError in a shared loop).
         resolved = ResolvedLintConfig()
-        for field_name in (
-            "profile", "exclude", "min_severity", "max_warnings",
-            "format", "min_severity_source", "pyproject_min_severity",
-        ):
-            with pytest.raises(dataclasses.FrozenInstanceError):
-                # ``setattr`` is the same as ``resolved.<name> = ...``
-                # for the frozen-dataclass check; using it lets us
-                # parametrize the assertion cleanly.
-                setattr(resolved, field_name, None)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            # ``setattr`` is the same as ``resolved.<name> = ...``
+            # for the frozen-dataclass check; using it lets us
+            # parametrize the assertion cleanly.
+            setattr(resolved, field_name, None)
 
 
 # ---------------------------------------------------------------------------

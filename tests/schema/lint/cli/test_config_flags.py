@@ -246,3 +246,60 @@ class TestHelpMentionsConfigFlags:
         assert "Mutually exclusive with --config" in self._normalized(
             result.output,
         )
+
+
+# ---------------------------------------------------------------------------
+# ParameterSource.DEFAULT_MAP precedence (D5 U2 ce:review F-02)
+# ---------------------------------------------------------------------------
+
+
+class TestParameterSourceDefaultMap:
+    """``ParameterSource.DEFAULT_MAP`` is treated as explicit.
+
+    Programmatic callers that pass ``default_map=...`` to
+    ``click.Command.main`` (e.g., test harnesses or wrapper CLIs)
+    are asserting user-level override intent. The pyproject merge
+    layer must therefore treat DEFAULT_MAP as a higher-precedence
+    source than the pyproject table — symmetric with COMMANDLINE
+    and ENVIRONMENT.
+    """
+
+    def test_default_map_value_overrides_pyproject(
+        self, tmp_path: Path, descriptor_set: Path,
+    ) -> None:
+        """default_map={'profile_name': 'default'} wins over pyproject.
+
+        We set ``[tool.protokit.lint] profile = "strict"`` in
+        pyproject (a profile name no built-in pack declares, which
+        would normally trip R11 ``error[lint-unknown-profile]:``).
+        Then we pass ``default_map={"profile_name": "default"}``.
+        If DEFAULT_MAP is treated as explicit (as required), the
+        resolved profile is ``"default"`` (which the built-in
+        canary pack declares) and R11 does NOT fire.
+        """
+        config = tmp_path / "pyproject.toml"
+        config.write_text(
+            "[tool.protokit.lint]\nprofile = \"strict\"\n",
+        )
+
+        result = CliRunner().invoke(
+            lint_main,
+            ["--config", str(config), str(descriptor_set)],
+            default_map={"profile_name": "default"},
+        )
+
+        # If default_map were NOT honored as explicit, pyproject's
+        # `profile = "strict"` would win, no built-in pack declares
+        # 'strict', and R11 unknown-profile would fire (exit 2).
+        assert "error[lint-unknown-profile]:" not in result.stderr, (
+            "DEFAULT_MAP should override pyproject `profile`; "
+            f"got stderr:\n{result.stderr}"
+        )
+        # The config-load step must also have succeeded.
+        assert "error[lint-pyproject-config-load]:" not in result.stderr
+        # The descriptor set fixture is trivially empty; lint may
+        # exit 0 (clean) but never 2 from a config-precedence error.
+        assert result.exit_code != 2, (
+            f"DEFAULT_MAP precedence failure: exit_code={result.exit_code} "
+            f"stderr:\n{result.stderr}"
+        )

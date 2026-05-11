@@ -508,7 +508,15 @@ class TestQuietFlag:
         self, clean_descriptor_set: Path,
     ) -> None:
         """Hard mutex: --quiet + --format=json is a usage error
-        (click-owned 'Usage:' prefix; NOT lint stable prefix)."""
+        (click-owned 'Usage:' prefix; NOT lint stable prefix).
+
+        D5 U2 F-04: the error message is source-aware. When the
+        non-human format comes from the CLI (or PROTOKIT_FORMAT
+        envvar), the message names the ``--format=`` flag explicitly
+        so users see the offending input. See
+        ``test_quiet_with_pyproject_format_names_pyproject_source``
+        for the pyproject-source branch.
+        """
         result = CliRunner().invoke(
             lint_main,
             ["--quiet", "--format", "json", str(clean_descriptor_set)],
@@ -516,6 +524,46 @@ class TestQuietFlag:
         assert result.exit_code == 2
         # Click usage-error prefix; NOT lint stable prefix.
         assert "error[lint-" not in result.output
+        # Source-aware: CLI-source mentions --format= explicitly.
+        assert "--format='json'" in result.stderr
+        assert "[tool.protokit.lint]" not in result.stderr
+
+    def test_quiet_with_pyproject_format_names_pyproject_source(
+        self,
+        tmp_path: Path,
+        clean_descriptor_set: Path,
+    ) -> None:
+        """D5 U2 F-04: when --quiet collides with a pyproject-sourced
+        non-human format, the mutex error names ``[tool.protokit.lint]
+        format=...`` (not ``--format=...``) so users see the actual
+        source of the offending value.
+
+        The check moved AFTER ResolvedLintConfig.from_dict in U2
+        specifically to catch this pyproject-driven path; the
+        source-aware wording closes the agent-grep regression flagged
+        by the ce:review.
+        """
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            "[tool.protokit.lint]\nformat = \"json\"\n",
+        )
+
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--config", str(pyproject),
+                "--quiet",
+                str(clean_descriptor_set),
+            ],
+        )
+
+        assert result.exit_code == 2
+        # Click usage-error prefix; NOT lint stable prefix.
+        assert "error[lint-" not in result.output
+        # Source-aware: pyproject-source mentions [tool.protokit.lint]
+        # format=, NOT --format= (which would be misleading).
+        assert "[tool.protokit.lint] format='json'" in result.stderr
+        assert "--format=" not in result.stderr
 
     def test_quiet_with_statistics_emits_advisory_and_quiet_wins(
         self, bad_naming_descriptor_set: Path,

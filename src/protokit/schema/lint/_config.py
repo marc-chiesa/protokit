@@ -55,6 +55,16 @@ else:
 from protokit.schema.lint._cli_utils import _safe_for_stderr, error_exit_with_code
 from protokit.schema.lint.model import LintSeverity
 
+# Per-key source attribution for ResolvedLintConfig (R20 message branches).
+# - "cli":       CLI flag (--profile/--min-severity/etc) explicitly provided.
+# - "pyproject": Pyproject set this key; CLI did not override.
+# - "profile":   Neither CLI nor pyproject set this key; the composed
+#                profile's intrinsic floor is in effect. U4 may transition
+#                "default" to "profile" at emission time when min_severity
+#                is None.
+# - "default":   Neither CLI nor pyproject nor profile set this key.
+ConfigSource = Literal["cli", "pyproject", "profile", "default"]
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -415,7 +425,7 @@ def _validate_table_keys(table: Mapping[str, Any]) -> None:
     what they meant. The offending VALUE is never echoed (R5a
     content-safety carries over from U1's parse-time posture).
     """
-    unknown = sorted(k for k in table if k not in _ALLOWED_KEYS)
+    unknown = sorted(set(table) - _ALLOWED_KEYS)
     if unknown:
         unknown_repr = ", ".join(repr(k) for k in unknown)
         allowed_repr = ", ".join(repr(k) for k in sorted(_ALLOWED_KEYS))
@@ -440,6 +450,14 @@ def _coerce_profile(value: Any) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value.strip().lower(),)
     if isinstance(value, list):
+        if not value:
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    "[tool.protokit.lint] profile must not be empty; "
+                    "at least one profile name is required."
+                ),
+            )
         for index, elem in enumerate(value):
             if not isinstance(elem, str):
                 error_exit_with_code(
@@ -512,15 +530,16 @@ def _coerce_min_severity(value: Any) -> LintSeverity:
             ),
         )
     normalized = value.strip().lower()
-    for severity in LintSeverity:
-        if severity.value == normalized:
-            return severity
+    try:
+        return LintSeverity(normalized)
+    except ValueError:
+        pass
     valid = ", ".join(repr(s.value) for s in LintSeverity)
     error_exit_with_code(
         "pyproject-config-invalid",
         (
             f"[tool.protokit.lint] min_severity must be one of "
-            f"{valid}; got {value!r}."
+            f"{valid}; got {type(value).__name__!r}."
         ),
     )
 
@@ -532,8 +551,15 @@ def _coerce_max_warnings(value: Any) -> int:
     ``int`` subclass in Python — accepting ``max_warnings = true``
     as ``1`` would be a surprising silent coercion that TOML users
     would not expect.
+
+    Positive-form isinstance narrowing (F-10): structure the type
+    check so mypy can narrow ``value`` to ``int`` for the remainder
+    of the function without an explicit ``int(value)`` cast at the
+    return statement. F-18 / R5a content-safety carries forward by
+    naming only the *type* on negative-int input (never the raw
+    integer value).
     """
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not isinstance(value, int) or isinstance(value, bool):
         error_exit_with_code(
             "pyproject-config-invalid",
             (
@@ -545,14 +571,11 @@ def _coerce_max_warnings(value: Any) -> int:
         error_exit_with_code(
             "pyproject-config-invalid",
             (
-                f"[tool.protokit.lint] max_warnings must be a "
-                f"non-negative integer; got {value}."
+                "[tool.protokit.lint] max_warnings must be a "
+                "non-negative integer; got a negative integer."
             ),
         )
-    # Explicit cast: mypy treats `value: Any` as un-narrowable after
-    # the negative-form isinstance guard above. The runtime `int(...)`
-    # call is a no-op for already-int values.
-    return int(value)
+    return value
 
 
 def _coerce_format(value: Any) -> str:
@@ -616,9 +639,7 @@ class ResolvedLintConfig:
     min_severity: LintSeverity | None = None
     max_warnings: int | None = None
     format: str = "human"
-    min_severity_source: Literal["cli", "pyproject", "profile", "default"] = (
-        "default"
-    )
+    min_severity_source: ConfigSource = "default"
     pyproject_min_severity: LintSeverity | None = None
 
     def __post_init__(self) -> None:
@@ -729,7 +750,7 @@ class ResolvedLintConfig:
         cli_min_sev = cli_overrides.get("min_severity")
         pyproject_min_sev = validated.get("min_severity")
         resolved_min_sev: LintSeverity | None
-        min_sev_source: Literal["cli", "pyproject", "profile", "default"]
+        min_sev_source: ConfigSource
         if cli_min_sev is not None:
             resolved_min_sev = cli_min_sev
             min_sev_source = "cli"
@@ -738,6 +759,12 @@ class ResolvedLintConfig:
             min_sev_source = "pyproject"
         else:
             resolved_min_sev = None
+            # TODO(D5 U4): The "profile" source state in ConfigSource is
+            # reserved for U4's R20 emission code, which may transition
+            # "default" to "profile" when emitting the relaxation
+            # message and the composed profile's intrinsic floor is in
+            # effect. U2 always reports "default" here; U4 owns the
+            # transition.
             min_sev_source = "default"
 
         # max_warnings: CLI replaces pyproject.
