@@ -57,6 +57,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import click
 
@@ -85,6 +86,7 @@ from protokit.schema.lint._cli_utils import (
     _safe_module_name,
     error_exit_with_code,
 )
+from protokit.schema.lint._config import load_pyproject_config
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
     SEVERITY_RANK,
@@ -235,6 +237,35 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
          "mutex with --statistics — emits a stderr advisory line "
          "and --quiet wins (no footer).",
 )
+@click.option(
+    "--config",
+    "config_path",
+    default=None,
+    metavar="PATH",
+    type=click.Path(path_type=Path),
+    # Existence + readability + format checks are performed by
+    # protokit.schema.lint._config.load_pyproject_config so they
+    # produce the error[lint-pyproject-config-load]: stable prefix
+    # rather than click's default 'Usage:' prefix. Do NOT pass
+    # exists=True here.
+    help="Path to a pyproject.toml-style file to load "
+         "[tool.protokit.lint] from. Overrides walk-up discovery. "
+         "All R5a shadow paths (missing file, unreadable, missing "
+         "[tool.protokit.lint] table, invalid TOML) exit 2 with "
+         "error[lint-pyproject-config-load]:. Mutually exclusive "
+         "with --no-config.",
+)
+@click.option(
+    "--no-config",
+    "no_config",
+    is_flag=True,
+    default=False,
+    help="Bypass pyproject.toml discovery entirely; run with "
+         "built-in defaults only. Mutually exclusive with --config. "
+         "Useful for verifying CI runs with intended defaults, or "
+         "in environments without a .git boundary where walk-up "
+         "may otherwise consume an unintended parent pyproject.",
+)
 def main(
     inputs: tuple[Path, ...],
     use_proto: bool,
@@ -246,6 +277,8 @@ def main(
     max_warnings: int | None,
     statistics: bool | None,
     quiet: bool,
+    config_path: Path | None,
+    no_config: bool,
 ) -> None:
     """Lint INPUTS for style and policy violations.
 
@@ -263,6 +296,15 @@ def main(
             f"--quiet is incompatible with --format={format_name!r}; "
             "use --quiet only with the human format (the default)."
         )
+    # D5 R5a + R13a-precedence: --config and --no-config are mutually
+    # exclusive. Click-level mutex emits the 'Usage:' prefix and exits
+    # 2 — distinct from --config's loader-side R5a errors which carry
+    # the error[lint-pyproject-config-load]: prefix.
+    if config_path is not None and no_config:
+        raise click.UsageError(
+            "--config and --no-config are mutually exclusive; pass one or "
+            "neither.",
+        )
     effective_statistics: bool | None = statistics
     if quiet and statistics:
         click.echo(
@@ -271,6 +313,18 @@ def main(
             err=True,
         )
         effective_statistics = False
+    # D5 U1: load [tool.protokit.lint] from pyproject.toml. The loaded
+    # table is exposed to _main_impl but not yet consumed at U1 — U2
+    # introduces ResolvedLintConfig.from_dict for schema validation
+    # (R3, R3a) and precedence application (R11-R14).
+    #
+    # If load_pyproject_config raises SystemExit (any R5a shadow path,
+    # parse error), it never returns and the CLI exits 2 with the
+    # error[lint-pyproject-config-load]: stable prefix.
+    pyproject_config = load_pyproject_config(
+        explicit_path=config_path,
+        no_config=no_config,
+    )
     _main_impl(
         inputs=inputs,
         use_proto=use_proto,
@@ -282,6 +336,7 @@ def main(
         max_warnings=max_warnings,
         statistics=effective_statistics,
         quiet=quiet,
+        pyproject_config=pyproject_config,
     )
 
 
@@ -297,6 +352,7 @@ def _main_impl(
     max_warnings: int | None,
     statistics: bool | None,
     quiet: bool,
+    pyproject_config: dict[str, Any] | None,
 ) -> None:
     """Implementation body of ``protokit lint`` after flag validation.
 
@@ -306,7 +362,21 @@ def _main_impl(
     auto-load surface. Each ``--rule-pack`` module must expose
     ``RULES = (decorated_fn, ...)`` where each callable is
     ``@lint_rule``-decorated.
+
+    ``pyproject_config`` (D5 U1) is the raw parsed
+    ``[tool.protokit.lint]`` dict from pyproject.toml (or ``None``
+    when no config applies). At U1, the table is received but not
+    yet consumed — U2 introduces ``ResolvedLintConfig.from_dict`` to
+    validate the schema (R3, R3a) and apply precedence (R11-R14).
     """
+    # TODO(D5 U2): pass pyproject_config through ResolvedLintConfig.from_dict
+    # to validate keys/types and apply CLI > pyproject > defaults precedence.
+    # For U1, the table is intentionally unused — the loader's
+    # correct-by-construction behavior is validated via the
+    # tests/schema/lint/_config/ suite. Until U2 lands, --config /
+    # --no-config / walk-up have no effect on resolved behavior; their
+    # error paths (R5a) are still active and tested.
+    _ = pyproject_config
     if use_proto:
         result = compile_protos_to_result(
             paths=list(inputs),

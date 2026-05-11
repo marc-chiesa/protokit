@@ -65,6 +65,27 @@ _LINT_ERROR_CODES: tuple[str, ...] = (
     "missing-imports",
     "rule-collision",
     "rule-pack-load",
+    # D5 U1: pyproject `[tool.protokit.lint]` discovery / loading errors.
+    # Covers walk-up failures, explicit `--config PATH` shadow paths
+    # (per R5a: missing file, unreadable, table-absent, invalid TOML),
+    # and any `tomllib.load` triple-arm-guarded failure surface. Per
+    # KTD-9, the message body is newline-sanitized; per KTD-9 fallback
+    # contract, `TOMLDecodeError` content is replaced with the structured
+    # form `TOML parse error at {filename}:{line}:{col}` to prevent
+    # raw-bytes echoing per R5a content-safety.
+    "pyproject-config-load",
+    # D5 U2: pyproject `[tool.protokit.lint]` schema validation errors —
+    # unknown keys (R3), type mismatches (R3a), heterogeneous list
+    # elements (KTD-5). Distinct from `pyproject-config-load` (parse-time
+    # failure) — this code surfaces post-parse-success validation
+    # failures.
+    "pyproject-config-invalid",
+    # D5 U3: `--exclude PATTERN` (CLI) or pyproject `exclude = [...]`
+    # contains a pattern that `pathspec.PathSpec.from_lines` rejects.
+    # Distinct from `pyproject-config-invalid` because exclude patterns
+    # can come from CLI flags, not just pyproject — reusing the
+    # pyproject-specific code would mis-attribute the source.
+    "exclude-pattern-invalid",
 )
 
 

@@ -28,6 +28,13 @@ classifiers = [
 dependencies = [
     "protobuf>=4.21.0",
     "click>=8.0",
+    # TOML parsing for pyproject [tool.protokit.lint] (D5 R25).
+    # Python 3.11+ ships tomllib in stdlib; tomli is the 3.10 fallback.
+    # Standard import pattern: `import tomllib if sys.version_info >= (3, 11) else import tomli as tomllib`.
+    "tomli>=2.0,<3; python_version<'3.11'",
+    # gitignore-style glob matching for D5 R26 [tool.protokit.lint] exclude /
+    # --exclude PATTERN. Pure-Python; used by mypy/dvc/pre-commit.
+    "pathspec>=0.12,<1",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +59,12 @@ dev = [
     "types-jsonschema",
     "mypy>=1.8",
     "ruff>=0.5",
+    # D5 U6 perf-smoke meta-test parses .github/workflows/ci.yml via
+    # yaml.safe_load to assert at-least-one-cell-ran (KTD-3). NEVER
+    # yaml.load() without explicit SafeLoader (security: prevents
+    # arbitrary code execution via YAML object construction).
+    "PyYAML>=6.0,<7",
+    "types-PyYAML",
 ]
 
 [project.scripts]
@@ -65,6 +78,12 @@ packages = ["src/protokit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# D5 R23a: register the `slow` marker so future --strict-markers
+# adoption doesn't regress. Used by tests/schema/lint/test_perf_smoke.py
+# (D5 U6) to gate the perf-smoke test off the fast-iteration loop.
+markers = [
+    "slow: tests excluded by `pytest -m 'not slow'` (currently: D5 perf smoke on linux+py3.12)",
+]
 
 [tool.ruff]
 target-version = "py310"
@@ -86,4 +105,13 @@ warn_unused_configs = true
 # signal-to-noise ratio useful for the protokit code itself.
 [[tool.mypy.overrides]]
 module = ["google.protobuf.*", "protoxy"]
+ignore_missing_imports = true
+
+# `tomli` is a conditional dep (py<3.11 only); on py3.11+ environments
+# it is NOT installed and mypy cannot find the import. The import is
+# guarded by `if sys.version_info >= (3, 11): import tomllib else: import tomli`,
+# so the runtime never hits an unsatisfiable import — but mypy still
+# needs to be told to ignore the missing stub.
+[[tool.mypy.overrides]]
+module = ["tomli"]
 ignore_missing_imports = true

@@ -32,25 +32,53 @@ _EXPECTED_D3_CODES: tuple[str, ...] = (
     "rule-pack-load",
 )
 
+#: D5 U1 extends the constant with three new codes for pyproject
+#: config loading (`pyproject-config-load`, R5a shadow paths),
+#: schema validation (`pyproject-config-invalid`, R3/R3a — wired by
+#: U2), and exclude pattern compilation (`exclude-pattern-invalid` —
+#: wired by U3). The order extends the D3 R20a Reachability Matrix.
+_EXPECTED_D5_CODES: tuple[str, ...] = (
+    *_EXPECTED_D3_CODES,
+    "pyproject-config-load",
+    "pyproject-config-invalid",
+    "exclude-pattern-invalid",
+)
+
 
 class TestLintErrorCodesConstant:
-    def test_constant_has_exactly_the_d3_set(self) -> None:
-        """Closed set check: no rogue codes, no missing codes."""
-        assert set(_LINT_ERROR_CODES) == set(_EXPECTED_D3_CODES)
+    def test_constant_has_exactly_the_d5_set(self) -> None:
+        """Closed set check: no rogue codes, no missing codes (D5 inventory)."""
+        assert set(_LINT_ERROR_CODES) == set(_EXPECTED_D5_CODES)
 
-    def test_constant_size_is_ten(self) -> None:
-        """R20a says D3 ships 10 codes total."""
-        assert len(_LINT_ERROR_CODES) == 10
+    def test_constant_size_is_thirteen(self) -> None:
+        """D5 R20a-extended says we ship D3's 10 codes + D5's 3 new codes."""
+        assert len(_LINT_ERROR_CODES) == 13
 
     def test_constant_order_matches_r20a(self) -> None:
         """Plan locks the tuple order so docs and CI greps stay stable."""
-        assert _LINT_ERROR_CODES == _EXPECTED_D3_CODES
+        assert _LINT_ERROR_CODES == _EXPECTED_D5_CODES
+
+    def test_d3_codes_still_present(self) -> None:
+        """D3 codes must not be reordered or removed by D5's additions."""
+        assert _LINT_ERROR_CODES[: len(_EXPECTED_D3_CODES)] == _EXPECTED_D3_CODES
 
     def test_format_unavailable_present(self) -> None:
         assert "format-unavailable" in _LINT_ERROR_CODES
 
     def test_formatter_exception_present(self) -> None:
         assert "formatter-exception" in _LINT_ERROR_CODES
+
+    def test_pyproject_config_load_present(self) -> None:
+        """D5 U1: pyproject-config-load is wired and reachable."""
+        assert "pyproject-config-load" in _LINT_ERROR_CODES
+
+    def test_pyproject_config_invalid_present(self) -> None:
+        """D5 U2 will wire pyproject-config-invalid for schema validation."""
+        assert "pyproject-config-invalid" in _LINT_ERROR_CODES
+
+    def test_exclude_pattern_invalid_present(self) -> None:
+        """D5 U3 will wire exclude-pattern-invalid for pathspec rejections."""
+        assert "exclude-pattern-invalid" in _LINT_ERROR_CODES
 
 
 class TestEachCodeProducesStablePrefix:
