@@ -53,6 +53,31 @@ class TestCategoryLiteral:
         # a corresponding test update will fail this assertion.
         assert len(literal_args) == 4
 
+    def test_test_helper_mirror_stays_in_sync_with_model(self) -> None:
+        """``LINT_RUNTIME_WARNING_CATEGORIES`` in ``tests/schema/lint/cli/_helpers.py``
+        is a manually-maintained mirror of the model Literal — the
+        cross-formatter parametrized matrix iterates that tuple, so a
+        5th category added to the model but missed in the helper
+        silently stops getting matrix coverage. Fail the test now if
+        the two diverge so the discipline is mechanically enforced
+        rather than relying on the helper docstring's "Keep in sync"
+        comment.
+        """
+        from tests.schema.lint.cli._helpers import (
+            LINT_RUNTIME_WARNING_CATEGORIES,
+        )
+
+        type_hints = typing.get_type_hints(LintRuntimeWarning)
+        literal_args = set(typing.get_args(type_hints["category"]))
+        assert set(LINT_RUNTIME_WARNING_CATEGORIES) == literal_args, (
+            f"LINT_RUNTIME_WARNING_CATEGORIES drifted from the model Literal. "
+            f"Helper tuple: {sorted(LINT_RUNTIME_WARNING_CATEGORIES)}; "
+            f"model Literal: {sorted(literal_args)}. Update the helper "
+            f"tuple in tests/schema/lint/cli/_helpers.py in lockstep with "
+            f"the LintRuntimeWarning.category Literal in "
+            f"src/protokit/schema/lint/model.py."
+        )
+
 
 # ---------------------------------------------------------------------------
 # rule_id type widening (BREAKING)

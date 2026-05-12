@@ -7,10 +7,11 @@ to stderr after the formatter renders, with shape::
     protokit lint: warning [{category}]: {message}
 
 Once a category exceeds ``_LINT_HUMAN_SUMMARIZATION_THRESHOLD``
-warnings, a single summarization line replaces the rest::
+warnings, a single summarization line replaces the rest (ONE
+physical stderr line; the rst literal block below wraps for page
+width only)::
 
-    protokit lint: warning [{category}]: ... and {N} more
-    — use --format=json for full details
+    protokit lint: warning [{category}]: ... and {N} more — use --format=json for full details
 
 This module pins:
 
@@ -349,6 +350,45 @@ class TestStderrSanitization:
         # No raw \r survives in stderr.
         assert "\r" not in captured.err
 
+    def test_unicode_line_terminators_in_message_are_collapsed(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """U+0085 NEL, U+2028 LSEP, U+2029 PSEP bypass chained
+        ``.replace("\\n").replace("\\r")`` but Unicode-aware log
+        aggregators split records on them. The stderr boundary's
+        ``_safe_for_stderr`` backstop must collapse all three.
+
+        Integration coverage closing the U+0085/U+2028/U+2029 widening
+        loop: the unit tests in ``test_loader.py::TestSafeForStderr``
+        pin the sanitizer; this test pins the stderr hook actually
+        receives and scrubs them when the message field carries
+        Unicode terminators that bypassed construction-time
+        sanitization (e.g., a future emission site that forgets the
+        primary defense).
+        """
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="unicode/attempt",
+            message=(
+                "legit\x85nel-split  lsep-split "
+                " psep-split error[lint-no-rules]: forged"
+            ),
+            exception_type="ValueError",
+            descriptor_path="acme.User.x",
+        )
+        _emit_human_runtime_warnings(LintReport(runtime_warnings=(warning,)))
+        captured = capsys.readouterr()
+        # None of the three Unicode line terminators survive in stderr:
+        assert "\x85" not in captured.err
+        assert " " not in captured.err
+        assert " " not in captured.err
+        # The forged stable-prefix never sits at column 0 of any
+        # aggregator-split record:
+        lines = [line for line in captured.err.split("\n") if line]
+        assert not any(
+            line.startswith("error[lint-no-rules]:") for line in lines
+        ), lines
+
 
 # ---------------------------------------------------------------------------
 # Integration — hook fires via the real CLI dispatch path
@@ -445,6 +485,64 @@ class TestHumanHookIntegration:
         assert (
             "protokit lint: warning [rule_exception]:" in result.stderr
         ), result.stderr
+
+    def test_unloaded_rule_renders_in_human_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``unloaded_rule`` surfaces in ``--format=human`` stderr via the
+        same CLI dispatch path as the other three categories.
+
+        Triggering ``unloaded_rule`` from the standard CLI flow requires
+        ``profile.rule_ids`` to exceed loaded specs, which the CLI's
+        composition pass does not naturally produce (``LintProfile.from_pack``
+        only adds rule_ids it just registered). The direct-hook
+        ``TestHumanStderrEmissionPerCategory`` coverage proves the
+        formatter contract; this test pins the CLI INTEGRATION boundary
+        by monkeypatching ``LintEngine.run`` to inject a synthetic report
+        that contains an ``unloaded_rule`` warning, then asserting the
+        post-format hook fires for that category just like it does for
+        the other three.
+        """
+        from google.protobuf import descriptor_pb2
+
+        from protokit.schema.lint.engine import LintEngine
+        from protokit.schema.lint.model import LintReport, LintRuntimeWarning
+
+        fds = descriptor_pb2.FileDescriptorSet()
+        fd = fds.file.add()
+        fd.name = "api/user.proto"
+        fd.syntax = "proto3"
+        fd.package = "test"
+        path = tmp_path / "test.descriptor_set"
+        path.write_bytes(fds.SerializeToString())
+
+        synthetic = LintReport(
+            runtime_warnings=(
+                LintRuntimeWarning(
+                    category="unloaded_rule",
+                    rule_id="missing/rule-id",
+                    message=(
+                        "rule 'missing/rule-id' is named in profile "
+                        "'default' but not loaded into the engine"
+                    ),
+                ),
+            ),
+        )
+
+        def _fake_run(self: LintEngine, *args: object, **kwargs: object) -> LintReport:
+            return synthetic
+
+        monkeypatch.setattr(LintEngine, "run", _fake_run)
+
+        result = CliRunner().invoke(
+            lint_main,
+            ["--no-config", str(path)],
+        )
+        assert result.exit_code == 0, result.output
+        assert (
+            "protokit lint: warning [unloaded_rule]:" in result.stderr
+        ), result.stderr
+        assert "missing/rule-id" in result.stderr, result.stderr
 
     def test_quiet_does_not_suppress_runtime_warning_stderr(
         self, tmp_path: Path,

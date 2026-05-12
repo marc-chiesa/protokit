@@ -21,6 +21,7 @@ recorded `LintRuntimeWarning.message` has been sanitized.
 
 from __future__ import annotations
 
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 from protokit.schema.lint.decorator import lint_rule
@@ -60,15 +61,16 @@ def _build_minimal_compile_result() -> CompileResult:
     )
 
 
-def _make_pack_module(rule_fn: object) -> object:
+def _make_pack_module(rule_fn: object) -> ModuleType:
     """Wrap a decorated rule_fn into a minimal RULES-tuple module.
 
     The engine accepts any object with a ``RULES`` attribute that is a
-    tuple of ``@lint_rule``-decorated functions.
+    tuple of ``@lint_rule``-decorated functions. Return type is
+    ``ModuleType`` so callers passing the result directly to
+    ``LintEngine.load_rule_pack(module: ModuleType)`` type-check cleanly
+    once tests enter the mypy ratchet surface.
     """
-    import types
-
-    module = types.ModuleType("synthetic_pack")
+    module = ModuleType("synthetic_pack")
     module.RULES = (rule_fn,)
     module.__name__ = "synthetic_pack"
     return module
@@ -108,7 +110,7 @@ class TestNewlineSanitization:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             raise ValueError(
                 "real failure\n"
                 "warning[lint-runtime]: forged second line",
@@ -149,7 +151,7 @@ class TestNewlineSanitization:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             # ValueError IS in the engine's catch tuple; RuntimeError
             # is not (would propagate and crash the run).
             raise ValueError("first\rsecond")
@@ -181,7 +183,7 @@ class TestNewlineSanitization:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             raise ValueError("\x1b[31mred text\x1b[0m")
 
         engine = LintEngine()
@@ -198,6 +200,56 @@ class TestNewlineSanitization:
             if w.category == "rule_exception"
         ]
         assert "\x1b" not in warnings[0].message
+
+    def test_unicode_line_terminators_collapsed_to_space(self) -> None:
+        """Unicode line terminators (U+0085 NEL, U+2028 LSEP, U+2029 PSEP)
+        in exception messages must be collapsed to spaces — they bypass
+        chained ``.replace("\\n").replace("\\r")`` but Unicode-aware log
+        aggregators (CloudWatch, Splunk, Datadog) split records on them.
+
+        Integration coverage closing the U+0085/U+2028/U+2029 widening
+        loop: the unit tests in ``test_loader.py::TestSafeForStderr`` pin
+        ``_safe_for_stderr`` itself; this test pins that the engine
+        construction-time sanitizer actually receives and scrubs Unicode
+        terminators injected through the rule_exception path.
+        """
+        @lint_rule(
+            rule_id="t/raises-unicode",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FILE,
+            message_template="never fires",
+        )
+        def _rule(ctx: object) -> None:
+            raise ValueError(
+                "line1line2 line3 forged: warning",
+            )
+
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack_module(_rule))
+        report = engine.run(
+            _build_minimal_compile_result(),
+            profile=LintProfile(
+                name="default",
+                rule_ids=frozenset({"t/raises-unicode"}),
+            ),
+        )
+        warnings = [
+            w for w in report.runtime_warnings
+            if w.category == "rule_exception"
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].message
+        # None of the three Unicode line terminators survive:
+        assert "" not in msg
+        assert " " not in msg
+        assert " " not in msg
+        # The text payload is preserved (just newline-collapsed):
+        assert "line1" in msg
+        assert "line3" in msg
+        # The forged prefix is still present but no longer at the start
+        # of an aggregator-split record:
+        assert "forged: warning" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +272,7 @@ class TestEmptyMessageFallback:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             raise ValueError()  # str(ValueError()) is ""
 
         engine = LintEngine()
@@ -266,7 +318,7 @@ class TestRealTracebackContentSafety:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             # Multi-line diagnostic that a user-pack might construct
             # by interpolating a traceback into ValueError.
             raise ValueError(
@@ -327,7 +379,7 @@ class TestUnloadedRuleConstructionTimeSanitization:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             pass
 
         engine = LintEngine()
@@ -366,7 +418,7 @@ class TestUnloadedRuleConstructionTimeSanitization:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             pass
 
         engine = LintEngine()
@@ -399,7 +451,7 @@ class TestUnloadedRuleConstructionTimeSanitization:
             element=ElementKind.FILE,
             message_template="never fires",
         )
-        def _rule(ctx: object) -> None:  # noqa: ANN001
+        def _rule(ctx: object) -> None:
             pass
 
         engine = LintEngine()

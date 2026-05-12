@@ -49,10 +49,12 @@ from protokit.schema.lint.model import DuplicateRuleError
 #: documentation and CI grep contracts.
 #:
 #: Prefix family (stable, closed set per delivery):
-#:   info[lint-compile]:    backend info/warning diagnostics in --proto mode
-#:   warning[lint-compile]: backend warning diagnostics in --proto mode
-#:   warning[lint-cli]:     CLI-layer advisories (e.g. ignored flags)
-#:   error[lint-CODE]:      exit-2 paths; CODE must be in this tuple
+#:   info[lint-compile]:                backend info/warning diagnostics in --proto mode
+#:   info[lint-pack-profiles]:          R11 per-pack introspection (pack= profiles= ...)
+#:   warning[lint-compile]:             backend warning diagnostics in --proto mode
+#:   warning[lint-cli]:                 CLI-layer advisories (e.g. ignored flags)
+#:   protokit lint: warning [<category>]: D5 U5 R21a runtime-warning stderr family (4 categories)
+#:   error[lint-CODE]:                  exit-2 paths; CODE must be in this tuple
 #:
 #: Note: the legacy ``warning[lint-runtime]:`` stderr prefix was
 #: removed in D5 U4 (R21) and is not restored. Runtime warnings

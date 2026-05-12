@@ -348,7 +348,14 @@ class LintEngine:
                 self._runtime_warnings.append(
                     LintRuntimeWarning(
                         category="unloaded_rule",
-                        rule_id=rid,
+                        # rule_id flows verbatim into lint_json and lint_sarif
+                        # wire formats — json.dumps does NOT escape U+2028/U+2029,
+                        # so an attacker-influenced rule_id with embedded line
+                        # terminators would survive into machine output and
+                        # trigger log-aggregator record injection. Apply the
+                        # same sanitizer here as the message slot per the
+                        # dual-sanitization model (KTD-9).
+                        rule_id=safe_rid,
                         message=(
                             f"rule {safe_rid!r} is named in profile "
                             f"{safe_profile_name!r} but not loaded "
@@ -525,10 +532,17 @@ class LintEngine:
             # carries the precise class name for programmatic filtering.
             scrubbed = _scrub_exc_message(exc) or repr(exc)
             safe_message = _safe_for_stderr(scrubbed)
+            # ``spec.rule_id`` flows verbatim into lint_json / lint_sarif wire
+            # formats. ``json.dumps`` does NOT escape U+2028/U+2029, so an
+            # attacker-influenced rule_id with embedded Unicode line terminators
+            # survives into machine output and triggers log-aggregator record
+            # injection. Sanitize at construction time per KTD-9, mirroring the
+            # ``unloaded_rule`` arm above.
+            safe_rule_id = _safe_for_stderr(spec.rule_id)
             self._runtime_warnings.append(
                 LintRuntimeWarning(
                     category="rule_exception",
-                    rule_id=spec.rule_id,
+                    rule_id=safe_rule_id,
                     message=safe_message,
                     exception_type=exc.__class__.__name__,
                     descriptor_path=str(ctx.location()),

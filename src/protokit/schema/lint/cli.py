@@ -141,10 +141,14 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     Per-category counters track how many lines fired; once a
     category's count exceeds ``_LINT_HUMAN_SUMMARIZATION_THRESHOLD``,
     a single summarization line replaces the remaining individuals
-    for that category::
+    for that category. The actual emission is ONE physical stderr
+    line; the docstring renders it across two visual lines only
+    because rst literal blocks wrap on the page width. Agents
+    grepping stderr should match the literal substring
+    ``more — use --format=json for full details`` as the
+    fidelity-available signal::
 
-        protokit lint: warning [{category}]: ... and {N} more
-        — use --format=json for full details
+        protokit lint: warning [{category}]: ... and {N} more — use --format=json for full details
 
     Both the ``{category}`` and ``{message}`` slots are passed
     through ``_safe_for_stderr`` before ``click.echo`` as a
@@ -810,15 +814,25 @@ def _main_impl(
         active_per_pack = _active_rule_ids_per_pack(
             loaded_packs_tuple, composed_profile.rule_ids,
         )
+        # Sanitize every attacker-influenced slot before emission: rule_ids
+        # come from user pack metadata (`spec.rule_id`); profile names come
+        # from pyproject or --profile. Both flow into this stderr line via
+        # f-string interpolation and would otherwise allow U+2028/U+2029
+        # injection that bypasses chained `.replace()` and that `_safe_module_name`
+        # already addresses for the pack-name slot. Mirrors KTD-9's full-slot
+        # sanitization posture per the module-name-newline-injection learning.
         per_pack_segments = [
-            f"{_safe_module_name(pack)}=[{','.join(rule_ids)}]"
+            (
+                f"{_safe_module_name(pack)}="
+                f"[{','.join(_safe_for_stderr(rid) for rid in rule_ids)}]"
+            )
             for pack, rule_ids in zip(
                 loaded_packs_tuple, active_per_pack.values(), strict=True,
             )
         ]
         # Render multi-profile as "default+strict-naming" for the
         # provenance line so the resolved set is observable.
-        provenance_profile = (
+        provenance_profile = _safe_for_stderr(
             resolved.profile[0]
             if len(resolved.profile) == 1
             else "+".join(resolved.profile)

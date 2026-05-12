@@ -185,3 +185,136 @@ def test_ci_matrix_contains_perf_smoke_cell() -> None:
         f"_REQUIRED_PYTHON_VERSION_EQUALS constant in lockstep. "
         f"Cells observed: {cells}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed branch coverage for the meta-test's own internal helpers.
+#
+# The happy-path test above exercises only the case where ci.yml exists,
+# parses as YAML, contains a mapping shape, and has no matrix include/exclude
+# extensions. The four pytest.fail branches inside _load_ci_workflow and
+# _iter_matrix_cells therefore have no synthetic-input coverage — a bug in
+# any fail-closed code path would not be caught by the happy-path test.
+# The tests below pin each fail-closed branch with synthetic input so the
+# meta-test's own fail-closed guarantee is itself fail-closed.
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCiWorkflowFailClosedBranches:
+    """Pin each ``pytest.fail`` branch in ``_load_ci_workflow``."""
+
+    def test_absent_workflow_file_fails_loudly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """An absent ci.yml must `pytest.fail`, not skip."""
+        missing = tmp_path / "nonexistent" / "ci.yml"
+        monkeypatch.setattr(
+            "tests.schema.lint.test_perf_smoke_coverage._CI_WORKFLOW_PATH",
+            missing,
+        )
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            _load_ci_workflow()
+        assert "CI workflow not found" in str(exc_info.value)
+        assert str(missing) in str(exc_info.value)
+
+    def test_unparseable_yaml_fails_loudly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A file that doesn't parse as YAML must `pytest.fail`, not skip."""
+        bad = tmp_path / "ci.yml"
+        # Tab indentation inside a block is a YAML parser error.
+        bad.write_text("jobs:\n\tinvalid: indentation\n")
+        monkeypatch.setattr(
+            "tests.schema.lint.test_perf_smoke_coverage._CI_WORKFLOW_PATH",
+            bad,
+        )
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            _load_ci_workflow()
+        assert "did not parse as YAML" in str(exc_info.value)
+
+    def test_non_dict_root_fails_loudly(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A workflow whose YAML root is a string/list (not a mapping) must `pytest.fail`."""
+        bad = tmp_path / "ci.yml"
+        bad.write_text("just a bare string\n")
+        monkeypatch.setattr(
+            "tests.schema.lint.test_perf_smoke_coverage._CI_WORKFLOW_PATH",
+            bad,
+        )
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            _load_ci_workflow()
+        assert "not a mapping" in str(exc_info.value)
+        assert "str" in str(exc_info.value)
+
+
+class TestIterMatrixCellsFailClosedBranches:
+    """Pin the ``pytest.fail`` guard inside ``_iter_matrix_cells``."""
+
+    def test_matrix_include_triggers_loud_failure(self) -> None:
+        """A matrix with ``include`` must `pytest.fail`, not silently produce wrong cells.
+
+        ``matrix.include`` adds extra cells beyond the cartesian product;
+        treating it as a normal axis would produce an incorrect cell list
+        and could mask a missing predicate-matching cell.
+        """
+        workflow = {
+            "jobs": {
+                "test": {
+                    "runs-on": "ubuntu-latest",
+                    "strategy": {
+                        "matrix": {
+                            "python": ["3.10", "3.12"],
+                            "include": [{"python": "3.13", "experimental": True}],
+                        },
+                    },
+                },
+            },
+        }
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            _iter_matrix_cells(workflow)
+        assert "matrix include/exclude extensions" in str(exc_info.value)
+        assert "'test'" in str(exc_info.value)
+
+    def test_matrix_exclude_triggers_loud_failure(self) -> None:
+        """A matrix with ``exclude`` must `pytest.fail`, not silently invert fail-closed posture.
+
+        The directional risk: a ``matrix.exclude`` that drops the perf-
+        smoke's predicate-matching cell would still appear in the naive
+        cartesian product. The guard forces the meta-test to be updated
+        before this can land silently.
+        """
+        workflow = {
+            "jobs": {
+                "test": {
+                    "runs-on": "ubuntu-latest",
+                    "strategy": {
+                        "matrix": {
+                            "python": ["3.10", "3.12"],
+                            "exclude": [{"python": "3.12"}],
+                        },
+                    },
+                },
+            },
+        }
+        with pytest.raises(pytest.fail.Exception) as exc_info:
+            _iter_matrix_cells(workflow)
+        assert "matrix include/exclude extensions" in str(exc_info.value)
+
+    def test_predicate_matches_ubuntu_py312(self) -> None:
+        """Positive predicate check: ubuntu* + py3.12 matches."""
+        assert _cell_matches_predicate({"runs_on": "ubuntu-latest", "python": "3.12"})
+        assert _cell_matches_predicate({"runs_on": "ubuntu-22.04", "python": "3.12"})
+
+    def test_predicate_rejects_non_matching_cells(self) -> None:
+        """Negative predicate checks: macos / py3.10 / py3.11 all reject."""
+        assert not _cell_matches_predicate({"runs_on": "macos-latest", "python": "3.12"})
+        assert not _cell_matches_predicate({"runs_on": "ubuntu-latest", "python": "3.10"})
+        assert not _cell_matches_predicate({"runs_on": "ubuntu-latest", "python": "3.11"})
+        assert not _cell_matches_predicate({})
