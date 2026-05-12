@@ -1,6 +1,7 @@
 ---
 title: "Rule-pack __name__ newline injection forges fake lint error lines on stderr"
 date: 2026-05-07
+last_updated: 2026-05-12
 category: docs/solutions/security-issues
 module: protokit.schema.lint
 problem_type: security_issue
@@ -127,17 +128,51 @@ the concrete `__name__` override and confirmed it empirically.
 ## Solution
 
 Sanitise pack-name strings at the output boundary, not at import
-time. A small helper in `src/protokit/schema/lint/_cli_utils.py`
-collapses `\n`/`\r` in the module's `__name__` to spaces:
+time. The fix landed in two stages: the initial U3 patch used inline
+`.replace()` calls; the post-U3 consolidation generalised the scope
+into a single `_safe_for_stderr(value)` helper backed by a control-
+character translation table. The current implementation in
+`src/protokit/schema/lint/_cli_utils.py` is:
 
 ```python
-def _safe_module_name(module: ModuleType) -> str:
-    """Return ``module.__name__`` with embedded newlines collapsed.
+#: Translation table mapping every line-break / control codepoint
+#: to a single space. Built once at module-load time so per-call
+#: cost is one ``str.translate`` rather than chained ``.replace()``
+#: scans.
+_CONTROL_CHAR_TABLE: dict[int, int] = {
+    codepoint: ord(" ") for codepoint in range(0x20)
+}
+_CONTROL_CHAR_TABLE[0x7F] = ord(" ")
+# Unicode line-terminator codepoints beyond ASCII — see the
+# "Unicode line-terminator widening" subsection below.
+_CONTROL_CHAR_TABLE[0x85] = ord(" ")    # U+0085 NEXT LINE (NEL)
+_CONTROL_CHAR_TABLE[0x2028] = ord(" ")  # U+2028 LINE SEPARATOR
+_CONTROL_CHAR_TABLE[0x2029] = ord(" ")  # U+2029 PARAGRAPH SEPARATOR
 
-    Defends the per-line stderr stable-prefix contract against a
-    ``--rule-pack``-loaded module that overrides ``__name__``.
+
+def _safe_for_stderr(value: object) -> str:
+    """Collapse all line-break / control characters in a stringified
+    value to spaces.
+
+    Defense-in-depth against attacker-controlled strings flowing
+    into single-line ``click.echo(..., err=True)`` output. Paths,
+    exception messages, module names, and any other stringified
+    field that may include user-controlled bytes is passed through
+    this helper before being interpolated into stderr error
+    messages.
     """
-    return module.__name__.replace("\n", " ").replace("\r", " ")
+    return str(value).translate(_CONTROL_CHAR_TABLE)
+
+
+def _safe_module_name(module: ModuleType) -> str:
+    """Return ``module.__name__`` sanitized for stderr emission.
+
+    Thin wrapper that extracts ``module.__name__`` first, then routes
+    through ``_safe_for_stderr``. Used at every emission site that
+    interpolates a user-loaded module's name into a per-line
+    stable-prefix output stream.
+    """
+    return _safe_for_stderr(module.__name__)
 ```
 
 Call-site changes in `src/protokit/schema/lint/cli.py`:
@@ -156,11 +191,11 @@ per_pack_segments = [
 ```
 
 - **R11 `info[lint-pack-profiles]:` lines** sanitise the dict-key
-  `pack_name` inline (the dict keys are `pack.__name__` strings, not
-  module objects, so the inline replace is the narrowest fix):
+  `pack_name` via `_safe_for_stderr` (the dict keys are
+  `pack.__name__` strings, not module objects):
 
 ```python
-safe_pack_name = pack_name.replace("\n", " ").replace("\r", " ")
+safe_pack_name = _safe_for_stderr(pack_name)
 click.echo(
     f"info[lint-pack-profiles]: pack={safe_pack_name} "
     f"profiles=[{profiles_str}]",
@@ -169,11 +204,11 @@ click.echo(
 ```
 
 - **--rule-pack load-banner** sanitises the user-supplied argv
-  string `module_name` inline (this is the `--rule-pack` argument,
-  not `__name__`, but the same defense-in-depth applies):
+  string `module_name` (this is the `--rule-pack` argument, not
+  `__name__`, but the same defense-in-depth applies):
 
 ```python
-safe_module_name = module_name.replace("\n", " ").replace("\r", " ")
+safe_module_name = _safe_for_stderr(module_name)
 click.echo(
     f"protokit lint: loading user-supplied rule pack "
     f"{safe_module_name!r} (executes arbitrary Python from the "
@@ -185,10 +220,13 @@ click.echo(
 - **`kind=shape:` `LintProfile.from_pack` failure path** also uses
   `_safe_module_name(pack)`.
 
-Also sanitised in the same pass: `runtime_warning.message` for the
-`warning[lint-runtime]:` emission loop, since rule callables can
-raise exceptions whose `str(exc)` is multi-line and would inject the
-same vector through a different field.
+Also sanitised in the same family of fixes: `runtime_warning.message`
+for the human-format CLI-side hook (D5 U5
+`_emit_human_runtime_warnings`); `rid` and `profile.name` at the
+`unloaded_rule` `LintRuntimeWarning` construction site in
+`engine.py` (D5 U5 ce:review follow-up — KTD-9 dual-defense at
+construction time + emission time). The single `_safe_for_stderr`
+helper covers every emission/construction site uniformly.
 
 ## Why This Works
 
@@ -308,6 +346,111 @@ values; the module body can overwrite all of them.
 Adopt the same posture as for `sys.argv` strings or environment
 variable values: sanitise at the boundary where the contract lives,
 not at the boundary where the data was first introduced.
+
+### Extended principle — every interpolated slot, not just user-supplied fields
+
+(Added 2026-05-12 from the D5 U5 ce:review.) The natural instinct
+when adding defense-in-depth sanitization to a string interpolation
+boundary is to identify "user-supplied data" fields and sanitize
+those. Fields that are typed as closed-set enumerations —
+`Literal["rule_exception", "unloaded_rule", "min_severity_relaxed",
+"all_files_excluded"]` — feel bounded and safe by inspection. The
+trap is that **Python does not enforce `Literal[...]` annotations
+at runtime**. A `mypy` check at the construction site catches type
+violations only if the developer reads the annotation and respects
+it; a future emission site that constructs the dataclass with a
+hand-crafted control-character-bearing value bypasses the type
+checker entirely.
+
+The U5 initial implementation of `_emit_human_runtime_warnings`
+applied `_safe_for_stderr` to `w.message` but interpolated
+`w.category` raw — `w.category` was a `Literal[...]`-annotated field
+populated internally and the developer reasoned from the annotation
+rather than the trust model. Three reviewers (security +
+project-standards + adversarial) converged on the asymmetry as a
+defense gap. The fix was two additional lines:
+
+```python
+# Wrong — asymmetric: only the obviously user-data slot sanitized.
+safe_message = _safe_for_stderr(w.message)
+click.echo(
+    f"protokit lint: warning [{w.category}]: {safe_message}",
+    err=True,
+)
+
+# Right — every interpolated slot sanitized.
+safe_category = _safe_for_stderr(w.category)
+safe_message = _safe_for_stderr(w.message)
+click.echo(
+    f"protokit lint: warning [{safe_category}]: {safe_message}",
+    err=True,
+)
+```
+
+The cost of sanitizing every slot is one `str.translate` call per
+field per emission — negligible at any realistic volume. The cost
+of *not* sanitizing is a latent injection vector unlocked the
+moment a future emission site forgets construction-time
+sanitization.
+
+**Pattern**: when writing a sanitization function call in an
+interpolation expression, count all the `{...}` slots in the
+f-string and verify every one calls the sanitizer. The type-system
+argument ("it's a `Literal`, it's bounded") is the wrong level of
+defense for a runtime sanitization layer; the sanitization layer
+exists precisely because the type system cannot be trusted at
+runtime.
+
+### Unicode line-terminator widening (U+0085, U+2028, U+2029)
+
+(Added 2026-05-12 from the D5 U5 ce:review.) The original
+sanitization scope was ASCII control characters: `range(0x20)` plus
+`0x7F` DEL. This covers `\n` (0x0A), `\r` (0x0D), NUL, ESC, and all
+other ASCII control codepoints. The U5 adversarial reviewer
+identified a gap above 0x7F: Unicode-defined line terminators
+**U+0085 NEXT LINE (NEL)**, **U+2028 LINE SEPARATOR**, and
+**U+2029 PARAGRAPH SEPARATOR**.
+
+A Python terminal does not render these as line breaks — the
+attacker payload appears on the same line. But Unicode-aware log
+aggregators — Datadog, Splunk, AWS CloudWatch Logs — split records
+on them per the Unicode line-terminator rules. An operator
+inspecting stderr locally sees one line; the aggregator sees two
+records, with the second beginning with a forged `error[lint-...]:`
+prefix indistinguishable from a real CLI emission.
+
+The fix adds three entries to `_CONTROL_CHAR_TABLE` (see the full table definition in the **Solution** section above):
+
+```python
+_CONTROL_CHAR_TABLE[0x85] = ord(" ")    # U+0085 NEXT LINE (NEL)
+_CONTROL_CHAR_TABLE[0x2028] = ord(" ")  # U+2028 LINE SEPARATOR
+_CONTROL_CHAR_TABLE[0x2029] = ord(" ")  # U+2029 PARAGRAPH SEPARATOR
+```
+
+**Broader principle**: a sanitization function that defends against
+"newline injection" must enumerate the codepoints **the downstream
+consumer treats as a record boundary**, not just the codepoints the
+terminal renders as line breaks. The threat model is what the log
+aggregator / XML parser / JSON parser will split on, which is a
+superset of what `echo` renders. The full set for the line-
+terminator family is:
+
+| Codepoint | Name | Terminal | Aggregators |
+|-----------|------|----------|-------------|
+| U+000A | LF (line feed) | Yes | Yes |
+| U+000D | CR (carriage return) | Yes | Yes |
+| U+0085 | NEL (next line) | No | Yes (Unicode) |
+| U+2028 | LINE SEPARATOR | No | Yes (Unicode) |
+| U+2029 | PARAGRAPH SEPARATOR | No | Yes (Unicode) |
+
+A sanitization function that only covers the "terminal renders as
+line break" set silently passes a review that tests with terminals
+while remaining exploitable via aggregator-targeted payloads. When
+a sanitization table is built programmatically from a `range()`,
+`range(0x20)` covers ASCII control chars but stops well before the
+Unicode terminator range (U+0085 is at decimal 133, above 0x1F = 31)
+— making this an easy gap to miss without an explicit threat-model
+check.
 
 ### Architectural posture — extend the parent's posture to data flow
 

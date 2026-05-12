@@ -688,7 +688,14 @@ def _main_impl(
         # Per the round-1 plan-review P1 finding on --rule-pack
         # security mitigation. Stderr diagnostic; not gated by
         # --quiet (which suppresses findings stdout only).
-        safe_module_name = module_name.replace("\n", " ").replace("\r", " ")
+        # ``_safe_for_stderr`` (the project-wide sanitizer) covers the
+        # full ASCII control range plus Unicode line terminators
+        # U+0085/U+2028/U+2029. The earlier chained ``.replace()``
+        # form only handled ``\n``/``\r`` and was bypassed by Unicode
+        # line terminators that log aggregators split records on.
+        # See docs/solutions/security-issues/
+        # module-name-newline-injection-stderr-forge-2026-05-07.md.
+        safe_module_name = _safe_for_stderr(module_name)
         click.echo(
             f"protokit lint: loading user-supplied rule pack "
             f"{safe_module_name!r} (executes arbitrary Python from the "
@@ -770,7 +777,12 @@ def _main_impl(
         declared_per_pack = _declared_profiles_per_pack(loaded_packs_tuple)
         for pack_name, profiles in declared_per_pack.items():
             profiles_str = ", ".join(sorted(profiles)) if profiles else "(none)"
-            safe_pack_name = pack_name.replace("\n", " ").replace("\r", " ")
+            # Use the project-wide ``_safe_for_stderr`` sanitizer
+            # rather than chained ``.replace()`` so Unicode line
+            # terminators are covered alongside ``\n``/``\r``. See
+            # docs/solutions/security-issues/
+            # module-name-newline-injection-stderr-forge-2026-05-07.md.
+            safe_pack_name = _safe_for_stderr(pack_name)
             click.echo(
                 f"info[lint-pack-profiles]: pack={safe_pack_name} "
                 f"profiles=[{profiles_str}]",

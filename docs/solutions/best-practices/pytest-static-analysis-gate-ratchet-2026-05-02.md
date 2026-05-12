@@ -1,6 +1,7 @@
 ---
 title: "Pytest-driven static analysis gate: ruff + mypy as a ratcheting subprocess test"
 date: 2026-05-02
+last_updated: 2026-05-12
 category: docs/solutions/best-practices
 module: tooling/static-analysis
 problem_type: best_practice
@@ -219,6 +220,11 @@ Three smaller-but-important design choices:
 - **The pytest skip is NOT a substitute for the dedicated CI step.** A CI job that forgets to install the `[dev]` extra would see green pytest (the gate skips silently) and a missing tool. Only the dedicated CI step (`python -m mypy ...`) catches that failure mode. Keep both — they cover different gaps.
 - **The `_LINT_PATHS` / `_TYPE_CHECK_PATHS` ↔ CI yaml duplication** is fine for two callers (one pytest test, one CI step). When a third caller appears (a pre-commit hook, a `Makefile` target, an `nox`/`tox` session), hoist the path list into one source of truth — a `pyproject.toml` table read by all callers, or a `scripts/static_analysis.py` invoked from each. Today the comment "mirrors the CI step" enforces the sync manually; that scales to two.
 - **`_REPO_ROOT = Path(__file__).resolve().parent.parent` assumes the test file lives exactly two levels deep.** If you copy this into a project where the gate test is at `tests/static/test_gate.py`, the parent count is wrong. Either keep the gate at `tests/test_static_analysis.py` or compute `_REPO_ROOT` by walking up to a marker file (`pyproject.toml`).
+- **New test files at the repo root level require explicit per-file `_LINT_PATHS` entries — directory entries do not cover them.** (Added 2026-05-12 from the D5 U5 ce:review.) `_LINT_PATHS` mixes two entry styles: directory entries that gate every file recursively (`"src/protokit/schema/lint"`, `"tests/schema/lint"`) and per-file entries that gate only the specific path listed (`"tests/test_cli_utils.py"`, `"tests/test_static_analysis.py"`). When a new test file is created at the `tests/` root — not in a subdirectory already covered by a directory entry — it silently escapes the gate until explicitly added. The pass-fail signal is identical to a real green run: ruff/mypy pass on the listed paths and the new file is simply not in the listed paths. The gap is invisible. In the D5 U5 ce:review, project-standards (PS-U5-01 at 0.88) and testing (T-U5-04 at 0.85) both flagged that `tests/test_builtin_lint_runtime_warnings.py` (created in the U5 feat commit) was not in `_LINT_PATHS`. The pre-existing `tests/test_builtin_lint_formatter.py` had been outside the ratchet since D3 — at minimum two complete delivery cycles — and was added in the same follow-up commit under pay-as-you-touch. New test file checklist:
+  - Does the parent directory have a directory entry in `_LINT_PATHS`? If so, no action needed (the new file is auto-covered).
+  - If not, add the new file path to `_LINT_PATHS` in the **same commit** that creates the file. The ratchet should never lag the implementation.
+  - When adding a new per-file entry, grep the same directory level for un-gated neighbors and fix them in the same commit (pay-as-you-touch).
+  - Convention recommendation: prefer placing new test files under a directory that already has a directory entry, rather than as per-file entries at the root level. Directory entries auto-scale; per-file entries require manual updates and tend to drift.
 
 ## When to Apply
 
