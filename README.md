@@ -477,6 +477,204 @@ in practice — most teams rename a file and its importers in the
 same commit — but worth flagging. The workaround is to rerun the
 walk against a ref where the importer has been updated.
 
+## Schema Linting
+
+`protokit lint` runs descriptor-level lint rules against one or
+more `.proto` files (or pre-built `FileDescriptorSet` binaries).
+The current built-in pack is the AIP-122 `naming` canary; future
+deliveries expand the rule library. Lint is intentionally orthogonal
+to `protokit compat` — compat answers "is this schema change safe
+for consumers?", lint answers "does this schema follow our style
+conventions?".
+
+### Quick Start
+
+A typical `pyproject.toml` configuration:
+
+```toml
+[tool.protokit.lint]
+profile = "default"
+exclude = ["third_party/**", "vendor/**"]
+min_severity = "warning"
+```
+
+A typical invocation:
+
+```bash
+# Lint every .proto file in the project (walks pyproject.toml from CWD)
+protokit lint protos/**/*.proto
+
+# Lint a pre-built descriptor set
+protokit lint schema.descriptor_set
+
+# Override the pyproject min_severity for one run
+protokit lint --min-severity error protos/**/*.proto
+
+# Run without any pyproject configuration (use built-in defaults only)
+protokit lint --no-config protos/**/*.proto
+```
+
+### `[tool.protokit.lint]` configuration
+
+`protokit lint` discovers `pyproject.toml` by walking up from the
+current working directory until it reaches the first `.git`
+directory or file (worktree-safe — both `.git/` directories and
+`.git` pointer files terminate the walk-up). The first
+`pyproject.toml` encountered is used; if it lacks a
+`[tool.protokit.lint]` table, built-in defaults apply silently.
+
+Recognized keys (every key is optional):
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `profile` | string or list of strings | Profile name(s) to compose. Single profile is the common case; multi-profile composition lifts the strictest floor and union-merges rule_ids. |
+| `exclude` | list of strings | Gitignore-style globs matched against `FileDescriptorProto.name`. Patterns are additive with CLI `--exclude`. |
+| `min_severity` | string (`"info"`, `"warning"`, `"error"`) | Minimum severity to emit. Relaxing the composed profile floor fires a `min_severity_relaxed` runtime warning. |
+| `max_warnings` | integer | Non-error exit threshold for warning-level findings. |
+| `format` | string | Default output formatter (`"human"`, `"json"`, `"junit"`, `"sarif"`, or a `--formatter-module` name). |
+
+Unknown keys and type mismatches produce a hard error (exit 2)
+that names the recognized keys and offending field. List-valued
+keys also reject heterogeneous arrays — `exclude = ["a", 1, "b"]`
+fails at the element-type check, not silently coerced.
+
+### CLI flags
+
+In addition to the pyproject keys, the CLI carries:
+
+| Flag | Purpose |
+|------|---------|
+| `--config PATH` | Use a pinned config file; bypasses CWD walk-up. Strict mode: missing/unreadable/table-absent/invalid-TOML all exit 2. |
+| `--no-config` | Skip the `[tool.protokit.lint]` table entirely; built-in defaults apply. Mutually exclusive with `--config`. |
+| `--exclude PATTERN` | Append a gitignore-style glob to the resolved exclude list (repeatable). |
+| `--no-exclude` | Override every pyproject + CLI exclude pattern; lint every input file. Wins at apply-time over `--exclude`. |
+| `--profile NAME` | Override the pyproject `profile` key for one run. |
+| `--min-severity LEVEL` | Override the pyproject `min_severity` key for one run. |
+| `--max-warnings N` | Override the pyproject `max_warnings` key for one run. |
+| `--format NAME` | Override the pyproject `format` key for one run. Also reads `PROTOKIT_FORMAT` envvar. |
+| `--rule-pack MODULE` | Load a user rule pack on top of the built-ins (repeatable). |
+| `--proto` | Treat inputs as `.proto` source files instead of pre-built descriptor sets; invokes the in-process compile path. |
+| `--proto-path DIR` / `-I DIR` | Add an include directory to the `--proto` compile path (repeatable). |
+| `--statistics` / `--no-statistics` | Show / suppress the trailing statistics line (filtered count, runtime warnings). |
+| `--quiet` | Suppress findings on stdout; structured stderr warnings remain visible. Mutually exclusive with non-`human` `--format`. |
+
+CLI flags replace the pyproject value for their key, except
+`--exclude`, which appends. `--no-exclude` clears the resolved
+exclude list (CLI + pyproject) entirely.
+
+### JSON output shape (`--format=json`)
+
+The `--format=json` output is a stable wire format for CI integrations
+and agents. Top-level keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
+| `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
+| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"`), `rule_id` (string for engine-emitted categories, `null` for CLI-emitted categories), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
+| `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty for `--input` descriptor-set mode. |
+| `summary` | object | Aggregate counts. Keys: `errors`, `warnings`, `info`, `total`, `filtered_count`, `runtime_warning_count`. |
+
+A non-JSON-serializable rule param (e.g., a `pathlib.Path`) renders via
+`repr()` rather than failing the entire emission — this guarantees one
+broken param value never suppresses every other finding.
+
+### Multi-profile attribution note
+
+When `profile = ["a", "b"]` composes multiple profiles, the
+resolved profile floor reported in `min_severity_relaxed`
+messages is the composed floor — a single value after the
+composition step. The message does not name which contributing
+profile set the relaxed floor. If attribution matters, consult
+the composed-profile result via the public API rather than
+reading it out of the warning message text.
+
+### Security Considerations
+
+`protokit lint` reads `pyproject.toml` files discovered via CWD
+walk-up. The walk-up terminates at the **first** `.git` directory
+or file encountered, which is the typical project-root boundary
+for any code-bearing repository.
+
+**Bypass channels.** The following configuration keys can relax
+lint policy and therefore should be reviewed alongside any other
+policy-affecting change:
+
+- `exclude` — drops files from the lint pool.
+- `min_severity` — raises the emission floor (hides findings).
+- `max_warnings` — raises the non-error threshold (turns failures
+  into passes).
+- `profile` — switches the active rule set; a less-strict profile
+  exercises fewer rules.
+
+Changes to these keys should go through the same code-review
+discipline as source-level changes; CI gates that enforce lint
+policy should be aware that `[tool.protokit.lint]` edits are
+policy-affecting.
+
+**Walk-up trust assumptions.** The walk-up uses `Path.exists()` on
+the `.git` candidate (not `Path.is_dir()`), which covers standard
+checkouts AND git worktrees / submodules. The `.git` path is
+checked for existence only; its contents (the `gitdir: ...`
+pointer in worktree `.git` files) are NEVER read, parsed, or
+followed by `protokit lint`.
+
+**No-`.git` CI caveat.** If the working tree is not a git
+checkout — e.g., a shallow-clone-replacement that strips `.git`,
+or a CI environment that materializes sources outside any
+repository — the walk-up runs to the filesystem root. In that
+configuration, an attacker who controls a parent directory of the
+CWD can plant a `pyproject.toml` containing
+`[tool.protokit.lint]` keys that relax the lint policy. For
+untrusted-parent-CWD environments, use `--no-config` (to disable
+pyproject reading entirely) or `--config <pinned-path>` (to read
+a specific, vetted config) instead of the default walk-up.
+
+### Pre-1.0 stability disclaimer
+
+`protokit` is pre-1.0. Minor-version releases may include
+breaking changes to public Python APIs and machine output formats
+(JSON, JUnit, SARIF). Breaking changes are explicitly marked
+`BREAKING:` in CHANGELOG entries; consumers should pin to a
+specific minor version (e.g., `protokit~=0.5.0`) until 1.0 ships.
+The 1.0 release will **define the stable public surface** and
+commit to semver compatibility for that surface.
+
+### Public Surface (DRAFT — frozen at 1.0)
+
+The candidate stable surface, listed here so consumers can
+anticipate what 1.0 will commit to. Each row is marked
+tentatively `IN` (under consideration for the stable surface) or
+`INTERNAL` (deliberately not under consideration; subject to
+change without notice). This appendix is maintained each delivery
+so 1.0 inherits a defined surface rather than discovering it via
+accumulation.
+
+| Surface | Element | Status |
+|---------|---------|--------|
+| Python dataclass | `LintReport` (fields, ordering, frozen-ness) | IN |
+| Python dataclass | `LintRuntimeWarning` (category Literal, `rule_id: str \| None`, message, exception_type, descriptor_path) | IN |
+| Python dataclass | `LintFinding` (rule_id, severity, location, violation_kind, params) | IN |
+| Python dataclass | `LintProfile` (name, rule_ids, min_severity, rule_severity_overrides) | IN |
+| Python dataclass | `LintRuleSpec` (rule_id, severity, profiles, source_spec, element, message_template, fn) | IN |
+| Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
+| Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
+| JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
+| SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory) | IN |
+| SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
+| JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
+| CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack` | IN |
+| Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
+| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid` (full set in `_LINT_ERROR_CODES`) | IN |
+| Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
+| Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
+| Internal module | `protokit.schema.lint._cli_utils` | INTERNAL |
+| Threshold constants | `_LINT_HUMAN_SUMMARIZATION_THRESHOLD` (per-category human-stderr summarization) | INTERNAL |
+
+The surface above is a working draft. Names and signatures may
+shift before 1.0; the BREAKING marker in CHANGELOG entries is the
+authoritative signal for any individual change.
+
 ## Output Formatters
 
 `--format NAME` selects how `protokit diff` and every `protokit

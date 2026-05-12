@@ -3,6 +3,16 @@
 All notable changes to `protokit` are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/).
 
+> **Pre-1.0 stability disclaimer.** `protokit` is pre-1.0. Minor-version
+> releases may include breaking changes to public Python APIs and
+> machine output formats (JSON, JUnit, SARIF). Breaking changes are
+> flagged in `BREAKING`-prefixed section headings below (formats vary
+> across the changelog: `### Changed — BREAKING`, `### BREAKING (D5 U3 ...)`,
+> etc.). Consumers should pin to a specific minor version (e.g.,
+> `protokit~=0.5.0`) until 1.0 ships. The 1.0 release will **define
+> the stable public surface** and commit to semver compatibility for
+> that surface.
+
 ## Unreleased
 
 ### Added
@@ -47,6 +57,71 @@ All notable changes to `protokit` are documented here. Format loosely follows
   registry semantics, built-in coverage, JUnit xsd validation, SARIF
   schema validation, CLI dispatch, two-phase pack rollback, formatter
   exception fail-fast, and the stdout-write guard.
+
+#### Schema linting (D1–D5)
+
+- **`protokit lint` subcommand** — descriptor-level lint runner over
+  `.proto` sources or pre-built `FileDescriptorSet` binaries. D1
+  landed the engine + cold-import contract; D2 shipped the canonical
+  `naming` rule pack (AIP-122 snake_case canary); D3 ratcheted the
+  rule-emission contract with the structured `LintRuntimeWarning`
+  carrier (`rule_exception`, `unloaded_rule` categories); D5 lands
+  the pyproject configuration substrate, file-level exclusion,
+  cross-formatter render parity, and the perf-smoke canary.
+- **`[tool.protokit.lint]` pyproject table** — auto-discovered by
+  walking up from the CWD to the first `.git` directory or file
+  (worktree-safe per KTD-7). Recognized keys: `profile` (string or
+  list), `exclude` (list of gitignore-style globs), `min_severity`
+  (`"info"` / `"warning"` / `"error"`), `max_warnings` (int),
+  `format` (formatter name). Unknown keys and type mismatches
+  produce a hard exit-2 error naming the recognized keys; list-
+  valued keys reject heterogeneous arrays per KTD-5.
+- **`--config PATH` / `--no-config`** — pin a specific config file
+  or skip pyproject reading entirely. Mutually exclusive at parse
+  time. `--config` is strict (missing/unreadable/table-absent/
+  invalid-TOML all exit 2 with newline-sanitized stderr); the
+  default walk-up is silent-fallback when no `[tool.protokit.lint]`
+  table is found.
+- **`--exclude PATTERN` (repeatable) / `--no-exclude`** — gitignore-
+  style glob exclusion of input files matched against
+  `FileDescriptorProto.name`. CLI `--exclude` patterns append to
+  the pyproject `exclude` list per R13; `--no-exclude` clears the
+  resolved exclude list (CLI + pyproject) at apply-time. When the
+  resolved exclude drops every file, a structured
+  `LintRuntimeWarning(category="all_files_excluded")` fires and
+  `engine.run` short-circuits (no point walking zero files per
+  KTD-4).
+- **Source-attributed `min_severity_relaxed` warning** — when the
+  resolved `min_severity` relaxes the composed profile floor, a
+  structured `LintRuntimeWarning(category="min_severity_relaxed")`
+  fires post-`engine.run`. The message attributes the source: CLI
+  flag, pyproject key, or "both" with the pyproject value carried
+  in the message for triage. Replaces the previous unstructured
+  stderr breadcrumb.
+- **Cross-formatter `LintRuntimeWarning` render parity** — all
+  four current categories (`rule_exception`, `unloaded_rule`,
+  `min_severity_relaxed`, `all_files_excluded`) render in all four
+  built-in formatters: `lint_human` stderr envelope, `lint_json`
+  `runtime_warnings` array, `lint_junit` `<system-out>` lines,
+  `lint_sarif` `runs[].properties.runtime_warnings` array. Closes
+  the D3-era silent-warning regression in three of four formatters.
+- **`tests/schema/lint/test_perf_smoke.py`** — catastrophic-regression
+  canary on `linux + py3.12` cells. Synthetic 50 files × 20 messages
+  × 10 fields = 10,000 fields; threshold loose by design (smoke,
+  not benchmark). Skipped via `@pytest.mark.skipif` on other cells;
+  the companion `test_perf_smoke_coverage.py` parses
+  `.github/workflows/ci.yml` to verify the matrix contains at least
+  one predicate-matching cell (fail-closed per KTD-3).
+- **`slow` pytest marker** — registered in `pyproject.toml`. The
+  D5 perf smoke is the only current consumer; future slow tests
+  can join via the same marker. `pytest -m "not slow"` excludes
+  them from fast-iteration loops.
+- **New deps**: `tomli >= 2.0, < 3` (py<3.11 only; py3.11+ uses
+  stdlib `tomllib`) for `[tool.protokit.lint]` parsing; `pathspec
+  >= 0.12, < 2` for gitignore-style glob matching. Dev-dep
+  additions: `PyYAML >= 6.0, < 7` and `types-PyYAML` for the perf-
+  smoke coverage meta-test (uses `yaml.safe_load` exclusively per
+  KTD-3 security posture).
 
 ### Changed
 - `--format` on every CLI subcommand is now a free-form string instead
@@ -135,11 +210,80 @@ The rename lands as a single breaking change on the path to 0.2.
   `"min_severity_relaxed"`, `"all_files_excluded"`). Exhaustive
   `match`/`if-elif` with `assert_never()` arms require an additional
   branch.
-- Full migration recipes (JSON / SARIF / Python with concrete
-  before/after code) land with D5 U6's CHANGELOG fold-in alongside
-  the formatter-side wire-format updates (lint_junit / lint_sarif).
-  This entry pre-empts the U3→U6 gap for consumers landing the
-  BREAKING change in `main` today.
+
+**Migration recipes (D5 U6 fold-in).** Concrete before/after for
+each consumer type:
+
+*JSON consumer migration.* The shape of
+`report.runtime_warnings[*]` changed only in the `rule_id` field:
+it is now `string | null`. When `rule_id` is `null`, the `category`
+field tells you the source — `"min_severity_relaxed"` means
+pyproject or CLI relaxed the profile floor; `"all_files_excluded"`
+means no files survived `--exclude` / `[tool.protokit.lint] exclude`
+filtering. Code that previously did:
+
+```python
+for w in parsed["runtime_warnings"]:
+    print(w["rule_id"].upper())  # AttributeError on None
+```
+
+becomes:
+
+```python
+for w in parsed["runtime_warnings"]:
+    if w["rule_id"] is not None:
+        print(w["rule_id"].upper())
+    else:
+        # rule_id-less category — branch on w["category"] for triage
+        print(f"[{w['category']}] {w['message']}")
+```
+
+*SARIF consumer migration.* Read
+`runs[].properties.runtime_warnings` in addition to the existing
+`runs[].invocations[].toolExecutionNotifications` array. The two
+arrays carry disjoint event sets — `toolExecutionNotifications`
+remains compile-stage diagnostics only (per KTD-1); the new
+`runs[].properties.runtime_warnings` array carries
+`LintRuntimeWarning` events. Each entry has shape:
+
+```json
+{
+  "level": "warning",
+  "message": {"text": "<warning message>"},
+  "properties": {
+    "category": "<one of the four categories>",
+    "subcategory": "runtime"
+  }
+}
+```
+
+No `descriptor.id` is emitted (per KTD-1) — categorization travels
+via `properties.category`. SARIF consumers wanting a unified
+warning stream should union the two channels on the client side.
+The `runs[].properties` block is **omitted entirely** on clean
+runs (zero runtime warnings); existing pre-U5 SARIF documents are
+byte-for-byte unchanged when no warnings fire.
+
+*Python API consumer migration.* Add a `None` branch when
+narrowing `LintRuntimeWarning.rule_id`. The mypy-strict pattern
+mirrors the existing `descriptor_path` / `exception_type`
+narrowing in `LintRuntimeWarning`'s docstring:
+
+```python
+def handle(w: LintRuntimeWarning) -> None:
+    if w.category in ("rule_exception", "unloaded_rule"):
+        assert w.rule_id is not None  # mypy-strict narrowing
+        process_rule_scoped_warning(w.rule_id, w.message)
+    else:
+        # category in ("min_severity_relaxed", "all_files_excluded")
+        # rule_id is None; warning is global, not rule-scoped
+        process_global_warning(w.category, w.message)
+```
+
+Exhaustive `match`/`if-elif` arms with `assert_never()` also
+require an additional branch — the `category` Literal widened
+from 2 values to 4 (`"rule_exception"`, `"unloaded_rule"`,
+`"min_severity_relaxed"`, `"all_files_excluded"`).
 
 ### BREAKING (D5 U4 — `protokit lint` stderr wire format)
 
