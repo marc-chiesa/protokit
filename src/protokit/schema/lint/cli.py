@@ -87,6 +87,7 @@ from protokit.schema.lint._cli_utils import (
     _load_descriptor_sets_to_result,
     _load_user_rule_pack,
     _run_lint_formatter_safely,
+    _safe_for_stderr,
     _safe_module_name,
     error_exit_with_code,
 )
@@ -113,6 +114,78 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     "warning": LintSeverity.WARNING,
     "error": LintSeverity.ERROR,
 }
+
+#: Per-category emit budget for the ``--format=human`` runtime-warning
+#: stderr hook (D5 U5 R21a). Once a category exceeds this count, the
+#: hook collapses the remainder into a single summarization line and
+#: stops emitting individual warnings for that category. Machine
+#: formatters (``json`` / ``junit`` / ``sarif``) always emit ALL
+#: warnings unconditionally — summarization is human-only per
+#: KTD-6.
+#:
+#: Tests pin behaviour against ``threshold`` / ``threshold + 1``
+#: boundaries via ``monkeypatch.setattr`` rather than the literal
+#: value, so D6+ tuning does not require coordinated test updates.
+_LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
+
+
+def _emit_human_runtime_warnings(report: LintReport) -> None:
+    """Emit ``report.runtime_warnings`` to stderr as human-format lines.
+
+    Called only when ``resolved.format == "human"`` (the CLI-side
+    post-format hook per KTD-6). Each warning becomes a stderr line
+    of the form::
+
+        protokit lint: warning [{category}]: {message}
+
+    Per-category counters track how many lines fired; once a
+    category's count exceeds ``_LINT_HUMAN_SUMMARIZATION_THRESHOLD``,
+    a single summarization line replaces the remaining individuals
+    for that category::
+
+        protokit lint: warning [{category}]: ... and {N} more
+        — use --format=json for full details
+
+    The ``{message}`` slot is passed through ``_safe_for_stderr``
+    as a defense-in-depth measure (per KTD-9): construction-time
+    sanitization in engine.py / cli.py already collapses control
+    characters in the message field, but the stderr boundary runs
+    the same pass as a backstop in case a future emission site
+    forgets to sanitize at construction time.
+
+    This hook is **NOT** gated by ``--quiet`` (KTD-6): ``--quiet``
+    suppresses findings on stdout, not warnings on stderr. The
+    pre-U4 stderr breadcrumb had the same posture (an inline
+    comment on the deleted ``cli.py:498-503`` loop said as much).
+    Closes the D3-era silent-warning regression for
+    ``--format=human``.
+    """
+    if not report.runtime_warnings:
+        return
+    per_category_total: Counter[str] = Counter(
+        w.category for w in report.runtime_warnings
+    )
+    per_category_emitted: Counter[str] = Counter()
+    summarized: set[str] = set()
+    for w in report.runtime_warnings:
+        per_category_emitted[w.category] += 1
+        if per_category_emitted[w.category] <= _LINT_HUMAN_SUMMARIZATION_THRESHOLD:
+            safe_message = _safe_for_stderr(w.message)
+            click.echo(
+                f"protokit lint: warning [{w.category}]: {safe_message}",
+                err=True,
+            )
+        elif w.category not in summarized:
+            remaining = (
+                per_category_total[w.category]
+                - _LINT_HUMAN_SUMMARIZATION_THRESHOLD
+            )
+            click.echo(
+                f"protokit lint: warning [{w.category}]: ... and "
+                f"{remaining} more — use --format=json for full details",
+                err=True,
+            )
+            summarized.add(w.category)
 
 
 @click.command(
@@ -788,15 +861,6 @@ def _main_impl(
             ),
         )
 
-    # Runtime warnings flow through formatter dispatch only. The
-    # ``warning[lint-runtime]:`` stderr loop was removed in D5 U4
-    # (R21). D5 U5 will add a CLI-side post-format hook so
-    # ``--format=human`` re-emits ``runtime_warnings`` to stderr;
-    # until then, human-format consumers see runtime warnings only
-    # via ``--format=json`` / ``--format=junit`` / ``--format=sarif``.
-    # See CHANGELOG ``BREAKING (D5 U4 — stderr wire format)`` for
-    # the migration recipe.
-
     try:
         formatter = get_formatter(resolved.format, FormatterKind.LINT_REPORT)
     except KeyError:
@@ -813,6 +877,17 @@ def _main_impl(
     )
     if output and not quiet:
         click.echo(output)
+
+    # D5 U5 R21a: CLI-side post-format hook for ``--format=human``.
+    # The machine formatters (``lint_json`` / ``lint_junit`` /
+    # ``lint_sarif``) embed ``runtime_warnings`` in their structured
+    # payloads; ``lint_human`` is intentionally pure (returns the
+    # findings string), so re-surfacing the warnings to stderr is
+    # CLI-layer policy per KTD-6. The hook is NOT gated by
+    # ``--quiet`` (warnings on stderr stay visible; ``--quiet``
+    # suppresses findings on stdout).
+    if resolved.format == "human":
+        _emit_human_runtime_warnings(report)
 
     if statistics and resolved.format == "human" and not quiet:
         _emit_statistics_footer(report)

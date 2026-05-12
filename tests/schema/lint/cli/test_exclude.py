@@ -336,15 +336,16 @@ class TestExcludeErrorPaths:
 # ---------------------------------------------------------------------------
 
 
-class TestR21StderrLoopAbsent:
-    """D5 U4 R21 removed the ``warning[lint-runtime]:`` stderr loop.
-    Until D5 U5 adds the human-format post-format hook, the default
-    ``--format=human`` output must produce zero ``warning[lint-runtime]:``
-    lines on stderr even when ``runtime_warnings`` are present.
-
-    Without this assertion, accidental re-introduction of the loop
-    (or a partial revert) would silently re-emit the legacy prefix
-    and the structured-only contract would regress unnoticed.
+class TestR21LegacyStderrFormatAbsent:
+    """D5 U4 R21 removed the ``warning[lint-runtime]:`` stderr loop;
+    D5 U5 reinstated stderr emission under a NEW structured envelope:
+    ``protokit lint: warning [{category}]: {message}``. The legacy
+    formats (the U3-era ``warning[lint-runtime]:`` prefix and the
+    U2-era bare ``protokit lint: --min-severity=...`` breadcrumb)
+    must stay deleted. These tests pin that absence — an accidental
+    revert that re-emits either legacy shape regresses the BREAKING
+    contract carried by CHANGELOG ``BREAKING (D5 U4 — stderr wire
+    format)`` and the U5 structured envelope's surface stability.
     """
 
     def test_human_format_emits_no_warning_lint_runtime_prefix(
@@ -364,15 +365,26 @@ class TestR21StderrLoopAbsent:
         )
         assert result.exit_code == 0, result.output
         assert "warning[lint-runtime]:" not in result.stderr, (
-            "R21 regression: the stderr loop was re-introduced. "
+            "R21 regression: the legacy stderr loop was re-introduced. "
             f"stderr was:\n{result.stderr}"
         )
+        # U5 positive assertion: the NEW structured envelope IS
+        # present for the all_files_excluded warning, so this test
+        # also pins the U5 hook against silent removal.
+        assert "warning [all_files_excluded]:" in result.stderr, (
+            "U5 regression: the structured human-format hook stopped "
+            f"emitting all_files_excluded. stderr was:\n{result.stderr}"
+        )
 
-    def test_human_format_emits_no_min_severity_relaxed_breadcrumb(
+    def test_human_format_emits_no_bare_min_severity_breadcrumb(
         self, multi_file_descriptor_set: Path,
     ) -> None:
-        # The U2 ``protokit lint: ... relaxes profile floor ...``
-        # breadcrumb was also removed in U4. Pin that absence.
+        # The U2 legacy breadcrumb shape was
+        # ``protokit lint: --min-severity=info relaxes profile floor
+        # from warning to info`` — bare prefix, no ``warning
+        # [min_severity_relaxed]:`` envelope. U4 removed it; U5
+        # re-introduces emission but under the NEW envelope. Pin
+        # the LEGACY bare shape absent and the NEW shape present.
         result = CliRunner().invoke(
             lint_main,
             [
@@ -381,6 +393,12 @@ class TestR21StderrLoopAbsent:
                 str(multi_file_descriptor_set),
             ],
         )
-        assert "protokit lint:" not in result.stderr or (
-            "relaxes profile floor" not in result.stderr
+        assert "protokit lint: --min-severity=" not in result.stderr, (
+            "U2 legacy breadcrumb regression: a bare "
+            "``protokit lint: --min-severity=...`` line slipped through. "
+            f"stderr was:\n{result.stderr}"
+        )
+        assert "warning [min_severity_relaxed]:" in result.stderr, (
+            "U5 regression: the structured human-format hook stopped "
+            f"emitting min_severity_relaxed. stderr was:\n{result.stderr}"
         )

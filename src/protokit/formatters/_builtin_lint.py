@@ -366,13 +366,26 @@ def _build_lint_testsuite(
             suite, junit.make_testcase(classname="lint", name="clean"),
         )
 
-    if warning_diags:
-        junit.append_system_out(
-            suite,
-            "\n".join(
-                f"{d.level} [{d.category}]: {d.message}" for d in warning_diags
-            ),
-        )
+    # Compile-time warning diagnostics + engine/CLI runtime warnings
+    # share the suite's single ``<system-out>`` body. JUnit XSD permits
+    # only one ``<system-out>`` per testsuite, so the two sources are
+    # joined into one text block. Runtime warnings use a leading
+    # ``[{category}]`` token so consumers can distinguish them from
+    # compile diagnostics (which lead with ``{level} [{category}]:``).
+    #
+    # Per D5 U5 R21a, the cross-formatter render contract: every
+    # ``LintRuntimeWarning`` category (``rule_exception``,
+    # ``unloaded_rule``, ``min_severity_relaxed``, ``all_files_excluded``,
+    # plus any future category) renders here regardless of source —
+    # closes the D3-era silent-warning regression for ``lint_junit``.
+    system_out_lines: list[str] = [
+        f"{d.level} [{d.category}]: {d.message}" for d in warning_diags
+    ]
+    system_out_lines.extend(
+        f"[{w.category}] {w.message}" for w in report.runtime_warnings
+    )
+    if system_out_lines:
+        junit.append_system_out(suite, "\n".join(system_out_lines))
     return suite
 
 
@@ -563,6 +576,44 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
         "results": results,
         "invocations": [invocation],
     }
+
+    # D5 U5 R21a / KTD-1: runtime warnings ride in
+    # ``runs[].properties.runtime_warnings`` (SARIF ``propertyBag``
+    # is permitted on any object). Each entry has shape::
+    #
+    #     {
+    #         "level": "warning",
+    #         "message": {"text": "..."},
+    #         "properties": {
+    #             "category": "<one of the four categories>",
+    #             "subcategory": "runtime",
+    #         },
+    #     }
+    #
+    # The ``invocations[0].toolExecutionNotifications`` array
+    # (above) remains compile-stage diagnostics only — runtime
+    # warnings are intentionally a separate channel so SARIF
+    # consumers can filter ``properties.subcategory == "runtime"``
+    # without scanning the notifications stream. Per KTD-1, no
+    # ``descriptor.id`` is emitted — categorization travels via
+    # ``properties.category`` instead. The field is omitted when
+    # the report carries no runtime warnings (matches the
+    # ``toolExecutionNotifications`` pattern above and keeps the
+    # common clean-report SARIF document minimal).
+    if report.runtime_warnings:
+        run["properties"] = {
+            "runtime_warnings": [
+                {
+                    "level": "warning",
+                    "message": {"text": w.message},
+                    "properties": {
+                        "category": w.category,
+                        "subcategory": "runtime",
+                    },
+                }
+                for w in report.runtime_warnings
+            ],
+        }
 
     # default=str: same rationale as lint_json — preserve output when
     # a user-pack finding's params or message contains a
