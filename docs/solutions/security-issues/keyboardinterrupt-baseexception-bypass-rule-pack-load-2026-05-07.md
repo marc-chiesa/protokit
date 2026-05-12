@@ -483,3 +483,23 @@ for the standalone learning.
 - Fix commit: `1249b10` — D3 unit 3 ce:review follow-ups
   (safe_auto + approved gated). The `KeyboardInterrupt` arm landed
   in the safe_auto pass.
+- Mirror-image companion (added 2026-05-11): `docs/solutions/best-practices/deprecationwarning-poisons-except-exception-strict-warning-ci-2026-05-11.md`.
+  This learning addresses the case where broad `except Exception`
+  MISSES a dangerous `BaseException` subclass (KeyboardInterrupt,
+  SystemExit). The companion learning addresses the orthogonal case
+  on the same kind of defensive boundary: under strict-warning CI
+  (`-W error::DeprecationWarning`), a `DeprecationWarning` is
+  promoted to a raised exception, AND because `DeprecationWarning`
+  IS an `Exception` subclass via `Warning`, the broad
+  `except Exception` arm CATCHES it and mis-attributes the
+  upstream library deprecation as a local-input error. The
+  spatial-scope-audit checklist in this doc's "Symmetric surfaces"
+  section (every `Path.is_file()`, every `tomllib.loads`, every
+  `importlib.import_module`, every `pathspec.PathSpec.from_lines`)
+  is still correct as written, but should be extended with: at
+  each of those surfaces, also audit whether the wrapped library
+  call could emit a `DeprecationWarning` (or any `Warning`
+  subclass) that the broad catch would mis-route under strict-CI.
+  Both halves together — what `except Exception` MISSES AND what
+  it CATCHES under specific CI conditions — map the full failure
+  surface of defensive broad catches at library boundaries.

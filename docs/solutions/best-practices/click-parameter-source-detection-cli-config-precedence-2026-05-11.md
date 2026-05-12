@@ -1,6 +1,7 @@
 ---
 title: "Use Click's ParameterSource API to distinguish explicit user intent from flag defaults when merging CLI flags with a config file"
 date: 2026-05-11
+last_updated: 2026-05-11
 category: docs/solutions/best-practices
 module: protokit.schema.lint.cli
 problem_type: best_practice
@@ -12,6 +13,7 @@ applies_when:
   - "The intended precedence rule is CLI flag > environment variable > config file > built-in default, and the config-file value must win when the user did not explicitly supply the flag"
   - "A programmatic caller uses `click.Context(default_map={...})` to inject overrides (test harnesses, parent command groups, plugin wrappers)"
   - "A ce:review correctness or adversarial reviewer flags that config-file values are silently overridden by click defaults the user never typed"
+  - "The flag is declared with `multiple=True` — in that case the natural empty-tuple sentinel already disambiguates 'not supplied' from 'user supplied values'; ParameterSource detection is NOT needed (see 'When ParameterSource is NOT needed' section)"
 tags:
   - click
   - parameter-source
@@ -184,6 +186,112 @@ fact by comparing the resolved value against the known click default
 (`if value == "default"`) — `"default"` is a real valid value the
 user might type. The `ctx.get_parameter_source()` call is the only
 reliable signal.
+
+## When ParameterSource is NOT needed — natural sentinels
+
+Not every flag that feeds a config-merge layer requires
+`ctx.get_parameter_source()`. Two other flag shapes provide a clean
+unambiguous "user did not pass this flag" signal at the value level,
+making source detection redundant.
+
+### The three natural sentinel patterns
+
+**1. `default=None` flags** (e.g., D3 `--max-warnings`):
+
+`value is None` is the natural sentinel. `None` is not a valid
+user-typed value for these flags (Click rejects blank input for
+typed parameters), so `value is None` unambiguously means "user did
+not pass this flag." The config-merge layer can branch on
+`value is None` directly without consulting
+`ctx.get_parameter_source()`.
+
+```python
+# --max-warnings has default=None; no source detection needed.
+"max_warnings": max_warnings,  # None means "not supplied"
+```
+
+**2. `multiple=True` flags** (e.g., D5 U3 `--exclude`):
+
+`len(value) == 0` is the natural sentinel. Click's `multiple=True`
+delivers an empty tuple `()` when the flag is absent (its built-in
+default). Users CANNOT produce the empty tuple by typing
+`--exclude` — Click requires a value with the flag, and passing
+zero `--exclude` flags yields `()`. Therefore
+`len(exclude_patterns) == 0` (equivalently, `not exclude_patterns`)
+is a clean unambiguous "user did not pass this flag" signal that
+requires no source-detection machinery.
+
+```python
+# D5 U3 sentinel-disambiguation block (cli.py, around line 432):
+cli_exclude_value: tuple[str, ...] | None
+if no_exclude:
+    cli_exclude_value = ()       # --no-exclude: explicit clear-all sentinel
+elif exclude_patterns:
+    cli_exclude_value = exclude_patterns  # CLI patterns to append
+else:
+    cli_exclude_value = None     # natural empty-tuple → no CLI input, defer to pyproject
+```
+
+The explicit `no_exclude` boolean is still needed to disambiguate
+"user passed `--no-exclude`" (clear pyproject patterns too) from
+"user passed no `--exclude` flags" (natural empty tuple, defer to
+pyproject). The `multiple=True` sentinel handles the defer case;
+the boolean flag handles the clear-all case. Together they give
+three distinct states (`None`, `()`, non-empty tuple) that map
+cleanly onto the three-way `from_dict` merge contract.
+
+**3. Flags with non-`None` meaningful defaults** (e.g., `--profile NAME`
+defaulting to `"default"`, `--format NAME` defaulting to `"human"`):
+
+No natural value-level sentinel exists. The default value
+(`"default"`, `"human"`) is a valid user-typed value — the user
+could type `--profile default` or `--format human` explicitly.
+Value-level comparison (`if value == "default"`) cannot distinguish
+"user typed the default" from "Click applied the default."
+`ctx.get_parameter_source()` is the only reliable signal. This is
+the case the rest of this document describes.
+
+### Quick decision rule
+
+When designing a new flag that will feed a config-merge layer:
+
+```
+flag has default=None?
+  └─ YES → use `value is None` sentinel; no ParameterSource check needed
+
+flag uses multiple=True?
+  └─ YES → use `not value` / `len(value) == 0` sentinel; no ParameterSource check needed
+         → add an explicit boolean --no-<flag> if "user wants to clear pyproject"
+           is distinct from "user did not pass the flag"
+
+flag has a non-None meaningful default AND a competing config-file source?
+  └─ YES → use ctx.get_parameter_source(); see Step 1-3 above
+```
+
+### Why future reviewers might flag the absence of ParameterSource for `--exclude` (and why they'd be wrong)
+
+The D5 U3 implementation of `--exclude` deliberately does NOT call
+`ctx.get_parameter_source("exclude_patterns")`. A reviewer familiar
+with the ParameterSource discipline for `--profile` and `--format`
+might flag this as an oversight. It is not: `multiple=True` provides
+a cleaner sentinel that avoids the `ctx` dependency in the CLI
+callback entirely. The `no_exclude` boolean separately handles the
+third state (clear-all) that the `multiple=True` default-empty
+sentinel cannot express. The absence of ParameterSource detection
+for `--exclude` is a deliberate design choice, not a gap.
+
+**Session-history context (session history).** The
+`multiple=True` empty-tuple trap was first surfaced at D5 U2
+ce:review as forward risk **RR-U3-A**: "`multiple=True` exclude
+flag default = `()` collides with `--no-exclude` sentinel."
+RR-U3-A presented two resolution options: `default=None`-style
+sentinel discipline OR `ctx.get_parameter_source()` detection.
+U3 chose the natural-sentinel route via the `no_exclude` boolean,
+closing the forward risk without introducing ParameterSource
+machinery for a flag that didn't need it. The U2 ParameterSource
+learning was authored before U3 shipped — the `multiple=True`
+case was an actively deferred problem at U2 ce:compound time and
+the proper place to document its resolution is here.
 
 ## When to Apply
 
