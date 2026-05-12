@@ -347,6 +347,15 @@ reviewing defensive broad catches:
 
 ## Related Learnings
 
+- [`circular-import-type-checking-cycle-break-2026-05-11.md`](circular-import-type-checking-cycle-break-2026-05-11.md)
+  — sibling "discipline near except arms" learning. Both cover an
+  unexpected exception class escaping a containment `except` arm
+  with wrong attribution. This doc: `DeprecationWarning` promoted
+  to exception under strict-warning CI. The sibling: `ImportError`
+  raised by a lazy import inside the except arm itself, silently
+  dropping the original exception. Different mechanisms, same
+  failure-mode family of "containment arm assumes the family it
+  caught is the only one that can fire mid-cleanup."
 - [`keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`](../security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md)
   — sibling pattern at the same `except Exception` boundary. That
   doc covers what broad catches MISS (BaseException-not-Exception);

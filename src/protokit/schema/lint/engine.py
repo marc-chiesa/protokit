@@ -39,13 +39,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from protokit._cli_utils import _scrub_exc_message
-
-# Note: ``_safe_for_stderr`` from ``protokit.schema.lint._cli_utils``
-# is imported lazily inside the ``rule_exception`` handler below.
-# Eager import would create a circular dependency: ``_cli_utils``
-# imports ``engine.LintEngine`` for type-annotating
-# ``_load_user_rule_pack``. The lazy import resolves cleanly because
-# by the time a rule actually raises, both modules are fully loaded.
+from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint.model import (
     SEVERITY_RANK,
     DuplicateRuleError,
@@ -498,35 +492,23 @@ class LintEngine:
         try:
             spec.fn(ctx)
         except _RULE_EXCEPTION_TUPLE as exc:
-            # D5 U4 Q16 content-safety constraint: the message field
-            # must NOT include raw exception tracebacks or filesystem
-            # paths. Three layers of sanitization:
+            # Q16 content-safety: the message field must NOT include
+            # raw exception tracebacks or filesystem paths. Two
+            # layers run on every rule_exception emit:
             #
-            # 1. ``_scrub_exc_message`` (from ``protokit._cli_utils``)
-            #    strips the filename from ``OSError`` subclasses
-            #    (which embed ``filename`` / ``filename2`` into their
-            #    str()), emitting only ``[Errno N LABEL] strerror``
-            #    instead. Prevents path leaks for the common case of
-            #    a rule that touches the filesystem and fails.
-            # 2. ``_safe_for_stderr`` collapses all ASCII control
-            #    characters (newlines, ANSI escapes, etc.) to spaces
-            #    so a multi-line exception message cannot forge fake
+            # 1. ``_scrub_exc_message`` strips the filename from
+            #    ``OSError`` subclasses (defense-in-depth for a
+            #    future widening of ``_RULE_EXCEPTION_TUPLE``;
+            #    OSError is not in the tuple today).
+            # 2. ``_safe_for_stderr`` (KTD-9) collapses all ASCII
+            #    control characters to spaces so a multi-line
+            #    exception message cannot forge fake
             #    ``warning[lint-runtime]:`` or ``error[lint-CODE]:``
-            #    lines in any downstream stderr surface (per KTD-9).
-            # 3. Empty-string fallback to ``repr(exc)`` preserves the
-            #    pre-U4 behavior for exceptions whose ``str()`` is
-            #    empty — the class name + parenthesized args still
-            #    surface for diagnosis.
+            #    lines in downstream stderr surfaces.
             #
-            # The ``exception_type`` field still carries the precise
-            # class name (e.g., ``"FileNotFoundError"``) for
-            # programmatic filtering; the ``message`` field is the
-            # human-readable summary.
-            # Lazy import to break the engine ↔ _cli_utils cycle
-            # (see note near the top-of-module import block).
-            from protokit.schema.lint._cli_utils import (  # noqa: PLC0415
-                _safe_for_stderr,
-            )
+            # ``repr(exc)`` fallback preserves the pre-U4 behavior
+            # for exceptions whose ``str()`` is empty. ``exception_type``
+            # carries the precise class name for programmatic filtering.
             scrubbed = _scrub_exc_message(exc) or repr(exc)
             safe_message = _safe_for_stderr(scrubbed)
             self._runtime_warnings.append(

@@ -83,6 +83,18 @@ ConfigSource = Literal["cli", "pyproject", "profile", "default"]
 # - "default":   No exclude configured (resolved.exclude is the empty tuple).
 ExcludeSource = Literal["cli", "pyproject", "both", "default"]
 
+# Source-attribution descriptors for the R20 ``all_files_excluded``
+# message. ``"default"`` is excluded from the mapping because the
+# ``__post_init__`` invariant on ``ResolvedLintConfig`` rejects
+# ``exclude_source == "default"`` when ``exclude`` is non-empty, so
+# the descriptor is never needed at the emit site.
+_EXCLUDE_SOURCE_DESC: dict[ExcludeSource, str] = {
+    "cli": "--exclude",
+    "pyproject": "[tool.protokit.lint] exclude",
+    "both": "--exclude and [tool.protokit.lint] exclude",
+}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -669,6 +681,23 @@ class ResolvedLintConfig:
         # mutations on it would leak through to the dataclass.
         object.__setattr__(self, "profile", tuple(self.profile))
         object.__setattr__(self, "exclude", tuple(self.exclude))
+        # Construction-time invariant: when ``exclude`` is non-empty,
+        # ``exclude_source`` MUST be one of "cli" / "pyproject" / "both"
+        # so ``all_files_excluded_message`` can attribute the patterns.
+        # The default value ``"default"`` is only valid for an empty
+        # ``exclude`` tuple. Catches programmatic misuse where a caller
+        # constructs ``ResolvedLintConfig(exclude=(...))`` without
+        # specifying ``exclude_source``, or where
+        # ``dataclasses.replace(resolved, exclude=new)`` is used without
+        # also updating ``exclude_source``. Without this guard, the
+        # R20-attributed message silently degrades to an unattributed
+        # fallback.
+        if self.exclude and self.exclude_source == "default":
+            raise ValueError(
+                "ResolvedLintConfig.exclude_source must be set to "
+                "'cli', 'pyproject', or 'both' when exclude is "
+                "non-empty (got 'default').",
+            )
 
     def relaxation_message(
         self, composed_floor: LintSeverity,
@@ -758,12 +787,20 @@ class ResolvedLintConfig:
           ``all N input file(s) excluded by [tool.protokit.lint]
           exclude patterns: vendor/**``
         - **Both** (``exclude_source == "both"``):
-          ``all N input file(s) excluded by --exclude + [tool.protokit.lint]
-          exclude patterns: vendor/**, third_party/**``
+          ``all N input file(s) excluded by --exclude and
+          [tool.protokit.lint] exclude patterns:
+          vendor/**, third_party/**``
 
         Per KTD-9, individual patterns are passed through
         ``_safe_for_stderr`` before joining so a pattern with
         embedded control characters cannot forge a fake stderr line.
+
+        The ``exclude_source == "default"`` case is rejected at
+        construction time by ``__post_init__`` when ``exclude`` is
+        non-empty, so this method's branches are exhaustive for any
+        ``ResolvedLintConfig`` that can reach the
+        ``all_files_excluded`` emit site (which is guarded by
+        ``if resolved.exclude:`` in the CLI).
 
         Args:
             file_count: The number of input files that were excluded
@@ -775,18 +812,7 @@ class ResolvedLintConfig:
         safe_patterns = ", ".join(
             _safe_for_stderr(p) for p in self.exclude
         )
-        if self.exclude_source == "cli":
-            source_desc = "--exclude"
-        elif self.exclude_source == "pyproject":
-            source_desc = "[tool.protokit.lint] exclude"
-        elif self.exclude_source == "both":
-            source_desc = "--exclude + [tool.protokit.lint] exclude"
-        else:
-            # "default" — exclude_source should be one of cli/pyproject/
-            # both at the all_files_excluded emit site (the CLI block
-            # guards on `if resolved.exclude:` before computing this
-            # message). Fall back to a neutral source descriptor.
-            source_desc = "exclude"
+        source_desc = _EXCLUDE_SOURCE_DESC[self.exclude_source]
         return (
             f"all {file_count} input file(s) excluded by {source_desc} "
             f"patterns: {safe_patterns}"
@@ -911,12 +937,13 @@ class ResolvedLintConfig:
             min_sev_source = "pyproject"
         else:
             resolved_min_sev = None
-            # TODO(D5 U4): The "profile" source state in ConfigSource is
-            # reserved for U4's R20 emission code, which may transition
-            # "default" to "profile" when emitting the relaxation
-            # message and the composed profile's intrinsic floor is in
-            # effect. U2 always reports "default" here; U4 owns the
-            # transition.
+            # ``"profile"`` source state in ``ConfigSource`` is reserved
+            # for future emission code that may want to attribute a
+            # message to the composed profile's intrinsic floor (rather
+            # than to a CLI/pyproject override). U4 shipped the R20
+            # relaxation message without using the ``"profile"`` source
+            # — when no override is set, ``relaxation_message`` returns
+            # ``None``. ``"default"`` is correct here.
             min_sev_source = "default"
 
         # max_warnings: CLI replaces pyproject.

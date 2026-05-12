@@ -212,5 +212,6 @@ Tuples are immutable end-to-end. Even if a future contributor drops the `__post_
 
 ## Related
 
+- [`frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md`](frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md) — sibling `__post_init__` discipline for *semantic* integrity (paired-field invariants between a payload and its source discriminator). This learning covers *structural* integrity (snapshotting mutable container inputs). Both belong on the same hook and stack cleanly: snapshot first, then invariant-check. Together they cover the menu of `__post_init__` duties on a frozen dataclass with source-attributed fields.
 - `docs/solutions/best-practices/pytest-static-analysis-gate-ratchet-2026-05-02.md` — the static-analysis gate that catches mypy strict-mode regressions; relevant because `__post_init__` uses `object.__setattr__` which mypy strict has its own opinions about (use a local for narrowing, as shown above).
 - `docs/solutions/test-failures/pytestmark-does-not-guard-module-top-imports-2026-05-02.md` — companion learning from the same review pass; both are "looks-like-it-works-but-actually-doesn't" Python gotchas that static analysis won't catch.

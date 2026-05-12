@@ -149,19 +149,27 @@ class TestMinSeverityOverride:
         The canary fires WARNING-severity findings on bad_naming.
         With --min-severity=error, those are filtered.
         """
+        import json
+
         result = CliRunner().invoke(
             lint_main,
             [
                 "--min-severity", "error",
+                "--format", "json",
                 str(bad_naming_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        # Findings filtered: stdout is empty (or has zero findings).
-        assert "BadCamelCase" not in result.stdout
-        assert "with__double" not in result.stdout
-        # No relaxation breadcrumb (override is more strict, not lenient).
-        assert "relaxes profile floor" not in result.stderr
+        parsed = json.loads(result.stdout)
+        # Findings filtered: zero findings render.
+        assert parsed["findings"] == []
+        # Override is stricter than the WARNING floor, so the
+        # structured relaxation warning must NOT fire.
+        relax = [
+            w for w in parsed["runtime_warnings"]
+            if w["category"] == "min_severity_relaxed"
+        ]
+        assert relax == [], parsed["runtime_warnings"]
 
     def test_min_severity_info_emits_relaxation_warning(
         self, bad_naming_descriptor_set: Path,
@@ -209,22 +217,36 @@ class TestMinSeverityOverride:
         # Findings still rendered (warnings pass the info floor):
         assert len(parsed["findings"]) > 0
 
-    def test_min_severity_warning_no_breadcrumb_no_change(
+    def test_min_severity_warning_no_relaxation_when_matching_floor(
         self, bad_naming_descriptor_set: Path,
     ) -> None:
-        """--min-severity=warning matches composed default — no breadcrumb."""
+        """--min-severity=warning matches composed default — no relaxation.
+
+        T-U4-03 edge case: override equals the floor exactly (not
+        below). ``relaxation_message`` returns ``None`` for this case,
+        so no structured warning is appended.
+        """
+        import json
+
         result = CliRunner().invoke(
             lint_main,
             [
                 "--min-severity", "warning",
+                "--format", "json",
                 str(bad_naming_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        # No relaxation (override equals the composed floor, not below).
-        assert "relaxes profile floor" not in result.stderr
+        parsed = json.loads(result.stdout)
+        # Override == floor, no relaxation: structured warning absent.
+        relax = [
+            w for w in parsed["runtime_warnings"]
+            if w["category"] == "min_severity_relaxed"
+        ]
+        assert relax == [], parsed["runtime_warnings"]
         # Findings still rendered (warning passes the warning floor):
-        assert "BadCamelCase" in result.stdout
+        finding_messages = [f["message"] for f in parsed["findings"]]
+        assert any("BadCamelCase" in m for m in finding_messages)
 
     def test_min_severity_invalid_value_is_click_choice_error(
         self, clean_descriptor_set: Path,

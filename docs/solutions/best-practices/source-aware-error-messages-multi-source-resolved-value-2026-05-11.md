@@ -299,6 +299,15 @@ simultaneously (the worst-of-both case).
 
 ## Related Learnings
 
+- [`frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md`](./frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md)
+  — upstream guard pairing. Where this doc addresses the runtime
+  *message-emission* contract (the message must name the actual
+  source), the paired doc addresses the *carrier-construction*
+  contract (the dataclass carrying the value-plus-source pair must
+  reject states where the source defaults to "none" while the value
+  is set). The two compose into a complete pipeline:
+  construction-time rejection of contradictory pairs +
+  emit-time source-aware branching.
 - [`shared-error-helper-source-label-caller-attribution-2026-05-11.md`](./shared-error-helper-source-label-caller-attribution-2026-05-11.md)
   — adjacent discipline at a different structural shape. That doc:
   shared helper called from multiple callers, fix is `source_label`

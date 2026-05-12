@@ -15,7 +15,7 @@ Covers:
   warnings now flow through formatter dispatch only).
 - D5 U4 source-aware messages: the all_files_excluded message names
   ``--exclude`` (CLI source), ``[tool.protokit.lint] exclude``
-  (pyproject source), or ``--exclude + [tool.protokit.lint] exclude``
+  (pyproject source), or ``--exclude and [tool.protokit.lint] exclude``
   (both) per the R20 attribution contract.
 
 The corresponding ``--no-exclude`` flag (clear-all sentinel + advisory
@@ -24,29 +24,13 @@ when combined with ``--exclude``) lives in ``test_no_exclude.py``.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 from click.testing import CliRunner
 
 from protokit.schema.lint.cli import main as lint_main
-
-
-def _runtime_warnings_from_json(stdout: str) -> list[dict[str, Any]]:
-    """Parse `--format=json` stdout and return its runtime_warnings list.
-
-    D5 U4 removed the previous `warning[lint-runtime]:` stderr loop;
-    structured warnings now flow through formatter dispatch only.
-    Tests that previously asserted on the stderr loop now invoke with
-    ``--format=json`` and inspect ``parsed['runtime_warnings']``.
-    """
-    parsed = json.loads(stdout)
-    warnings = parsed.get("runtime_warnings", [])
-    assert isinstance(warnings, list)
-    return warnings
-
+from tests.schema.lint.cli._helpers import runtime_warnings_from_json
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -138,7 +122,7 @@ class TestCliExcludeHappyPath:
             ],
         )
         assert result.exit_code == 0, result.output
-        warnings = _runtime_warnings_from_json(result.stdout)
+        warnings = runtime_warnings_from_json(result.stdout)
         categories = [w["category"] for w in warnings]
         assert "all_files_excluded" in categories
 
@@ -210,7 +194,7 @@ class TestCliAppendsToPyproject:
         all_files_excluded fires.
 
         D5 U4 F-03 fold-in: the message names BOTH sources
-        ("--exclude + [tool.protokit.lint] exclude") so the user
+        ("--exclude and [tool.protokit.lint] exclude") so the user
         sees that patterns from both layers contributed.
         """
         pyproject = tmp_path / "pyproject.toml"
@@ -227,13 +211,13 @@ class TestCliAppendsToPyproject:
             ],
         )
         assert result.exit_code == 0, result.output
-        warnings = _runtime_warnings_from_json(result.stdout)
+        warnings = runtime_warnings_from_json(result.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
         # F-03: source-aware message names BOTH CLI and pyproject.
         msg = afe[0]["message"]
         assert (
-            "--exclude + [tool.protokit.lint] exclude" in msg
+            "--exclude and [tool.protokit.lint] exclude" in msg
         ), msg
         assert afe[0]["rule_id"] is None  # BREAKING R18 contract
 
@@ -265,7 +249,7 @@ class TestAllFilesExcludedWarning:
             ],
         )
         assert result.exit_code == 0, result.output
-        warnings = _runtime_warnings_from_json(result.stdout)
+        warnings = runtime_warnings_from_json(result.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
         msg = afe[0]["message"]
@@ -296,7 +280,7 @@ class TestAllFilesExcludedWarning:
             ],
         )
         assert result.exit_code == 0, result.output
-        warnings = _runtime_warnings_from_json(result.stdout)
+        warnings = runtime_warnings_from_json(result.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
         assert "2 input file(s)" in afe[0]["message"]
@@ -345,3 +329,58 @@ class TestExcludeErrorPaths:
         )
         assert result.exit_code == 0, result.output
         assert "all_files_excluded" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# R21 negative regression test (T-U4-06, 4-way reviewer convergence)
+# ---------------------------------------------------------------------------
+
+
+class TestR21StderrLoopAbsent:
+    """D5 U4 R21 removed the ``warning[lint-runtime]:`` stderr loop.
+    Until D5 U5 adds the human-format post-format hook, the default
+    ``--format=human`` output must produce zero ``warning[lint-runtime]:``
+    lines on stderr even when ``runtime_warnings`` are present.
+
+    Without this assertion, accidental re-introduction of the loop
+    (or a partial revert) would silently re-emit the legacy prefix
+    and the structured-only contract would regress unnoticed.
+    """
+
+    def test_human_format_emits_no_warning_lint_runtime_prefix(
+        self, multi_file_descriptor_set: Path,
+    ) -> None:
+        # ``--exclude '**/*'`` guarantees an ``all_files_excluded``
+        # runtime warning exists, so we are checking absence on a run
+        # that DID produce a runtime warning (not a no-op run).
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--exclude", "**/*",
+                # Default --format=human
+                str(multi_file_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "warning[lint-runtime]:" not in result.stderr, (
+            "R21 regression: the stderr loop was re-introduced. "
+            f"stderr was:\n{result.stderr}"
+        )
+
+    def test_human_format_emits_no_min_severity_relaxed_breadcrumb(
+        self, multi_file_descriptor_set: Path,
+    ) -> None:
+        # The U2 ``protokit lint: ... relaxes profile floor ...``
+        # breadcrumb was also removed in U4. Pin that absence.
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--min-severity", "info",
+                str(multi_file_descriptor_set),
+            ],
+        )
+        assert "protokit lint:" not in result.stderr or (
+            "relaxes profile floor" not in result.stderr
+        )

@@ -28,8 +28,8 @@ from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 
 if TYPE_CHECKING:
     from protokit.formatters import Formatter, FormatterContext
+    from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.decorator import get_lint_spec
-from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import DuplicateRuleError
 
 # ---------------------------------------------------------------------------
@@ -51,9 +51,15 @@ from protokit.schema.lint.model import DuplicateRuleError
 #: Prefix family (stable, closed set per delivery):
 #:   info[lint-compile]:    backend info/warning diagnostics in --proto mode
 #:   warning[lint-compile]: backend warning diagnostics in --proto mode
-#:   warning[lint-runtime]: engine runtime warnings (rule_exception, unloaded_rule)
 #:   warning[lint-cli]:     CLI-layer advisories (e.g. ignored flags)
 #:   error[lint-CODE]:      exit-2 paths; CODE must be in this tuple
+#:
+#: Note: the ``warning[lint-runtime]:`` stderr prefix was removed in
+#: D5 U4 (R21). Runtime warnings (``rule_exception``,
+#: ``unloaded_rule``, ``min_severity_relaxed``, ``all_files_excluded``)
+#: are carried in ``LintReport.runtime_warnings`` and surface only
+#: via the machine formatters (``--format=json`` / ``--format=junit``
+#: / ``--format=sarif``) until D5 U5 adds the human-format hook.
 _LINT_ERROR_CODES: tuple[str, ...] = (
     "no-rules",
     "unknown-profile",

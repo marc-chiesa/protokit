@@ -21,6 +21,8 @@ recorded `LintRuntimeWarning.message` has been sanitized.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from protokit.schema.lint.decorator import lint_rule
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
@@ -29,12 +31,15 @@ from protokit.schema.lint.model import (
     LintSeverity,
 )
 
+if TYPE_CHECKING:
+    from protokit.schema.compile import CompileResult
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _build_minimal_compile_result() -> object:
+def _build_minimal_compile_result() -> CompileResult:
     """Build a CompileResult with one trivial proto file for the engine
     walk. The actual file contents don't matter — we just need a file
     that the engine will walk so the rule callable fires.
@@ -237,3 +242,59 @@ class TestEmptyMessageFallback:
         # The exception class name is still surfaced (so failure is
         # diagnosable):
         assert "ValueError" in warnings[0].message
+
+
+# ---------------------------------------------------------------------------
+# Real traceback handling (T-U4-08)
+# ---------------------------------------------------------------------------
+
+
+class TestRealTracebackContentSafety:
+    """T-U4-08: a real ``str(exc)`` carrying a multi-line message that
+    looks like a traceback is sanitised end-to-end without losing
+    diagnostic content. Pins ``_safe_for_stderr`` behaviour on
+    realistic exception strings, not just synthetic control chars.
+    """
+
+    def test_multi_line_diagnostic_string_collapsed_to_one_line(
+        self,
+    ) -> None:
+        @lint_rule(
+            rule_id="t/raises-realistic",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FILE,
+            message_template="never fires",
+        )
+        def _rule(ctx: object) -> None:  # noqa: ANN001
+            # Multi-line diagnostic that a user-pack might construct
+            # by interpolating a traceback into ValueError.
+            raise ValueError(
+                "downstream call failed:\n"
+                "Traceback (most recent call last):\n"
+                '  File "/secret/path/to/user_pack.py", line 42\n'
+                "ValueError: actual failure",
+            )
+
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack_module(_rule))
+        report = engine.run(
+            _build_minimal_compile_result(),
+            profile=LintProfile(
+                name="default",
+                rule_ids=frozenset({"t/raises-realistic"}),
+            ),
+        )
+        warnings = [
+            w for w in report.runtime_warnings
+            if w.category == "rule_exception"
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].message
+        # The message is one line — no embedded newlines that could
+        # forge a fake ``warning[lint-runtime]:`` line if downstream
+        # tooling later prints the message to stderr.
+        assert "\n" not in msg
+        # Diagnostic content survives (path, exception class label):
+        assert "actual failure" in msg
+        assert "downstream call failed" in msg

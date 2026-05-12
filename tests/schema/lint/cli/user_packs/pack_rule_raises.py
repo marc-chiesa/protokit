@@ -1,10 +1,12 @@
 """Synthetic user pack — rule raises ValueError at check time.
 
 Used by runtime_warnings emission tests: the engine catches the
-exception (per its narrow-catch tuple), appends a
-``LintRuntimeWarning(category="rule_exception")`` to the report,
-and the CLI surfaces it as ``warning[lint-runtime]: rule_exception:
-...`` on stderr.
+exception (per its narrow-catch tuple) and appends a
+``LintRuntimeWarning(category="rule_exception")`` to
+``LintReport.runtime_warnings``. The warning surfaces via the
+machine formatters (``--format=json`` / ``--format=junit`` /
+``--format=sarif``); D5 U4 removed the legacy stderr emission and
+D5 U5 will add the ``--format=human`` hook.
 """
 
 from __future__ import annotations

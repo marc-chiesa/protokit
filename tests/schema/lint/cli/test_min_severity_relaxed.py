@@ -25,47 +25,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
 
 from protokit.schema.lint.cli import main as lint_main
+from tests.schema.lint.cli._helpers import first_warning_by_category
 
 
+# The session-scoped ``bad_naming_descriptor_set`` fixture from
+# ``tests/schema/lint/cli/conftest.py`` aliased to ``descriptor_set``
+# at module scope to keep test methods terse.
 @pytest.fixture
-def descriptor_set(tmp_path: Path) -> Path:
-    """Single-file descriptor set with a bad-naming finding.
-
-    The naming canary's snake-case-fields rule reports WARNING-severity
-    findings on `badField` — we use this so the min_severity filter
-    has something to act on.
-    """
-    from google.protobuf import descriptor_pb2
-
-    fds = descriptor_pb2.FileDescriptorSet()
-    fd = fds.file.add()
-    fd.name = "test.proto"
-    fd.syntax = "proto3"
-    fd.package = "test"
-    msg = fd.message_type.add()
-    msg.name = "M"
-    fld = msg.field.add()
-    fld.name = "badField"
-    fld.number = 1
-    fld.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-
-    path = tmp_path / "test.descriptor_set"
-    path.write_bytes(fds.SerializeToString())
-    return path
+def descriptor_set(bad_naming_descriptor_set: Path) -> Path:
+    return bad_naming_descriptor_set
 
 
-def _relaxation_warning(stdout: str) -> dict | None:
-    """Return the first min_severity_relaxed warning, or None."""
-    parsed = json.loads(stdout)
-    for w in parsed["runtime_warnings"]:
-        if w["category"] == "min_severity_relaxed":
-            return w
-    return None
+def _relaxation_warning(stdout: str) -> dict[str, Any] | None:
+    return first_warning_by_category(stdout, "min_severity_relaxed")
 
 
 # ---------------------------------------------------------------------------

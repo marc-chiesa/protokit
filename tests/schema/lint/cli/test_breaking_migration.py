@@ -33,24 +33,9 @@ from protokit.schema.lint.cli import main as lint_main
 
 
 @pytest.fixture
-def descriptor_set(tmp_path: Path) -> Path:
-    from google.protobuf import descriptor_pb2
-
-    fds = descriptor_pb2.FileDescriptorSet()
-    fd = fds.file.add()
-    fd.name = "test.proto"
-    fd.syntax = "proto3"
-    fd.package = "test"
-    msg = fd.message_type.add()
-    msg.name = "M"
-    fld = msg.field.add()
-    fld.name = "badField"
-    fld.number = 1
-    fld.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-
-    path = tmp_path / "test.descriptor_set"
-    path.write_bytes(fds.SerializeToString())
-    return path
+def descriptor_set(bad_naming_descriptor_set: Path) -> Path:
+    """Alias the session-scoped conftest fixture for terser test signatures."""
+    return bad_naming_descriptor_set
 
 
 # ---------------------------------------------------------------------------
@@ -124,34 +109,17 @@ class TestCliEmittedCategoriesProduceJsonNull:
 
 class TestEngineEmittedCategoriesRetainStringRuleId:
     def test_rule_exception_rule_id_is_non_null_string(
-        self,
-        tmp_path: Path,
+        self, descriptor_set: Path,
     ) -> None:
         """`rule_exception` warning: the engine populates rule_id with
         the offending rule's id (non-`None` string). The R18 widening
         was additive — engine-emitted categories did NOT change emit
         behavior, only the type annotation.
 
-        The `pack_rule_raises` fixture's rule fires on FIELD elements,
-        so the descriptor needs at least one message with a field for
-        the rule to fire and produce the rule_exception warning.
+        The `pack_rule_raises` fixture's rule fires on FIELD elements;
+        ``bad_naming_descriptor_set`` carries three fields, so the
+        rule fires multiple times. The assertion only requires one.
         """
-        from google.protobuf import descriptor_pb2
-
-        fds = descriptor_pb2.FileDescriptorSet()
-        fd = fds.file.add()
-        fd.name = "test.proto"
-        fd.syntax = "proto3"
-        fd.package = "test"
-        msg = fd.message_type.add()
-        msg.name = "M"
-        fld = msg.field.add()
-        fld.name = "anyField"
-        fld.number = 1
-        fld.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
-        ds = tmp_path / "test.descriptor_set"
-        ds.write_bytes(fds.SerializeToString())
-
         result = CliRunner().invoke(
             lint_main,
             [
@@ -159,7 +127,7 @@ class TestEngineEmittedCategoriesRetainStringRuleId:
                 "--rule-pack",
                 "tests.schema.lint.cli.user_packs.pack_rule_raises",
                 "--format", "json",
-                str(ds),
+                str(descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
@@ -168,10 +136,7 @@ class TestEngineEmittedCategoriesRetainStringRuleId:
             w for w in parsed["runtime_warnings"]
             if w["category"] == "rule_exception"
         ]
-        # If the rule pack has the rule registered, at least one
-        # rule_exception warning fires:
         assert len(rule_exc) >= 1, parsed["runtime_warnings"]
-        # rule_id is a non-None, non-empty string:
         for w in rule_exc:
             assert isinstance(w["rule_id"], str)
             assert w["rule_id"] != ""

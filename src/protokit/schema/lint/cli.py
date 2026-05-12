@@ -26,8 +26,10 @@ U3 (this unit) adds:
     2. ``--profile NAME`` (default ``"default"``) — select which
        profile each pack contributes to the resolved set.
     3. ``--min-severity LEVEL`` — override the composed profile's
-       severity floor; emits a stderr breadcrumb when the override
-       is more lenient than the composed floor.
+       severity floor. When the override is more lenient than the
+       composed floor, a structured ``min_severity_relaxed`` runtime
+       warning is emitted in ``report.runtime_warnings`` (D5 U4
+       replaces the U3 stderr breadcrumb with structured emission).
     4. R9 zero-rules loud failure (``error[lint-no-rules]:``).
     5. R11 unknown-profile loud failure (``error[lint-unknown-profile]:``)
        with per-pack introspection of declared profile names.
@@ -35,9 +37,12 @@ U3 (this unit) adds:
        ``len(loaded_packs) >= 2`` (single-pack default emits no line
        per origin R25 revised).
     7. Runtime-warning emission — engine warnings (``rule_exception``,
-       ``unloaded_rule``) surface as ``warning[lint-runtime]:`` lines
-       on stderr after ``engine.run`` returns. Closes the agent-native
-       silent-drop concern from U2's ce:review.
+       ``unloaded_rule``) are captured in ``report.runtime_warnings``
+       and rendered by formatter dispatch. D5 U4 removed the
+       ``warning[lint-runtime]:`` stderr loop; warnings now surface
+       via the machine formatters (``--format=json`` /
+       ``--format=junit`` / ``--format=sarif``). D5 U5 adds a
+       post-format hook so ``--format=human`` re-emits to stderr.
     8. Non-error compile diagnostics in ``--proto`` mode — info /
        warning level diagnostics from the protoxy/protoc backend
        surface to stderr alongside (or instead of) the
@@ -45,9 +50,7 @@ U3 (this unit) adds:
 
 U4a wires the R20 exit-code ladder + ``--max-warnings`` /
 ``--statistics`` / ``--quiet`` / ``--format``. U4b adds the three
-machine formatters. Until U4a lands, exit code is 0 unconditionally
-on successful pipeline runs (the KD-10 invariant requires only
-"never 2 from internal CLI errors", which holds).
+machine formatters.
 """
 
 from __future__ import annotations
@@ -213,9 +216,10 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
     type=click.Choice(["info", "warning", "error"], case_sensitive=False),
     default=None,
     help="Override the composed profile's severity floor. Findings "
-         "below this severity are filtered. Emits a stderr "
-         "advisory line when the override is more lenient than the "
-         "composed floor.",
+         "below this severity are filtered. When the override is "
+         "more lenient than the composed profile floor, a structured "
+         "min_severity_relaxed runtime warning is emitted in "
+         "report.runtime_warnings (inspect with --format=json).",
 )
 @click.option(
     "--format",
@@ -784,13 +788,14 @@ def _main_impl(
             ),
         )
 
-    # D5 U4 R21: the stderr loop that mirrored runtime_warnings as
-    # `warning[lint-runtime]:` lines was REMOVED here. The structured
-    # warnings now flow through formatter dispatch only. D5 U5 adds a
-    # CLI-side post-format hook for `--format=human` that re-emits
-    # runtime_warnings to stderr; until U5 ships, human-format
-    # consumers see runtime warnings only via the machine formatters
-    # (`--format=json` / `--format=junit` / `--format=sarif`).
+    # Runtime warnings flow through formatter dispatch only. The
+    # ``warning[lint-runtime]:`` stderr loop was removed in D5 U4
+    # (R21). D5 U5 will add a CLI-side post-format hook so
+    # ``--format=human`` re-emits ``runtime_warnings`` to stderr;
+    # until then, human-format consumers see runtime warnings only
+    # via ``--format=json`` / ``--format=junit`` / ``--format=sarif``.
+    # See CHANGELOG ``BREAKING (D5 U4 — stderr wire format)`` for
+    # the migration recipe.
 
     try:
         formatter = get_formatter(resolved.format, FormatterKind.LINT_REPORT)
