@@ -55,9 +55,13 @@ else:
     import tomli as tomllib
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr, error_exit_with_code
-from protokit.schema.lint.model import LintSeverity
+from protokit.schema.lint.model import SEVERITY_RANK, LintSeverity
 
 # Per-key source attribution for ResolvedLintConfig (R20 message branches).
+# Used for `min_severity_source`: cli vs pyproject is mutually exclusive
+# (CLI replaces pyproject); a "both" message branch is encoded by
+# `min_severity_source="cli"` + `pyproject_min_severity is not None`.
+#
 # - "cli":       CLI flag (--profile/--min-severity/etc) explicitly provided.
 # - "pyproject": Pyproject set this key; CLI did not override.
 # - "profile":   Neither CLI nor pyproject set this key; the composed
@@ -66,6 +70,18 @@ from protokit.schema.lint.model import LintSeverity
 #                is None.
 # - "default":   Neither CLI nor pyproject nor profile set this key.
 ConfigSource = Literal["cli", "pyproject", "profile", "default"]
+
+# Exclude-specific source attribution (R20 message branches for
+# `all_files_excluded`). Unlike `min_severity` (where CLI replaces
+# pyproject), `exclude` APPENDS CLI patterns to pyproject patterns,
+# so the "both" case is structurally distinct — both sources
+# CONTRIBUTE patterns rather than one overriding the other.
+#
+# - "cli":       CLI `--exclude` patterns only (no pyproject exclude).
+# - "pyproject": Pyproject `exclude` patterns only (no CLI flags).
+# - "both":      Both CLI AND pyproject contributed patterns.
+# - "default":   No exclude configured (resolved.exclude is the empty tuple).
+ExcludeSource = Literal["cli", "pyproject", "both", "default"]
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -643,6 +659,7 @@ class ResolvedLintConfig:
     format: str = "human"
     min_severity_source: ConfigSource = "default"
     pyproject_min_severity: LintSeverity | None = None
+    exclude_source: ExcludeSource = "default"
 
     def __post_init__(self) -> None:
         # Tuple-snapshot list inputs per the
@@ -652,6 +669,128 @@ class ResolvedLintConfig:
         # mutations on it would leak through to the dataclass.
         object.__setattr__(self, "profile", tuple(self.profile))
         object.__setattr__(self, "exclude", tuple(self.exclude))
+
+    def relaxation_message(
+        self, composed_floor: LintSeverity,
+    ) -> str | None:
+        """Return the R20 relaxation message, or ``None`` when no relaxation.
+
+        Three R20 message templates pinned at the ``ResolvedLintConfig``
+        boundary per the
+        ``cross-format-enum-string-parity-2026-05-08`` learning, so
+        every CLI/formatter consumer emits identical text:
+
+        - **CLI-source** (``min_severity_source == "cli"`` with no
+          pyproject contribution):
+          ``--min-severity=warning relaxes profile floor from error
+          to warning``
+        - **Pyproject-source** (``min_severity_source == "pyproject"``):
+          ``[tool.protokit.lint] min_severity=warning relaxes profile
+          floor from error to warning``
+        - **Both** (``min_severity_source == "cli"`` AND
+          ``pyproject_min_severity is not None``):
+          ``--min-severity=warning relaxes profile floor from error
+          to warning (overriding pyproject min_severity=info)``
+
+        Returns ``None`` when:
+
+        - ``self.min_severity is None`` (no override at all);
+        - ``SEVERITY_RANK[self.min_severity] >= SEVERITY_RANK[
+          composed_floor]`` (the resolved severity is at or above the
+          floor, so no relaxation occurred — pyproject relaxed but
+          CLI restored, or the override matched the floor exactly).
+
+        Args:
+            composed_floor: The composed profile's intrinsic
+                ``min_severity`` BEFORE the override was applied.
+                Callers in ``cli.py`` capture this just before calling
+                ``dataclasses.replace(composed_profile, min_severity=
+                override_severity)``.
+
+        Returns:
+            The R20-attributed relaxation message, or ``None``.
+        """
+        if self.min_severity is None:
+            return None
+        if SEVERITY_RANK[self.min_severity] >= SEVERITY_RANK[composed_floor]:
+            return None
+        floor_name = composed_floor.value
+        resolved_name = self.min_severity.value
+        if self.min_severity_source == "cli":
+            if self.pyproject_min_severity is not None:
+                pyp_name = self.pyproject_min_severity.value
+                return (
+                    f"--min-severity={resolved_name} relaxes profile "
+                    f"floor from {floor_name} to {resolved_name} "
+                    f"(overriding pyproject min_severity={pyp_name})"
+                )
+            return (
+                f"--min-severity={resolved_name} relaxes profile "
+                f"floor from {floor_name} to {resolved_name}"
+            )
+        if self.min_severity_source == "pyproject":
+            return (
+                f"[tool.protokit.lint] min_severity={resolved_name} "
+                f"relaxes profile floor from {floor_name} to "
+                f"{resolved_name}"
+            )
+        # "profile" / "default" cannot reach a relaxation message
+        # (no override is set when source is "default"; "profile"
+        # is reserved for future U5+ emission code that may emit
+        # different message branches).
+        return None
+
+    def all_files_excluded_message(self, file_count: int) -> str:
+        """Return the R20-attributed message for the all_files_excluded warning.
+
+        Pins the source-aware message templates at the
+        ``ResolvedLintConfig`` boundary per the
+        ``cross-format-enum-string-parity-2026-05-08`` learning AND
+        the
+        ``source-aware-error-messages-multi-source-resolved-value-2026-05-11``
+        learning. The three message branches mirror the relaxation-message
+        structure:
+
+        - **CLI-source** (``exclude_source == "cli"``):
+          ``all N input file(s) excluded by --exclude patterns:
+          vendor/**``
+        - **Pyproject-source** (``exclude_source == "pyproject"``):
+          ``all N input file(s) excluded by [tool.protokit.lint]
+          exclude patterns: vendor/**``
+        - **Both** (``exclude_source == "both"``):
+          ``all N input file(s) excluded by --exclude + [tool.protokit.lint]
+          exclude patterns: vendor/**, third_party/**``
+
+        Per KTD-9, individual patterns are passed through
+        ``_safe_for_stderr`` before joining so a pattern with
+        embedded control characters cannot forge a fake stderr line.
+
+        Args:
+            file_count: The number of input files that were excluded
+                (i.e., ``len(result.root_files)`` at the call site).
+
+        Returns:
+            The R20-attributed message string.
+        """
+        safe_patterns = ", ".join(
+            _safe_for_stderr(p) for p in self.exclude
+        )
+        if self.exclude_source == "cli":
+            source_desc = "--exclude"
+        elif self.exclude_source == "pyproject":
+            source_desc = "[tool.protokit.lint] exclude"
+        elif self.exclude_source == "both":
+            source_desc = "--exclude + [tool.protokit.lint] exclude"
+        else:
+            # "default" — exclude_source should be one of cli/pyproject/
+            # both at the all_files_excluded emit site (the CLI block
+            # guards on `if resolved.exclude:` before computing this
+            # message). Fall back to a neutral source descriptor.
+            source_desc = "exclude"
+        return (
+            f"all {file_count} input file(s) excluded by {source_desc} "
+            f"patterns: {safe_patterns}"
+        )
 
     @classmethod
     def from_dict(
@@ -740,13 +879,24 @@ class ResolvedLintConfig:
         # None means "no --exclude flags were passed; use pyproject".
         cli_exclude = cli_overrides.get("exclude")
         pyproject_exclude = validated.get("exclude", ())
+        exclude_source: ExcludeSource
         if cli_exclude is None:
+            # No CLI --exclude flag; pyproject patterns (if any) drive.
             resolved_exclude: tuple[str, ...] = pyproject_exclude
+            exclude_source = (
+                "pyproject" if pyproject_exclude else "default"
+            )
         elif len(cli_exclude) == 0:
-            # --no-exclude semantics: clear pyproject too.
+            # --no-exclude semantics: clear pyproject too. The user
+            # explicitly asked for "no exclude"; attribute the empty
+            # result to "default" since neither CLI patterns nor
+            # pyproject patterns ended up applying.
             resolved_exclude = ()
+            exclude_source = "default"
         else:
+            # CLI patterns appended to pyproject patterns.
             resolved_exclude = pyproject_exclude + tuple(cli_exclude)
+            exclude_source = "both" if pyproject_exclude else "cli"
 
         # min_severity: CLI replaces pyproject; track source for R20.
         cli_min_sev = cli_overrides.get("min_severity")
@@ -794,6 +944,7 @@ class ResolvedLintConfig:
             format=resolved_fmt,
             min_severity_source=min_sev_source,
             pyproject_min_severity=pyproject_min_sev,
+            exclude_source=exclude_source,
         )
 
 

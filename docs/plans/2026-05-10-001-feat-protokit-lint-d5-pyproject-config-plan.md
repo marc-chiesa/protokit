@@ -521,7 +521,7 @@ D5 ships when **all** of the following hold (mirrors origin Success Criteria; ca
 
 ---
 
-- [ ] **U4: D3 R12 fold-in — CLI emission of `min_severity_relaxed` + R20 source attribution + R21 breadcrumb removal**
+- [x] **U4: D3 R12 fold-in — CLI emission of `min_severity_relaxed` + R20 source attribution + R21 breadcrumb removal** — SHIPPED 2026-05-11
 
 **Goal:** Convert the existing `cli.py:425-439` stderr breadcrumb into a structured `LintRuntimeWarning(category="min_severity_relaxed")` emitted CLI-side post-`engine.run` per KTD-6/R19a using the Literal entry + `rule_id: str | None` foundation landed in U3. Remove the second stderr loop at `cli.py:498-503`. Constrain `rule_exception` message field per Outstanding Q16 (no tracebacks/paths). The R18 BREAKING migration is finalized here via R18a CHANGELOG marker (lands in U6) — the dataclass change itself shipped in U3.
 

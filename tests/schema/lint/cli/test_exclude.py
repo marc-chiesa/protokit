@@ -1,4 +1,4 @@
-"""End-to-end CLI tests for ``--exclude PATTERN`` (D5 U3).
+"""End-to-end CLI tests for ``--exclude PATTERN`` (D5 U3, U4).
 
 Covers:
 
@@ -9,8 +9,14 @@ Covers:
 - Multi-file pool: a single file excluded; others lint normally;
   descriptor pool still loads every file (per R9).
 - ``all_files_excluded`` warning fires when patterns drop every input
-  file; engine.run is short-circuited; the warning surfaces in
-  ``warning[lint-runtime]: all_files_excluded: ...`` stderr.
+  file; engine.run is short-circuited; the warning surfaces in the
+  ``lint_json`` formatter's ``runtime_warnings`` array (D5 U4 removed
+  the previous ``warning[lint-runtime]:`` stderr loop; structured
+  warnings now flow through formatter dispatch only).
+- D5 U4 source-aware messages: the all_files_excluded message names
+  ``--exclude`` (CLI source), ``[tool.protokit.lint] exclude``
+  (pyproject source), or ``--exclude + [tool.protokit.lint] exclude``
+  (both) per the R20 attribution contract.
 
 The corresponding ``--no-exclude`` flag (clear-all sentinel + advisory
 when combined with ``--exclude``) lives in ``test_no_exclude.py``.
@@ -18,12 +24,29 @@ when combined with ``--exclude``) lives in ``test_no_exclude.py``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
 
 from protokit.schema.lint.cli import main as lint_main
+
+
+def _runtime_warnings_from_json(stdout: str) -> list[dict[str, Any]]:
+    """Parse `--format=json` stdout and return its runtime_warnings list.
+
+    D5 U4 removed the previous `warning[lint-runtime]:` stderr loop;
+    structured warnings now flow through formatter dispatch only.
+    Tests that previously asserted on the stderr loop now invoke with
+    ``--format=json`` and inspect ``parsed['runtime_warnings']``.
+    """
+    parsed = json.loads(stdout)
+    warnings = parsed.get("runtime_warnings", [])
+    assert isinstance(warnings, list)
+    return warnings
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,19 +121,26 @@ class TestCliExcludeHappyPath:
     def test_multiple_patterns_combine(
         self, multi_file_descriptor_set: Path,
     ) -> None:
-        """Two ``--exclude`` flags both apply (each adds a pattern)."""
+        """Two ``--exclude`` flags both apply (each adds a pattern).
+
+        Both files excluded → all_files_excluded fires in the
+        ``runtime_warnings`` JSON array (D5 U4 contract: structured
+        warnings via formatter dispatch).
+        """
         result = CliRunner().invoke(
             lint_main,
             [
                 "--no-config",
+                "--format", "json",
                 "--exclude", "vendor/**",
                 "--exclude", "api/**",
                 str(multi_file_descriptor_set),
             ],
         )
-        # Both files excluded → all_files_excluded fires:
         assert result.exit_code == 0, result.output
-        assert "warning[lint-runtime]: all_files_excluded:" in result.stderr
+        warnings = _runtime_warnings_from_json(result.stdout)
+        categories = [w["category"] for w in warnings]
+        assert "all_files_excluded" in categories
 
     def test_gitignore_negation(
         self, multi_file_descriptor_set: Path,
@@ -178,6 +208,10 @@ class TestCliAppendsToPyproject:
         """pyproject ``exclude = ["vendor/**"]`` + CLI
         ``--exclude 'api/**'``: both apply. Both files excluded →
         all_files_excluded fires.
+
+        D5 U4 F-03 fold-in: the message names BOTH sources
+        ("--exclude + [tool.protokit.lint] exclude") so the user
+        sees that patterns from both layers contributed.
         """
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
@@ -187,12 +221,21 @@ class TestCliAppendsToPyproject:
             lint_main,
             [
                 "--config", str(pyproject),
+                "--format", "json",
                 "--exclude", "api/**",
                 str(multi_file_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "warning[lint-runtime]: all_files_excluded:" in result.stderr
+        warnings = _runtime_warnings_from_json(result.stdout)
+        afe = [w for w in warnings if w["category"] == "all_files_excluded"]
+        assert len(afe) == 1
+        # F-03: source-aware message names BOTH CLI and pyproject.
+        msg = afe[0]["message"]
+        assert (
+            "--exclude + [tool.protokit.lint] exclude" in msg
+        ), msg
+        assert afe[0]["rule_id"] is None  # BREAKING R18 contract
 
 
 # ---------------------------------------------------------------------------
@@ -207,21 +250,34 @@ class TestAllFilesExcludedWarning:
         """When the pattern matches every input file, the
         ``all_files_excluded`` warning fires CLI-side and
         ``engine.run`` is short-circuited (no findings).
+
+        D5 U4 contract: warning surfaces via the lint_json formatter's
+        ``runtime_warnings`` array. F-04 fold-in: ``rule_id`` is
+        serialized as JSON ``null`` (not the string ``"None"``).
         """
         result = CliRunner().invoke(
             lint_main,
             [
                 "--no-config",
+                "--format", "json",
                 "--exclude", "vendor/**",
                 str(single_vendor_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "warning[lint-runtime]: all_files_excluded:" in result.stderr
-        # The warning message names the input count and at least one
-        # pattern so users can diagnose:
-        assert "1 input file(s)" in result.stderr
-        assert "vendor/**" in result.stderr
+        warnings = _runtime_warnings_from_json(result.stdout)
+        afe = [w for w in warnings if w["category"] == "all_files_excluded"]
+        assert len(afe) == 1
+        msg = afe[0]["message"]
+        # The message names the input count and at least one pattern:
+        assert "1 input file(s)" in msg
+        assert "vendor/**" in msg
+        # F-04 R18 BREAKING contract: rule_id is null for CLI-emitted
+        # categories (not the literal string "None"):
+        assert afe[0]["rule_id"] is None
+        # F-03 source-aware message: CLI-source attribution:
+        assert "--exclude patterns" in msg
+        assert "[tool.protokit.lint]" not in msg
 
     def test_glob_matching_all_files_emits_warning(
         self, multi_file_descriptor_set: Path,
@@ -234,13 +290,17 @@ class TestAllFilesExcludedWarning:
             lint_main,
             [
                 "--no-config",
+                "--format", "json",
                 "--exclude", "**/*",
                 str(multi_file_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "warning[lint-runtime]: all_files_excluded:" in result.stderr
-        assert "2 input file(s)" in result.stderr
+        warnings = _runtime_warnings_from_json(result.stdout)
+        afe = [w for w in warnings if w["category"] == "all_files_excluded"]
+        assert len(afe) == 1
+        assert "2 input file(s)" in afe[0]["message"]
+        assert afe[0]["rule_id"] is None
 
     def test_no_input_files_does_not_fire_warning(
         self, tmp_path: Path,

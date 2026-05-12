@@ -84,7 +84,6 @@ from protokit.schema.lint._cli_utils import (
     _load_descriptor_sets_to_result,
     _load_user_rule_pack,
     _run_lint_formatter_safely,
-    _safe_for_stderr,
     _safe_module_name,
     error_exit_with_code,
 )
@@ -95,7 +94,6 @@ from protokit.schema.lint._config import (
 )
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
-    SEVERITY_RANK,
     DuplicateRuleError,
     LintProfile,
     LintReport,
@@ -627,42 +625,26 @@ def _main_impl(
         else LintProfile.compose(*profiles_per_name)
     )
 
-    # Apply min_severity override (R12). Pure numeric override:
-    # replaces the composed profile's min_severity; the
-    # LintRuntimeWarning(category="min_severity_relaxed") emission
-    # is deferred to D5 U4 per origin R12. At U2 the breadcrumb is
-    # source-aware (CLI vs pyproject) so pyproject-driven relaxations
-    # do not mis-attribute to --min-severity.
+    # Apply min_severity override (R12, R19a). Pure numeric override
+    # that replaces the composed profile's min_severity. The R20
+    # relaxation message (if the override actually relaxes the floor)
+    # is computed HERE and emitted post-engine.run as a structured
+    # LintRuntimeWarning(category="min_severity_relaxed") per KTD-6 +
+    # R19a. The U2 stderr breadcrumb was removed in D5 U4 in favor of
+    # this structured emission; the R20 message templates now live on
+    # ResolvedLintConfig.relaxation_message per the
+    # cross-format-enum-string-parity learning so every formatter
+    # emits identical text.
+    relaxation_msg: str | None = None
     if resolved.min_severity is not None:
-        override_severity = resolved.min_severity
         composed_floor = composed_profile.min_severity
         composed_profile = dataclasses.replace(
-            composed_profile, min_severity=override_severity,
+            composed_profile, min_severity=resolved.min_severity,
         )
-        # Emit a relaxation breadcrumb when the override is more
-        # lenient (lower SEVERITY_RANK = lower severity = more
-        # lenient). Stderr diagnostic; not gated by --quiet (which
-        # suppresses findings stdout only).
-        if (
-            SEVERITY_RANK[override_severity]
-            < SEVERITY_RANK[composed_floor]
-        ):
-            floor_name = composed_floor.value
-            override_name = override_severity.value
-            if resolved.min_severity_source == "cli":
-                click.echo(
-                    f"protokit lint: --min-severity={override_name} "
-                    f"relaxes profile floor from {floor_name} to "
-                    f"{override_name}",
-                    err=True,
-                )
-            elif resolved.min_severity_source == "pyproject":
-                click.echo(
-                    f"protokit lint: [tool.protokit.lint] "
-                    f"min_severity={override_name} relaxes profile "
-                    f"floor from {floor_name} to {override_name}",
-                    err=True,
-                )
+        # relaxation_message returns None when no relaxation actually
+        # occurred (resolved >= floor) — the override may equal or
+        # exceed the floor, in which case no warning fires.
+        relaxation_msg = resolved.relaxation_message(composed_floor)
 
     # Loud-failure checks per origin R9 + R11. R9 wins over R11 when
     # both predicates would fire — the user can't meaningfully fix
@@ -749,18 +731,17 @@ def _main_impl(
             len(filtered_root_files) == 0
             and len(result.root_files) > 0
         ):
-            # Sanitize the joined-pattern string per KTD-9 since
-            # exclude patterns can carry attacker-controlled bytes
-            # when sourced from pyproject in a multi-tenant repo.
-            safe_patterns = ", ".join(
-                _safe_for_stderr(p) for p in resolved.exclude
-            )
+            # D5 U4 F-03 fold-in: the all_files_excluded message is
+            # now R20-source-attributed via
+            # ResolvedLintConfig.all_files_excluded_message, so users
+            # see whether the dropping patterns came from --exclude,
+            # pyproject, or both. Per KTD-9, patterns are
+            # newline-sanitized inside the helper.
             all_files_excluded_warning = LintRuntimeWarning(
                 category="all_files_excluded",
                 rule_id=None,
-                message=(
-                    f"all {len(result.root_files)} input "
-                    f"file(s) excluded by patterns: {safe_patterns}"
+                message=resolved.all_files_excluded_message(
+                    len(result.root_files),
                 ),
             )
         else:
@@ -770,10 +751,9 @@ def _main_impl(
 
     if all_files_excluded_warning is not None:
         # Short-circuit: skip engine.run and emit an empty report
-        # whose runtime_warnings carries only the all_files_excluded
-        # CLI-side warning. Downstream rendering (stderr loop +
-        # formatter dispatch) still runs so the warning surfaces in
-        # every output format consistent with engine-emitted warnings.
+        # whose runtime_warnings carries the all_files_excluded
+        # CLI-side warning. Downstream rendering (formatter dispatch)
+        # still runs so the warning surfaces in every output format.
         report = LintReport(
             findings=(),
             diagnostics=result.diagnostics,
@@ -784,21 +764,33 @@ def _main_impl(
     else:
         report = engine.run(result, profile=composed_profile)
 
-    # Emit runtime warnings to stderr (closes U2 ce:review CLR-U2-03
-    # / agent-native warning #5). Four categories can surface here:
-    # `rule_exception` and `unloaded_rule` (engine-emitted) plus
-    # `all_files_excluded` (D5 U3, CLI-emitted just above when the
-    # --exclude filter dropped every file) and `min_severity_relaxed`
-    # (D5 U4 forward-declared in the Literal; CLI-emitted by U4 when
-    # the resolved min_severity relaxes the composed profile floor).
-    # Stderr diagnostic; not gated by --quiet (which suppresses
-    # findings stdout only).
-    for warning in report.runtime_warnings:
-        safe_message = warning.message.replace("\n", " ").replace("\r", " ")
-        click.echo(
-            f"warning[lint-runtime]: {warning.category}: {safe_message}",
-            err=True,
+    # D5 U4 R19a: post-engine append for `min_severity_relaxed`. Per
+    # KTD-4 alphabetical ordering, this comes AFTER any
+    # `all_files_excluded` already attached above
+    # (alphabetical: all_files_excluded < min_severity_relaxed).
+    # Engine-emitted categories (`rule_exception`, `unloaded_rule`)
+    # come first by emission order; CLI-emitted categories are
+    # appended in alphabetical sequence here.
+    if relaxation_msg is not None:
+        relaxation_warning = LintRuntimeWarning(
+            category="min_severity_relaxed",
+            rule_id=None,
+            message=relaxation_msg,
         )
+        report = dataclasses.replace(
+            report,
+            runtime_warnings=(
+                report.runtime_warnings + (relaxation_warning,)
+            ),
+        )
+
+    # D5 U4 R21: the stderr loop that mirrored runtime_warnings as
+    # `warning[lint-runtime]:` lines was REMOVED here. The structured
+    # warnings now flow through formatter dispatch only. D5 U5 adds a
+    # CLI-side post-format hook for `--format=human` that re-emits
+    # runtime_warnings to stderr; until U5 ships, human-format
+    # consumers see runtime warnings only via the machine formatters
+    # (`--format=json` / `--format=junit` / `--format=sarif`).
 
     try:
         formatter = get_formatter(resolved.format, FormatterKind.LINT_REPORT)

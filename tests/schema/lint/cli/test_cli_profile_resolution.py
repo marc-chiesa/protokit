@@ -163,28 +163,51 @@ class TestMinSeverityOverride:
         # No relaxation breadcrumb (override is more strict, not lenient).
         assert "relaxes profile floor" not in result.stderr
 
-    def test_min_severity_info_emits_relaxation_breadcrumb(
+    def test_min_severity_info_emits_relaxation_warning(
         self, bad_naming_descriptor_set: Path,
     ) -> None:
-        """--min-severity=info against composed-default WARNING emits breadcrumb.
+        """--min-severity=info against composed-default WARNING emits
+        a structured min_severity_relaxed warning.
 
         The composed profile's min_severity is WARNING (from_pack
         always returns the dataclass default). --min-severity=info
-        is more lenient → breadcrumb fires.
+        is more lenient → relaxation message fires.
+
+        D5 U4 contract: the previous U2 stderr breadcrumb was
+        replaced with a `LintRuntimeWarning(category=
+        "min_severity_relaxed", rule_id=None)` appended to
+        `report.runtime_warnings` post-engine. Visible via
+        `--format=json`.
         """
+        import json
+
         result = CliRunner().invoke(
             lint_main,
             [
                 "--min-severity", "info",
+                "--format", "json",
                 str(bad_naming_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "relaxes profile floor" in result.stderr
-        assert "warning" in result.stderr.lower()
-        assert "info" in result.stderr.lower()
+        parsed = json.loads(result.stdout)
+        warnings = parsed["runtime_warnings"]
+        relax = [
+            w for w in warnings
+            if w["category"] == "min_severity_relaxed"
+        ]
+        assert len(relax) == 1, warnings
+        msg = relax[0]["message"]
+        assert "relaxes profile floor" in msg
+        assert "warning" in msg.lower()
+        assert "info" in msg.lower()
+        # CLI source attribution:
+        assert "--min-severity=info" in msg
+        # R18 BREAKING contract: rule_id is null for CLI-emitted
+        # categories:
+        assert relax[0]["rule_id"] is None
         # Findings still rendered (warnings pass the info floor):
-        assert "BadCamelCase" in result.stdout
+        assert len(parsed["findings"]) > 0
 
     def test_min_severity_warning_no_breadcrumb_no_change(
         self, bad_naming_descriptor_set: Path,
@@ -278,30 +301,47 @@ class TestR25Provenance:
 
 
 class TestRuntimeWarningEmission:
-    def test_rule_exception_surfaces_as_warning_lint_runtime(
+    def test_rule_exception_surfaces_in_runtime_warnings(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """A rule that raises an exception produces ``warning[lint-runtime]:``
-        on stderr.
+        """A rule that raises an exception produces a
+        ``LintRuntimeWarning(category="rule_exception")`` in the
+        report's ``runtime_warnings`` tuple.
 
         ``pack_rule_raises`` declares a rule that unconditionally raises
         ``ValueError("synthetic-failure")``. The engine catches the
-        exception (its narrow-catch tuple includes ``Exception``),
-        records a ``LintRuntimeWarning(category="rule_exception")``,
-        and the CLI emits it to stderr.
+        exception (its narrow-catch tuple includes ``Exception``)
+        and records a ``LintRuntimeWarning(category="rule_exception")``.
+
+        D5 U4 contract: the previous stderr ``warning[lint-runtime]:``
+        loop was removed; structured warnings now flow through
+        formatter dispatch only. Visible via ``--format=json``. (D5 U5
+        adds a CLI-side post-format hook re-emitting to stderr for
+        ``--format=human``.)
         """
+        import json
+
         result = CliRunner().invoke(
             lint_main,
             [
                 "--rule-pack",
                 "tests.schema.lint.cli.user_packs.pack_rule_raises",
+                "--format", "json",
                 str(clean_descriptor_set),
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "warning[lint-runtime]:" in result.stderr
-        assert "rule_exception" in result.stderr
-        assert "synthetic-failure" in result.stderr
+        parsed = json.loads(result.stdout)
+        warnings = parsed["runtime_warnings"]
+        rule_exc = [
+            w for w in warnings if w["category"] == "rule_exception"
+        ]
+        assert len(rule_exc) >= 1, warnings
+        assert "synthetic-failure" in rule_exc[0]["message"]
+        # Engine-emitted categories retain a non-null rule_id per
+        # the R18 widening contract (only CLI-emitted categories
+        # populate rule_id=None):
+        assert rule_exc[0]["rule_id"] is not None
 
 
 class TestProfileCaseNormalization:
