@@ -1,6 +1,7 @@
 ---
 title: "Shared error-emitting helpers must accept caller context via a source_label parameter, never hard-code attribution"
 date: 2026-05-11
+last_updated: 2026-05-11
 category: docs/solutions/best-practices
 module: protokit.schema.lint._config
 problem_type: best_practice
@@ -350,6 +351,30 @@ test.
   handles error-content attribution (what the error says). Same
   structural lesson: don't hard-code in a shared helper what the
   caller has to know.
+- `docs/solutions/best-practices/source-aware-error-messages-multi-source-resolved-value-2026-05-11.md` —
+  **adjacent variant** of the same user-harm (wrong source
+  attribution in error messages), but a different structural
+  trigger. That doc covers the case where a SINGLE error site
+  references a value that can come from multiple RUNTIME SOURCES
+  (CLI flag, env var, config file, default); the fix is source-aware
+  branching at the check site using a pre-computed source boolean
+  from `ctx.get_parameter_source()`. This doc covers the case where
+  a SHARED HELPER is reachable from multiple CALL SITES with
+  different invocation surfaces; the fix is a `source_label`
+  parameter injected from the caller. The disambiguation table at
+  the top of the sibling doc enumerates the structural differences
+  in detail. Both docs share vocabulary (source, attribution, error
+  message) — future readers should consult both when triaging an
+  "error message names the wrong source" finding to determine which
+  pattern applies.
+- The 5-persona convergence on `_read_and_parse` source attribution
+  in this doc's Context section is one of the calibration data
+  points cited in
+  `docs/solutions/best-practices/apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.md`
+  (see its 2026-05-11 refinement note). 5-persona is among the
+  strongest signals to date; the parallel D5 U2 review showed that
+  3-way convergence with diverse reasoning chains is also a
+  high-reliability indicator — not a weaker form of the same signal.
 
 ## Fix Commits
 
