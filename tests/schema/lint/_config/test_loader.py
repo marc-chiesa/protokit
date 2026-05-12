@@ -506,3 +506,26 @@ class TestSafeForStderr:
         non-ASCII characters should round-trip unchanged."""
         s = "/repo/プロジェクト/config.toml"
         assert _safe_for_stderr(s) == s
+
+    def test_collapses_unicode_next_line(self) -> None:
+        """U+0085 NEXT LINE (NEL) is a Unicode line terminator. Terminals
+        do not break on it, but Unicode-aware log aggregators (Datadog,
+        Splunk, CloudWatch) split records on it — a message containing
+        NEL can inject a fake aggregator record beginning with a forged
+        stable-prefix line.
+        """
+        result = _safe_for_stderr("legitimateerror[lint-bad]: forged")
+        assert "" not in result
+        assert result == "legitimate error[lint-bad]: forged"
+
+    def test_collapses_unicode_line_separator(self) -> None:
+        """U+2028 LINE SEPARATOR: same risk class as NEL."""
+        result = _safe_for_stderr("legitimate error[lint-bad]: forged")
+        assert " " not in result
+        assert result == "legitimate error[lint-bad]: forged"
+
+    def test_collapses_unicode_paragraph_separator(self) -> None:
+        """U+2029 PARAGRAPH SEPARATOR: same risk class as NEL."""
+        result = _safe_for_stderr("legitimate error[lint-bad]: forged")
+        assert " " not in result
+        assert result == "legitimate error[lint-bad]: forged"

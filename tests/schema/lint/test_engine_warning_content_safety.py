@@ -298,3 +298,123 @@ class TestRealTracebackContentSafety:
         # Diagnostic content survives (path, exception class label):
         assert "actual failure" in msg
         assert "downstream call failed" in msg
+
+
+# ---------------------------------------------------------------------------
+# unloaded_rule construction-time sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestUnloadedRuleConstructionTimeSanitization:
+    """U5 ce:review SEC-U5-02: the ``unloaded_rule`` warning message
+    is constructed from ``rid`` and ``profile.name`` — both
+    operator-supplied (pyproject ``profile = ...`` or ``--profile NAME``).
+    Construction-time ``_safe_for_stderr`` sanitization is required
+    per KTD-9 dual-defense, matching the ``rule_exception`` path,
+    so a profile name containing ANSI escape sequences cannot leak
+    into JUnit ``<system-out>`` (where ``xml_safe_text`` does not
+    strip ESC) or SARIF ``message.text`` (where ``json.dumps`` leaves
+    ESC as a literal byte).
+    """
+
+    def test_newline_in_profile_name_collapsed_at_construction(
+        self,
+    ) -> None:
+        @lint_rule(
+            rule_id="t/exists",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FILE,
+            message_template="never fires",
+        )
+        def _rule(ctx: object) -> None:  # noqa: ANN001
+            pass
+
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack_module(_rule))
+        report = engine.run(
+            _build_minimal_compile_result(),
+            profile=LintProfile(
+                # Profile name with embedded newline + forged prefix.
+                name="legit\nerror[lint-bad-input]: forged",
+                # Reference a rule_id that is NOT loaded so the
+                # unloaded_rule path fires.
+                rule_ids=frozenset({"never/registered"}),
+            ),
+        )
+        warnings = [
+            w for w in report.runtime_warnings
+            if w.category == "unloaded_rule"
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].message
+        assert "\n" not in msg, msg
+
+    def test_ansi_escape_in_profile_name_collapsed_at_construction(
+        self,
+    ) -> None:
+        """ANSI ESC (0x1b) in profile.name survives JUnit's
+        xml_safe_text (which does not strip ESC) without
+        construction-time sanitization. Verify the engine sanitizes
+        before constructing the LintRuntimeWarning so machine
+        formatters receive a clean message.
+        """
+        @lint_rule(
+            rule_id="t/exists2",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FILE,
+            message_template="never fires",
+        )
+        def _rule(ctx: object) -> None:  # noqa: ANN001
+            pass
+
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack_module(_rule))
+        report = engine.run(
+            _build_minimal_compile_result(),
+            profile=LintProfile(
+                # ESC[31m would normally start red text on a terminal.
+                name="my-profile\x1b[31mERROR\x1b[0m",
+                rule_ids=frozenset({"never/registered"}),
+            ),
+        )
+        warnings = [
+            w for w in report.runtime_warnings
+            if w.category == "unloaded_rule"
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].message
+        assert "\x1b" not in msg, repr(msg)
+
+    def test_newline_in_rid_collapsed_at_construction(self) -> None:
+        """The rule_id strings flow through profile.rule_ids and may
+        contain user-supplied content (pyproject ``profile = [...]``
+        list entries or ``--profile`` arg). Same sanitization
+        applies."""
+        @lint_rule(
+            rule_id="t/exists3",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FILE,
+            message_template="never fires",
+        )
+        def _rule(ctx: object) -> None:  # noqa: ANN001
+            pass
+
+        engine = LintEngine()
+        engine.load_rule_pack(_make_pack_module(_rule))
+        report = engine.run(
+            _build_minimal_compile_result(),
+            profile=LintProfile(
+                name="default",
+                rule_ids=frozenset({"bad\nerror[lint-forged]: line"}),
+            ),
+        )
+        warnings = [
+            w for w in report.runtime_warnings
+            if w.category == "unloaded_rule"
+        ]
+        assert len(warnings) == 1
+        msg = warnings[0].message
+        assert "\n" not in msg, msg

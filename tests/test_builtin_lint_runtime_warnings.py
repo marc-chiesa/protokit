@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
+import jsonschema
 import pytest
+import xmlschema
 
 from protokit.formatters import FormatterContext
 from protokit.formatters._builtin_lint import (
@@ -36,64 +39,47 @@ from protokit.formatters._builtin_lint import (
     lint_sarif,
 )
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
+from tests.schema.lint.cli._helpers import (
+    LINT_RUNTIME_WARNING_CATEGORIES as _CATEGORIES,
+)
+from tests.schema.lint.cli._helpers import (
+    warning_for_category as _warning_for_category,
+)
+
+_JUNIT_XSD = Path(__file__).parent / "fixtures" / "junit-xml" / "JUnit.xsd"
+_SARIF_SCHEMA = Path(__file__).parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
+
+
+@pytest.fixture(scope="module")
+def junit_validator() -> xmlschema.XMLSchema:
+    """Vendored Apache Ant JUnit xsd loaded once per module."""
+    return xmlschema.XMLSchema(str(_JUNIT_XSD))
+
+
+@pytest.fixture(scope="module")
+def sarif_validator() -> jsonschema.Draft7Validator:
+    """Vendored SARIF 2.1.0 schema loaded once per module."""
+    with open(_SARIF_SCHEMA) as f:
+        return jsonschema.Draft7Validator(json.load(f))
+
+
+def _validate_junit(validator: xmlschema.XMLSchema, xml: str) -> None:
+    """Validate an XML string against the vendored xsd."""
+    ET.fromstring(xml)  # well-formedness first
+    validator.validate(xml)
 
 
 def _ctx() -> FormatterContext:
     return FormatterContext(subcommand="lint")
 
 
-def _warning_for_category(category: str) -> LintRuntimeWarning:
-    """Construct a representative ``LintRuntimeWarning`` per category.
-
-    Mirrors the engine/CLI emission contract:
-
-    - Engine-emitted (``rule_exception`` / ``unloaded_rule``):
-      ``rule_id`` is a non-``None`` string + ``descriptor_path`` is
-      populated for ``rule_exception``.
-    - CLI-emitted (``min_severity_relaxed`` / ``all_files_excluded``):
-      ``rule_id`` is ``None``.
-    """
-    if category == "rule_exception":
-        return LintRuntimeWarning(
-            category="rule_exception",
-            rule_id="naming/snake-case-fields",
-            message="ValueError: synthetic rule failure",
-            exception_type="ValueError",
-            descriptor_path="acme.User.bad_field",
-        )
-    if category == "unloaded_rule":
-        return LintRuntimeWarning(
-            category="unloaded_rule",
-            rule_id="missing/never-registered",
-            message="rule pack 'missing.pack' could not be loaded",
-        )
-    if category == "min_severity_relaxed":
-        return LintRuntimeWarning(
-            category="min_severity_relaxed",
-            rule_id=None,
-            message=(
-                "--min-severity=info relaxes profile floor from "
-                "warning to info"
-            ),
-        )
-    if category == "all_files_excluded":
-        return LintRuntimeWarning(
-            category="all_files_excluded",
-            rule_id=None,
-            message=(
-                "all 3 input file(s) excluded by --exclude patterns: "
-                "**/*"
-            ),
-        )
-    raise AssertionError(f"unrecognized category for test: {category}")
-
-
-_CATEGORIES: tuple[str, ...] = (
-    "rule_exception",
-    "unloaded_rule",
-    "min_severity_relaxed",
-    "all_files_excluded",
-)
+# ``_CATEGORIES`` (the canonical four ``LintRuntimeWarning`` category
+# strings) and ``_warning_for_category`` (the per-category factory)
+# live in ``tests/schema/lint/cli/_helpers.py`` so this file and
+# ``tests/schema/lint/cli/test_human_stderr_render.py`` share a
+# single definition. Adding a 5th category requires editing only the
+# shared helper; the parametrized matrix tests in this file then
+# fail until every formatter render site is covered.
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +118,24 @@ class TestLintJsonRuntimeWarningParity:
         assert payload["runtime_warnings"] == []
         assert payload["summary"]["runtime_warning_count"] == 0
 
+    def test_empty_message_field_still_emits_one_entry(self) -> None:
+        """Plan U5 line 645: 'skip-empty would mask bugs'. A warning
+        with an empty message field must still produce one
+        ``runtime_warnings`` entry; the formatter must not silently
+        drop it. Catches a future defensive ``if w.message:`` guard.
+        """
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="",
+            exception_type="ValueError",
+            descriptor_path="acme.User.x",
+        )
+        report = LintReport(runtime_warnings=(warning,))
+        payload = json.loads(lint_json(report, _ctx()))
+        assert len(payload["runtime_warnings"]) == 1
+        assert payload["runtime_warnings"][0]["message"] == ""
+
 
 # ---------------------------------------------------------------------------
 # lint_junit — D5 U5 new system-out emission
@@ -143,13 +147,21 @@ class TestLintJunitRuntimeWarningSystemOut:
     ``<system-out>`` body with shape ``[{category}] {message}``.
     Compile-diagnostic warnings share the same ``<system-out>``
     element (JUnit XSD permits only one).
+
+    Every test in this class validates the rendered XML against the
+    vendored Apache Ant JUnit XSD per plan U5 line 651 — well-formedness
+    alone (``ET.fromstring``) is not sufficient; schema drift in the
+    runtime-warnings body must trip the validator.
     """
 
     @pytest.mark.parametrize("category", _CATEGORIES)
-    def test_category_renders_in_system_out(self, category: str) -> None:
+    def test_category_renders_in_system_out(
+        self, category: str, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
         warning = _warning_for_category(category)
         report = LintReport(runtime_warnings=(warning,))
         out = lint_junit(report, _ctx())
+        _validate_junit(junit_validator, out)
         root = ET.fromstring(out)
         system_out = root.find("system-out")
         assert system_out is not None, out
@@ -161,10 +173,11 @@ class TestLintJunitRuntimeWarningSystemOut:
         assert warning.message in system_out.text
 
     def test_empty_runtime_warnings_emits_empty_system_out_body(
-        self,
+        self, junit_validator: xmlschema.XMLSchema,
     ) -> None:
         report = LintReport()
         out = lint_junit(report, _ctx())
+        _validate_junit(junit_validator, out)
         root = ET.fromstring(out)
         # The ``<system-out>`` element is seeded by ``make_testsuite``
         # to satisfy the JUnit XSD even on empty suites, but its text
@@ -175,10 +188,13 @@ class TestLintJunitRuntimeWarningSystemOut:
         assert system_out is not None
         assert not (system_out.text or ""), out
 
-    def test_multiple_categories_emit_independent_lines(self) -> None:
+    def test_multiple_categories_emit_independent_lines(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
         warnings = tuple(_warning_for_category(c) for c in _CATEGORIES)
         report = LintReport(runtime_warnings=warnings)
         out = lint_junit(report, _ctx())
+        _validate_junit(junit_validator, out)
         root = ET.fromstring(out)
         system_out = root.find("system-out")
         assert system_out is not None
@@ -189,6 +205,66 @@ class TestLintJunitRuntimeWarningSystemOut:
         # And every message body survives.
         for w in warnings:
             assert w.message in text
+
+    def test_empty_message_field_still_emits_one_line(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        """Plan U5 line 645: 'skip-empty would mask bugs'. A warning
+        with an empty message field must still produce one
+        ``<system-out>`` line, not be silently dropped. The leading
+        ``[{category}]`` token is what callers grep on; an empty
+        body is acceptable but the entry must survive.
+        """
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="",
+            exception_type="ValueError",
+            descriptor_path="acme.User.x",
+        )
+        report = LintReport(runtime_warnings=(warning,))
+        out = lint_junit(report, _ctx())
+        _validate_junit(junit_validator, out)
+        root = ET.fromstring(out)
+        system_out = root.find("system-out")
+        assert system_out is not None
+        text = system_out.text or ""
+        assert "[rule_exception]" in text, text
+
+    def test_compile_warning_and_runtime_warning_coexist_in_system_out(
+        self, junit_validator: xmlschema.XMLSchema,
+    ) -> None:
+        """Compile-diagnostic warning lines and runtime-warning lines
+        share the single ``<system-out>`` body per JUnit XSD. The
+        documented ordering is compile diagnostics first, then runtime
+        warnings — pin both presence and ordering so a future refactor
+        cannot reverse them silently.
+        """
+        from protokit.schema.compile import LintCompileDiagnostic
+        diag = LintCompileDiagnostic(
+            level="warning",
+            message="protoxy unavailable, falling back to protoc",
+            category="protoxy_fallback",
+        )
+        rt_warning = _warning_for_category("rule_exception")
+        report = LintReport(
+            diagnostics=(diag,),
+            runtime_warnings=(rt_warning,),
+        )
+        out = lint_junit(report, _ctx())
+        _validate_junit(junit_validator, out)
+        root = ET.fromstring(out)
+        system_out = root.find("system-out")
+        assert system_out is not None
+        text = system_out.text or ""
+        # Compile diagnostic uses ``{level} [{category}]:`` shape.
+        assert "warning [protoxy_fallback]:" in text, text
+        # Runtime warning uses ``[{category}] {message}`` shape.
+        assert "[rule_exception]" in text, text
+        # Compile diagnostic precedes runtime warning.
+        compile_idx = text.index("[protoxy_fallback]")
+        runtime_idx = text.index("[rule_exception]")
+        assert compile_idx < runtime_idx, (compile_idx, runtime_idx, text)
 
 
 # ---------------------------------------------------------------------------
@@ -211,15 +287,23 @@ class TestLintSarifRuntimeWarningProperties:
 
     ``descriptor.id`` is intentionally absent (KTD-1);
     categorization travels via ``properties.category``.
+
+    Every test in this class validates the rendered JSON against the
+    vendored SARIF 2.1.0 schema per plan U5 line 651. SARIF
+    ``propertyBag`` semantics permit non-standard keys, so the
+    validator is what catches a shape change that would otherwise
+    be silently rejected by GitHub code scanning.
     """
 
     @pytest.mark.parametrize("category", _CATEGORIES)
     def test_category_renders_in_runs_properties(
         self, category: str,
+        sarif_validator: jsonschema.Draft7Validator,
     ) -> None:
         warning = _warning_for_category(category)
         report = LintReport(runtime_warnings=(warning,))
         doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
         run = doc["runs"][0]
         assert "properties" in run, doc
         rw = run["properties"]["runtime_warnings"]
@@ -233,14 +317,41 @@ class TestLintSarifRuntimeWarningProperties:
         assert "ruleId" not in entry
         assert "descriptor" not in entry
 
-    def test_empty_runtime_warnings_omits_properties_block(self) -> None:
+    def test_empty_runtime_warnings_omits_properties_block(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
         report = LintReport()
         doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
         run = doc["runs"][0]
         assert "properties" not in run, run
 
+    def test_empty_message_field_still_emits_one_entry(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """Plan U5 line 645: 'skip-empty would mask bugs'. A warning
+        with an empty message must still produce one
+        ``runtime_warnings`` entry; ``message.text`` may be empty
+        but the entry must survive — and SARIF schema validation
+        must still pass on the empty-string text node.
+        """
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="",
+            exception_type="ValueError",
+            descriptor_path="acme.User.x",
+        )
+        report = LintReport(runtime_warnings=(warning,))
+        doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
+        rw = doc["runs"][0]["properties"]["runtime_warnings"]
+        assert len(rw) == 1
+        assert rw[0]["message"]["text"] == ""
+
     def test_runtime_warnings_distinct_from_tool_execution_notifications(
         self,
+        sarif_validator: jsonschema.Draft7Validator,
     ) -> None:
         """``invocations[0].toolExecutionNotifications`` stays
         compile-stage only; runtime warnings DO NOT bleed into it.
@@ -260,6 +371,7 @@ class TestLintSarifRuntimeWarningProperties:
             runtime_warnings=(warning,),
         )
         doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
         run = doc["runs"][0]
         # Compile diagnostic lives in toolExecutionNotifications.
         notifications = run["invocations"][0]["toolExecutionNotifications"]

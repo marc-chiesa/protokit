@@ -330,15 +330,29 @@ class LintEngine:
 
         try:
             # Step 2: unloaded-rule diff (one warning per missing rule_id).
+            # Per KTD-9, ``rid`` (from ``profile.rule_ids``) and
+            # ``profile.name`` are operator-supplied strings — pyproject
+            # ``profile = ...`` values or ``--profile NAME`` CLI args —
+            # so they pass through ``_safe_for_stderr`` at construction
+            # time, matching the ``rule_exception`` path below. Without
+            # this, an ANSI-escape-bearing profile name would survive
+            # into JUnit ``<system-out>`` (where ``xml_safe_text`` does
+            # not strip ESC) and SARIF ``message.text`` (where
+            # ``json.dumps`` does not escape ESC). The stderr boundary
+            # (``_emit_human_runtime_warnings``) is the backstop; this
+            # is the primary defense per the dual-sanitization model.
             loaded_ids = set(self._loaded_specs.keys())
+            safe_profile_name = _safe_for_stderr(profile.name)
             for rid in sorted(profile.rule_ids - loaded_ids):
+                safe_rid = _safe_for_stderr(rid)
                 self._runtime_warnings.append(
                     LintRuntimeWarning(
                         category="unloaded_rule",
                         rule_id=rid,
                         message=(
-                            f"rule {rid!r} is named in profile "
-                            f"{profile.name!r} but not loaded into the engine"
+                            f"rule {safe_rid!r} is named in profile "
+                            f"{safe_profile_name!r} but not loaded "
+                            f"into the engine"
                         ),
                     ),
                 )

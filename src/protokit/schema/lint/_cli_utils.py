@@ -54,12 +54,17 @@ from protokit.schema.lint.model import DuplicateRuleError
 #:   warning[lint-cli]:     CLI-layer advisories (e.g. ignored flags)
 #:   error[lint-CODE]:      exit-2 paths; CODE must be in this tuple
 #:
-#: Note: the ``warning[lint-runtime]:`` stderr prefix was removed in
-#: D5 U4 (R21). Runtime warnings (``rule_exception``,
-#: ``unloaded_rule``, ``min_severity_relaxed``, ``all_files_excluded``)
-#: are carried in ``LintReport.runtime_warnings`` and surface only
-#: via the machine formatters (``--format=json`` / ``--format=junit``
-#: / ``--format=sarif``) until D5 U5 adds the human-format hook.
+#: Note: the legacy ``warning[lint-runtime]:`` stderr prefix was
+#: removed in D5 U4 (R21) and is not restored. Runtime warnings
+#: (``rule_exception``, ``unloaded_rule``, ``min_severity_relaxed``,
+#: ``all_files_excluded``) are carried in
+#: ``LintReport.runtime_warnings``. Under ``--format=human`` (the
+#: default) they surface on stderr via the D5 U5 CLI-side hook as
+#: ``protokit lint: warning [<category>]: <message>`` — see
+#: ``_emit_human_runtime_warnings`` in ``cli.py``. Machine
+#: formatters (``--format=json`` / ``--format=junit`` /
+#: ``--format=sarif``) embed warnings in their structured payloads
+#: with no stderr emission.
 _LINT_ERROR_CODES: tuple[str, ...] = (
     "no-rules",
     "unknown-profile",
@@ -192,10 +197,22 @@ _CONTROL_CHAR_TABLE: dict[int, int] = {
     codepoint: ord(" ") for codepoint in range(0x20)
 }
 _CONTROL_CHAR_TABLE[0x7F] = ord(" ")
+# Unicode line-terminator codepoints beyond ASCII. The terminal does
+# not treat these as line breaks, but log aggregators (Datadog,
+# Splunk, CloudWatch Logs) split records on them per Unicode's
+# line-terminator rules — a crafted message containing one of these
+# can inject a fake aggregator record beginning with a forged
+# ``error[lint-CODE]:`` prefix even though the on-disk stderr output
+# looks like a single line. The widening matches the spirit of the
+# original ``module-name-newline-injection-stderr-forge-2026-05-07``
+# defense applied to Unicode-defined breaks.
+_CONTROL_CHAR_TABLE[0x85] = ord(" ")  # U+0085 NEXT LINE (NEL)
+_CONTROL_CHAR_TABLE[0x2028] = ord(" ")  # U+2028 LINE SEPARATOR
+_CONTROL_CHAR_TABLE[0x2029] = ord(" ")  # U+2029 PARAGRAPH SEPARATOR
 
 
 def _safe_for_stderr(value: object) -> str:
-    """Collapse all ASCII control characters in a stringified value to spaces.
+    """Collapse all line-break / control characters in a stringified value to spaces.
 
     Defense-in-depth against attacker-controlled strings flowing into
     single-line ``click.echo(..., err=True)`` output. Paths, exception
@@ -213,6 +230,11 @@ def _safe_for_stderr(value: object) -> str:
       injection that can obscure stable error prefixes for CI grep.
     - Other ASCII control characters (``\\t``, ``\\b``, etc.) — same
       defense-in-depth reasoning.
+    - Unicode line terminators (``U+0085`` NEL, ``U+2028`` LSEP,
+      ``U+2029`` PSEP) — terminals do not break on these but Unicode-
+      aware log aggregators do, so a message containing one of these
+      can inject a fake aggregator record beginning with a forged
+      stable-prefix line.
 
     Single source of truth for stderr-safe stringification across the
     lint subpackage; :func:`_safe_module_name` is a thin wrapper that

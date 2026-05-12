@@ -596,24 +596,27 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     # consumers can filter ``properties.subcategory == "runtime"``
     # without scanning the notifications stream. Per KTD-1, no
     # ``descriptor.id`` is emitted — categorization travels via
-    # ``properties.category`` instead. The field is omitted when
+    # ``properties.category`` instead. The block is omitted when
     # the report carries no runtime warnings (matches the
     # ``toolExecutionNotifications`` pattern above and keeps the
     # common clean-report SARIF document minimal).
+    #
+    # ``run.setdefault("properties", {})`` rather than wholesale
+    # assignment so a future delivery that adds other run-level
+    # properties (e.g., ``tool_version`` / ``policy_hash``) before
+    # this block executes does not get silently overwritten.
     if report.runtime_warnings:
-        run["properties"] = {
-            "runtime_warnings": [
-                {
-                    "level": "warning",
-                    "message": {"text": w.message},
-                    "properties": {
-                        "category": w.category,
-                        "subcategory": "runtime",
-                    },
-                }
-                for w in report.runtime_warnings
-            ],
-        }
+        run.setdefault("properties", {})["runtime_warnings"] = [
+            {
+                "level": "warning",
+                "message": {"text": w.message},
+                "properties": {
+                    "category": w.category,
+                    "subcategory": "runtime",
+                },
+            }
+            for w in report.runtime_warnings
+        ]
 
     # default=str: same rationale as lint_json — preserve output when
     # a user-pack finding's params or message contains a

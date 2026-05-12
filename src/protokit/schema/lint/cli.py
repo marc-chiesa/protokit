@@ -146,12 +146,25 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
         protokit lint: warning [{category}]: ... and {N} more
         — use --format=json for full details
 
-    The ``{message}`` slot is passed through ``_safe_for_stderr``
-    as a defense-in-depth measure (per KTD-9): construction-time
+    Both the ``{category}`` and ``{message}`` slots are passed
+    through ``_safe_for_stderr`` before ``click.echo`` as a
+    defense-in-depth measure (per KTD-9): construction-time
     sanitization in engine.py / cli.py already collapses control
-    characters in the message field, but the stderr boundary runs
-    the same pass as a backstop in case a future emission site
-    forgets to sanitize at construction time.
+    characters in the message field, and the ``category`` field is
+    typed as a closed ``Literal[...]`` set whose four values are all
+    ASCII tokens — but Python does not enforce ``Literal`` at
+    runtime, so a future emission site that constructs a
+    ``LintRuntimeWarning`` with a control-character-bearing category
+    string would otherwise bypass the boundary. Sanitizing both
+    slots keeps the stderr boundary symmetric and immune to that
+    future-emission-site regression.
+
+    A non-positive ``_LINT_HUMAN_SUMMARIZATION_THRESHOLD`` is
+    clamped to ``1`` at function entry so the summarization math
+    stays well-defined under accidental D6 tuning to ``0`` or
+    negative values (zero would fire summary on the first warning
+    with "and N more" framing implying prior emissions; negative
+    would overcount remaining by ``abs(threshold)``).
 
     This hook is **NOT** gated by ``--quiet`` (KTD-6): ``--quiet``
     suppresses findings on stdout, not warnings on stderr. The
@@ -162,30 +175,34 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     """
     if not report.runtime_warnings:
         return
+    threshold = max(1, _LINT_HUMAN_SUMMARIZATION_THRESHOLD)
     per_category_total: Counter[str] = Counter(
         w.category for w in report.runtime_warnings
     )
     per_category_emitted: Counter[str] = Counter()
-    summarized: set[str] = set()
     for w in report.runtime_warnings:
         per_category_emitted[w.category] += 1
-        if per_category_emitted[w.category] <= _LINT_HUMAN_SUMMARIZATION_THRESHOLD:
+        safe_category = _safe_for_stderr(w.category)
+        if per_category_emitted[w.category] <= threshold:
             safe_message = _safe_for_stderr(w.message)
             click.echo(
-                f"protokit lint: warning [{w.category}]: {safe_message}",
+                f"protokit lint: warning [{safe_category}]: {safe_message}",
                 err=True,
             )
-        elif w.category not in summarized:
-            remaining = (
-                per_category_total[w.category]
-                - _LINT_HUMAN_SUMMARIZATION_THRESHOLD
-            )
+        elif per_category_emitted[w.category] == threshold + 1:
+            # First overflow for this category — emit the
+            # summarization line exactly once. Subsequent overflow
+            # warnings for the same category fall through silently
+            # because their emit count exceeds ``threshold + 1`` and
+            # neither branch matches. The numeric equality replaces
+            # an earlier ``summarized: set[str]`` guard that tracked
+            # the same first-overflow membership less directly.
+            remaining = per_category_total[w.category] - threshold
             click.echo(
-                f"protokit lint: warning [{w.category}]: ... and "
+                f"protokit lint: warning [{safe_category}]: ... and "
                 f"{remaining} more — use --format=json for full details",
                 err=True,
             )
-            summarized.add(w.category)
 
 
 @click.command(
@@ -292,7 +309,10 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
          "below this severity are filtered. When the override is "
          "more lenient than the composed profile floor, a structured "
          "min_severity_relaxed runtime warning is emitted in "
-         "report.runtime_warnings (inspect with --format=json).",
+         "report.runtime_warnings. Under --format=human (default) "
+         "the warning also surfaces on stderr as "
+         "'protokit lint: warning [min_severity_relaxed]: ...'; use "
+         "--format=json for full machine-readable access.",
 )
 @click.option(
     "--format",
@@ -303,10 +323,16 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     show_envvar=True,
     metavar="NAME",
     help=(
-        "Output format. 'human' is the default and only format "
-        "registered in U4a; 'json', 'junit', and 'sarif' arrive "
-        "in U4b and currently exit 2 via "
-        "error[lint-format-unavailable]:. Precedence: CLI --format > "
+        "Output format. One of: 'human' (default — findings on "
+        "stdout; runtime warnings on stderr as "
+        "'protokit lint: warning [<category>]: ...' lines), "
+        "'json' (structured JSON on stdout with a runtime_warnings "
+        "array), 'junit' (JUnit XML; runtime warnings appear in the "
+        "testsuite <system-out>), 'sarif' (SARIF 2.1.0 with runtime "
+        "warnings in runs[].properties.runtime_warnings). Use "
+        "--format=json for full machine-readable access to all "
+        "runtime warnings (human format may summarize per-category "
+        "above an internal threshold). Precedence: CLI --format > "
         "PROTOKIT_FORMAT envvar > [tool.protokit.lint] format in "
         "pyproject.toml > built-in default ('human'). Envvar and CLI "
         "flag are treated as explicit and override pyproject."
@@ -345,7 +371,10 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
          "--max-warnings, 2 lint-internal error). Hard mutex with "
          "--format=json/junit/sarif (click usage error). Soft "
          "mutex with --statistics — emits a stderr advisory line "
-         "and --quiet wins (no footer).",
+         "and --quiet wins (no footer). Runtime-warning stderr lines "
+         "emitted under --format=human (default) are NOT suppressed "
+         "by --quiet — only stdout findings are; use --format=json "
+         "to route warnings into structured stdout instead of stderr.",
 )
 @click.option(
     "--config",

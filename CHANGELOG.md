@@ -181,20 +181,112 @@ restores a human-format hook.
   `all N input file(s) excluded by --exclude and
   [tool.protokit.lint] exclude patterns: ...` (both). Consumers
   matching the substring `excluded by patterns:` no longer match.
-- **`--format=human` regression window (U4 → U5).** Until D5 U5
-  adds a CLI-side post-format hook for human-format output,
-  `--format=human` (the default) surfaces zero runtime warnings —
-  including `rule_exception` notifications from a misbehaving user
-  rule pack. CI pipelines that relied on the stderr loop as a
-  silent-rule-failure tripwire must switch to `--format=json` and
-  parse `runtime_warnings` until U5 lands.
+- **`--format=human` regression window (U4 → U5).** The U4 → U5
+  window in which `--format=human` (the default) surfaced zero
+  runtime warnings is now CLOSED — see the "BREAKING (D5 U5)"
+  entry below for the restored envelope shape. Until U5 shipped,
+  `--format=human` consumers had to fall back to `--format=json`
+  to observe runtime warnings; that fallback is no longer required
+  for visibility, though it remains the right choice for full-fidelity
+  machine consumption (the human hook truncates per-category above
+  an internal threshold; see U5 entry).
 
-  **Migration recipe (human-format CI):** replace
-  `protokit lint <args>` with
+  **Migration recipe (human-format CI, transitional):** during the
+  U4-only window CI scripts replaced `protokit lint <args>` with
   `protokit lint --format=json <args> | jq '.runtime_warnings'`,
-  or set `format = "json"` in `[tool.protokit.lint]` and parse the
-  emitted JSON. Reverting to `--format=human` once U5 ships
-  restores stderr emission with no other code changes.
+  or set `format = "json"` in `[tool.protokit.lint]` and parsed
+  the emitted JSON. Reverting to `--format=human` once U5 shipped
+  restores stderr emission under the NEW envelope shape — see U5
+  entry for the new prefix.
+
+### BREAKING (D5 U5 — `protokit lint` cross-formatter runtime-warning surfaces)
+
+D5 U5 materializes three consumer-visible wire-format surfaces. The
+agent-native `--format=json` channel is unchanged. Each new surface
+is additive at the document level but introduces a new shape
+consumers may need to parse:
+
+- **`--format=human` stderr envelope restored.** The U4→U5 silent
+  window for `--format=human` is closed. Runtime warnings now
+  emit to stderr as:
+
+      protokit lint: warning [<category>]: <message>
+
+  This is a NEW shape — distinct from both the U3-era
+  `warning[lint-runtime]: <category>: <message>` (REMOVED in U4)
+  and the U2-era `protokit lint: <bare-message>` breadcrumb
+  (REMOVED in U4). CI scripts grepping `protokit lint: warning [`
+  match. The four current categories — `rule_exception`,
+  `unloaded_rule`, `min_severity_relaxed`, `all_files_excluded` —
+  all render under this envelope. The hook is NOT gated by
+  `--quiet` (KTD-6); only stdout findings are. To suppress
+  stderr warnings, route them through `--format=json` instead.
+
+  **Summarization above per-category threshold.** When a single
+  category produces more than an internal threshold of warnings
+  (currently 5; module-level constant `_LINT_HUMAN_SUMMARIZATION_THRESHOLD`),
+  the human hook emits the first `<threshold>` individual lines
+  then a single collapse line:
+
+      protokit lint: warning [<category>]: ... and <N> more — use --format=json for full details
+
+  Machine formatters (`json` / `junit` / `sarif`) emit ALL warnings
+  unconditionally; summarization is human-only. Agents needing
+  full fidelity must use `--format=json`.
+
+- **`--format=junit` `<system-out>` dual line format.** The
+  testsuite's `<system-out>` body now contains TWO incompatible
+  line shapes joined by newlines:
+
+  1. Compile diagnostics (pre-U5; unchanged): `<level> [<category>]: <message>`
+  2. Runtime warnings (NEW in U5): `[<category>] <message>`
+
+  Compile diagnostics precede runtime warnings within the block.
+  Consumers with a strict prefix regex anchored to the leading
+  level token (`^(warning|error|info) \[`) will not match the new
+  runtime-warning lines. Two distinguishing tokens:
+  compile-diagnostic lines start with a word, runtime-warning
+  lines start with `[`.
+
+- **`--format=sarif` `runs[].properties.runtime_warnings` array.**
+  SARIF runtime warnings ride on a `propertyBag` extension under
+  the run object — INTENTIONALLY separate from the existing
+  `runs[].invocations[].toolExecutionNotifications` array (which
+  remains compile-stage diagnostics only per KTD-1). Entry shape:
+
+      {
+        "level": "warning",
+        "message": {"text": "<warning message>"},
+        "properties": {
+          "category": "<one of the four categories>",
+          "subcategory": "runtime"
+        }
+      }
+
+  No `descriptor.id` is emitted per KTD-1 — categorization
+  travels via `properties.category`. SARIF consumers filter
+  `properties.subcategory == "runtime"` to get the dedicated
+  channel. The `runs[].properties` block is OMITTED entirely on
+  clean runs (zero runtime warnings) so existing pre-U5 SARIF
+  documents are byte-for-byte unchanged when no warnings fire.
+
+  **Migration recipe (SARIF consumer):** add a second scan of
+  `runs[].properties.runtime_warnings` in addition to the existing
+  `runs[].invocations[].toolExecutionNotifications` scan. The two
+  arrays carry disjoint event sets. If consumers want a unified
+  warning stream, union the two channels on the client side.
+
+  **Migration recipe (JUnit consumer):** if scripts parse
+  `<system-out>` for warning lines, extend the leading-token
+  regex to accept BOTH `^<level> \[<category>\]:` AND
+  `^\[<category>\]`. Runtime-warning lines always appear AFTER
+  compile-diagnostic lines within the same `<system-out>` body.
+
+  **Migration recipe (human-format consumer):** match the new
+  envelope `protokit lint: warning [<category>]:` on stderr. The
+  trailing summarization line includes the literal string
+  `use --format=json` so a grep-based consumer hitting the
+  threshold knows where to find full-fidelity output.
 
 ### Rationale (design decisions)
 

@@ -34,6 +34,8 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "tests/schema/lint",
+    "tests/test_builtin_lint_formatter.py",
+    "tests/test_builtin_lint_runtime_warnings.py",
     "tests/test_cli_utils.py",
     "tests/test_formatters_cli.py",
     "tests/test_static_analysis.py",

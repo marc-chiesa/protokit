@@ -47,52 +47,13 @@ from protokit.schema.lint import cli as lint_cli_module
 from protokit.schema.lint.cli import _emit_human_runtime_warnings
 from protokit.schema.lint.cli import main as lint_main
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
-from tests.schema.lint.cli._helpers import runtime_warnings_from_json
-
-_CATEGORIES: tuple[str, ...] = (
-    "rule_exception",
-    "unloaded_rule",
-    "min_severity_relaxed",
-    "all_files_excluded",
+from tests.schema.lint.cli._helpers import (
+    LINT_RUNTIME_WARNING_CATEGORIES as _CATEGORIES,
 )
-
-
-def _warning_for(category: str, *, index: int = 0) -> LintRuntimeWarning:
-    """Construct a representative ``LintRuntimeWarning`` for the category."""
-    if category == "rule_exception":
-        return LintRuntimeWarning(
-            category="rule_exception",
-            rule_id="naming/snake-case-fields",
-            message=f"ValueError: synthetic rule failure #{index}",
-            exception_type="ValueError",
-            descriptor_path=f"acme.User.bad_field_{index}",
-        )
-    if category == "unloaded_rule":
-        return LintRuntimeWarning(
-            category="unloaded_rule",
-            rule_id=f"missing/never-registered-{index}",
-            message=f"rule pack 'missing.pack.{index}' could not be loaded",
-        )
-    if category == "min_severity_relaxed":
-        return LintRuntimeWarning(
-            category="min_severity_relaxed",
-            rule_id=None,
-            message=(
-                f"--min-severity=info relaxes profile floor from "
-                f"warning to info ({index})"
-            ),
-        )
-    if category == "all_files_excluded":
-        return LintRuntimeWarning(
-            category="all_files_excluded",
-            rule_id=None,
-            message=(
-                f"all {index + 1} input file(s) excluded by --exclude "
-                f"patterns: **/*"
-            ),
-        )
-    raise AssertionError(f"unrecognized category: {category}")
-
+from tests.schema.lint.cli._helpers import runtime_warnings_from_json
+from tests.schema.lint.cli._helpers import (
+    warning_for_category as _warning_for,
+)
 
 # ---------------------------------------------------------------------------
 # Happy paths — every category surfaces under the stable prefix
@@ -123,6 +84,30 @@ class TestHumanStderrEmissionPerCategory:
         captured = capsys.readouterr()
         assert captured.err == ""
         assert captured.out == ""
+
+    def test_empty_message_field_still_emits_one_line(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Plan U5 line 645: 'skip-empty would mask bugs'. A warning
+        whose ``message`` field is the empty string must still emit
+        one stderr line — the leading
+        ``protokit lint: warning [{category}]:`` envelope carries
+        diagnostic value even with an empty message body. A future
+        defensive ``if w.message:`` guard would silently drop the
+        warning; this test catches that regression.
+        """
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="",
+            exception_type="ValueError",
+            descriptor_path="acme.User.x",
+        )
+        _emit_human_runtime_warnings(LintReport(runtime_warnings=(warning,)))
+        captured = capsys.readouterr()
+        lines = [line for line in captured.err.split("\n") if line]
+        assert len(lines) == 1
+        assert "warning [rule_exception]:" in lines[0]
 
     def test_each_individual_warning_renders_on_its_own_line(
         self, capsys: pytest.CaptureFixture[str],
@@ -228,6 +213,59 @@ class TestSummarizationThresholdBoundary:
         assert len(summary_lines) == 1
         # The remaining-count names the FULL overflow (n - threshold).
         assert f"and {n - threshold} more" in summary_lines[0]
+
+    def test_threshold_zero_is_clamped_to_one(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-positive ``_LINT_HUMAN_SUMMARIZATION_THRESHOLD`` is
+        clamped to ``1`` so the summarization math stays well-defined.
+        With threshold=0 raw, the first emit would skip the individual
+        branch and the elif would fire summary on the first warning
+        with ``remaining = total - 0 = total`` — the "and N more"
+        framing implying prior emissions that did not happen. The
+        clamp turns the effective threshold into 1: first warning
+        emits individually, second triggers the summary with the
+        correct overflow count.
+        """
+        monkeypatch.setattr(
+            lint_cli_module, "_LINT_HUMAN_SUMMARIZATION_THRESHOLD", 0,
+        )
+        warnings = tuple(
+            _warning_for("rule_exception", index=i) for i in range(3)
+        )
+        _emit_human_runtime_warnings(LintReport(runtime_warnings=warnings))
+        captured = capsys.readouterr()
+        lines = [line for line in captured.err.split("\n") if line]
+        # Effective threshold=1 means: 1 individual + 1 summary line.
+        assert len(lines) == 2, lines
+        assert "#0" in lines[0]
+        assert "warning [rule_exception]: ... and 2 more" in lines[1]
+
+    def test_threshold_negative_is_clamped_to_one(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Same clamp behavior for negative threshold values —
+        catches accidental sign flips during D6 tuning. Without the
+        clamp, ``remaining = total - threshold`` would overcount by
+        ``abs(threshold)`` (``total - (-3) = total + 3``).
+        """
+        monkeypatch.setattr(
+            lint_cli_module, "_LINT_HUMAN_SUMMARIZATION_THRESHOLD", -3,
+        )
+        warnings = tuple(
+            _warning_for("rule_exception", index=i) for i in range(2)
+        )
+        _emit_human_runtime_warnings(LintReport(runtime_warnings=warnings))
+        captured = capsys.readouterr()
+        lines = [line for line in captured.err.split("\n") if line]
+        # Effective threshold=1: 1 individual + 1 summary line with
+        # ``remaining = 2 - 1 = 1``, NOT ``2 - (-3) = 5``.
+        assert len(lines) == 2, lines
+        assert "warning [rule_exception]: ... and 1 more" in lines[1]
 
     def test_two_categories_use_independent_counters(
         self,
