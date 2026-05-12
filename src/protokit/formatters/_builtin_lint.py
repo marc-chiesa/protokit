@@ -234,7 +234,12 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
     - ``filtered_count``: int (count of findings dropped by
       ``--min-severity`` filtering).
     - ``runtime_warnings``: list of warning dicts (category,
-      rule_id, message, exception_type, descriptor_path).
+      rule_id, message, exception_type, descriptor_path). The
+      ``rule_id`` field is ``null`` for the CLI-emitted categories
+      (``min_severity_relaxed``, ``all_files_excluded``) and a
+      string for engine-emitted categories (``rule_exception``,
+      ``unloaded_rule``) — see :class:`LintRuntimeWarning` for the
+      contract.
     - ``diagnostics``: list of compile-time diagnostic dicts
       (level, category, message); empty unless ``--proto`` mode
       surfaced backend notices.

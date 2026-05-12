@@ -134,6 +134,13 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
         "    # pyproject.toml: [tool.protokit.lint]\n\n"
         "    #                  profile = [\"default\", \"strict-naming\"]\n\n"
         "    protokit lint schema.descriptor_set\n\n"
+        "  Exclude files matching gitignore-style patterns "
+        "(repeatable):\n\n"
+        "    protokit lint --exclude 'vendor/**' "
+        "--exclude '!vendor/critical.proto' schema.descriptor_set\n\n"
+        "  Bypass any pyproject `[tool.protokit.lint] exclude` "
+        "(lint all files):\n\n"
+        "    protokit lint --no-exclude schema.descriptor_set\n\n"
         "  Bypass pyproject discovery (containerized CI without "
         ".git boundary):\n\n"
         "    protokit lint --no-config schema.descriptor_set\n\n"
@@ -315,7 +322,7 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
          "`[tool.protokit.lint] exclude` in pyproject.toml is used "
          "if present (list of patterns). CLI patterns APPEND to "
          "pyproject patterns; see --no-exclude to clear both. "
-         "Patterns use gitwildmatch semantics including negation: "
+         "Patterns use gitignore-style semantics including negation: "
          "`--exclude 'vendor/**' --exclude '!vendor/important.proto'` "
          "excludes everything under vendor/ except the named file. "
          "The descriptor pool still loads all files (per R9: "
@@ -422,19 +429,13 @@ def main(
     format_explicit = (
         ctx.get_parameter_source("format_name") in explicit_sources
     )
-    # D5 U3: --exclude / --no-exclude → cli_overrides["exclude"]. Three
-    # sentinel branches (per RR-U3-A from U2's ce:review and the
-    # cli_overrides shape contract in ResolvedLintConfig.from_dict):
-    #
-    # - --no-exclude set:      () = clear-all sentinel (drops pyproject too)
-    # - --exclude has values:  the non-empty tuple = CLI patterns to append
-    # - neither:               None = no CLI input, defer to pyproject
-    #
-    # Critical: `multiple=True` defaults to an empty tuple `()` when the
-    # flag is absent. Treating `()` directly as the cli_overrides value
-    # would silently fire the --no-exclude clear-all sentinel on every
-    # invocation. The explicit `no_exclude` boolean disambiguates "user
-    # passed --no-exclude" from "user did not pass --exclude."
+    # D5 U3: --exclude / --no-exclude → cli_overrides["exclude"]. See
+    # ResolvedLintConfig.from_dict's docstring for the full
+    # None/()/non-empty sentinel contract. Local note: click's
+    # `multiple=True` default-empty-tuple is indistinguishable from
+    # "user passed --exclude ''" by value alone, so the explicit
+    # `no_exclude` boolean disambiguates "--no-exclude clear-all"
+    # from "no --exclude flag passed."
     cli_exclude_value: tuple[str, ...] | None
     if no_exclude:
         cli_exclude_value = ()
@@ -758,8 +759,8 @@ def _main_impl(
                 category="all_files_excluded",
                 rule_id=None,
                 message=(
-                    f"all {len(result.root_files)} input file(s) "
-                    f"excluded by patterns: {safe_patterns}"
+                    f"all {len(result.root_files)} input "
+                    f"file(s) excluded by patterns: {safe_patterns}"
                 ),
             )
         else:
@@ -784,12 +785,14 @@ def _main_impl(
         report = engine.run(result, profile=composed_profile)
 
     # Emit runtime warnings to stderr (closes U2 ce:review CLR-U2-03
-    # / agent-native warning #5). Two categories surface here:
-    # `rule_exception` (a rule callable raised an exception caught
-    # by the engine's narrow catch tuple) and `unloaded_rule` (the
-    # active profile names a rule_id not loaded into the engine —
-    # reachable now that --rule-pack ships). Stderr diagnostic; not
-    # gated by --quiet (which suppresses findings stdout only).
+    # / agent-native warning #5). Four categories can surface here:
+    # `rule_exception` and `unloaded_rule` (engine-emitted) plus
+    # `all_files_excluded` (D5 U3, CLI-emitted just above when the
+    # --exclude filter dropped every file) and `min_severity_relaxed`
+    # (D5 U4 forward-declared in the Literal; CLI-emitted by U4 when
+    # the resolved min_severity relaxes the composed profile floor).
+    # Stderr diagnostic; not gated by --quiet (which suppresses
+    # findings stdout only).
     for warning in report.runtime_warnings:
         safe_message = warning.message.replace("\n", " ").replace("\r", " ")
         click.echo(

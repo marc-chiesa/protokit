@@ -4,7 +4,7 @@ Covers:
 
 - **Happy paths**: simple globs, multi-pattern, gitignore-style
   negation (``!path``), and the empty-pattern edge case.
-- **Match semantics**: pathspec ``gitwildmatch`` matches
+- **Match semantics**: pathspec ``gitignore`` matches
   ``FileDescriptorProto.name``-shaped paths (no leading slash;
   forward-slash separators).
 - **Pathological patterns**: pathspec is permissive — empty
@@ -43,7 +43,7 @@ class TestHappyPaths:
 
     def test_gitignore_negation(self) -> None:
         """``!path`` re-includes a previously-excluded path. This is
-        the gitwildmatch negation semantic; useful for excluding a
+        the gitignore negation semantic; useful for excluding a
         whole directory except for one file.
         """
         spec = compile_exclude_patterns(
@@ -87,7 +87,7 @@ class TestEdgeCases:
 
     def test_pathspec_is_permissive_about_bracket_chars(self) -> None:
         """Patterns that look like malformed character classes
-        (``[``, ``[[[``) parse cleanly under gitwildmatch and match
+        (``[``, ``[[[``) parse cleanly under gitignore and match
         nothing in practice. pathspec is permissive by design;
         confirming that prevents false-positive failure reports in
         tests that try to exercise the error path.
@@ -104,7 +104,7 @@ class TestEdgeCases:
 class TestFileDescriptorProtoNameShapes:
     def test_no_leading_slash_paths(self) -> None:
         """``FileDescriptorProto.name`` is a relative path like
-        ``"acme/user.proto"`` — never absolute. gitwildmatch handles
+        ``"acme/user.proto"`` — never absolute. gitignore handles
         this shape correctly.
         """
         spec = compile_exclude_patterns(("acme/**",))

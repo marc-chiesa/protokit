@@ -807,23 +807,24 @@ def compile_exclude_patterns(
 ) -> pathspec.PathSpec:  # type: ignore[type-arg]
     """Compile gitignore-style exclude patterns to a ``pathspec.PathSpec``.
 
-    Wraps ``pathspec.PathSpec.from_lines("gitwildmatch", patterns)`` so
+    Wraps ``pathspec.PathSpec.from_lines("gitignore", patterns)`` so
     the CLI's `--exclude` flag and pyproject ``[tool.protokit.lint]
     exclude`` entries share a single compilation path. The returned
     spec is used to filter ``compile_result.root_files`` post-compile
     and pre-``engine.run`` (per plan U3 approach).
 
-    An empty pattern iterable returns an empty PathSpec that matches
-    nothing — the same shape as "no exclude configured." Callers can
-    branch on ``len(patterns) == 0`` to short-circuit the filter
-    entirely, or just call this helper unconditionally and rely on
-    ``match_file()`` returning ``False`` for every file.
+    The current call site (``protokit.schema.lint.cli`` U3 filter
+    block) guards on ``if resolved.exclude:`` before calling, so the
+    empty-pattern path is not exercised in production. An empty
+    iterable would return an empty PathSpec that matches nothing,
+    but callers should prefer the truthiness guard on a tuple over
+    calling with an empty input.
 
     Args:
         patterns: An iterable of gitignore-style glob patterns. Each
             pattern is consumed once; the iterable is materialized
             inside pathspec. Negation patterns (``!path``) are
-            honored per gitwildmatch semantics.
+            honored per gitignore semantics.
 
     Returns:
         A ``pathspec.PathSpec`` whose ``match_file(path)`` returns
@@ -850,7 +851,7 @@ def compile_exclude_patterns(
     # crafted pattern with embedded newlines cannot forge a fake
     # second stderr line.
     try:
-        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+        return pathspec.PathSpec.from_lines("gitignore", patterns)
     except Exception as exc:  # noqa: BLE001 - intentional broad catch
         error_exit_with_code(
             "exclude-pattern-invalid",

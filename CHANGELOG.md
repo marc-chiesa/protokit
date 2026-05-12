@@ -106,6 +106,41 @@ All notable changes to `protokit` are documented here. Format loosely follows
 There is no compatibility shim — existing imports must be updated.
 The rename lands as a single breaking change on the path to 0.2.
 
+### BREAKING (D5 U3 — `protokit lint` runtime warnings)
+
+- `LintRuntimeWarning.rule_id` widened from `str` to `str | None`
+  (D5 U3). Engine-emitted categories (`rule_exception`,
+  `unloaded_rule`) continue to populate a non-`None` string at every
+  emit site. CLI-emitted categories — `all_files_excluded` (D5 U3,
+  fires when `--exclude` / `[tool.protokit.lint] exclude` drops every
+  input file) and `min_severity_relaxed` (D5 U4 forthcoming, fires
+  when the resolved `min_severity` relaxes the composed profile
+  floor) — populate `rule_id=None` because they are not scoped to a
+  single rule.
+- **JSON wire format**: `report.runtime_warnings[*].rule_id` is now
+  `null`-capable. Consumers strictly typing this field as `string`
+  must accept `null` or `Optional<string>`.
+- **Python API**: code iterating `w.rule_id.upper()` or
+  `w.rule_id.startswith(...)` on the new categories raises
+  `AttributeError`. Branch on `w.category` first, then narrow:
+  ```python
+  if w.category in ("rule_exception", "unloaded_rule"):
+      assert w.rule_id is not None  # mypy-strict narrowing
+      ...use w.rule_id as str...
+  ```
+  Mirrors the existing `descriptor_path` / `exception_type` narrowing
+  pattern in `LintRuntimeWarning`'s docstring.
+- **`LintRuntimeWarning.category` Literal** widened from 2 values
+  (`"rule_exception"`, `"unloaded_rule"`) to 4 (adds
+  `"min_severity_relaxed"`, `"all_files_excluded"`). Exhaustive
+  `match`/`if-elif` with `assert_never()` arms require an additional
+  branch.
+- Full migration recipes (JSON / SARIF / Python with concrete
+  before/after code) land with D5 U6's CHANGELOG fold-in alongside
+  the formatter-side wire-format updates (lint_junit / lint_sarif).
+  This entry pre-empts the U3→U6 gap for consumers landing the
+  BREAKING change in `main` today.
+
 ### Rationale (design decisions)
 
 See `TODOS.md` for the full decision log. Summary:

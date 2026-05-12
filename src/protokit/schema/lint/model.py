@@ -514,13 +514,12 @@ class LintReport:
             invoked because no element of its ``ElementKind`` was
             present in any walked file. Defaults to ``()``.
         runtime_warnings: Tuple of engine-stage warnings raised during
-            the run. Two categories share the type:
-            ``"rule_exception"`` (a registered rule callable raised
-            an exception caught by the engine's narrow catch tuple)
-            and ``"unloaded_rule"`` (the active profile referenced a
-            ``rule_id`` not loaded into the engine). Defaults to
-            ``()``. See :class:`LintRuntimeWarning` for field-
-            population rules per category.
+            the run. Four categories share the type:
+            ``rule_exception`` and ``unloaded_rule`` (engine-emitted)
+            plus ``min_severity_relaxed`` (D5 U4) and
+            ``all_files_excluded`` (D5 U3) (both CLI-emitted). See
+            :class:`LintRuntimeWarning` for the full per-category
+            field-population contract. Defaults to ``()``.
         filtered_count: Count of findings dropped at emit time
             because their effective severity ranked below the active
             profile's ``min_severity``. Lets D3+ tooling render
