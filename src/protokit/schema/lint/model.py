@@ -343,9 +343,9 @@ class LintFinding:
 
 @dataclass(frozen=True)
 class LintRuntimeWarning:
-    """Engine-stage warning recorded during a lint run.
+    """Engine- or CLI-stage warning recorded during a lint run.
 
-    Two structurally distinct events share this type via the
+    Four structurally distinct events share this type via the
     ``category`` discriminator (mirrors ``LintCompileDiagnostic``'s
     ``category: Literal[...]`` pattern in
     ``protokit.schema.compile``):
@@ -355,7 +355,7 @@ class LintRuntimeWarning:
        documented in ``LintEngine``). Carries ``exception_type`` (the
        caught exception's class name) and ``descriptor_path`` (a
        stable string locating the descriptor at which the rule was
-       firing).
+       firing). Emitted by the engine.
     2. ``"unloaded_rule"`` — the active profile's ``rule_ids``
        referenced a ``rule_id`` not loaded into the engine. Computed
        once at the start of ``LintEngine.run`` (set difference of
@@ -363,19 +363,59 @@ class LintRuntimeWarning:
        ``rule_id``s); produces exactly one warning per missing
        ``rule_id``. Carries no exception or descriptor context;
        ``exception_type`` and ``descriptor_path`` are ``None``.
+       Emitted by the engine.
+    3. ``"min_severity_relaxed"`` (D5 U4) — the CLI-side relaxation
+       notice fired when the resolved ``min_severity`` is more
+       lenient than the composed profile's intrinsic floor. The
+       message field carries the R20 source-attributed text
+       (CLI-source / pyproject-source / both branches). Emitted
+       CLI-side, NOT by the engine. ``rule_id`` is ``None`` because
+       the warning is not scoped to a single rule.
+    4. ``"all_files_excluded"`` (D5 U3) — the CLI-side notice fired
+       when ``--exclude`` / pyproject ``exclude`` filters drop every
+       file from the descriptor pool before ``engine.run``. The
+       message field describes how many files were excluded. Emitted
+       CLI-side, NOT by the engine; engine is short-circuited.
+       ``rule_id`` is ``None`` because the warning is not scoped to
+       a single rule.
+
+    **BREAKING (D5 U3)**: ``rule_id`` was widened from ``str`` to
+    ``str | None``. The two existing engine-emitted categories
+    (``rule_exception``, ``unloaded_rule``) continue to populate
+    ``rule_id`` with a non-``None`` value at every emit site; the
+    type widening only allows the two NEW CLI-emitted categories to
+    populate ``None``. Consumers iterating ``w.rule_id`` (e.g.,
+    ``w.rule_id.upper()``) on the new categories will raise
+    ``AttributeError`` — migrate to ``str | None``-aware narrowing
+    per the mypy-strict pattern below. See the CHANGELOG D5 entry
+    for the BREAKING marker and migration recipes.
 
     **Field-population per category** (enforced by tests, not by the
     type system):
 
-    +-------------------+--------------------+--------------------+
-    | Field             | ``rule_exception`` | ``unloaded_rule``  |
-    +===================+====================+====================+
-    | ``category``      | ``"rule_exception"`` | ``"unloaded_rule"`` |
-    | ``rule_id``       | populated          | populated          |
-    | ``message``       | ``str(exc)``       | human-readable     |
-    | ``exception_type``| exception class name | ``None``         |
-    | ``descriptor_path``| see table below   | ``None``           |
-    +-------------------+--------------------+--------------------+
+    ``"rule_exception"`` (engine-emitted):
+        - ``rule_id``: populated (``str``)
+        - ``message``: ``str(exc)`` or ``repr(exc)``
+        - ``exception_type``: caught exception's ``__class__.__name__``
+        - ``descriptor_path``: see ElementKind table below
+
+    ``"unloaded_rule"`` (engine-emitted):
+        - ``rule_id``: populated (``str``)
+        - ``message``: human-readable "id is in profile but not loaded"
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
+    ``"min_severity_relaxed"`` (CLI-emitted, D5 U4):
+        - ``rule_id``: ``None`` (not rule-scoped)
+        - ``message``: R20-attributed text (CLI/pyproject/both branches)
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
+    ``"all_files_excluded"`` (CLI-emitted, D5 U3):
+        - ``rule_id``: ``None`` (not rule-scoped)
+        - ``message``: human-readable "N files excluded by patterns"
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
 
     For ``category="rule_exception"``, ``descriptor_path`` mirrors
     D1's ``LintLocation.__str__`` shapes per ``ElementKind``:
@@ -398,29 +438,45 @@ class LintRuntimeWarning:
     single dataclass. Downstream consumers (D4 formatters) match D1's
     ``LintCompileDiagnostic`` precedent: branch on ``category``,
     then ``assert w.descriptor_path is not None`` (or use ``cast``)
-    inside the ``"rule_exception"`` branch before reading. This is
-    the same pattern ``LintCompileDiagnostic`` requires for its own
+    inside the ``"rule_exception"`` branch before reading. After D5
+    U3 the same pattern extends to ``rule_id``: branch on
+    ``category``, then ``assert w.rule_id is not None`` inside the
+    ``"rule_exception"`` / ``"unloaded_rule"`` branches. This is the
+    same pattern ``LintCompileDiagnostic`` requires for its own
     Optional fields (``command``, ``exit_code``, ``stderr``,
-    ``exception_type``); D2 introduces no new convention.
+    ``exception_type``); D2 introduced the convention, D5 U3
+    extended it to ``rule_id``.
 
     Attributes:
-        category: Discriminator for the two event shapes.
+        category: Discriminator for the four event shapes. Two
+            engine-emitted (``rule_exception``, ``unloaded_rule``)
+            and two CLI-emitted (``min_severity_relaxed``,
+            ``all_files_excluded``).
         rule_id: The id of the rule the warning is about. For
-            ``"unloaded_rule"`` this is the missing id; for
-            ``"rule_exception"`` this is the rule that raised.
+            ``"rule_exception"`` this is the rule that raised; for
+            ``"unloaded_rule"`` this is the missing id; for the two
+            CLI-emitted categories this is ``None`` (not
+            rule-scoped).
         message: Human-readable description. For
             ``"rule_exception"`` typically ``str(exc)``; for
             ``"unloaded_rule"`` an explanation that the id was named
-            in a profile but not loaded.
+            in a profile but not loaded; for the CLI-emitted
+            categories see the per-category description above.
         exception_type: ``__name__`` of the caught exception class
-            for ``"rule_exception"``; ``None`` for ``"unloaded_rule"``.
+            for ``"rule_exception"``; ``None`` for every other
+            category.
         descriptor_path: Stable string locating the descriptor at
             which a ``"rule_exception"`` was firing (per the table
-            above); ``None`` for ``"unloaded_rule"``.
+            above); ``None`` for every other category.
     """
 
-    category: Literal["rule_exception", "unloaded_rule"]
-    rule_id: str
+    category: Literal[
+        "rule_exception",
+        "unloaded_rule",
+        "min_severity_relaxed",
+        "all_files_excluded",
+    ]
+    rule_id: str | None
     message: str
     exception_type: str | None = None
     descriptor_path: str | None = None

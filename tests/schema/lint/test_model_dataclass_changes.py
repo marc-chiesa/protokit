@@ -1,0 +1,173 @@
+"""Tests for the D5 U3 atomic LintRuntimeWarning dataclass change.
+
+Covers:
+
+- **Literal extension** from 2 → 4 categories: ``rule_exception``,
+  ``unloaded_rule`` (existing), plus ``min_severity_relaxed`` and
+  ``all_files_excluded`` (NEW, both CLI-emitted).
+- ``rule_id: str`` → ``rule_id: str | None`` widening (BREAKING per
+  R18/R18a). The two existing engine-emitted categories continue to
+  populate ``rule_id`` with a non-None string at every emit site;
+  only the two new CLI-emitted categories construct with
+  ``rule_id=None``.
+- Frozen-dataclass mutation discipline still enforced for every
+  field across all four categories.
+- Field-population invariants per the docstring table (rule_id is
+  None ↔ category is one of the two CLI-emitted categories).
+
+These tests pin the BREAKING wire-format change so D6+ consumers
+that iterate ``w.rule_id`` see a regression if the type widens
+further or the Literal set drifts.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import typing
+
+import pytest
+
+from protokit.schema.lint.model import LintRuntimeWarning
+
+# ---------------------------------------------------------------------------
+# Literal extension
+# ---------------------------------------------------------------------------
+
+
+class TestCategoryLiteral:
+    def test_literal_lists_all_four_categories(self) -> None:
+        """The Literal annotation must enumerate exactly 4 category
+        names. A drift to 3 or 5 indicates an accidental break in the
+        category contract that this test catches at import time.
+        """
+        type_hints = typing.get_type_hints(LintRuntimeWarning)
+        category_type = type_hints["category"]
+        literal_args = typing.get_args(category_type)
+        assert set(literal_args) == {
+            "rule_exception",
+            "unloaded_rule",
+            "min_severity_relaxed",
+            "all_files_excluded",
+        }
+        # And exactly 4 — not "a superset" — so adding a fifth without
+        # a corresponding test update will fail this assertion.
+        assert len(literal_args) == 4
+
+
+# ---------------------------------------------------------------------------
+# rule_id type widening (BREAKING)
+# ---------------------------------------------------------------------------
+
+
+class TestRuleIdWidened:
+    def test_rule_id_is_optional_str(self) -> None:
+        """``rule_id`` is typed ``str | None`` after D5 U3 R18."""
+        type_hints = typing.get_type_hints(LintRuntimeWarning)
+        rule_id_type = type_hints["rule_id"]
+        # str | None is equivalent to Optional[str] / Union[str, None]
+        args = set(typing.get_args(rule_id_type))
+        assert args == {str, type(None)}
+
+    def test_engine_categories_accept_populated_rule_id(self) -> None:
+        """The two engine-emitted categories continue to take a
+        non-None ``rule_id`` (existing behavior preserved).
+        """
+        w_exc = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="ValueError(...)",
+            exception_type="ValueError",
+            descriptor_path="foo.proto:bar",
+        )
+        assert w_exc.rule_id == "naming/snake-case-fields"
+
+        w_unloaded = LintRuntimeWarning(
+            category="unloaded_rule",
+            rule_id="acme/missing-rule",
+            message=(
+                "rule 'acme/missing-rule' is named in profile "
+                "'default' but not loaded into the engine"
+            ),
+        )
+        assert w_unloaded.rule_id == "acme/missing-rule"
+
+    def test_cli_categories_accept_none_rule_id(self) -> None:
+        """The two CLI-emitted categories construct with
+        ``rule_id=None`` (NEW behavior).
+        """
+        w_relaxed = LintRuntimeWarning(
+            category="min_severity_relaxed",
+            rule_id=None,
+            message="--min-severity=warning relaxes ...",
+        )
+        assert w_relaxed.rule_id is None
+
+        w_excluded = LintRuntimeWarning(
+            category="all_files_excluded",
+            rule_id=None,
+            message="all 3 input file(s) excluded by patterns: vendor/**",
+        )
+        assert w_excluded.rule_id is None
+
+
+# ---------------------------------------------------------------------------
+# Frozen-dataclass discipline preserved across all four categories
+# ---------------------------------------------------------------------------
+
+
+class TestFrozen:
+    @pytest.mark.parametrize(
+        "category,rule_id",
+        [
+            ("rule_exception", "rule/id"),
+            ("unloaded_rule", "rule/id"),
+            ("min_severity_relaxed", None),
+            ("all_files_excluded", None),
+        ],
+    )
+    def test_assignment_raises_for_every_category(
+        self, category: str, rule_id: str | None,
+    ) -> None:
+        w = LintRuntimeWarning(
+            category=category,  # type: ignore[arg-type]
+            rule_id=rule_id,
+            message="m",
+        )
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            w.rule_id = "different"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Field-population invariants per docstring table
+# ---------------------------------------------------------------------------
+
+
+class TestFieldPopulationInvariants:
+    def test_cli_emitted_categories_have_none_descriptor_path(self) -> None:
+        """``min_severity_relaxed`` and ``all_files_excluded`` are
+        CLI-emitted (not engine-emitted); ``descriptor_path`` is
+        ``None`` for both. The dataclass default is ``None`` so
+        omitting it is the canonical construction.
+        """
+        for category in ("min_severity_relaxed", "all_files_excluded"):
+            w = LintRuntimeWarning(
+                category=category,  # type: ignore[arg-type]
+                rule_id=None,
+                message="m",
+            )
+            assert w.descriptor_path is None
+            assert w.exception_type is None
+
+    def test_rule_exception_takes_descriptor_path(self) -> None:
+        """``rule_exception`` is the only category that populates
+        ``descriptor_path``; this test pins the contract.
+        """
+        w = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="r/id",
+            message="m",
+            exception_type="ValueError",
+            descriptor_path="foo.proto:bar.Msg",
+        )
+        assert w.descriptor_path == "foo.proto:bar.Msg"
+        assert w.exception_type == "ValueError"

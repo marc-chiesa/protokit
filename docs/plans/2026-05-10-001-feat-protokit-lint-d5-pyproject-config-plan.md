@@ -459,7 +459,7 @@ D5 ships when **all** of the following hold (mirrors origin Success Criteria; ca
 
 ---
 
-- [ ] **U3: File-level exclusion — atomic dataclass change + pathspec + `--exclude` / `--no-exclude` + filter at CLI**
+- [x] **U3: File-level exclusion — atomic dataclass change + pathspec + `--exclude` / `--no-exclude` + filter at CLI** — SHIPPED 2026-05-11
 
 **Goal:** Land the atomic dataclass prerequisite (Literal extension to 4 categories + `rule_id` widening to `str | None`) so both new D5 categories can be constructed without breaking mypy --strict. Apply gitignore-style globs (pathspec) to `FileDescriptorProto.name` between compile and `engine.run`. Short-circuit `engine.run` when zero files survive exclusion. Emit `LintRuntimeWarning(category="all_files_excluded")` CLI-side per KTD-4 + KTD-6.
 

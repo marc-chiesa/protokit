@@ -42,10 +42,12 @@ land in U2. U1 returns the raw ``dict[str, Any]`` parsed from the
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+
+import pathspec
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -792,4 +794,68 @@ class ResolvedLintConfig:
             format=resolved_fmt,
             min_severity_source=min_sev_source,
             pyproject_min_severity=pyproject_min_sev,
+        )
+
+
+# ---------------------------------------------------------------------------
+# pathspec compilation (D5 U3: R7-R10, R13, R13a)
+# ---------------------------------------------------------------------------
+
+
+def compile_exclude_patterns(
+    patterns: Iterable[str],
+) -> pathspec.PathSpec:  # type: ignore[type-arg]
+    """Compile gitignore-style exclude patterns to a ``pathspec.PathSpec``.
+
+    Wraps ``pathspec.PathSpec.from_lines("gitwildmatch", patterns)`` so
+    the CLI's `--exclude` flag and pyproject ``[tool.protokit.lint]
+    exclude`` entries share a single compilation path. The returned
+    spec is used to filter ``compile_result.root_files`` post-compile
+    and pre-``engine.run`` (per plan U3 approach).
+
+    An empty pattern iterable returns an empty PathSpec that matches
+    nothing — the same shape as "no exclude configured." Callers can
+    branch on ``len(patterns) == 0`` to short-circuit the filter
+    entirely, or just call this helper unconditionally and rely on
+    ``match_file()`` returning ``False`` for every file.
+
+    Args:
+        patterns: An iterable of gitignore-style glob patterns. Each
+            pattern is consumed once; the iterable is materialized
+            inside pathspec. Negation patterns (``!path``) are
+            honored per gitwildmatch semantics.
+
+    Returns:
+        A ``pathspec.PathSpec`` whose ``match_file(path)`` returns
+        ``True`` when ``path`` should be EXCLUDED.
+
+    Raises:
+        SystemExit: Exit code 2 via ``error_exit_with_code(
+        "exclude-pattern-invalid", ...)`` when pathspec rejects any
+        pattern. The error code is distinct from
+        ``pyproject-config-invalid`` because exclude patterns can
+        come from CLI flags as well as pyproject — reusing the
+        pyproject-specific code would mis-attribute the source. Per
+        KTD-9, the rejected pattern is newline-sanitized before
+        being interpolated into the stderr message.
+    """
+    # pathspec is highly permissive about gitignore-shaped input —
+    # most invalid-looking patterns parse silently and just match
+    # nothing. The catch-all here is defense-in-depth: when pathspec
+    # DOES raise (a rare GitWildMatchPatternError, or any future
+    # exception type), route the failure through the stable
+    # ``error[lint-exclude-pattern-invalid]:`` prefix rather than
+    # letting an uncaught traceback escape. Per KTD-9, the exception
+    # message body is newline-sanitized before interpolation so a
+    # crafted pattern with embedded newlines cannot forge a fake
+    # second stderr line.
+    try:
+        return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    except Exception as exc:  # noqa: BLE001 - intentional broad catch
+        error_exit_with_code(
+            "exclude-pattern-invalid",
+            (
+                f"invalid exclude pattern "
+                f"({type(exc).__name__}): {_safe_for_stderr(exc)}"
+            ),
         )

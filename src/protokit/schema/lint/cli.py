@@ -84,16 +84,22 @@ from protokit.schema.lint._cli_utils import (
     _load_descriptor_sets_to_result,
     _load_user_rule_pack,
     _run_lint_formatter_safely,
+    _safe_for_stderr,
     _safe_module_name,
     error_exit_with_code,
 )
-from protokit.schema.lint._config import ResolvedLintConfig, load_pyproject_config
+from protokit.schema.lint._config import (
+    ResolvedLintConfig,
+    compile_exclude_patterns,
+    load_pyproject_config,
+)
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
     SEVERITY_RANK,
     DuplicateRuleError,
     LintProfile,
     LintReport,
+    LintRuntimeWarning,
     LintSeverity,
 )
 from protokit.schema.lint.rules import BUILTIN_PACKS
@@ -297,6 +303,39 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
          "in environments without a .git boundary where walk-up "
          "may otherwise consume an unintended parent pyproject.",
 )
+@click.option(
+    "--exclude",
+    "exclude_patterns",
+    multiple=True,
+    metavar="PATTERN",
+    help="Gitignore-style glob pattern to exclude files from the "
+         "lint pass (repeatable). Matched against "
+         "FileDescriptorProto.name (i.e., the path the file was "
+         "registered under). When --exclude is not explicitly passed, "
+         "`[tool.protokit.lint] exclude` in pyproject.toml is used "
+         "if present (list of patterns). CLI patterns APPEND to "
+         "pyproject patterns; see --no-exclude to clear both. "
+         "Patterns use gitwildmatch semantics including negation: "
+         "`--exclude 'vendor/**' --exclude '!vendor/important.proto'` "
+         "excludes everything under vendor/ except the named file. "
+         "The descriptor pool still loads all files (per R9: "
+         "filtering applies to findings emission, not pool loading); "
+         "an --exclude'd file's symbols remain resolvable as "
+         "transitive imports for other files.",
+)
+@click.option(
+    "--no-exclude",
+    "no_exclude",
+    is_flag=True,
+    default=False,
+    help="Bypass all exclude patterns (CLI --exclude AND pyproject "
+         "[tool.protokit.lint] exclude). When --no-exclude is set, "
+         "every input file is linted regardless of pattern matches. "
+         "Useful for verifying that a pyproject exclude list is the "
+         "reason an expected finding is not surfacing, or in CI "
+         "configurations that override the project's default "
+         "exclude policy.",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -312,6 +351,8 @@ def main(
     quiet: bool,
     config_path: Path | None,
     no_config: bool,
+    exclude_patterns: tuple[str, ...],
+    no_exclude: bool,
 ) -> None:
     """Lint INPUTS for style and policy violations.
 
@@ -339,6 +380,16 @@ def main(
             err=True,
         )
         effective_statistics = False
+    # D5 U3: --no-exclude wins over --exclude per KTD-10. When both are
+    # supplied, drop the --exclude patterns silently after announcing
+    # the override on stderr (mirrors the --quiet/--statistics
+    # soft-mutex pattern above).
+    if no_exclude and exclude_patterns:
+        click.echo(
+            "warning[lint-cli]: --no-exclude clears --exclude patterns "
+            "(--no-exclude wins)",
+            err=True,
+        )
     # D5 U1: load [tool.protokit.lint] from pyproject.toml.
     # If load_pyproject_config raises SystemExit (any R5a shadow path,
     # parse error), it never returns and the CLI exits 2 with the
@@ -371,6 +422,26 @@ def main(
     format_explicit = (
         ctx.get_parameter_source("format_name") in explicit_sources
     )
+    # D5 U3: --exclude / --no-exclude → cli_overrides["exclude"]. Three
+    # sentinel branches (per RR-U3-A from U2's ce:review and the
+    # cli_overrides shape contract in ResolvedLintConfig.from_dict):
+    #
+    # - --no-exclude set:      () = clear-all sentinel (drops pyproject too)
+    # - --exclude has values:  the non-empty tuple = CLI patterns to append
+    # - neither:               None = no CLI input, defer to pyproject
+    #
+    # Critical: `multiple=True` defaults to an empty tuple `()` when the
+    # flag is absent. Treating `()` directly as the cli_overrides value
+    # would silently fire the --no-exclude clear-all sentinel on every
+    # invocation. The explicit `no_exclude` boolean disambiguates "user
+    # passed --no-exclude" from "user did not pass --exclude."
+    cli_exclude_value: tuple[str, ...] | None
+    if no_exclude:
+        cli_exclude_value = ()
+    elif exclude_patterns:
+        cli_exclude_value = exclude_patterns
+    else:
+        cli_exclude_value = None
     cli_overrides: dict[str, Any] = {
         "profile": (
             (profile_name.strip().lower(),) if profile_explicit else None
@@ -384,8 +455,7 @@ def main(
         "format": (
             format_name.strip().lower() if format_explicit else None
         ),
-        # `--exclude` arrives in D5 U3; until then no CLI source for exclude.
-        "exclude": None,
+        "exclude": cli_exclude_value,
     }
     resolved = ResolvedLintConfig.from_dict(pyproject_config, cli_overrides)
     # quiet + non-human-format mutex applies to the RESOLVED format so
@@ -658,7 +728,60 @@ def _main_impl(
             err=True,
         )
 
-    report = engine.run(result, profile=composed_profile)
+    # D5 U3: file-level exclusion. Apply `resolved.exclude` patterns to
+    # the post-compile `result.root_files` BEFORE invoking the engine.
+    # Per R9, the descriptor POOL still loads every file (so transitive
+    # imports resolve), but the engine only walks files that survive
+    # the filter. When zero files survive AND the user passed inputs
+    # at all, emit `LintRuntimeWarning(category="all_files_excluded")`
+    # CLI-side per KTD-4 + KTD-6 and short-circuit `engine.run` with
+    # an empty report; downstream rendering still fires so the
+    # warning surfaces in every formatter.
+    all_files_excluded_warning: LintRuntimeWarning | None = None
+    if resolved.exclude:
+        exclude_spec = compile_exclude_patterns(resolved.exclude)
+        filtered_root_files = tuple(
+            f for f in result.root_files
+            if not exclude_spec.match_file(f)
+        )
+        if (
+            len(filtered_root_files) == 0
+            and len(result.root_files) > 0
+        ):
+            # Sanitize the joined-pattern string per KTD-9 since
+            # exclude patterns can carry attacker-controlled bytes
+            # when sourced from pyproject in a multi-tenant repo.
+            safe_patterns = ", ".join(
+                _safe_for_stderr(p) for p in resolved.exclude
+            )
+            all_files_excluded_warning = LintRuntimeWarning(
+                category="all_files_excluded",
+                rule_id=None,
+                message=(
+                    f"all {len(result.root_files)} input file(s) "
+                    f"excluded by patterns: {safe_patterns}"
+                ),
+            )
+        else:
+            result = dataclasses.replace(
+                result, root_files=filtered_root_files,
+            )
+
+    if all_files_excluded_warning is not None:
+        # Short-circuit: skip engine.run and emit an empty report
+        # whose runtime_warnings carries only the all_files_excluded
+        # CLI-side warning. Downstream rendering (stderr loop +
+        # formatter dispatch) still runs so the warning surfaces in
+        # every output format consistent with engine-emitted warnings.
+        report = LintReport(
+            findings=(),
+            diagnostics=result.diagnostics,
+            profiles_run=(composed_profile.name,),
+            rules_run=tuple(sorted(composed_profile.rule_ids)),
+            runtime_warnings=(all_files_excluded_warning,),
+        )
+    else:
+        report = engine.run(result, profile=composed_profile)
 
     # Emit runtime warnings to stderr (closes U2 ce:review CLR-U2-03
     # / agent-native warning #5). Two categories surface here:
