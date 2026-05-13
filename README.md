@@ -484,13 +484,12 @@ more `.proto` files (or pre-built `FileDescriptorSet` binaries).
 The built-in packs cover buf BASIC parity for single-language teams:
 `naming` (AIP-122 + PascalCase/snake_case/UPPER_SNAKE conventions
 for messages, enums, services, RPCs, oneofs, files, and packages),
-`enum` (`no-allow-alias`, `first-value-zero`), and `imports`
-(`no-public`, `no-weak`, `unused`). The remaining D6a packs
-(`package` structural rules, `file` syntax rule) land in subsequent
-D6a deliveries. Lint is intentionally orthogonal to `protokit
-compat` — compat answers "is this schema change safe for
-consumers?", lint answers "does this schema follow our style
-conventions?".
+`enum` (`no-allow-alias`, `first-value-zero`), `imports`
+(`no-public`, `no-weak`, `unused`), `package` (`defined`,
+`directory-match`), and `file` (`syntax-specified`). 14 rules across
+5 packs. Lint is intentionally orthogonal to `protokit compat` —
+compat answers "is this schema change safe for consumers?", lint
+answers "does this schema follow our style conventions?".
 
 ### Quick Start
 

@@ -147,6 +147,44 @@ class TestSyntaxSpecified:
         assert f.violation_kind == "file/syntax-specified"
         assert f.params == {"file": "implicit.proto"}
 
+    def test_happy_path_editions_clean(self) -> None:
+        """Proto-editions files (``fdp.syntax == "editions"``) are clean.
+
+        The rule's spirit is "did the user opt into a non-default
+        syntax". Editions IS an explicit opt-in, so the rule treats
+        it as clean. The ``_CLEAN_SYNTAXES`` frozenset documents
+        the accepted values; this test pins the editions branch
+        before editions adoption arrives in earnest.
+
+        Cannot construct an editions file via the test-fixture
+        compile path (the project's compile backends don't
+        support editions yet), so this test exercises the
+        ``_CLEAN_SYNTAXES`` membership via a manually-constructed
+        FileDescriptorProto with ``syntax = "editions"`` and
+        ``edition = EDITION_2023``.
+        """
+        from google.protobuf import descriptor_pb2 as _pb2
+        from google.protobuf import descriptor_pool as _pool
+
+        fdp = _pb2.FileDescriptorProto()
+        fdp.name = "ed.proto"
+        fdp.syntax = "editions"
+        fdp.edition = _pb2.Edition.EDITION_2023
+        fdp.package = "ed"
+        pool = _pool.DescriptorPool()
+        pool.Add(fdp)
+        from protokit.schema.compile import CompileResult
+        result = CompileResult(pool=pool, root_files=("ed.proto",))
+        engine = LintEngine()
+        engine.load_rule_pack(file_pack)
+        profile = LintProfile(
+            name="t",
+            rule_ids=frozenset({"file/syntax-specified"}),
+            min_severity=LintSeverity.INFO,
+        )
+        report = engine.run(result, profile=profile)
+        assert report.findings == ()
+
 
 # ---------------------------------------------------------------------------
 # Profile membership — derived from RULES

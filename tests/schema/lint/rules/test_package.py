@@ -248,6 +248,73 @@ message U { string n = 1; }
             "expected": "acme",
         }
 
+    def test_package_more_segments_than_directory_fires(
+        self, tmp_path: Path,
+    ) -> None:
+        """File at ``acme/v1/users.proto`` with ``package acme.v1.types;``
+        fires — package has MORE segments than the directory path implies.
+        """
+        src = """
+syntax = "proto3";
+package acme.v1.types;
+message U { string n = 1; }
+"""
+        report = _run_single(
+            tmp_path,
+            {"acme/v1/users.proto": src},
+            "package/directory-match",
+        )
+        assert len(report.findings) == 1
+        assert report.findings[0].params == {
+            "file": "acme/v1/users.proto",
+            "package": "acme.v1.types",
+            "expected": "acme.v1",
+        }
+
+    def test_skipped_when_directory_part_is_not_valid_identifier(
+        self, tmp_path: Path,
+    ) -> None:
+        """Directory parts that cannot form proto identifiers are skipped.
+
+        The protobuf descriptor convention forbids leading-slash anchors,
+        ``..`` segments, hyphens, and leading digits in package names.
+        When the file path contains any of these in its directory parts,
+        no meaningful "expected" package can be derived — the rule
+        skips rather than emit a nonsense finding like
+        ``expected="/.acme.v1"`` or ``expected="acme....v1"``. This
+        defends against manually-constructed fixtures and synthesized
+        descriptors that bypass the normalization the compile backends
+        perform.
+
+        Cannot easily construct these via compile_protos_to_result (the
+        compiler rejects most of them), so this test exercises the
+        guard via a manually-constructed FileDescriptorProto.
+        """
+        from google.protobuf import descriptor_pb2 as _pb2
+        from google.protobuf import descriptor_pool as _pool
+
+        for bad_name in ["/acme/v1/foo.proto", "acme/../v1/foo.proto"]:
+            fdp = _pb2.FileDescriptorProto()
+            fdp.name = bad_name
+            fdp.syntax = "proto3"
+            fdp.package = "should.not.match"
+            pool = _pool.DescriptorPool()
+            pool.Add(fdp)
+            from protokit.schema.compile import CompileResult
+            result = CompileResult(pool=pool, root_files=(bad_name,))
+            engine = LintEngine()
+            engine.load_rule_pack(package_pack)
+            profile = LintProfile(
+                name="t",
+                rule_ids=frozenset({"package/directory-match"}),
+                min_severity=LintSeverity.INFO,
+            )
+            report = engine.run(result, profile=profile)
+            # Should skip cleanly without emitting findings.
+            assert report.findings == (), (
+                f"unexpected findings for {bad_name!r}: {report.findings}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # Profile membership — derived from RULES

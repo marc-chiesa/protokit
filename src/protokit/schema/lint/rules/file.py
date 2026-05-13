@@ -45,22 +45,33 @@ if TYPE_CHECKING:
     from protokit.schema.lint.model import FileLintContext
 
 
+#: Syntaxes the rule treats as "specified" and clean. Proto3 is
+#: the primary D6a target; ``editions`` is included so files that
+#: explicitly opt into proto-editions (recorded as
+#: ``fdp.syntax == "editions"`` by the protobuf compiler) are
+#: treated as also-clean, matching the rule docstring's stated
+#: intent. Empty (``""``) covers both no-statement files and
+#: explicit ``syntax = "proto2";``, and the rule fires on those —
+#: see the documented buf-parity divergence below.
+_CLEAN_SYNTAXES: frozenset[str] = frozenset({"proto3", "editions"})
+
+
 @lint_rule(
     rule_id="file/syntax-specified",
     severity=LintSeverity.ERROR,
     profiles=("recommended", "default"),
     element=ElementKind.FILE,
     message_template=(
-        "File {file!r} does not declare ``syntax = \"proto3\";``; "
-        "protokit treats proto2 (whether explicit or implicit) as "
-        "a parity violation — declare proto3 explicitly or demote "
-        "this rule via [tool.protokit.lint.severities] if proto2 "
-        "is intentional"
+        "File {file!r} does not declare ``syntax = \"proto3\";`` "
+        "(or ``edition = \"...\";``); protokit treats proto2 "
+        "(whether explicit or implicit) as a parity violation — "
+        "declare proto3 explicitly or demote this rule via "
+        "[tool.protokit.lint.severities] if proto2 is intentional"
     ),
     source_spec="buf:SYNTAX_SPECIFIED",
 )
 def check_syntax_specified(ctx: FileLintContext) -> None:
-    """Fire when the file's resolved syntax is not ``proto3``.
+    """Fire when the file's resolved syntax is not proto3 or editions.
 
     The descriptor pool does not preserve enough source-level
     information to distinguish "no syntax statement at all" from
@@ -70,19 +81,21 @@ def check_syntax_specified(ctx: FileLintContext) -> None:
 
     Buf's SYNTAX_SPECIFIED rule fires only on the no-statement
     case (it parses .proto source directly). Protokit can only
-    work from descriptor output, so the rule fires on both cases.
-    This is stricter than buf and intentionally nudges users
-    toward proto3; users with intentional proto2 codebases can
-    demote the rule via ``[tool.protokit.lint.severities]``.
+    work from descriptor output, so the rule fires on both
+    no-syntax and explicit-proto2 cases. This is stricter than
+    buf and intentionally nudges users toward proto3; users with
+    intentional proto2 codebases can demote the rule via
+    ``[tool.protokit.lint.severities]``.
 
-    Future editions (proto-editions, recorded as
-    ``fdp.syntax == "editions"`` or similar) are out of scope for
-    D6a — when editions support lands, this rule should accept
-    editions as also-clean.
+    **Editions support**: files that explicitly opt into
+    proto-editions (``fdp.syntax == "editions"``) are treated as
+    clean — the rule's spirit is "did you opt into a non-default
+    syntax", and editions IS an explicit opt-in. The
+    ``_CLEAN_SYNTAXES`` frozenset documents the accepted values.
     """
     fdp = descriptor_pb2.FileDescriptorProto()
     ctx.file.CopyToProto(fdp)
-    if fdp.syntax != "proto3":
+    if fdp.syntax not in _CLEAN_SYNTAXES:
         ctx.emit(
             violation_kind="file/syntax-specified",
             params={"file": ctx.file.name},

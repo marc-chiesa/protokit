@@ -273,16 +273,17 @@ class TestMinSeverityOverride:
 
 
 class TestR25Provenance:
-    def test_builtin_default_emits_provenance_line_two_packs(
+    def test_builtin_default_emits_provenance_line_multi_pack(
         self, clean_descriptor_set: Path,
     ) -> None:
         """R25 fires on the built-in default once BUILTIN_PACKS >= 2.
 
         ``BUILTIN_PACKS`` shipped with one member at D2 (``naming``);
-        D6a Unit 4 added a second (``enum``), tripping the R25
-        ``len(loaded_packs) >= 2`` gate. The default invocation now
-        emits the provenance line listing both packs and their
-        contributing rule_ids.
+        D6a Unit 4 added ``enum`` (tripping the R25
+        ``len(loaded_packs) >= 2`` gate), Unit 5 added ``imports``,
+        Unit 6 added ``package`` and ``file``. The default
+        invocation now emits the provenance line listing all five
+        packs and their contributing rule_ids.
 
         The single-pack-silent branch of the gate is no longer
         reachable through built-in defaults. It will be re-verifiable
@@ -296,24 +297,36 @@ class TestR25Provenance:
         )
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile 'default' from" in result.stderr
-        # Both built-in packs listed with their contributing rule_ids.
-        # Pin at least one rule_id per pack so a future rename or
-        # accidental drop of either rule fails the assertion.
+        # All five built-in packs listed with at least one
+        # contributing rule_id each. A future rename or accidental
+        # drop of any rule fails the assertion; per-pack coverage
+        # also catches a future BUILTIN_PACKS entry that loads but
+        # contributes no rules in the default profile.
         assert "protokit.schema.lint.rules.naming=" in result.stderr
         assert "naming/snake-case-fields" in result.stderr
         assert "protokit.schema.lint.rules.enum=" in result.stderr
         assert "enum/no-allow-alias" in result.stderr
         assert "enum/first-value-zero" in result.stderr
+        assert "protokit.schema.lint.rules.imports=" in result.stderr
+        assert "imports/no-public" in result.stderr
+        assert "imports/no-weak" in result.stderr
+        assert "imports/unused" in result.stderr
+        assert "protokit.schema.lint.rules.package=" in result.stderr
+        assert "package/defined" in result.stderr
+        assert "package/directory-match" in result.stderr
+        assert "protokit.schema.lint.rules.file=" in result.stderr
+        assert "file/syntax-specified" in result.stderr
 
     def test_multi_pack_emits_provenance_line(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """Multi-pack (2 built-in + 1 user pack) triggers R25 line.
+        """Multi-pack (5 built-in + 1 user pack) triggers R25 line.
 
-        After D6a Unit 4 the built-in default is already multi-pack,
-        so this case exercises 3-pack composition (naming + enum +
-        user). The companion test above pins the 2-pack
-        built-in-default case.
+        After D6a Unit 6 the built-in default loads 5 packs, so this
+        case exercises 6-pack composition with one user pack on top.
+        The companion test above pins the 5-pack built-in-default
+        case; this test additionally pins that user packs append
+        cleanly to the provenance line in the same wire format.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -325,13 +338,21 @@ class TestR25Provenance:
         )
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile 'default' from" in result.stderr
-        # All three packs listed with their contributing rule_ids;
-        # pin both enum rule_ids so future drift on either is caught:
+        # All six packs listed with at least one contributing rule_id each.
         assert "protokit.schema.lint.rules.naming=" in result.stderr
         assert "naming/snake-case-fields" in result.stderr
         assert "protokit.schema.lint.rules.enum=" in result.stderr
         assert "enum/no-allow-alias" in result.stderr
         assert "enum/first-value-zero" in result.stderr
+        assert "protokit.schema.lint.rules.imports=" in result.stderr
+        assert "imports/no-public" in result.stderr
+        assert "imports/no-weak" in result.stderr
+        assert "imports/unused" in result.stderr
+        assert "protokit.schema.lint.rules.package=" in result.stderr
+        assert "package/defined" in result.stderr
+        assert "package/directory-match" in result.stderr
+        assert "protokit.schema.lint.rules.file=" in result.stderr
+        assert "file/syntax-specified" in result.stderr
         assert "pack_user_a" in result.stderr
         assert "user-a/no-leading-x" in result.stderr
 
