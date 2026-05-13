@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package parity.naming.rpcs;
+
+message GoodPing {}
+message GoodPong {}
+
+service GoodPingService {
+  rpc GoodRpc(GoodPing) returns (GoodPong);
+}

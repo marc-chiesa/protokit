@@ -1,0 +1,5 @@
+syntax = "proto3";
+
+package Parity.Naming.BadPkg;
+
+message Stub {}

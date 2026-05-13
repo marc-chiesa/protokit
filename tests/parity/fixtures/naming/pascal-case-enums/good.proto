@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package parity.naming.pascalenums;
+
+enum GoodEnum {
+  GOOD_ENUM_UNSPECIFIED = 0;
+}

@@ -1,0 +1,6 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - ENUM_NO_ALLOW_ALIAS

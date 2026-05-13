@@ -1,0 +1,5 @@
+package parity.file.syntaxspecified;
+
+message NoSyntaxStub {
+  optional int32 field = 1;
+}

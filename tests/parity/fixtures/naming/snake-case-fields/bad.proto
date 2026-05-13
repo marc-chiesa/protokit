@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package parity.naming.snakecasefields;
+
+message BadMessage {
+  int32 MyField = 1;
+}

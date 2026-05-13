@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package parity.naming.rpcs;
+
+message BadPing {}
+message BadPong {}
+
+service BadPingService {
+  rpc lower_case_rpc(BadPing) returns (BadPong);
+}

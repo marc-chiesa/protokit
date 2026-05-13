@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package parity.naming.oneofs;
+
+message GoodMessage {
+  oneof good_oneof {
+    string a = 1;
+    string b = 2;
+  }
+}

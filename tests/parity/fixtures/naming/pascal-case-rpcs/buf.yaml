@@ -1,0 +1,6 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - RPC_PASCAL_CASE

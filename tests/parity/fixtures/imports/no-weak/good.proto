@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package parity.imports.noweak;
+
+import "other.proto";
+
+message GoodMessage {
+  OtherMessage embedded = 1;
+}

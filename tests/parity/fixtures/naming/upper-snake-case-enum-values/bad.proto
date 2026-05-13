@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package parity.naming.enumvalues;
+
+enum BadEnum {
+  BAD_ENUM_UNSPECIFIED = 0;
+  lowerValue = 1;
+}

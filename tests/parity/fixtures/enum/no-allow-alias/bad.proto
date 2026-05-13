@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package parity.enum.noallowalias;
+
+enum BadEnum {
+  option allow_alias = true;
+  BAD_ENUM_UNSPECIFIED = 0;
+  BAD_ENUM_ALIAS = 0;
+}

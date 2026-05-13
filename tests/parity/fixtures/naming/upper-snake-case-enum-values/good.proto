@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package parity.naming.enumvalues;
+
+enum GoodEnum {
+  GOOD_ENUM_UNSPECIFIED = 0;
+  UPPER_VALUE = 1;
+}

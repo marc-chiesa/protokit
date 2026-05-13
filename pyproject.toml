@@ -81,8 +81,15 @@ testpaths = ["tests"]
 # D5 R23a: register the `slow` marker so future --strict-markers
 # adoption doesn't regress. Used by tests/schema/lint/test_perf_smoke.py
 # (D5 U6) to gate the perf-smoke test off the fast-iteration loop.
+#
+# D6a U8 Phase A: register the `parity` marker for the buf-parity
+# test harness in tests/parity/. Default `pytest tests/` excludes
+# these tests via `pytest -m 'not parity'` (or simply by not
+# passing `-m parity`); CI's dedicated `parity` job runs them with
+# the pinned buf binary on PATH.
 markers = [
     "slow: tests excluded by `pytest -m 'not slow'` (currently: D5 perf smoke on linux+py3.12)",
+    "parity: buf-parity tests (tests/parity/); require `buf` binary via $BUF_BINARY or PATH; CI runs them in the dedicated parity job",
 ]
 
 [tool.ruff]

@@ -1,0 +1,8 @@
+syntax = "proto2";
+
+package parity.enum.firstvaluezero;
+
+enum BadEnum {
+  BAD_ENUM_ONE = 1;
+  BAD_ENUM_TWO = 2;
+}

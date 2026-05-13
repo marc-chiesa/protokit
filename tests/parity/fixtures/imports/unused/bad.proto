@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package parity.imports.unused;
+
+import "other.proto";
+
+message BadMessage {
+  int32 unrelated_field = 1;
+}

@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package parity.imports.nopublic;
+
+message OtherMessage {
+  int32 value = 1;
+}

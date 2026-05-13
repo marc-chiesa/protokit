@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package parity.imports.nopublic;
+
+import public "other.proto";
+
+message BadMessage {
+  OtherMessage embedded = 1;
+}

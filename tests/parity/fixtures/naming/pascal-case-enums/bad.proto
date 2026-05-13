@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package parity.naming.pascalenums;
+
+enum lower_case_enum {
+  LOWER_CASE_ENUM_UNSPECIFIED = 0;
+}

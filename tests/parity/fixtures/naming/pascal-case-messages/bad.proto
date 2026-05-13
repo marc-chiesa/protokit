@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package parity.naming.pascalmessages;
+
+message lower_case_message {
+  int32 field = 1;
+}
