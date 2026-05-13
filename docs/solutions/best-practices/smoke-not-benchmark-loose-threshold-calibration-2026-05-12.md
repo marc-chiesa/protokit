@@ -123,14 +123,15 @@ assert elapsed < _PERF_SMOKE_THRESHOLD_SECONDS, "..."
 
 The `assert report.rules_run` is the underappreciated one. Without it, a refactor that accidentally empties `profile.rule_ids` satisfies `assert not report.findings` trivially while timing an empty walk. The canary would silently degrade to a no-op.
 
-### Profile reconstruction: use `dataclasses.replace`, not parts-reconstruction
+### Profile reconstruction: use `dataclasses.replace` + compose across all packs
 
-When deriving a test profile from a built-in pack, use `dataclasses.replace` to preserve fields not explicitly overridden. Parts-reconstruction silently drops fields:
+When deriving a test profile from the built-in packs, two disciplines compound: use `dataclasses.replace` (preserves fields not explicitly overridden) and compose across **every** member of `BUILTIN_PACKS` (so the smoke exercises the full walker, not just the first pack's rules).
 
 ```python
 import dataclasses
 
-# WRONG — silently drops rule_severity_overrides from the pack-derived profile
+# WRONG (field-preservation gap) — silently drops rule_severity_overrides
+# from the pack-derived profile by reconstructing the dataclass by parts:
 profile = LintProfile.from_pack(BUILTIN_PACKS[0], profile_name="default")
 profile = LintProfile(
     name="default",
@@ -138,14 +139,27 @@ profile = LintProfile(
     min_severity=LintSeverity.INFO,
 )
 
-# RIGHT — preserves rule_severity_overrides automatically
+# ALSO WRONG (registry-iteration gap, surfaced post-D6a U4 — see
+# [[perf-smoke-profile-compose-across-builtin-packs-2026-05-13]]) —
+# pinning to BUILTIN_PACKS[0] silently drops every other pack's rules
+# from the profile once BUILTIN_PACKS has more than one member:
 profile = dataclasses.replace(
     LintProfile.from_pack(BUILTIN_PACKS[0], profile_name="default"),
     min_severity=LintSeverity.INFO,
 )
+
+# RIGHT — compose across every pack in BUILTIN_PACKS, then replace.
+# LintProfile.compose is identity-safe for single arguments, so this
+# form is equally correct at registry size 1 and remains correct as
+# new packs are added:
+composed = LintProfile.compose(
+    *(LintProfile.from_pack(pack, profile_name="default")
+      for pack in BUILTIN_PACKS),
+)
+profile = dataclasses.replace(composed, min_severity=LintSeverity.INFO)
 ```
 
-If the built-in pack ever declares severity overrides, the wrong form silently runs the smoke with subtly different policy than production lint — a silent correctness gap on top of a perf smoke.
+If the built-in pack ever declares severity overrides, the parts-reconstruction form silently runs the smoke with subtly different policy than production lint — a silent correctness gap on top of a perf smoke. If `BUILTIN_PACKS` has more than one member (post-D6a U4: `naming` + `enum`), the `BUILTIN_PACKS[0]` form silently runs the smoke against a strict subset of the rules the engine actually loaded — a silent coverage gap on top of the same smoke.
 
 ### Pair with a fail-closed CI matrix coverage meta-test
 
@@ -206,3 +220,4 @@ The correct response when the smoke fires unexpectedly: profile the code path un
 - [[fail-closed-ci-matrix-coverage-meta-test]] — companion meta-test pattern; the smoke and the meta-test ship together
 - [[pytest-static-analysis-gate-ratchet]] — parallel gate-as-pytest-test philosophy applied to static-analysis paths; this doc applies the pattern to performance assertions
 - [[parametrized-matrix-tests-inherit-schema-validators]] — tangential: if the smoke is parametrized across formatters/backends, fixture-inheritance discipline applies
+- [[perf-smoke-profile-compose-across-builtin-packs-2026-05-13]] — direct sibling on the same file; covers the registry-iteration gap that the "Profile reconstruction" section's pre-D6a-U4 `BUILTIN_PACKS[0]` form created once `BUILTIN_PACKS` went multi-pack. Refresh that section's example with the compose-across-all-packs form when writing or reviewing smoke tests for projects with a growing built-in registry.
