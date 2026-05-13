@@ -47,11 +47,17 @@ def multi_file_descriptor_set(tmp_path: Path) -> Path:
     from google.protobuf import descriptor_pb2
 
     fds = descriptor_pb2.FileDescriptorSet()
-    for name in ["api/user.proto", "vendor/external.proto"]:
+    # Each fixture file's package matches its directory path so the
+    # D6a U6 ``package/directory-match`` rule (now in BUILTIN_PACKS)
+    # does not fire on this exclude-feature test. The exclude logic
+    # is what's under test here; aligning the packages avoids
+    # coupling this test to the directory-match rule.
+    for name, pkg in [("api/user.proto", "api"),
+                      ("vendor/external.proto", "vendor")]:
         fd = fds.file.add()
         fd.name = name
         fd.syntax = "proto3"
-        fd.package = "test"
+        fd.package = pkg
 
     path = tmp_path / "test.descriptor_set"
     path.write_bytes(fds.SerializeToString())
@@ -71,7 +77,7 @@ def single_vendor_descriptor_set(tmp_path: Path) -> Path:
     fd = fds.file.add()
     fd.name = "vendor/external.proto"
     fd.syntax = "proto3"
-    fd.package = "test"
+    fd.package = "vendor"  # match directory for package/directory-match (U6)
 
     path = tmp_path / "test.descriptor_set"
     path.write_bytes(fds.SerializeToString())

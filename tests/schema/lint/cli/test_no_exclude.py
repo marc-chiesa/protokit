@@ -35,11 +35,15 @@ def multi_file_descriptor_set(tmp_path: Path) -> Path:
     from google.protobuf import descriptor_pb2
 
     fds = descriptor_pb2.FileDescriptorSet()
-    for name in ["api/user.proto", "vendor/external.proto"]:
+    # Packages match directory paths so the D6a U6
+    # ``package/directory-match`` rule does not fire — the exclude
+    # logic is what's under test here.
+    for name, pkg in [("api/user.proto", "api"),
+                      ("vendor/external.proto", "vendor")]:
         fd = fds.file.add()
         fd.name = name
         fd.syntax = "proto3"
-        fd.package = "test"
+        fd.package = pkg
 
     path = tmp_path / "test.descriptor_set"
     path.write_bytes(fds.SerializeToString())

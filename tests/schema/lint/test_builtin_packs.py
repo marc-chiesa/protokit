@@ -80,6 +80,8 @@ class TestBuiltinPacks:
             "protokit.schema.lint.rules.naming",
             "protokit.schema.lint.rules.enum",
             "protokit.schema.lint.rules.imports",
+            "protokit.schema.lint.rules.package",
+            "protokit.schema.lint.rules.file",
         )
         assert actual == expected, (
             f"BUILTIN_PACKS changed: {actual!r} != {expected!r}.\n"
