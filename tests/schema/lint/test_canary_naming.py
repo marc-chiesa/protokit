@@ -37,18 +37,31 @@ class TestNamingPackShape:
     """The naming pack exposes RULES with the canary rule properly registered."""
 
     def test_rules_attribute_is_tuple_of_decorated_fns(self) -> None:
-        """RULES is a tuple containing the decorated check_snake_case_fields fn."""
+        """The canary is the first registered entry in RULES.
+
+        D6a Unit 3 extends RULES with 8 additional naming rules; the
+        full set is exercised by ``tests/schema/lint/rules/
+        test_naming_extended.py``. The canary's own assertion checks
+        only that it remains a decorated entry in the tuple.
+        """
         assert isinstance(RULES, tuple)
-        assert (check_snake_case_fields,) == RULES
+        assert check_snake_case_fields in RULES
         for fn in RULES:
             assert hasattr(fn, "_lint_spec")
 
     def test_canary_spec_metadata_matches_aip_122(self) -> None:
-        """The canary spec carries the documented metadata."""
+        """The canary spec carries the documented metadata.
+
+        Profile membership widened in D6a Unit 3 from
+        ``("default",)`` to ``("recommended", "default")`` so the
+        canary participates in the buf-parity ``recommended`` profile
+        alongside the new naming rules. Severity and source_spec are
+        unchanged.
+        """
         spec = check_snake_case_fields._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "naming/snake-case-fields"
         assert spec.severity is LintSeverity.WARNING
-        assert spec.profiles == ("default",)
+        assert spec.profiles == ("recommended", "default")
         assert spec.element is ElementKind.FIELD
         assert "snake_case" in spec.message_template
         assert spec.source_spec == "https://google.aip.dev/122"
@@ -167,12 +180,24 @@ class TestCanaryMapEntrySkip:
 
 
 class TestCanaryFromPack:
-    """LintProfile.from_pack walks the canary's RULES and derives a profile."""
+    """LintProfile.from_pack walks the canary's RULES and derives a profile.
+
+    D6a Unit 3 widens the pack so ``from_pack(naming_pack, "default")``
+    returns 9 rule_ids (canary + 8 new). The canary's own coverage
+    asserts only the canary's membership; full profile shape is
+    covered by ``tests/schema/lint/rules/test_naming_extended.py``.
+    """
 
     def test_from_pack_default_profile_includes_canary(self) -> None:
         profile = LintProfile.from_pack(naming_pack, "default")
         assert profile.name == "default"
-        assert profile.rule_ids == frozenset({"naming/snake-case-fields"})
+        assert "naming/snake-case-fields" in profile.rule_ids
+
+    def test_from_pack_recommended_profile_includes_canary(self) -> None:
+        """D6a Unit 3 widened the canary into ``recommended``."""
+        profile = LintProfile.from_pack(naming_pack, "recommended")
+        assert profile.name == "recommended"
+        assert "naming/snake-case-fields" in profile.rule_ids
 
     def test_from_pack_unknown_profile_returns_empty(self) -> None:
         profile = LintProfile.from_pack(naming_pack, "nonexistent")

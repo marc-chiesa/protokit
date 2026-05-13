@@ -284,8 +284,16 @@ class TestSeverityOverrideIntegrationWithCanary:
 
 
 class TestLintProfileFromPackWithCanary:
-    """End-to-end derivation of a profile from the canary pack."""
+    """End-to-end derivation of a profile from the canary pack.
+
+    D6a Unit 3 extended the naming pack with 8 additional rules and
+    widened the canary's profile membership to
+    ``("recommended", "default")``. The full set is covered by
+    ``tests/schema/lint/rules/test_naming_extended.py``; this
+    coverage just asserts the canary remains derived from the
+    ``default`` profile.
+    """
 
     def test_from_pack_default_yields_canary_rule_id(self) -> None:
         profile = LintProfile.from_pack(naming_pack, "default")
-        assert profile.rule_ids == frozenset({"naming/snake-case-fields"})
+        assert "naming/snake-case-fields" in profile.rule_ids

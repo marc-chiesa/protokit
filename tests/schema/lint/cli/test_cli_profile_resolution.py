@@ -87,10 +87,12 @@ class TestProfileResolution:
         assert result.exit_code == 2
         assert "error[lint-unknown-profile]:" in result.stderr
         # R11 introspection: built-in canary's declared profile listed
-        # as a parseable info[lint-pack-profiles]: line:
+        # as a parseable info[lint-pack-profiles]: line. D6a Unit 3
+        # widened the naming pack to declare both ``default`` and
+        # ``recommended`` (sorted alphabetically in the output).
         assert (
             "info[lint-pack-profiles]: pack=protokit.schema.lint.rules.naming "
-            "profiles=[default]"
+            "profiles=[default, recommended]"
             in result.stderr
         )
         # Single-line error body:
@@ -115,10 +117,11 @@ class TestProfileResolution:
         )
         assert result.exit_code == 2
         assert "error[lint-unknown-profile]:" in result.stderr
-        # Both packs appear as parseable info[lint-pack-profiles]: lines:
+        # Both packs appear as parseable info[lint-pack-profiles]: lines.
+        # D6a Unit 3 widened the naming pack's declared profiles.
         assert (
             "info[lint-pack-profiles]: pack=protokit.schema.lint.rules.naming "
-            "profiles=[default]"
+            "profiles=[default, recommended]"
             in result.stderr
         )
         assert (
