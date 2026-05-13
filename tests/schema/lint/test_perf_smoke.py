@@ -145,10 +145,21 @@ def test_lint_engine_walks_10k_fields_under_smoke_threshold(
     engine = LintEngine()
     for pack in BUILTIN_PACKS:
         engine.load_rule_pack(pack)
-    profile = dataclasses.replace(
-        LintProfile.from_pack(BUILTIN_PACKS[0], profile_name="default"),
-        min_severity=LintSeverity.INFO,
+    # Compose the profile across every pack in BUILTIN_PACKS so the
+    # smoke exercises the full walker, not just the first pack's rules.
+    # Before D6a Unit 4, BUILTIN_PACKS contained only the ``naming``
+    # pack and ``LintProfile.from_pack(BUILTIN_PACKS[0], ...)`` produced
+    # the complete rule set. After U4 added the ``enum`` pack, the
+    # single-pack form silently dropped enum's rules from the profile —
+    # the engine still loaded them, but the run never invoked them, so
+    # any catastrophic regression in the enum walker would have escaped
+    # the smoke entirely. Composing across every pack future-proofs the
+    # smoke against further BUILTIN_PACKS growth.
+    composed = LintProfile.compose(
+        *(LintProfile.from_pack(pack, profile_name="default")
+          for pack in BUILTIN_PACKS),
     )
+    profile = dataclasses.replace(composed, min_severity=LintSeverity.INFO)
 
     start = time.perf_counter()
     report = engine.run(compile_result, profile=profile)

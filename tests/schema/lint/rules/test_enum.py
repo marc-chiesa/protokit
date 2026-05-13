@@ -172,8 +172,13 @@ class TestNoAllowAlias:
             {"bad.proto": _NO_ALIAS_BAD_NO_ACTUAL_ALIAS},
             "enum/no-allow-alias",
         )
-        bad_enums = {f.params["name"] for f in report.findings}
-        assert bad_enums == {"Status"}
+        # Pin count so a double-fire regression (e.g., the rule
+        # firing once per enum value rather than per enum) fails the
+        # assertion that a set comparison would silently collapse.
+        assert len(report.findings) == 1
+        f = report.findings[0]
+        assert f.violation_kind == "enum/no-allow-alias"
+        assert f.params == {"name": "Status"}
 
     def test_sad_path_structurally_needed_alias_still_fires(
         self, tmp_path: Path,
@@ -195,8 +200,10 @@ class TestNoAllowAlias:
             {"bad.proto": _NO_ALIAS_BAD_STRUCTURALLY_NEEDED},
             "enum/no-allow-alias",
         )
-        bad_enums = {f.params["name"] for f in report.findings}
-        assert bad_enums == {"Status"}
+        assert len(report.findings) == 1
+        f = report.findings[0]
+        assert f.violation_kind == "enum/no-allow-alias"
+        assert f.params == {"name": "Status"}
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +284,7 @@ class TestFirstValueZero:
         # + its number so downstream consumers can render or aggregate.
         assert len(report.findings) == 1
         f = report.findings[0]
+        assert f.violation_kind == "enum/first-value-zero"
         assert f.params == {
             "name": "Status",
             "first_value": "STATUS_ACTIVE",
@@ -355,5 +363,10 @@ class TestEnumPackIntegration:
         engine.load_rule_pack(enum_pack)
         profile = LintProfile.from_pack(enum_pack, "recommended")
         report = engine.run(result, profile=profile)
+        # Pin the count too: the fixture has exactly one enum (Status),
+        # and each rule should fire exactly once on it. A set-only
+        # assertion would silently accept regressions where one rule
+        # fires twice and the other zero times.
+        assert len(report.findings) == 2
         fired_rule_ids = {f.rule_id for f in report.findings}
         assert fired_rule_ids == _ALL_ENUM_RULE_IDS

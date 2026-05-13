@@ -273,20 +273,16 @@ class TestMinSeverityOverride:
 
 
 class TestR25Provenance:
-    def test_builtin_default_emits_provenance_line_post_d6a_u4(
+    def test_builtin_default_emits_provenance_line_two_packs(
         self, clean_descriptor_set: Path,
     ) -> None:
         """R25 fires on the built-in default once BUILTIN_PACKS >= 2.
 
-        Pre-D6a-U4, ``BUILTIN_PACKS`` contained only the ``naming``
-        pack and this test asserted the *silent* branch of R25's
-        ``len(loaded_packs) >= 2`` gate — single-pack default emits
-        no provenance line because there's nothing to compose. D6a
-        Unit 4 added the ``enum`` pack to ``BUILTIN_PACKS``, so the
-        default invocation now ships two built-in packs and the R25
-        line fires unconditionally. The test was inverted to pin the
-        new behavior: built-in default emits the line, listing both
-        packs and their contributing rule_ids.
+        ``BUILTIN_PACKS`` shipped with one member at D2 (``naming``);
+        D6a Unit 4 added a second (``enum``), tripping the R25
+        ``len(loaded_packs) >= 2`` gate. The default invocation now
+        emits the provenance line listing both packs and their
+        contributing rule_ids.
 
         The single-pack-silent branch of the gate is no longer
         reachable through built-in defaults. It will be re-verifiable
@@ -300,11 +296,14 @@ class TestR25Provenance:
         )
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile 'default' from" in result.stderr
-        # Both built-in packs listed with their contributing rule_ids:
+        # Both built-in packs listed with their contributing rule_ids.
+        # Pin at least one rule_id per pack so a future rename or
+        # accidental drop of either rule fails the assertion.
         assert "protokit.schema.lint.rules.naming=" in result.stderr
         assert "naming/snake-case-fields" in result.stderr
         assert "protokit.schema.lint.rules.enum=" in result.stderr
         assert "enum/no-allow-alias" in result.stderr
+        assert "enum/first-value-zero" in result.stderr
 
     def test_multi_pack_emits_provenance_line(
         self, clean_descriptor_set: Path,
@@ -326,10 +325,13 @@ class TestR25Provenance:
         )
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile 'default' from" in result.stderr
-        # All three packs listed with their contributing rule_ids:
+        # All three packs listed with their contributing rule_ids;
+        # pin both enum rule_ids so future drift on either is caught:
         assert "protokit.schema.lint.rules.naming=" in result.stderr
         assert "naming/snake-case-fields" in result.stderr
         assert "protokit.schema.lint.rules.enum=" in result.stderr
+        assert "enum/no-allow-alias" in result.stderr
+        assert "enum/first-value-zero" in result.stderr
         assert "pack_user_a" in result.stderr
         assert "user-a/no-leading-x" in result.stderr
 

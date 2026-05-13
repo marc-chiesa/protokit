@@ -481,9 +481,13 @@ walk against a ref where the importer has been updated.
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
-The current built-in pack is the AIP-122 `naming` canary; future
-deliveries expand the rule library. Lint is intentionally orthogonal
-to `protokit compat` — compat answers "is this schema change safe
+The built-in packs cover buf BASIC naming and enum semantics —
+`naming` (AIP-122 + PascalCase/snake_case/UPPER_SNAKE conventions
+for messages, enums, services, RPCs, oneofs, files, and packages)
+and `enum` (`no-allow-alias`, `first-value-zero`). Further packs
+land in subsequent D6a deliveries (imports, package, file
+structural rules). Lint is intentionally orthogonal to
+`protokit compat` — compat answers "is this schema change safe
 for consumers?", lint answers "does this schema follow our style
 conventions?".
 
