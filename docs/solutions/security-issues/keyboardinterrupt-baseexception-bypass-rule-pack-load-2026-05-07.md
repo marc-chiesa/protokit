@@ -503,3 +503,14 @@ for the standalone learning.
   Both halves together — what `except Exception` MISSES AND what
   it CATCHES under specific CI conditions — map the full failure
   surface of defensive broad catches at library boundaries.
+- [[subprocess-exit-code-validation-test-harness-2026-05-13]] —
+  test-harness companion to this doc's triple-arm guard. That doc
+  covers what to do AFTER `subprocess.run()` returns successfully
+  without triggering any except arm: enumerate the wrapped tool's
+  documented success exit codes as a module-level `frozenset` and
+  assert membership BEFORE parsing stdout. The two disciplines
+  compose at every new `subprocess.run` site — the triple-arm guard
+  ensures `KeyboardInterrupt` / `SystemExit` propagate cleanly
+  during the call; the exit-code guard ensures a "successful"
+  subprocess return that actually crashed (exit 1 + empty stdout)
+  fails the test loudly rather than silently returning `[]`.

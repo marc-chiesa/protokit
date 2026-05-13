@@ -343,3 +343,15 @@ unilaterally. Enforce this structurally:
   because formatters didn't exist yet. (session history)
 - Fix commit: `a83a6d1` (`fix(formatters): apply ce:review safe-auto
   findings (P0 + P1 + P2/P3 cluster)`).
+- [[subprocess-exit-code-validation-test-harness-2026-05-13]] —
+  exit-code contract discipline from the INBOUND side (test
+  harness consumer reading another tool's exit code). This doc
+  covers the OUTBOUND side (CLI emitter wrapping rule execution;
+  the exit-code contract visible to callers must not be silently
+  bypassed by `SystemExit`). Together they cover both sides of
+  the exit-code contract boundary: a CLI must emit honest exit
+  codes (this doc) AND a test harness consuming another CLI must
+  validate the received exit codes against the tool's documented
+  contract (sibling doc). Same underlying invariant ("exit codes
+  are a stable cross-process contract"), enforced on both sides
+  of the process boundary.
