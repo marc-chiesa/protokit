@@ -537,11 +537,10 @@ def _coerce_profile(value: Any) -> tuple[str, ...]:
                         f"a string; got {type(elem).__name__}."
                     ),
                 )
+        normalized_elements = [elem.strip().lower() for elem in value]
         return tuple(
-            _PROFILE_ALIASES.get(
-                elem.strip().lower(), elem.strip().lower(),
-            )
-            for elem in value
+            _PROFILE_ALIASES.get(normalized, normalized)
+            for normalized in normalized_elements
         )
     error_exit_with_code(
         "pyproject-config-invalid",
@@ -693,11 +692,19 @@ def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
     accepts it so users can stage a configuration scaffold.
 
     Per the ``source-aware-error-messages`` learning, error messages
-    name BOTH the offending rule_id AND the rejected value so users
-    can locate the typo without re-reading their pyproject. The
-    rejected value's *type* is named, not its raw content (R5a
-    content-safety — a user could embed control chars in a TOML
-    key/value, so we never echo the raw bytes back to stderr).
+    name the offending rule_id (the dict KEY) via ``{rule_id!r}`` so
+    users can locate the typo without re-reading their pyproject.
+    Python's ``repr()`` escapes control characters and surrogate
+    pairs to their ``\\xNN`` / ``\\uNNNN`` form, so embedding control
+    chars in a TOML key cannot forge fake stderr lines or smuggle
+    ANSI escapes through (R5a content-safety holds via repr's
+    escaping, not by suppressing the key entirely).
+
+    The rejected VALUE's content is never echoed — only its Python
+    type name appears in error messages — so a TOML value like
+    ``severities = {"foo" = "warn\\x1b[31mmagenta"}`` produces an
+    error naming the key (``'foo'``) and the type (``str``), never
+    the raw value bytes.
     """
     if not isinstance(value, dict):
         error_exit_with_code(
@@ -738,9 +745,19 @@ def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
                     f"{type(sev_value).__name__}."
                 ),
             )
+        # Normalize keys at the input boundary per the
+        # ``normalize-at-input-boundary`` learning: rule_ids in
+        # ``BUILTIN_PACKS`` are lowercase by ``@lint_rule`` convention,
+        # so a user who writes ``"Naming/Snake-Case-Fields"`` in their
+        # pyproject expects the override to apply to the canonical
+        # rule. Without this normalization the override silently
+        # no-ops (or in U9 produces an ``unloaded_rule`` warning
+        # naming the user's wrong casing, not the canonical id).
+        # Mirrors ``_coerce_profile``'s normalize-then-resolve order.
+        normalized_rule_id = rule_id.strip().lower()
         normalized = sev_value.strip().lower()
         try:
-            result[rule_id] = LintSeverity(normalized)
+            result[normalized_rule_id] = LintSeverity(normalized)
         except ValueError:
             valid = ", ".join(repr(s.value) for s in LintSeverity)
             error_exit_with_code(
@@ -752,6 +769,19 @@ def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
                 ),
             )
     return result
+
+
+def _empty_severities() -> dict[str, LintSeverity]:
+    """Module-level typed factory for the ``severities`` default.
+
+    Used as ``dataclasses.field(default_factory=_empty_severities)``
+    on ``ResolvedLintConfig.severities``. A typed factory makes the
+    field's Mapping element types explicit to mypy across dataclasses
+    stubs versions (the bare ``dict`` callable returns ``dict[Any, Any]``
+    in some mypy inferences, which may or may not narrow cleanly to
+    ``Mapping[str, LintSeverity]``).
+    """
+    return {}
 
 
 def _coerce_no_builtin_rules(value: Any) -> bool:
@@ -768,7 +798,9 @@ def _coerce_no_builtin_rules(value: Any) -> bool:
             "pyproject-config-invalid",
             (
                 f"[tool.protokit.lint] no_builtin_rules must be a "
-                f"boolean; got {type(value).__name__}."
+                f"boolean; got {type(value).__name__}. TOML treats "
+                f"integers and booleans as distinct types; write "
+                f"`true`/`false`, not `1`/`0` or `\"true\"`/`\"false\"`."
             ),
         )
     return value
@@ -828,7 +860,7 @@ class ResolvedLintConfig:
     #: learning so a caller passing a mutable dict cannot leak mutations
     #: through the frozen wrapper.
     severities: Mapping[str, LintSeverity] = dataclasses.field(
-        default_factory=dict,
+        default_factory=_empty_severities,
     )
     #: D6a R9c — when ``True``, ``cli.py`` skips the BUILTIN_PACKS
     #: auto-load loop. Resolved from either ``--no-builtin-rules`` CLI
@@ -1031,12 +1063,24 @@ class ResolvedLintConfig:
         because the click default applied and the user did not type
         the flag):
 
-        - ``"profile"``:      ``tuple[str, ...] | None``
-        - ``"exclude"``:      ``tuple[str, ...] | None`` — the empty
-                              tuple represents ``--no-exclude``
-        - ``"min_severity"``: ``LintSeverity | None``
-        - ``"max_warnings"``: ``int | None``
-        - ``"format"``:       ``str | None``
+        - ``"profile"``:          ``tuple[str, ...] | None``
+        - ``"exclude"``:          ``tuple[str, ...] | None`` — the
+                                  empty tuple represents ``--no-exclude``
+        - ``"min_severity"``:     ``LintSeverity | None``
+        - ``"max_warnings"``:     ``int | None``
+        - ``"format"``:           ``str | None``
+        - ``"no_builtin_rules"``: ``bool | None`` — D6a R9c CLI side;
+                                  the actual CLI flag wiring lands in
+                                  D6a U9. ``None`` means "CLI did not
+                                  set this flag"; the pyproject value
+                                  (or default ``False``) wins.
+
+        Intentionally absent: ``"severities"``. D6a U2 ships the
+        pyproject-only parsing surface for R9a; no CLI side-channel
+        exists yet. If a future delivery wires a CLI severities
+        override, the key must be added to this shape table AND
+        ``from_dict`` updated to read it — otherwise the override
+        is silently dropped.
 
         Returns:
             A frozen ``ResolvedLintConfig`` with defaults applied
@@ -1146,6 +1190,20 @@ class ResolvedLintConfig:
         # CLI's user-wins post-compose overlay (KTD-2) is applied in
         # cli.py around the LintProfile.compose call, NOT here; this
         # method only resolves the input-boundary value.
+        #
+        # Guard against silent-drop: if a future delivery wires a CLI
+        # severities override without updating this method, the
+        # override would be silently ignored (the dict key exists but
+        # is never read). Hard-fail at the boundary so the integration
+        # bug surfaces immediately rather than in user-visible
+        # production behavior.
+        if "severities" in cli_overrides:
+            raise NotImplementedError(
+                "cli_overrides['severities'] is not yet wired into "
+                "ResolvedLintConfig.from_dict — D6a U2 ships pyproject "
+                "parsing only. Add the precedence branch here before "
+                "exposing a CLI severities override.",
+            )
         resolved_severities: Mapping[str, LintSeverity] = validated.get(
             "severities", {},
         )
@@ -1156,14 +1214,27 @@ class ResolvedLintConfig:
         # is either ``True``/``False`` (the user explicitly typed the
         # flag) or absent / ``None`` (defer to pyproject, then to
         # ``False``).
+        #
+        # Strict isinstance check rather than ``bool(...)`` coercion:
+        # the pyproject path hard-errors on non-bool inputs via
+        # ``_coerce_no_builtin_rules``, and asymmetric strictness
+        # between CLI and pyproject would silently accept falsy
+        # non-bools (``[]``, ``0``, ``""``) from a programmatic
+        # ``from_dict`` caller. The expected CLI shape is
+        # ``True | False | None`` (None meaning "CLI didn't set this").
         cli_no_builtin = cli_overrides.get("no_builtin_rules")
         resolved_no_builtin: bool
-        if cli_no_builtin is not None:
-            resolved_no_builtin = bool(cli_no_builtin)
-        elif "no_builtin_rules" in validated:
-            resolved_no_builtin = validated["no_builtin_rules"]
+        if cli_no_builtin is None:
+            resolved_no_builtin = validated.get("no_builtin_rules", False)
+        elif isinstance(cli_no_builtin, bool):
+            resolved_no_builtin = cli_no_builtin
         else:
-            resolved_no_builtin = False
+            raise TypeError(
+                "cli_overrides['no_builtin_rules'] must be bool or None; "
+                f"got {type(cli_no_builtin).__name__}. Click's is_flag "
+                "delivers Python bools by default — check the CLI wiring "
+                "in cli.py if this fires.",
+            )
 
         return cls(
             profile=resolved_profile,

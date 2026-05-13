@@ -29,29 +29,7 @@ import pytest
 from protokit.schema.lint._config import ResolvedLintConfig
 from protokit.schema.lint.model import LintSeverity
 
-# ---------------------------------------------------------------------------
-# Helpers (mirrors test_schema_validation.py shape)
-# ---------------------------------------------------------------------------
-
-
-_PREFIX: str = "error[lint-pyproject-config-invalid]:"
-
-
-def _expect_invalid(
-    table: dict[str, object],
-    cli_overrides: dict[str, object],
-    capsys: pytest.CaptureFixture[str],
-    *,
-    substring: str,
-) -> None:
-    """Call ``from_dict`` expecting exit 2 with the invalid-prefix message."""
-    with pytest.raises(SystemExit) as excinfo:
-        ResolvedLintConfig.from_dict(table, cli_overrides)
-    assert excinfo.value.code == 2
-    err = capsys.readouterr().err
-    assert err.startswith(_PREFIX), err
-    assert substring in err, err
-
+from .conftest import expect_invalid
 
 # ---------------------------------------------------------------------------
 # Happy path
@@ -158,7 +136,7 @@ class TestSeveritiesErrors:
     def test_scalar_value_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"severities": "warning"},
             {},
             capsys,
@@ -168,7 +146,7 @@ class TestSeveritiesErrors:
     def test_list_value_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"severities": ["naming/foo", "warning"]},
             {},
             capsys,
@@ -178,7 +156,7 @@ class TestSeveritiesErrors:
     def test_non_string_severity_value_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"severities": {"naming/foo": 1}},
             {},
             capsys,
@@ -188,8 +166,11 @@ class TestSeveritiesErrors:
     def test_unknown_severity_value_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
-            {"severities": {"naming/foo": "fatal"}},
+        # Plan scenario 9: "WARN" is the natural abbreviation a user
+        # types expecting "warning" to be accepted — the more useful
+        # regression boundary than an implausible string like "fatal".
+        expect_invalid(
+            {"severities": {"naming/foo": "WARN"}},
             {},
             capsys,
             substring="severity name outside the closed set",
@@ -202,8 +183,8 @@ class TestSeveritiesErrors:
         message names the rule_id whose value is invalid so the user
         can locate the typo without scanning their whole table.
         """
-        _expect_invalid(
-            {"severities": {"naming/snake-case-fields": "fatal"}},
+        expect_invalid(
+            {"severities": {"naming/snake-case-fields": "WARN"}},
             {},
             capsys,
             substring="'naming/snake-case-fields'",
@@ -212,7 +193,7 @@ class TestSeveritiesErrors:
     def test_empty_key_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"severities": {"": "warning"}},
             {},
             capsys,
@@ -222,7 +203,7 @@ class TestSeveritiesErrors:
     def test_whitespace_only_key_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"severities": {"   ": "warning"}},
             {},
             capsys,
@@ -236,7 +217,7 @@ class TestSeveritiesErrors:
         callers (tests, future internal APIs) may pass non-string
         keys. The defensive isinstance check covers this.
         """
-        _expect_invalid(
+        expect_invalid(
             {"severities": {123: "warning"}},
             {},
             capsys,

@@ -25,28 +25,16 @@ import pytest
 from protokit.schema.lint._config import ResolvedLintConfig
 from protokit.schema.lint.model import LintSeverity
 
+from .conftest import expect_invalid
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-_PREFIX: str = "error[lint-pyproject-config-invalid]:"
-
-
-def _expect_invalid(
-    table: dict[str, object],
-    cli_overrides: dict[str, object],
-    capsys: pytest.CaptureFixture[str],
-    *,
-    substring: str,
-) -> None:
-    """Call ``from_dict`` expecting exit 2 with the invalid-prefix message."""
-    with pytest.raises(SystemExit) as excinfo:
-        ResolvedLintConfig.from_dict(table, cli_overrides)
-    assert excinfo.value.code == 2
-    err = capsys.readouterr().err
-    assert err.startswith(_PREFIX), err
-    assert substring in err, err
+#
+# The ``_expect_invalid`` helper + ``INVALID_PREFIX`` constant are
+# defined in ``conftest.py`` (extracted during the D6a U2 ce:review
+# follow-ups to remove three-file duplication). Use the public names
+# from there.
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +76,7 @@ class TestR3UnknownKeys:
         # Classic typo: `excldue` instead of `exclude`. The error names
         # the unknown key AND the recognized keys so users see both
         # what they typed wrong and what they meant.
-        _expect_invalid(
+        expect_invalid(
             {"excldue": []},
             {},
             capsys,
@@ -102,7 +90,7 @@ class TestR3UnknownKeys:
         # `rules` (a dict value), which is not in the R2 allowlist.
         # D5 ships only the top-level message; D6 may extend to
         # dotted-path messages when nested tables become first-class.
-        _expect_invalid(
+        expect_invalid(
             {"rules": {"foo": {}}},
             {},
             capsys,
@@ -115,10 +103,16 @@ class TestR3UnknownKeys:
         with pytest.raises(SystemExit):
             ResolvedLintConfig.from_dict({"bogus": 1}, {})
         err = capsys.readouterr().err
-        # All five R2 allowlist keys must appear in the error so the
-        # user sees the closed set.
-        for allowed in ("profile", "exclude", "min_severity",
-                        "max_warnings", "format"):
+        # All R2 allowlist keys must appear in the error so the user
+        # sees the closed set. D6a U2 added `severities` and
+        # `no_builtin_rules` (R9a + R9c); the test enumerates the full
+        # set explicitly to catch silent drift if a key is ever removed
+        # from _ALLOWED_KEYS without updating the error message.
+        for allowed in (
+            "profile", "exclude", "min_severity",
+            "max_warnings", "format",
+            "severities", "no_builtin_rules",
+        ):
             assert repr(allowed) in err, err
 
     def test_multiple_unknown_keys_named_sorted(
@@ -145,7 +139,7 @@ class TestR3aProfileTypeMismatches:
     def test_profile_int_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"profile": 42}, {}, capsys,
             substring="profile must be a string or list of strings",
         )
@@ -154,7 +148,7 @@ class TestR3aProfileTypeMismatches:
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
         # KTD-5: heterogeneous list. Element index named in the error.
-        _expect_invalid(
+        expect_invalid(
             {"profile": [1, 2]}, {}, capsys,
             substring="profile[0]",
         )
@@ -162,7 +156,7 @@ class TestR3aProfileTypeMismatches:
     def test_profile_list_with_bool_element(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"profile": ["a", True]}, {}, capsys,
             substring="profile[1]",
         )
@@ -174,7 +168,7 @@ class TestR3aProfileTypeMismatches:
         # but semantically meaningless — there is no profile to resolve.
         # Reject at the schema-validation boundary so the user sees a
         # specific message instead of `lint-unknown-profile` later.
-        _expect_invalid(
+        expect_invalid(
             {"profile": []}, {}, capsys,
             substring="profile must not be empty",
         )
@@ -186,7 +180,7 @@ class TestR3aExcludeTypeMismatches:
     ) -> None:
         # exclude is list-only (R15 distinguishes profile from exclude
         # on this dimension).
-        _expect_invalid(
+        expect_invalid(
             {"exclude": "vendor/**"}, {}, capsys,
             substring="exclude must be a list of strings",
         )
@@ -196,7 +190,7 @@ class TestR3aExcludeTypeMismatches:
     ) -> None:
         # KTD-5: the brainstorm called out that heterogeneous lists
         # must name the offending element index.
-        _expect_invalid(
+        expect_invalid(
             {"exclude": ["a", 1, "b"]}, {}, capsys,
             substring="exclude[1]",
         )
@@ -204,7 +198,7 @@ class TestR3aExcludeTypeMismatches:
     def test_exclude_bool_element_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"exclude": ["a", True]}, {}, capsys,
             substring="exclude[1]",
         )
@@ -214,7 +208,7 @@ class TestR3aMinSeverityTypeMismatches:
     def test_min_severity_int_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"min_severity": 1}, {}, capsys,
             substring="min_severity must be a string",
         )
@@ -222,7 +216,7 @@ class TestR3aMinSeverityTypeMismatches:
     def test_min_severity_unknown_value(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"min_severity": "critical"}, {}, capsys,
             substring="must be one of",
         )
@@ -240,7 +234,7 @@ class TestR3aMaxWarningsTypeMismatches:
     def test_max_warnings_string_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"max_warnings": "0"}, {}, capsys,
             substring="max_warnings must be a non-negative integer",
         )
@@ -251,7 +245,7 @@ class TestR3aMaxWarningsTypeMismatches:
         # `True` is an int subclass in Python, but the boundary
         # explicitly rejects bools so `max_warnings = true` does
         # not silently coerce to `1`.
-        _expect_invalid(
+        expect_invalid(
             {"max_warnings": True}, {}, capsys,
             substring="max_warnings must be a non-negative integer",
         )
@@ -259,7 +253,7 @@ class TestR3aMaxWarningsTypeMismatches:
     def test_max_warnings_negative_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"max_warnings": -1}, {}, capsys,
             substring="non-negative",
         )
@@ -274,7 +268,7 @@ class TestR3aFormatTypeMismatches:
     def test_format_int_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"format": 1}, {}, capsys,
             substring="format must be a string",
         )

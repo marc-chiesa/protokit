@@ -28,29 +28,7 @@ import pytest
 
 from protokit.schema.lint._config import ResolvedLintConfig
 
-# ---------------------------------------------------------------------------
-# Helpers (mirrors test_schema_validation.py shape)
-# ---------------------------------------------------------------------------
-
-
-_PREFIX: str = "error[lint-pyproject-config-invalid]:"
-
-
-def _expect_invalid(
-    table: dict[str, object],
-    cli_overrides: dict[str, object],
-    capsys: pytest.CaptureFixture[str],
-    *,
-    substring: str,
-) -> None:
-    """Call ``from_dict`` expecting exit 2 with the invalid-prefix message."""
-    with pytest.raises(SystemExit) as excinfo:
-        ResolvedLintConfig.from_dict(table, cli_overrides)
-    assert excinfo.value.code == 2
-    err = capsys.readouterr().err
-    assert err.startswith(_PREFIX), err
-    assert substring in err, err
-
+from .conftest import expect_invalid
 
 # ---------------------------------------------------------------------------
 # Happy path: pyproject-only
@@ -144,7 +122,7 @@ class TestNoBuiltinRulesErrors:
         rather than silently coercing. TOML's type system makes this
         a typo signal, not a flexibility win.
         """
-        _expect_invalid(
+        expect_invalid(
             {"no_builtin_rules": "true"},
             {},
             capsys,
@@ -160,7 +138,7 @@ class TestNoBuiltinRulesErrors:
         (NOT ``not isinstance(value, int)``) which means int ``1``
         is rejected.
         """
-        _expect_invalid(
+        expect_invalid(
             {"no_builtin_rules": 1},
             {},
             capsys,
@@ -170,7 +148,7 @@ class TestNoBuiltinRulesErrors:
     def test_int_zero_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"no_builtin_rules": 0},
             {},
             capsys,
@@ -180,7 +158,7 @@ class TestNoBuiltinRulesErrors:
     def test_list_value_rejected(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        _expect_invalid(
+        expect_invalid(
             {"no_builtin_rules": [True]},
             {},
             capsys,

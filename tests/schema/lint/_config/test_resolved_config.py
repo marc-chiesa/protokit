@@ -37,6 +37,13 @@ class TestDefaults:
         assert resolved.min_severity_source == "default"
         assert resolved.pyproject_min_severity is None
         assert resolved.exclude_source == "default"
+        # D6a U2 — new fields documented in the dataclass field
+        # declarations. ``severities`` is empty (no overrides
+        # configured) and ``no_builtin_rules`` is False (BUILTIN_PACKS
+        # auto-load proceeds). The empty severities mapping is wrapped
+        # by ``__post_init__`` in MappingProxyType.
+        assert dict(resolved.severities) == {}
+        assert resolved.no_builtin_rules is False
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +65,8 @@ class TestFrozen:
         "format",
         "min_severity_source",
         "pyproject_min_severity",
+        "severities",  # D6a U2 R9a
+        "no_builtin_rules",  # D6a U2 R9c
     ])
     def test_assignment_raises(self, field_name: str) -> None:
         # Every field should refuse mutation; this protects against
@@ -135,6 +144,45 @@ class TestFromDictRoundTrip:
         assert resolved.format == "json"
         assert resolved.min_severity_source == "pyproject"
         assert resolved.pyproject_min_severity is LintSeverity.WARNING
+
+    def test_all_seven_keys_at_valid_types(self) -> None:
+        # D6a U2 cross-key integration: all 7 _ALLOWED_KEYS set together
+        # in one pyproject table. Pins the interaction between the
+        # __post_init__ snapshot chain (profile tuple → exclude tuple →
+        # severities MappingProxyType) and the exclude_source invariant
+        # (non-empty exclude forces exclude_source != "default").
+        # A regression in any one coercion helper or in the from_dict
+        # precedence wiring surfaces here as a single-test failure.
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "profile": "basic",
+                "exclude": ["vendor/**"],
+                "min_severity": "warning",
+                "max_warnings": 5,
+                "format": "json",
+                "severities": {
+                    "naming/snake-case-fields": "info",
+                    "imports/no-public": "error",
+                },
+                "no_builtin_rules": True,
+            },
+            {},
+        )
+        # Profile aliased: "basic" → "recommended"
+        assert resolved.profile == ("recommended",)
+        assert resolved.exclude == ("vendor/**",)
+        assert resolved.exclude_source == "pyproject"
+        assert resolved.min_severity is LintSeverity.WARNING
+        assert resolved.max_warnings == 5
+        assert resolved.format == "json"
+        # Severities normalized at the boundary (D6a U2 ce:review F1):
+        # rule_id keys stored lowercase to match @lint_rule convention.
+        assert (
+            resolved.severities["naming/snake-case-fields"]
+            is LintSeverity.INFO
+        )
+        assert resolved.severities["imports/no-public"] is LintSeverity.ERROR
+        assert resolved.no_builtin_rules is True
 
     def test_only_one_pyproject_key(self) -> None:
         # Sparse table — only one key set; others fall through to

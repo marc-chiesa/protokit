@@ -35,19 +35,15 @@ from protokit.schema.lint._config import (
 class TestAliasMapping:
     def test_mapping_pinned_to_two_entries(self) -> None:
         """``_PROFILE_ALIASES`` contains exactly the two buf compatibility
-        aliases. A drift here (e.g., adding ``strict -> default``) needs
-        an explicit test update to stay coherent with R7's "buf aliases
-        only" framing.
+        aliases with their documented primary-name targets. A drift here
+        (e.g., adding ``strict -> default``, renaming ``recommended``)
+        needs an explicit test update to stay coherent with R7's "buf
+        aliases only" framing.
         """
         assert _PROFILE_ALIASES == {
             "minimal": "essentials",
             "basic": "recommended",
         }
-
-    def test_aliases_resolve_to_documented_primaries(self) -> None:
-        """Each alias maps to a primary protokit-native name."""
-        assert _PROFILE_ALIASES["minimal"] == "essentials"
-        assert _PROFILE_ALIASES["basic"] == "recommended"
 
 
 # ---------------------------------------------------------------------------
