@@ -347,3 +347,14 @@ fallback).
   dedicated fixture file — the inline `FileDescriptorProto`
   construction + class-accessor patch covers what would otherwise
   need a separate `.proto` file.
+
+- **`docs/solutions/best-practices/conftest-plain-function-relative-import-2026-05-12.md`** —
+  Rule 3 above ("Establish the pattern in conftest/test-helpers
+  when multiple tests need it") uses a `@pytest.fixture` to share
+  the mock. That learning covers the SIBLING case: plain functions
+  + constants in `conftest.py` do NOT auto-load like fixtures do;
+  they require explicit `from .conftest import expect_invalid`
+  imports in each consuming test file. Fixtures (this learning's
+  pattern) auto-inject via parameter-name matching; plain helpers
+  (that learning's pattern) require the relative import. Choose
+  based on whether the helper has setup/teardown lifecycle needs.

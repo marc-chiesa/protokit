@@ -409,6 +409,18 @@ distinguishes within tiers 2-3.
   from knowing which source supplied each value, both for precedence
   logic (this learning) and for accurate error-message attribution
   (that learning, in the shared-helper variant).
+- [`cli-overrides-deferred-key-notimplemented-trip-wire-2026-05-12.md`](./cli-overrides-deferred-key-notimplemented-trip-wire-2026-05-12.md)
+  — companion learning on `cli_overrides` integrity. This learning
+  defines the protocol for *known* keys (the `None`-sentinel for "CLI
+  did not supply"); the trip-wire learning hard-fails on *unknown* keys
+  via `NotImplementedError` during phased-delivery windows where the
+  pyproject side ships before the CLI side.
+- [`symmetric-coercion-strictness-multi-source-field-resolver-2026-05-12.md`](./symmetric-coercion-strictness-multi-source-field-resolver-2026-05-12.md)
+  — companion learning on `cli_overrides` type discipline. This
+  learning's `None`-sentinel protocol depends on `isinstance(value,
+  bool)` ordering (check `is None` before the type check); the
+  symmetric-strictness learning explains why `isinstance` (not
+  `bool(value)`) is the right gate.
 
 ## Reference Commits
 

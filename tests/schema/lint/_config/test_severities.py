@@ -91,6 +91,36 @@ class TestSeveritiesHappyPath:
         assert resolved.severities["naming/foo"] is LintSeverity.WARNING
         assert resolved.severities["naming/bar"] is LintSeverity.INFO
 
+    def test_severity_keys_normalized_at_boundary(self) -> None:
+        """Per ``normalize-at-input-boundary`` (mapping-keys extension):
+        rule_id KEYS are normalized to lowercase at the coercion
+        boundary so the engine's canonical-form lookup
+        (``profile.rule_severity_overrides.get(spec.rule_id)`` where
+        ``spec.rule_id`` is always lowercase per ``@lint_rule``
+        convention) succeeds even when the user typed mixed case in
+        pyproject. Without this, a typo like
+        ``"Naming/Snake-Case-Fields"`` silently no-ops because the
+        stored key never matches the canonical lookup.
+        """
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "severities": {
+                    "Naming/Snake-Case-Fields": "info",
+                    "  IMPORTS/NO-PUBLIC  ": "error",
+                },
+            },
+            {},
+        )
+        # Stored under canonical lowercase form, not the user's mixed case.
+        assert (
+            resolved.severities["naming/snake-case-fields"]
+            is LintSeverity.INFO
+        )
+        assert resolved.severities["imports/no-public"] is LintSeverity.ERROR
+        # And the un-normalized forms are NOT keys.
+        assert "Naming/Snake-Case-Fields" not in resolved.severities
+        assert "  IMPORTS/NO-PUBLIC  " not in resolved.severities
+
 
 # ---------------------------------------------------------------------------
 # Frozen semantics — MappingProxyType + dataclass freeze

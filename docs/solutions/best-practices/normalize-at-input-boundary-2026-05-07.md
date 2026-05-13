@@ -1,7 +1,7 @@
 ---
 title: "Normalize user-supplied names at the input boundary when any downstream consumer normalizes at lookup"
 date: 2026-05-07
-last_updated: 2026-05-08
+last_updated: 2026-05-12
 category: docs/solutions/best-practices
 module: tooling/cli
 problem_type: best_practice
@@ -13,6 +13,7 @@ applies_when:
   - "A Click option uses `STRING` type backed by a case-insensitive registry — the registry normalizes at lookup but Click hands the raw value to local comparisons"
   - "A Click `Choice(case_sensitive=False)` value is later passed to another function that branches on it case-sensitively (Click's own normalization stops at the callback boundary)"
   - "An environment variable or config file feeds both a Python equality check and a case-insensitive lookup"
+  - "A user-supplied string is a KEY in a config mapping (not a value being matched against a registry) — e.g., `[tool.protokit.lint.severities]` rule_id keys where the engine looks up `spec.rule_id` (always lowercase by `@lint_rule` convention). Without normalization on the way in, a user typo like `\"Naming/snake-case-fields\"` silently no-ops because the lookup key never matches the canonical id"
 tags:
   - normalization
   - input-boundary
@@ -22,6 +23,7 @@ tags:
   - click
   - string-comparison
   - discipline
+  - mapping-keys
 ---
 
 # Normalize user-supplied names at the input boundary when any downstream consumer normalizes at lookup
@@ -309,6 +311,100 @@ class TestFormatCaseNormalization:
 These pin the two specific failure modes (silent footer suppression
 + spurious mutex misfiring via envvar). Future regressions surface
 immediately.
+
+### Extension: mapping-key normalization (D6a U2 — added 2026-05-12)
+
+The original learning covered user-supplied **values** matched
+against a registry that normalizes at lookup. D6a U2 surfaced an
+isomorphic case: user-supplied strings that are **keys** in a
+config mapping, where the engine later iterates the mapping and
+looks up the key by its canonical form.
+
+The trigger was `[tool.protokit.lint.severities]` — a TOML table
+that maps rule_id strings to severity overrides. The engine reads
+`spec.rule_id` (always lowercase by `@lint_rule` convention) and
+calls `profile.rule_severity_overrides.get(spec.rule_id)`. Without
+normalization at the input boundary, a user who writes:
+
+```toml
+[tool.protokit.lint.severities]
+"Naming/Snake-Case-Fields" = "info"  # user typo: mixed case
+```
+
+would silently get no override applied — the lookup key
+`"naming/snake-case-fields"` never matches the stored mixed-case
+key. The override appears to be configured but is invisible at
+runtime.
+
+The fix mirrors the established pattern: normalize keys at the
+input boundary before storing, so downstream lookup works against
+the canonical form. The same `.strip().lower()` discipline that
+applies to `--profile` values applies to severities-table KEYS:
+
+```python
+# src/protokit/schema/lint/_config.py:_coerce_severities
+
+def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
+    if not isinstance(value, dict):
+        error_exit_with_code(...)
+    result: dict[str, LintSeverity] = {}
+    for rule_id, sev_value in value.items():
+        # ... type checks on rule_id and sev_value ...
+
+        # Normalize keys at the input boundary: rule_ids in
+        # ``BUILTIN_PACKS`` are lowercase by ``@lint_rule`` convention.
+        # A user typo "Naming/Snake-Case-Fields" gets stored under the
+        # canonical "naming/snake-case-fields" so the engine's
+        # ``spec.rule_id`` lookup succeeds. Mirrors ``_coerce_profile``'s
+        # normalize-then-resolve order.
+        normalized_rule_id = rule_id.strip().lower()
+        normalized = sev_value.strip().lower()
+        try:
+            result[normalized_rule_id] = LintSeverity(normalized)
+        except ValueError:
+            ...
+    return result
+```
+
+**The generalization**: any time the user supplies a string that
+will eventually be matched against a canonical form, normalize at
+the input boundary — whether the string is a value (matched against
+a registry) or a key (looked up by canonical form). The trust-
+boundary diagram becomes:
+
+```
+User supplies:  rule_id "Naming/Snake-Case-Fields"
+                       │
+       Normalize HERE  │  rule_id.strip().lower() → "naming/snake-case-fields"
+                       │
+       Store under:    └─ result["naming/snake-case-fields"] = SEVERITY
+                       │
+       Engine lookup:  └─ overrides.get(spec.rule_id)  ← "naming/snake-case-fields" → SEVERITY ✓
+```
+
+Without the boundary normalization, the silent-no-op trap closes:
+the engine looks up `spec.rule_id` (lowercase), finds nothing
+under the mixed-case stored key, and uses the default severity.
+The user sees no error, no warning — just no override.
+
+Tests pin the discipline at the boundary:
+
+```python
+# tests/schema/lint/_config/test_severities.py
+
+def test_severity_keys_normalized_at_boundary() -> None:
+    """Per ``normalize-at-input-boundary``: rule_id KEYS are
+    normalized to lowercase at the coercion boundary so the engine's
+    canonical-form lookup succeeds even when the user typed mixed
+    case in pyproject.
+    """
+    resolved = ResolvedLintConfig.from_dict(
+        {"severities": {"Naming/Snake-Case-Fields": "info"}}, {},
+    )
+    # Stored under the canonical lowercase form, not the user's mixed case.
+    assert resolved.severities["naming/snake-case-fields"] is LintSeverity.INFO
+    assert "Naming/Snake-Case-Fields" not in resolved.severities
+```
 
 ## Related
 
