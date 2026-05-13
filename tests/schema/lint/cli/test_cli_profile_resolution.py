@@ -273,20 +273,49 @@ class TestMinSeverityOverride:
 
 
 class TestR25Provenance:
-    def test_single_pack_default_emits_no_provenance_line(
+    def test_builtin_default_emits_provenance_line_post_d6a_u4(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """R25 gated on len(loaded_packs) >= 2 — single-pack default silent."""
+        """R25 fires on the built-in default once BUILTIN_PACKS >= 2.
+
+        Pre-D6a-U4, ``BUILTIN_PACKS`` contained only the ``naming``
+        pack and this test asserted the *silent* branch of R25's
+        ``len(loaded_packs) >= 2`` gate — single-pack default emits
+        no provenance line because there's nothing to compose. D6a
+        Unit 4 added the ``enum`` pack to ``BUILTIN_PACKS``, so the
+        default invocation now ships two built-in packs and the R25
+        line fires unconditionally. The test was inverted to pin the
+        new behavior: built-in default emits the line, listing both
+        packs and their contributing rule_ids.
+
+        The single-pack-silent branch of the gate is no longer
+        reachable through built-in defaults. It will be re-verifiable
+        when D6a Unit 9 lands ``--no-builtin-rules`` (which, combined
+        with a single ``--rule-pack <module>``, yields a true
+        single-pack composition). A coverage test for that branch
+        ships alongside Unit 9.
+        """
         result = CliRunner().invoke(
             lint_main, [str(clean_descriptor_set)],
         )
         assert result.exit_code == 0, result.output
-        assert "protokit lint: profile" not in result.stderr
+        assert "protokit lint: profile 'default' from" in result.stderr
+        # Both built-in packs listed with their contributing rule_ids:
+        assert "protokit.schema.lint.rules.naming=" in result.stderr
+        assert "naming/snake-case-fields" in result.stderr
+        assert "protokit.schema.lint.rules.enum=" in result.stderr
+        assert "enum/no-allow-alias" in result.stderr
 
     def test_multi_pack_emits_provenance_line(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """Multi-pack (built-in + 1 user pack) triggers R25 line."""
+        """Multi-pack (2 built-in + 1 user pack) triggers R25 line.
+
+        After D6a Unit 4 the built-in default is already multi-pack,
+        so this case exercises 3-pack composition (naming + enum +
+        user). The companion test above pins the 2-pack
+        built-in-default case.
+        """
         result = CliRunner().invoke(
             lint_main,
             [
@@ -297,9 +326,10 @@ class TestR25Provenance:
         )
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile 'default' from" in result.stderr
-        # Both packs listed with their contributing rule_ids:
+        # All three packs listed with their contributing rule_ids:
         assert "protokit.schema.lint.rules.naming=" in result.stderr
         assert "naming/snake-case-fields" in result.stderr
+        assert "protokit.schema.lint.rules.enum=" in result.stderr
         assert "pack_user_a" in result.stderr
         assert "user-a/no-leading-x" in result.stderr
 

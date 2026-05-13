@@ -49,12 +49,21 @@ class TestHappyPaths:
     def test_clean_descriptor_set_exits_0(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """Demonstrates KD-10 invariant 1 (canary-clean → 0 or 1, never 2)."""
+        """Demonstrates KD-10 invariant 1 (canary-clean → 0 or 1, never 2).
+
+        The lint_human formatter returns an empty string for the
+        no-findings + no-diagnostics path, and ``click.echo`` of an
+        empty string is suppressed by the CLI wiring — so ``stdout``
+        is empty even though the rules ran. The R25 multi-pack
+        provenance line lands on ``stderr`` after D6a Unit 4 grew
+        ``BUILTIN_PACKS`` to two members (naming + enum); that
+        line is informational metadata, not finding output, and is
+        verified separately by tests in
+        ``test_cli_profile_resolution.py::TestR25Provenance``.
+        """
         result = CliRunner().invoke(lint_main, [str(clean_descriptor_set)])
         assert result.exit_code == 0, result.output
-        # lint_human returns empty string for no-findings, no-diagnostics —
-        # click.echo of empty string is suppressed in the CLI wiring.
-        assert result.output == ""
+        assert result.stdout == ""
 
     def test_bad_naming_descriptor_set_renders_findings(
         self, bad_naming_descriptor_set: Path,

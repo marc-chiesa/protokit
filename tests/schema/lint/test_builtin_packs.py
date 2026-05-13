@@ -76,7 +76,10 @@ class TestBuiltinPacks:
         version bump (the change is breaking under semver).
         """
         actual = tuple(p.__name__ for p in BUILTIN_PACKS)
-        expected = ("protokit.schema.lint.rules.naming",)
+        expected = (
+            "protokit.schema.lint.rules.naming",
+            "protokit.schema.lint.rules.enum",
+        )
         assert actual == expected, (
             f"BUILTIN_PACKS changed: {actual!r} != {expected!r}.\n"
             "If this change is intentional, you MUST:\n"
@@ -91,7 +94,7 @@ class TestBuiltinPacks:
 
 
 class TestCanaryPack:
-    """Sanity-check the single D3-era built-in pack."""
+    """Sanity-check the naming pack — origin of the D2 canary rule."""
 
     def test_naming_pack_exposes_snake_case_rule(self) -> None:
         rule_ids = [get_lint_spec(fn).rule_id for fn in naming.RULES]
