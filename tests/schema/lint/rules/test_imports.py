@@ -19,6 +19,7 @@ multi-file fixture.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import ElementKind, LintProfile, LintSeverity
@@ -38,7 +39,7 @@ def _run_single(
     tmp_path: Path,
     sources: dict[str, str],
     rule_id: str,
-):
+) -> Any:
     """Thin wrapper that fixes the pack to ``imports`` for this file's tests."""
     return _run_single_with_pack(tmp_path, sources, rule_id, imports_pack)
 
@@ -193,6 +194,14 @@ import weak "foo.proto";
 message Bar { optional string x = 1; }
 """
 
+_NO_WEAK_MULTIPLE_BAD = """
+syntax = "proto2";
+package bar;
+import weak "foo.proto";
+import weak "baz.proto";
+message Bar { optional string x = 1; }
+"""
+
 
 class TestNoWeakImports:
     """``imports/no-weak`` fires once per ``import weak`` declaration."""
@@ -217,6 +226,28 @@ class TestNoWeakImports:
         f = report.findings[0]
         assert f.violation_kind == "imports/no-weak"
         assert f.params == {"imported": "foo.proto"}
+
+    def test_sad_path_multiple_weak_imports_fire_per_import(
+        self, tmp_path: Path,
+    ) -> None:
+        """Per-import fan-out: N findings for N weak imports.
+
+        Symmetric with ``test_sad_path_multiple_public_imports_fire_per_import``
+        on the no-public side — the per-offender fan-out shape is
+        identical for both index arrays.
+        """
+        report = _run_single(
+            tmp_path,
+            {
+                "foo.proto": _FOO_PROTO2,
+                "baz.proto": _BAZ_PROTO2,
+                "bar.proto": _NO_WEAK_MULTIPLE_BAD,
+            },
+            "imports/no-weak",
+        )
+        assert len(report.findings) == 2
+        offenders = {f.params["imported"] for f in report.findings}
+        assert offenders == {"foo.proto", "baz.proto"}
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +359,28 @@ message Bar {
 }
 """
 
+# Edge: map field with imported message-type value — the walker must
+# recurse into the synthetic ``<FieldName>Entry`` nested message that
+# the compiler generates for the map, find its value-type field, and
+# record the value type's file. Pins the docstring claim that map
+# fields are covered transitively via nested_types.
+_UNUSED_GOOD_MAP_REF = """
+syntax = "proto3";
+package bar;
+import "foo.proto";
+message Bar { map<string, foo.Foo> items = 1; }
+"""
+
+# Sad path with a proto2 importer — cross-syntax verification that
+# fdp.dependency is populated identically on both syntaxes. (All other
+# imports/unused sad-path fixtures use proto3 as the importer.)
+_UNUSED_BAD_PROTO2 = """
+syntax = "proto2";
+package bar;
+import "foo.proto";
+message Bar { optional string x = 1; }
+"""
+
 
 class TestUnusedImports:
     """``imports/unused`` fires on declared-but-unreferenced direct imports."""
@@ -373,6 +426,42 @@ class TestUnusedImports:
             "imports/unused",
         )
         assert report.findings == ()
+
+    def test_happy_path_map_field_reference_clean(
+        self, tmp_path: Path,
+    ) -> None:
+        """Map fields cover the import via the synthetic <Field>Entry walk.
+
+        Pins the docstring claim that ``map<K, V> field = N;``
+        compiles to a nested ``<FieldName>Entry`` message whose
+        value field references the imported V type. The walker's
+        ``nested_types`` recursion must see the synthetic Entry,
+        walk its fields, and record the V type's file as used.
+        Without that path, the import is wrongly flagged.
+        """
+        report = _run_single(
+            tmp_path,
+            {"foo.proto": _FOO_PROTO2, "bar.proto": _UNUSED_GOOD_MAP_REF},
+            "imports/unused",
+        )
+        assert report.findings == ()
+
+    def test_sad_path_proto2_unreferenced_import_fires(
+        self, tmp_path: Path,
+    ) -> None:
+        """Cross-syntax verification: CopyToProto's fdp.dependency is
+        populated identically for proto2 and proto3 importing files,
+        so the rule fires the same way regardless of importer syntax.
+        """
+        report = _run_single(
+            tmp_path,
+            {"foo.proto": _FOO_PROTO2, "bar.proto": _UNUSED_BAD_PROTO2},
+            "imports/unused",
+        )
+        assert len(report.findings) == 1
+        f = report.findings[0]
+        assert f.violation_kind == "imports/unused"
+        assert f.params == {"imported": "foo.proto"}
 
     def test_sad_path_unreferenced_import_fires(self, tmp_path: Path) -> None:
         report = _run_single(

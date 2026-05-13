@@ -119,9 +119,11 @@ def check_no_weak_imports(ctx: FileLintContext) -> None:
     profiles=("recommended", "default"),
     element=ElementKind.FILE,
     message_template=(
-        "File imports {imported!r} but does not reference any of its "
-        "types — drop the import or mark it ``public``/``weak`` if "
-        "the re-export is intentional"
+        "File imports {imported!r} but does not reference any of "
+        "its message or enum types — drop the import if it is "
+        "truly unused; known false positives for imports used "
+        "only via custom options or proto2 extensions are tracked "
+        "for D6b"
     ),
     source_spec="buf:IMPORT_USED",
 )
@@ -143,15 +145,36 @@ def check_unused_imports(ctx: FileLintContext) -> None:
       compiler generates for each map.
     - Method input + output types on every service.
 
-    Not covered (out of scope for D6a — narrow protobuf surfaces
-    where buf itself is similarly limited):
+    **Known false positives** — these are documented limitations
+    rather than implementation oversights. The plan declares them
+    out of scope for D6a (the option/extension walker is a
+    distinct surface tracked for D6b); the rule's user-facing
+    message_template names both cases so users hitting them can
+    distinguish a true unused import from a known D6a gap:
 
-    - proto2 extensions of types in other files.
-    - Custom options whose definitions live in other files.
+    - **Custom options** — files imported solely so a custom
+      option (``option (foo.my_option) = "bar";``) can reference
+      a type defined there. The walker does not visit option
+      slots on messages/fields/services/methods/enums; the
+      import will be reported as unused even though it is used.
+    - **proto2 extensions of types in other files** — files
+      imported solely so an ``extend Foo { ... }`` block can
+      target a message defined there. The walker does not visit
+      ``ctx.file.extensions_by_name``.
 
-    The rule mirrors buf's IMPORT_USED behavior: a public-imported
-    file used only as a re-export is not flagged; a weak-imported
-    file used only for compat is not flagged.
+    The cross-rule contract that the message_template avoids: the
+    earlier draft of this rule suggested "mark it ``public`` /
+    ``weak`` if intentional" as a remediation, but those marks
+    fire ``imports/no-public`` / ``imports/no-weak`` in the same
+    ``recommended`` profile — the suggested remediation would
+    have created a cascade finding. The current message names
+    only safe remediations.
+
+    The rule mirrors buf's IMPORT_USED behavior on the surfaces
+    it covers: a public-imported file used only as a re-export
+    is not flagged; a weak-imported file used only for compat is
+    not flagged. Buf's own walker visits option slots too, which
+    is the parity gap acknowledged above.
     """
     fdp = descriptor_pb2.FileDescriptorProto()
     ctx.file.CopyToProto(fdp)
@@ -171,11 +194,10 @@ def check_unused_imports(ctx: FileLintContext) -> None:
             _record(field.enum_type)
         for nested in msg.nested_types:
             _walk_message(nested)
-        for nested_enum in msg.enum_types:
-            # enums declared inside this message live in this file;
-            # no cross-file usage to record here. Skipping keeps the
-            # used_files set focused on referenced symbols.
-            del nested_enum
+        # Locally-declared nested enums (``msg.enum_types``) cannot
+        # contribute cross-file references — their values are
+        # integers, not type references, and they live in this
+        # file. Intentionally not walked.
 
     for msg in ctx.file.message_types_by_name.values():
         _walk_message(msg)

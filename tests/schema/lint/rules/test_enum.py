@@ -20,6 +20,7 @@ full-pack integration test.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import ElementKind, LintProfile, LintSeverity
@@ -38,7 +39,7 @@ def _run_single(
     tmp_path: Path,
     sources: dict[str, str],
     rule_id: str,
-):
+) -> Any:
     """Thin wrapper that fixes the pack to ``enum`` for this file's tests."""
     return _run_single_with_pack(tmp_path, sources, rule_id, enum_pack)
 
