@@ -33,8 +33,14 @@ def _compile(tmp_path: Path, sources: dict[str, str]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-class TestNamingPackShape:
-    """The naming pack exposes RULES with the canary rule properly registered."""
+class TestCanaryPackShape:
+    """The naming pack exposes RULES with the canary rule properly registered.
+
+    Named ``TestCanaryPackShape`` (not ``TestNamingPackShape``) to
+    avoid colliding with the same-named class in
+    ``tests/schema/lint/rules/test_naming_extended.py``, which covers
+    the wider 9-rule pack shape introduced in D6a Unit 3.
+    """
 
     def test_rules_attribute_is_tuple_of_decorated_fns(self) -> None:
         """The canary is the first registered entry in RULES.

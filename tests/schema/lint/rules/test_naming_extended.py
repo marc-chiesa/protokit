@@ -406,6 +406,22 @@ message User {
 """
 
 
+# Proto3 ``optional`` fields synthesize a wrapper oneof named with a
+# leading underscore. The check_snake_case_oneofs rule must skip
+# these — protobuf grammar forbids user-authored underscore-prefixed
+# oneof names, so the leading underscore reliably discriminates
+# compiler-synthesized oneofs from user-declared ones.
+_ONEOF_PROTO3_OPTIONAL = """
+syntax = "proto3";
+package optfield;
+
+message User {
+  optional string email_address = 1;
+  optional int64 user_id = 2;
+}
+"""
+
+
 class TestSnakeCaseOneofs:
     """``naming/snake-case-oneofs`` fires on non-snake_case oneof names."""
 
@@ -425,6 +441,25 @@ class TestSnakeCaseOneofs:
         )
         bad_names = {f.params["name"] for f in report.findings}
         assert bad_names == {"Contact", "primaryId"}
+
+    def test_proto3_optional_synthetic_oneof_skipped(
+        self, tmp_path: Path,
+    ) -> None:
+        """Synthetic oneofs from proto3 ``optional`` fields do not fire.
+
+        ``optional string email_address = 1;`` synthesizes a wrapper
+        oneof named ``_email_address``. The leading underscore is the
+        discriminator: protobuf grammar prohibits user-authored
+        underscore-prefixed oneof names, so the rule can safely skip
+        any oneof whose name begins with ``_`` without losing
+        coverage of user-declared violations.
+        """
+        report = _run_single(
+            tmp_path,
+            {"optfield.proto": _ONEOF_PROTO3_OPTIONAL},
+            "naming/snake-case-oneofs",
+        )
+        assert report.findings == ()
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +646,26 @@ class TestSnakeCaseFiles:
         )
         assert report.findings == ()
 
+    def test_multi_dot_basename_fires_on_inner_dot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Multi-dot filenames fire because the inner dot survives stem-strip.
+
+        ``PurePosixPath('acme.v1.proto').stem`` is ``'acme.v1'`` (only
+        the final extension is stripped). The dot is not in the
+        snake_case character class, so the rule fires on ``acme.v1``.
+        Users encoding version segments should put them in the
+        directory path (``acme/v1/users.proto``) rather than the
+        basename. This matches buf's FILE_LOWER_SNAKE_CASE behavior.
+        """
+        report = _run_single(
+            tmp_path,
+            {"acme.v1.proto": _FILE_GOOD_CONTENT},
+            "naming/snake-case-files",
+        )
+        bad_names = {f.params["name"] for f in report.findings}
+        assert bad_names == {"acme.v1"}
+
 
 # ---------------------------------------------------------------------------
 # naming/snake-case-packages
@@ -701,21 +756,15 @@ class TestSnakeCasePackages:
 # ---------------------------------------------------------------------------
 
 
-# The 9 rule_ids the naming pack registers after D6a Unit 3 — used by
-# the profile-membership assertions below. Kept as a module-level
-# constant so a future rule addition forces a single update site.
+# Rule_ids the naming pack registers — derived from RULES so a future
+# rule addition (or removal) auto-updates this constant rather than
+# requiring a hand-edit at every consumer. The ``_lint_spec`` attribute
+# is attached by the ``@lint_rule`` decorator at module-import time;
+# the ``type: ignore`` mirrors the established access pattern used in
+# the per-rule spec-metadata tests above.
 _ALL_NAMING_RULE_IDS = frozenset(
-    {
-        "naming/snake-case-fields",
-        "naming/pascal-case-messages",
-        "naming/pascal-case-enums",
-        "naming/upper-snake-case-enum-values",
-        "naming/snake-case-oneofs",
-        "naming/pascal-case-services",
-        "naming/pascal-case-rpcs",
-        "naming/snake-case-files",
-        "naming/snake-case-packages",
-    }
+    fn._lint_spec.rule_id  # type: ignore[attr-defined]
+    for fn in RULES
 )
 
 
