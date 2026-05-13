@@ -1,0 +1,165 @@
+"""Tests for buf-compatibility profile alias resolution (D6a U2, KTD-1).
+
+Covers:
+
+- The ``_PROFILE_ALIASES`` mapping resolves ``minimal -> essentials``
+  and ``basic -> recommended`` at the ``_coerce_profile`` input boundary.
+- Both pyproject and CLI input paths flow through ``_coerce_profile``,
+  so alias resolution covers both surfaces with a single declaration
+  (no double-resolution needed downstream).
+- Resolution is case-insensitive and whitespace-tolerant per the
+  ``normalize-at-input-boundary`` learning (the alias check happens
+  AFTER ``.strip().lower()``).
+- Primary protokit-native names (``essentials``, ``recommended``,
+  ``default``) pass through unchanged.
+- Aliases in a list-form profile resolve per-element.
+
+The R7 mapping was carried in by D6a from the origin brainstorm; the
+pinned set is exactly two entries — adding a third without updating
+the tests is a regression signal.
+"""
+
+from __future__ import annotations
+
+from protokit.schema.lint._config import (
+    _PROFILE_ALIASES,
+    ResolvedLintConfig,
+    _coerce_profile,
+)
+
+# ---------------------------------------------------------------------------
+# The mapping itself
+# ---------------------------------------------------------------------------
+
+
+class TestAliasMapping:
+    def test_mapping_pinned_to_two_entries(self) -> None:
+        """``_PROFILE_ALIASES`` contains exactly the two buf compatibility
+        aliases. A drift here (e.g., adding ``strict -> default``) needs
+        an explicit test update to stay coherent with R7's "buf aliases
+        only" framing.
+        """
+        assert _PROFILE_ALIASES == {
+            "minimal": "essentials",
+            "basic": "recommended",
+        }
+
+    def test_aliases_resolve_to_documented_primaries(self) -> None:
+        """Each alias maps to a primary protokit-native name."""
+        assert _PROFILE_ALIASES["minimal"] == "essentials"
+        assert _PROFILE_ALIASES["basic"] == "recommended"
+
+
+# ---------------------------------------------------------------------------
+# _coerce_profile resolves aliases at the boundary
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceProfileResolvesAliases:
+    def test_minimal_resolves_to_essentials(self) -> None:
+        assert _coerce_profile("minimal") == ("essentials",)
+
+    def test_basic_resolves_to_recommended(self) -> None:
+        assert _coerce_profile("basic") == ("recommended",)
+
+    def test_primary_name_passes_through_unchanged(self) -> None:
+        """``essentials``/``recommended``/``default`` are primary names —
+        they must not double-resolve or otherwise change.
+        """
+        assert _coerce_profile("essentials") == ("essentials",)
+        assert _coerce_profile("recommended") == ("recommended",)
+        assert _coerce_profile("default") == ("default",)
+
+    def test_unknown_name_passes_through_unchanged(self) -> None:
+        """Unknown names are returned verbatim (after normalization);
+        rule-pack profile-name matching downstream decides whether the
+        name resolves to anything. The alias mechanism is closed-set,
+        not a free-form rewrite.
+        """
+        assert _coerce_profile("strict") == ("strict",)
+
+    def test_uppercase_alias_normalized_then_resolved(self) -> None:
+        """Per ``normalize-at-input-boundary``: ``.strip().lower()``
+        runs BEFORE the alias check, so ``BASIC`` resolves through.
+        """
+        assert _coerce_profile("BASIC") == ("recommended",)
+        assert _coerce_profile("Minimal") == ("essentials",)
+
+    def test_whitespace_alias_normalized_then_resolved(self) -> None:
+        assert _coerce_profile("  basic  ") == ("recommended",)
+        assert _coerce_profile("\tminimal\n") == ("essentials",)
+
+    def test_list_form_resolves_per_element(self) -> None:
+        """Multi-profile composition: each element resolves through the
+        alias mapping independently. Mixed alias + primary input is
+        the common upgrade scenario for users adding the new
+        ``recommended`` profile alongside an existing buf-aliased
+        ``basic`` entry.
+        """
+        assert _coerce_profile(["basic", "default"]) == (
+            "recommended",
+            "default",
+        )
+        assert _coerce_profile(["minimal", "BASIC"]) == (
+            "essentials",
+            "recommended",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Alias resolution covers both pyproject and CLI input paths
+# ---------------------------------------------------------------------------
+
+
+class TestAliasesAcrossInputSurfaces:
+    """Both pyproject ``profile = "basic"`` and CLI ``--profile basic``
+    flow through ``_coerce_profile`` in ``from_dict``, so the alias
+    mapping covers both surfaces with one declaration. These tests
+    pin that contract at the ``ResolvedLintConfig`` boundary.
+    """
+
+    def test_pyproject_alias_resolves(self) -> None:
+        resolved = ResolvedLintConfig.from_dict({"profile": "basic"}, {})
+        assert resolved.profile == ("recommended",)
+
+    def test_cli_alias_resolves(self) -> None:
+        """CLI overrides pass the value through ``_coerce_profile``
+        upstream of ``from_dict`` (via the CLI argument-parsing layer);
+        for this unit test we simulate the post-coercion result by
+        passing the alias-resolved value directly. The contract is
+        that BOTH input paths produce the same final tuple.
+        """
+        resolved = ResolvedLintConfig.from_dict(
+            None, {"profile": _coerce_profile("basic")},
+        )
+        assert resolved.profile == ("recommended",)
+
+    def test_cli_replaces_pyproject_alias_with_alias(self) -> None:
+        """CLI replaces pyproject for ``profile`` — both sides going
+        through ``_coerce_profile`` means the CLI's alias takes
+        precedence and resolves through the same mapping.
+        """
+        resolved = ResolvedLintConfig.from_dict(
+            {"profile": "basic"},
+            {"profile": _coerce_profile("minimal")},
+        )
+        assert resolved.profile == ("essentials",)
+
+
+# ---------------------------------------------------------------------------
+# Composition with the existing list-form profile
+# ---------------------------------------------------------------------------
+
+
+class TestAliasInListForm:
+    def test_mixed_list_in_pyproject(self) -> None:
+        resolved = ResolvedLintConfig.from_dict(
+            {"profile": ["basic", "default"]}, {},
+        )
+        assert resolved.profile == ("recommended", "default")
+
+    def test_all_aliases_in_pyproject(self) -> None:
+        resolved = ResolvedLintConfig.from_dict(
+            {"profile": ["minimal", "basic"]}, {},
+        )
+        assert resolved.profile == ("essentials", "recommended")

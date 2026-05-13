@@ -41,10 +41,12 @@ land in U2. U1 returns the raw ``dict[str, Any]`` parsed from the
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 import pathspec
@@ -434,12 +436,41 @@ def _extract_lint_table(table: dict[str, Any]) -> dict[str, Any] | None:
 #: Top-level keys allowed inside ``[tool.protokit.lint]`` (R2 allowlist).
 #: Anything else surfaces via :func:`_validate_table_keys` as an R3 error,
 #: including nested tables like ``[tool.protokit.lint.rules.foo]`` whose
-#: TOP-LEVEL key (``"rules"``) is not in this set. D6 may admit nested
-#: structures; until then the contract is "top-level allowlist only" per
-#: KTD-2.
+#: TOP-LEVEL key (``"rules"``) is not in this set. D6a admits two new
+#: keys (``severities``, ``no_builtin_rules``) per R9a / R9c; until
+#: cross-language profiles arrive in D6b the contract remains "top-level
+#: allowlist only" per KTD-2.
+#:
+#: Note: ``schema_version`` is wire-format OUTPUT only (R9d) — it is
+#: emitted by formatters, never accepted as pyproject input.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"profile", "exclude", "min_severity", "max_warnings", "format"},
+    {
+        "profile",
+        "exclude",
+        "min_severity",
+        "max_warnings",
+        "format",
+        "severities",
+        "no_builtin_rules",
+    },
 )
+
+#: Buf-compatibility profile aliases resolved at the
+#: ``_coerce_profile`` input boundary (per KTD-1 and the
+#: ``normalize-at-input-boundary`` learning). Both pyproject and CLI
+#: input paths flow through ``_coerce_profile`` via ``from_dict``'s
+#: coercion step, so this single mapping covers both surfaces.
+#:
+#: Downstream code (rule pack profile-name matching, ``LintProfile.compose``)
+#: sees only primary protokit-native names; aliases never leak past the
+#: coercion boundary. A user pack declaring ``profiles=("basic",)`` would
+#: never match because ``"basic"`` is resolved to ``"recommended"`` before
+#: lookup — this is the intended trade-off (users can extend recommended
+#: but not the buf-alias name itself).
+_PROFILE_ALIASES: dict[str, str] = {
+    "minimal": "essentials",
+    "basic": "recommended",
+}
 
 
 def _validate_table_keys(table: Mapping[str, Any]) -> None:
@@ -476,9 +507,18 @@ def _coerce_profile(value: Any) -> tuple[str, ...]:
     are list-only. Strings are normalized at the input boundary
     (strip whitespace + lowercase) per the
     ``normalize-at-input-boundary`` learning.
+
+    D6a (R7 / KTD-1): after ``.strip().lower()`` normalization, the
+    buf-compatibility aliases declared in ``_PROFILE_ALIASES`` are
+    resolved to their primary protokit-native names. This happens at
+    the input boundary so downstream code (``LintProfile.compose`` and
+    rule-pack profile-name matching) sees only primary names. Both
+    pyproject and CLI input paths flow through this helper, so the
+    alias resolution covers both surfaces with a single declaration.
     """
     if isinstance(value, str):
-        return (value.strip().lower(),)
+        normalized = value.strip().lower()
+        return (_PROFILE_ALIASES.get(normalized, normalized),)
     if isinstance(value, list):
         if not value:
             error_exit_with_code(
@@ -497,7 +537,12 @@ def _coerce_profile(value: Any) -> tuple[str, ...]:
                         f"a string; got {type(elem).__name__}."
                     ),
                 )
-        return tuple(elem.strip().lower() for elem in value)
+        return tuple(
+            _PROFILE_ALIASES.get(
+                elem.strip().lower(), elem.strip().lower(),
+            )
+            for elem in value
+        )
     error_exit_with_code(
         "pyproject-config-invalid",
         (
@@ -627,6 +672,108 @@ def _coerce_format(value: Any) -> str:
     return value.strip().lower()
 
 
+def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
+    """Coerce ``severities`` to ``dict[str, LintSeverity]`` per R9a.
+
+    The ``[tool.protokit.lint.severities]`` table is a flat
+    rule_id-to-severity mapping (no nested rules-pack grouping in
+    D6a). Validates:
+
+    - Value is a TOML table (``dict``) — scalar / list inputs are
+      hard-errors.
+    - Each key is a non-empty string (TOML keys are always strings,
+      but empty-string keys would silently no-op against rule_id
+      lookups and are flagged here as a typo signal).
+    - Each value coerces to ``LintSeverity`` via the same
+      severity-string semantics as :func:`_coerce_min_severity`
+      (case-insensitive, whitespace-stripped at the boundary).
+
+    Empty table (``severities = {}``) is valid — explicit empty is
+    indistinguishable from omitting the key, but the coercion
+    accepts it so users can stage a configuration scaffold.
+
+    Per the ``source-aware-error-messages`` learning, error messages
+    name BOTH the offending rule_id AND the rejected value so users
+    can locate the typo without re-reading their pyproject. The
+    rejected value's *type* is named, not its raw content (R5a
+    content-safety — a user could embed control chars in a TOML
+    key/value, so we never echo the raw bytes back to stderr).
+    """
+    if not isinstance(value, dict):
+        error_exit_with_code(
+            "pyproject-config-invalid",
+            (
+                f"[tool.protokit.lint] severities must be a table; "
+                f"got {type(value).__name__}."
+            ),
+        )
+    result: dict[str, LintSeverity] = {}
+    for rule_id, sev_value in value.items():
+        # TOML guarantees keys are strings, but defensive isinstance
+        # check covers the case where someone constructs the dict
+        # programmatically (e.g., from_dict called from a test with
+        # a hand-built dict) and accidentally passes a non-string key.
+        if not isinstance(rule_id, str):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] severities key must be a "
+                    f"string rule_id; got {type(rule_id).__name__}."
+                ),
+            )
+        if not rule_id.strip():
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    "[tool.protokit.lint] severities key must be a "
+                    "non-empty rule_id."
+                ),
+            )
+        if not isinstance(sev_value, str):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] severities[{rule_id!r}] must "
+                    f"be a string severity name; got "
+                    f"{type(sev_value).__name__}."
+                ),
+            )
+        normalized = sev_value.strip().lower()
+        try:
+            result[rule_id] = LintSeverity(normalized)
+        except ValueError:
+            valid = ", ".join(repr(s.value) for s in LintSeverity)
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] severities[{rule_id!r}] must "
+                    f"be one of {valid}; got a severity name outside "
+                    f"the closed set."
+                ),
+            )
+    return result
+
+
+def _coerce_no_builtin_rules(value: Any) -> bool:
+    """Coerce ``no_builtin_rules`` to ``bool`` per R9c.
+
+    TOML ``true`` / ``false`` only. String ``"true"`` is rejected
+    explicitly — accepting it would surprise users who expect TOML
+    type-strictness, and conflating it with the boolean would
+    create a footgun for typos like ``"True"`` or ``"yes"`` that
+    silently parse to truthy values in a less strict coercion path.
+    """
+    if not isinstance(value, bool):
+        error_exit_with_code(
+            "pyproject-config-invalid",
+            (
+                f"[tool.protokit.lint] no_builtin_rules must be a "
+                f"boolean; got {type(value).__name__}."
+            ),
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class ResolvedLintConfig:
     """Merged result of pyproject ``[tool.protokit.lint]`` + CLI + defaults.
@@ -672,6 +819,23 @@ class ResolvedLintConfig:
     min_severity_source: ConfigSource = "default"
     pyproject_min_severity: LintSeverity | None = None
     exclude_source: ExcludeSource = "default"
+    #: D6a R9a — per-rule severity overrides resolved from
+    #: ``[tool.protokit.lint.severities]``. Empty dict when no
+    #: overrides are configured. CLI side-channel for this knob is
+    #: deferred to a later delivery (D7+); D6a is pyproject-only.
+    #: ``__post_init__`` wraps the input in ``MappingProxyType(dict(...))``
+    #: per the ``frozen-dataclass-mutable-fields-need-post-init-snapshot``
+    #: learning so a caller passing a mutable dict cannot leak mutations
+    #: through the frozen wrapper.
+    severities: Mapping[str, LintSeverity] = dataclasses.field(
+        default_factory=dict,
+    )
+    #: D6a R9c — when ``True``, ``cli.py`` skips the BUILTIN_PACKS
+    #: auto-load loop. Resolved from either ``--no-builtin-rules`` CLI
+    #: flag OR ``[tool.protokit.lint] no_builtin_rules = true``; CLI
+    #: takes precedence per the standard CLI > pyproject precedence
+    #: applied to the other knobs.
+    no_builtin_rules: bool = False
 
     def __post_init__(self) -> None:
         # Tuple-snapshot list inputs per the
@@ -681,6 +845,16 @@ class ResolvedLintConfig:
         # mutations on it would leak through to the dataclass.
         object.__setattr__(self, "profile", tuple(self.profile))
         object.__setattr__(self, "exclude", tuple(self.exclude))
+        # Mapping-snapshot per the same learning: ``severities`` field's
+        # ``default_factory=dict`` returns a fresh mutable dict; wrap in
+        # ``MappingProxyType`` over a defensive ``dict()`` copy so callers
+        # that pass an external dict cannot leak mutations through and
+        # the frozen-dataclass contract holds for the new field.
+        object.__setattr__(
+            self,
+            "severities",
+            MappingProxyType(dict(self.severities)),
+        )
         # Construction-time invariant: when ``exclude`` is non-empty,
         # ``exclude_source`` MUST be one of "cli" / "pyproject" / "both"
         # so ``all_files_excluded_message`` can attribute the patterns.
@@ -887,6 +1061,10 @@ class ResolvedLintConfig:
                     validated[key] = _coerce_max_warnings(value)
                 elif key == "format":
                     validated[key] = _coerce_format(value)
+                elif key == "severities":
+                    validated[key] = _coerce_severities(value)
+                elif key == "no_builtin_rules":
+                    validated[key] = _coerce_no_builtin_rules(value)
                 # Unreachable: `_validate_table_keys` already exited
                 # on any key not in `_ALLOWED_KEYS`. The else-branch
                 # is omitted intentionally.
@@ -963,6 +1141,30 @@ class ResolvedLintConfig:
         else:
             resolved_fmt = "human"
 
+        # severities (R9a): pyproject-only in D6a — no CLI side-channel
+        # yet. Defaults to empty dict when the table key is absent.
+        # CLI's user-wins post-compose overlay (KTD-2) is applied in
+        # cli.py around the LintProfile.compose call, NOT here; this
+        # method only resolves the input-boundary value.
+        resolved_severities: Mapping[str, LintSeverity] = validated.get(
+            "severities", {},
+        )
+
+        # no_builtin_rules (R9c): CLI replaces pyproject. The CLI flag's
+        # ``ParameterSource`` detection happens in cli.py — by the time
+        # ``from_dict`` is called, ``cli_overrides["no_builtin_rules"]``
+        # is either ``True``/``False`` (the user explicitly typed the
+        # flag) or absent / ``None`` (defer to pyproject, then to
+        # ``False``).
+        cli_no_builtin = cli_overrides.get("no_builtin_rules")
+        resolved_no_builtin: bool
+        if cli_no_builtin is not None:
+            resolved_no_builtin = bool(cli_no_builtin)
+        elif "no_builtin_rules" in validated:
+            resolved_no_builtin = validated["no_builtin_rules"]
+        else:
+            resolved_no_builtin = False
+
         return cls(
             profile=resolved_profile,
             exclude=resolved_exclude,
@@ -972,6 +1174,8 @@ class ResolvedLintConfig:
             min_severity_source=min_sev_source,
             pyproject_min_severity=pyproject_min_sev,
             exclude_source=exclude_source,
+            severities=resolved_severities,
+            no_builtin_rules=resolved_no_builtin,
         )
 
 
