@@ -52,11 +52,20 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal, NoReturn
 
 import pytest
 
+from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.rules import BUILTIN_PACKS
+
+#: Type alias for the parity-exceptions mapping. Keys are
+#: ``(protokit_rule_id, fixture_stem)``; values are
+#: ``(posture, reason)`` where posture is one of
+#: ``"protokit_stricter"`` or ``"protokit_looser"``.
+ParityPosture = Literal["protokit_stricter", "protokit_looser"]
+ParityExceptionsMap = Mapping[tuple[str, str], tuple[ParityPosture, str]]
+_VALID_POSTURES: frozenset[str] = frozenset({"protokit_stricter", "protokit_looser"})
 
 #: Functional buf-parity override for the D2 canary
 #: ``naming/snake-case-fields``. The canary's ``source_spec`` is
@@ -88,7 +97,7 @@ _CANARY_PARITY_OVERRIDE: Mapping[str, str] = {
 #:   4. Per-branch test methods
 #: per
 #: ``docs/solutions/best-practices/buf-parity-divergence-documentation-discipline-2026-05-13.md``.
-_PARITY_EXCEPTIONS: Mapping[tuple[str, str], tuple[str, str]] = {
+_PARITY_EXCEPTIONS: ParityExceptionsMap = {
     # file/syntax-specified: descriptor-level limitation — protoc
     # emits ``fdp.syntax == ""`` for both "no syntax statement" AND
     # explicit ``syntax = "proto2";``. Protokit fires on both;
@@ -132,17 +141,42 @@ def _build_rule_id_map() -> Mapping[str, str]:
     Drops rules whose ``source_spec`` is neither ``buf:*`` nor
     listed in ``_CANARY_PARITY_OVERRIDE`` — those rules are
     protokit-only and not part of the parity contract.
+
+    Uses ``get_lint_spec()`` (the documented external-caller
+    accessor) so a malformed RULES tuple raises a clear
+    ``TypeError`` rather than an opaque ``AttributeError``.
     """
     mapping: dict[str, str] = {}
     pack: ModuleType
     for pack in BUILTIN_PACKS:
         for fn in pack.RULES:
-            spec = fn._lint_spec  # type: ignore[attr-defined]
+            spec = get_lint_spec(fn)
             protokit_id = spec.rule_id
             buf_id = _extract_buf_rule_id(spec.source_spec)
             if buf_id is not None:
+                # Duplicate rule_id across packs (refactor collision,
+                # accidental copy) would silently overwrite — every
+                # subsequent parity test for the first rule would
+                # then use the wrong buf_id. Fail loudly at module
+                # import instead of silently producing wrong tests.
+                if protokit_id in mapping and mapping[protokit_id] != buf_id:
+                    raise AssertionError(
+                        f"BUILTIN_PACKS registers protokit rule_id "
+                        f"{protokit_id!r} twice with conflicting buf "
+                        f"mappings: existing={mapping[protokit_id]!r}, "
+                        f"new={buf_id!r}. Check for a duplicate "
+                        f"@lint_rule decoration across rule packs."
+                    )
                 mapping[protokit_id] = buf_id
             elif protokit_id in _CANARY_PARITY_OVERRIDE:
+                if protokit_id in mapping:
+                    raise AssertionError(
+                        f"_CANARY_PARITY_OVERRIDE entry {protokit_id!r} "
+                        f"collides with a buf:-sourced rule already in "
+                        f"BUILTIN_PACKS. The override is dead code; "
+                        f"either remove it or change the rule's "
+                        f"source_spec away from a buf: prefix."
+                    )
                 mapping[protokit_id] = _CANARY_PARITY_OVERRIDE[protokit_id]
             # else: rule is protokit-only — excluded from parity.
     return mapping
@@ -154,19 +188,39 @@ RULE_ID_MAP: Mapping[str, str] = _build_rule_id_map()
 
 
 def _validate_parity_exceptions() -> None:
-    """Fail collection if ``_PARITY_EXCEPTIONS`` references unknown rule_ids.
+    """Fail collection if ``_PARITY_EXCEPTIONS`` references unknown rule_ids,
+    invalid posture values, or fixture files that do not exist on disk.
 
     Drift between the exceptions allowlist and the actual rule
-    registry would silently mask a divergence (entry-for-deleted-rule)
-    or fire spuriously (typo in rule_id). Validating once at import
-    keeps the harness in lockstep with the rule registry.
+    registry / fixture tree would silently mask a divergence (entry-
+    for-deleted-rule, fixture rename) or fire spuriously (typo in
+    rule_id or posture). Validating once at import keeps the harness
+    in lockstep with both the rule registry AND the fixture corpus.
     """
     known_rules = set(RULE_ID_MAP.keys())
-    for (rule_id, _fixture_stem) in _PARITY_EXCEPTIONS:
+    fixtures_root = Path(__file__).resolve().parent / "fixtures"
+    for (rule_id, fixture_stem), (posture, _reason) in _PARITY_EXCEPTIONS.items():
         if rule_id not in known_rules:
             raise AssertionError(
                 f"_PARITY_EXCEPTIONS references unknown rule_id "
                 f"{rule_id!r}; known parity rules: {sorted(known_rules)!r}"
+            )
+        if posture not in _VALID_POSTURES:
+            raise AssertionError(
+                f"_PARITY_EXCEPTIONS entry ({rule_id!r}, {fixture_stem!r}) "
+                f"has invalid posture {posture!r}; valid: "
+                f"{sorted(_VALID_POSTURES)!r}"
+            )
+        # Validate fixture_stem corresponds to an actual file under
+        # tests/parity/fixtures/<rule_id>/. The harness convention is
+        # one fixture directory per rule_id; the stem maps to
+        # ``<rule_id>/<stem>.proto`` relative to fixtures_root.
+        fixture_path = fixtures_root / rule_id / f"{fixture_stem}.proto"
+        if not fixture_path.is_file():
+            raise AssertionError(
+                f"_PARITY_EXCEPTIONS entry ({rule_id!r}, {fixture_stem!r}) "
+                f"references fixture {fixture_path} which does not exist. "
+                f"Update the entry or restore the fixture."
             )
 
 
@@ -183,7 +237,7 @@ def rule_id_map() -> Mapping[str, str]:
 
 
 @pytest.fixture(scope="session")
-def parity_exceptions() -> Mapping[tuple[str, str], tuple[str, str]]:
+def parity_exceptions() -> ParityExceptionsMap:
     """Documented divergences keyed by (rule_id, fixture_stem)."""
     return _PARITY_EXCEPTIONS
 
@@ -192,6 +246,24 @@ def parity_exceptions() -> Mapping[tuple[str, str], tuple[str, str]]:
 def buf_deprecated_rules() -> frozenset[str]:
     """Buf rule IDs that cannot be exercised by the harness (deprecated upstream)."""
     return _BUF_DEPRECATED_RULES
+
+
+def skip_if_buf_deprecated(buf_rule_id: str, protokit_rule_id: str) -> None:
+    """Skip the current test cleanly when ``buf_rule_id`` is upstream-deprecated.
+
+    Call this from a per-family ``test_parity`` method **before** any
+    subprocess invocation. Skipping early avoids buf returning exit 1
+    with ``"resultRules was empty"`` — which the new
+    ``run_buf_lint`` exit-code guard correctly surfaces as a failure
+    rather than letting it become a silent-green test.
+    """
+    if buf_rule_id in _BUF_DEPRECATED_RULES:
+        pytest.skip(
+            f"buf:{buf_rule_id} is deprecated in the pinned buf version "
+            f"(categories=[], deprecated=true); protokit's "
+            f"{protokit_rule_id!r} is protokit-only for this buf pin. "
+            f"See _BUF_DEPRECATED_RULES in tests/parity/conftest.py."
+        )
 
 
 @pytest.fixture(scope="session")
@@ -238,6 +310,28 @@ def fixtures_root() -> Path:
 # ---- Subprocess helpers -----------------------------------------------------
 
 
+def _fail_subprocess(msg: str) -> NoReturn:
+    """``pytest.fail`` typed as ``NoReturn`` so mypy/readers see the
+    contract: ``_run_subprocess``'s except arms never fall through."""
+    pytest.fail(msg)
+    raise AssertionError("unreachable")  # pragma: no cover -- defense vs stub rot
+
+
+def _stderr_repr(stderr: bytes | str | None) -> str:
+    """Render ``TimeoutExpired.stderr`` regardless of bytes/str/None.
+
+    On POSIX, ``subprocess.TimeoutExpired.stderr`` is ``bytes`` even
+    when the subprocess.run call passed ``text=True`` (the decode
+    path runs only on the normal-exit branch). Normalize to a clean
+    str repr so diagnostic messages don't show ``b'...'`` prefixes.
+    """
+    if stderr is None or stderr == b"" or stderr == "":
+        return "(empty)"
+    if isinstance(stderr, bytes):
+        return repr(stderr.decode("utf-8", errors="replace"))
+    return repr(stderr)
+
+
 def _run_subprocess(
     argv: list[str], cwd: Path, label: str
 ) -> subprocess.CompletedProcess[str]:
@@ -251,27 +345,36 @@ def _run_subprocess(
     try:
         return subprocess.run(  # noqa: S603 -- argv is constructed in-test, never user input
             argv,
-            cwd=str(cwd),
+            cwd=cwd,
             capture_output=True,
             text=True,
             check=False,
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
-        stderr_repr = repr(exc.stderr) if exc.stderr else "(empty)"
-        pytest.fail(
+        _fail_subprocess(
             f"{label} invocation exceeded 30s wall-clock cap "
-            f"(cwd={cwd}, argv={argv!r}). stderr so far: {stderr_repr}"
+            f"(cwd={cwd}, argv={argv!r}). stderr so far: {_stderr_repr(exc.stderr)}"
         )
     except KeyboardInterrupt:
         raise
     except SystemExit:
         raise
     except Exception as exc:
-        pytest.fail(
+        _fail_subprocess(
             f"{label} subprocess raised {type(exc).__name__}: {exc} "
             f"(cwd={cwd}, argv={argv!r})"
         )
+
+
+#: Buf exit codes that the harness treats as "ran successfully":
+#:   0 = clean (no findings)
+#:   100 = findings present
+#: Anything else (1 = error / misconfiguration, 2 = unknown command,
+#: 127 = binary missing, 128+signal, etc.) is a buf-side failure that
+#: would otherwise produce silent-green tests via the empty-stdout
+#: fall-through. The check below makes those failures loud.
+_BUF_OK_EXIT_CODES: frozenset[int] = frozenset({0, 100})
 
 
 def run_buf_lint(
@@ -282,19 +385,27 @@ def run_buf_lint(
     Returns a list of finding dicts parsed from buf's NDJSON output.
     Each dict carries at minimum ``path``, ``start_line``, and
     ``type`` (the buf rule_id). Empty list = no findings (clean
-    lint). Non-zero buf exit codes are normal when findings exist;
-    only treat parse failures as test failures.
+    lint). Buf exits 0 on a clean run and 100 when findings exist;
+    any other exit code is a buf-side failure (misconfiguration,
+    crash, missing binary) — surface those as test failures rather
+    than silently returning ``[]``.
     """
     result = _run_subprocess(
         [str(buf_binary_path), "lint", "--error-format=json", "."],
         cwd=fixture_dir,
         label="buf lint",
     )
+    if result.returncode not in _BUF_OK_EXIT_CODES:
+        pytest.fail(
+            f"buf lint exited {result.returncode} "
+            f"(expected 0=clean or 100=findings) on cwd={fixture_dir}. "
+            f"stderr: {result.stderr!r}; stdout: {result.stdout!r}"
+        )
     findings: list[dict[str, Any]] = []
     if not result.stdout.strip():
         return findings
-    for line in result.stdout.splitlines():
-        line = line.strip()
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         try:
@@ -346,10 +457,19 @@ def run_protokit_lint(
         cwd=fixture_dir,
         label="protokit lint",
     )
-    # exit 0 = clean; exit 1 = findings present; exit 2 = error
-    if result.returncode == 2:
+    # protokit lint exit codes (R20 ladder):
+    #   0 = clean (no findings)
+    #   1 = findings present (or WARNINGs exceed --max-warnings)
+    #   2 = lint-internal error / click usage error
+    # Any other exit code (e.g., 127 from CLI rename causing
+    # ImportError, 128+signal from OOM, 130 from SIGINT) would
+    # otherwise fall through ``if not result.stdout.strip(): return []``
+    # and produce a silent-green parity test (no findings, no errors)
+    # even when the harness's CLI invocation is broken.
+    if result.returncode not in (0, 1):
         pytest.fail(
-            f"protokit lint exited 2 (internal error) on {proto_path}; "
+            f"protokit lint exited {result.returncode} "
+            f"(expected 0=clean or 1=findings) on {proto_path}; "
             f"stderr: {result.stderr!r}; stdout: {result.stdout!r}"
         )
     if not result.stdout.strip():
@@ -373,17 +493,39 @@ def run_protokit_lint(
 # ---- Parity assertion -------------------------------------------------------
 
 
+def _normalize_buf_path(buf_path: str | None) -> str:
+    """Normalize buf's emitted path so leading ``./`` or OS separators
+    don't desync from the in-test ``proto_relpath`` strings.
+
+    Buf v1.69.0 emits POSIX-relative paths without a leading ``./``
+    (verified empirically), but a future release could change the
+    convention. Normalizing both sides through
+    ``PurePosixPath(...).as_posix()`` removes a class of silent
+    false-passes on nested-directory fixtures.
+    """
+    if not buf_path:
+        return ""
+    from pathlib import PurePosixPath
+    return PurePosixPath(buf_path).as_posix()
+
+
 def _filter_buf_findings_by_rule(
     findings: list[dict[str, Any]], buf_rule_id: str, target_path: str
 ) -> list[dict[str, Any]]:
-    """Filter NDJSON findings to (matching rule, matching file path)."""
+    """Filter NDJSON findings to (matching rule, matching file path).
+
+    Paths are normalized through ``_normalize_buf_path`` so buf's
+    emitted path format and our in-test ``proto_relpath`` stay
+    aligned regardless of leading-``./`` or OS-separator drift.
+    """
     matched: list[dict[str, Any]] = []
+    normalized_target = _normalize_buf_path(target_path)
     for f in findings:
         # buf JSON shape (verified by test_buf_output_shape.py):
         #   {"path": "bad.proto", "start_line": N, "type": "RULE_ID", ...}
         if f.get("type") != buf_rule_id:
             continue
-        if f.get("path") != target_path:
+        if _normalize_buf_path(f.get("path")) != normalized_target:
             continue
         matched.append(f)
     return matched
@@ -396,6 +538,19 @@ def _filter_protokit_findings_by_rule(
     return [f for f in findings if f.get("rule_id") == protokit_rule_id]
 
 
+def case_id(rule_id: str, proto_relpath: str, expected_fires: bool) -> str:
+    """Render a readable parametrize id like ``pascal-case-messages-bad-sad``.
+
+    Used by per-family test modules to label parametrized cases.
+    Lives in conftest so all 5 modules share one definition; previously
+    each module had a local ``_case_id`` copy that drifted in docstring.
+    """
+    rule_short = rule_id.split("/", 1)[1] if "/" in rule_id else rule_id
+    fixture_stem = Path(proto_relpath).stem
+    branch = "sad" if expected_fires else "happy"
+    return f"{rule_short}-{fixture_stem}-{branch}"
+
+
 def assert_parity(
     protokit_findings: list[dict[str, Any]],
     buf_findings: list[dict[str, Any]],
@@ -403,7 +558,7 @@ def assert_parity(
     buf_rule_id: str,
     proto_relpath: str,
     expected_fires: bool,
-    parity_exceptions: Mapping[tuple[str, str], tuple[str, str]],
+    parity_exceptions: ParityExceptionsMap,
 ) -> None:
     """Assert protokit and buf produce equivalent findings on a fixture.
 

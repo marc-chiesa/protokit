@@ -103,7 +103,17 @@ def check_no_public_imports(ctx: FileLintContext) -> None:
     source_spec="buf:IMPORT_NO_WEAK",
 )
 def check_no_weak_imports(ctx: FileLintContext) -> None:
-    """Fire on every ``import weak "...";`` declaration in the file."""
+    """Fire on every ``import weak "...";`` declaration in the file.
+
+    **Buf-parity status:** As of buf v1.69.0, ``IMPORT_NO_WEAK`` is
+    *deprecated upstream* (``categories=[]``, ``deprecated=true`` per
+    ``buf config ls-lint-rules --include-deprecated --format json``).
+    The protokit rule is retained because the ``weak`` import keyword
+    is still in the descriptor format and still worth nudging users
+    away from. The parity test harness at ``tests/parity/conftest.py``
+    skips this rule via ``_BUF_DEPRECATED_RULES`` rather than
+    misreporting the upstream-deprecation as drift.
+    """
     fdp = descriptor_pb2.FileDescriptorProto()
     ctx.file.CopyToProto(fdp)
     for idx in fdp.weak_dependency:

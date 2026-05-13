@@ -83,13 +83,15 @@ testpaths = ["tests"]
 # (D5 U6) to gate the perf-smoke test off the fast-iteration loop.
 #
 # D6a U8 Phase A: register the `parity` marker for the buf-parity
-# test harness in tests/parity/. Default `pytest tests/` excludes
-# these tests via `pytest -m 'not parity'` (or simply by not
-# passing `-m parity`); CI's dedicated `parity` job runs them with
-# the pinned buf binary on PATH.
+# test harness in tests/parity/. The marker is documentary — default
+# `pytest tests/` still collects parity tests, but the `buf_binary`
+# session fixture calls `pytest.skip(...)` when buf is absent, so
+# they appear as graceful skips rather than failures. CI's dedicated
+# `parity` job (Phase B+C) installs the pinned buf binary and runs
+# these tests with the marker explicitly selected via `-m parity`.
 markers = [
     "slow: tests excluded by `pytest -m 'not slow'` (currently: D5 perf smoke on linux+py3.12)",
-    "parity: buf-parity tests (tests/parity/); require `buf` binary via $BUF_BINARY or PATH; CI runs them in the dedicated parity job",
+    "parity: buf-parity tests (tests/parity/); buf binary discovered via $BUF_BINARY or PATH (graceful skip if absent); CI runs them in the dedicated parity job",
 ]
 
 [tool.ruff]
