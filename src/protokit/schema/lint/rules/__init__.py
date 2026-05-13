@@ -58,17 +58,19 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from protokit.schema.lint.rules import enum, naming
+from protokit.schema.lint.rules import enum, imports, naming
 
 #: Curated set of rule pack modules that ``protokit lint``
 #: auto-loads at subcommand startup. See module docstring for the
 #: KD-9 upgrade-safety policy that governs additions.
 #:
-#: D6a Unit 4 adds the ``enum`` semantic rules pack
-#: (``enum/no-allow-alias`` + ``enum/first-value-zero``). The KD-9
-#: docstring amendment that authorizes pre-1.0 BUILTIN_PACKS growth
-#: lands in the D6a Unit 10 final-commit per KTD-4 of the plan; this
-#: unit just adds the pack member.
-BUILTIN_PACKS: tuple[ModuleType, ...] = (naming, enum)
+#: D6a Unit 4 added the ``enum`` semantic rules pack
+#: (``enum/no-allow-alias`` + ``enum/first-value-zero``). D6a
+#: Unit 5 adds the ``imports`` pack
+#: (``imports/no-public`` + ``imports/no-weak`` + ``imports/unused``).
+#: The KD-9 docstring amendment that authorizes pre-1.0
+#: BUILTIN_PACKS growth lands in the D6a Unit 10 final-commit per
+#: KTD-4 of the plan; the per-unit additions just add pack members.
+BUILTIN_PACKS: tuple[ModuleType, ...] = (naming, enum, imports)
 
 __all__ = ["BUILTIN_PACKS"]

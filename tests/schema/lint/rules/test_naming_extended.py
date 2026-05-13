@@ -17,9 +17,7 @@ own violations rather than coupling them to peer-rule behavior.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import ElementKind, LintProfile, LintSeverity
 from protokit.schema.lint.rules import naming as naming_pack
@@ -36,53 +34,17 @@ from protokit.schema.lint.rules.naming import (
     check_upper_snake_case_enum_values,
 )
 
-# ---------------------------------------------------------------------------
-# Shared compile + engine helpers
-# ---------------------------------------------------------------------------
-
-
-def _compile(
-    tmp_path: Path,
-    sources: dict[str, str],
-) -> Any:
-    """Write ``sources`` under ``tmp_path`` and compile them.
-
-    Keys may include POSIX-style subdirectory segments
-    (``"acme/v1/users.proto"``); the helper creates the parent
-    directories as needed. Returns a ``CompileResult``.
-    """
-    paths: list[Path] = []
-    for fname, text in sources.items():
-        p = tmp_path / fname
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text)
-        paths.append(p)
-    return compile_protos_to_result(
-        paths=paths,
-        proto_paths=(str(tmp_path),),
-    )
+from .conftest import _compile
+from .conftest import _run_single as _run_single_with_pack
 
 
 def _run_single(
     tmp_path: Path,
     sources: dict[str, str],
     rule_id: str,
-) -> Any:
-    """Run the engine with a profile containing only ``rule_id``.
-
-    Returns the ``LintReport``. The profile uses ``INFO`` min-severity
-    so the test exercises emission rather than the severity-gate logic
-    (which has its own dedicated tests).
-    """
-    result = _compile(tmp_path, sources)
-    engine = LintEngine()
-    engine.load_rule_pack(naming_pack)
-    profile = LintProfile(
-        name="default",
-        rule_ids=frozenset({rule_id}),
-        min_severity=LintSeverity.INFO,
-    )
-    return engine.run(result, profile=profile)
+):
+    """Thin wrapper that fixes the pack to ``naming`` for this file's tests."""
+    return _run_single_with_pack(tmp_path, sources, rule_id, naming_pack)
 
 
 # ---------------------------------------------------------------------------
