@@ -46,9 +46,14 @@ def descriptor_set(tmp_path: Path) -> Path:
     from google.protobuf import descriptor_pb2
 
     # Minimal valid FileDescriptorSet: one file with no messages.
+    # fd.name's directory ("test/") must align with fd.package ("test")
+    # per package/directory-match in the recommended profile — otherwise
+    # the rule fires when the engine walks this descriptor in any test
+    # path that doesn't short-circuit (e.g., the happy-path / shadow-path
+    # cases below that only assert exit_code != 2).
     fds = descriptor_pb2.FileDescriptorSet()
     fd = fds.file.add()
-    fd.name = "test.proto"
+    fd.name = "test/test.proto"
     fd.syntax = "proto3"
     fd.package = "test"
 

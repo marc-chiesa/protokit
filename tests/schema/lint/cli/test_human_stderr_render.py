@@ -413,7 +413,11 @@ class TestHumanHookIntegration:
         fd = fds.file.add()
         fd.name = "api/user.proto"
         fd.syntax = "proto3"
-        fd.package = "test"
+        # package must match the directory of fd.name to satisfy
+        # package/directory-match (recommended profile). Survival here
+        # currently relies on `--exclude '**/*'` short-circuiting the
+        # engine before rules walk; alignment is defensive.
+        fd.package = "api"
         path = tmp_path / "test.descriptor_set"
         path.write_bytes(fds.SerializeToString())
 
@@ -512,7 +516,10 @@ class TestHumanHookIntegration:
         fd = fds.file.add()
         fd.name = "api/user.proto"
         fd.syntax = "proto3"
-        fd.package = "test"
+        # package aligned to fd.name's directory; engine is monkeypatched
+        # below so rules don't actually walk this descriptor, but the
+        # fixture stays hygienic per the CLI-fixture discipline.
+        fd.package = "api"
         path = tmp_path / "test.descriptor_set"
         path.write_bytes(fds.SerializeToString())
 
@@ -556,7 +563,10 @@ class TestHumanHookIntegration:
         fd = fds.file.add()
         fd.name = "api/user.proto"
         fd.syntax = "proto3"
-        fd.package = "test"
+        # package matches fd.name's directory per package/directory-match.
+        # The test uses `--exclude '**/*'` so rules don't actually walk,
+        # but hygiene keeps the fixture sound under future engine changes.
+        fd.package = "api"
         path = tmp_path / "test.descriptor_set"
         path.write_bytes(fds.SerializeToString())
 
@@ -590,7 +600,10 @@ class TestHumanHookIntegration:
         fd = fds.file.add()
         fd.name = "api/user.proto"
         fd.syntax = "proto3"
-        fd.package = "test"
+        # package matches fd.name's directory per package/directory-match;
+        # `--exclude '**/*'` short-circuits engine walk today but hygiene
+        # keeps the fixture sound under future engine changes.
+        fd.package = "api"
         path = tmp_path / "test.descriptor_set"
         path.write_bytes(fds.SerializeToString())
 

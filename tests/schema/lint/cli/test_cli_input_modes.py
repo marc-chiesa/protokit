@@ -235,8 +235,13 @@ class TestErrorCodes:
         """
         # Build a FileDescriptorProto with a field referencing
         # `.unknown.MissingType` — no other file declares it.
+        # fd.name's directory ("dangling/") aligns with fd.package
+        # ("dangling") per package/directory-match. The descriptor-pool
+        # build crashes before lint rules walk this file today, but
+        # alignment is defensive — see Learning 1 (CLI fixture proto
+        # hygiene must satisfy BUILTIN_PACKS).
         fd = descriptor_pb2.FileDescriptorProto()
-        fd.name = "dangling.proto"
+        fd.name = "dangling/dangling.proto"
         fd.package = "dangling"
         fd.syntax = "proto3"
         msg = fd.message_type.add()
