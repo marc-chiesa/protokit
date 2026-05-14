@@ -10,7 +10,7 @@ origin: docs/brainstorms/2026-05-14-protokit-lint-delivery-6b-option-aware-and-m
 
 ## Overview
 
-D6b ships protokit-lint's first comment-aware rule family (R6 — 5 rules covering `*Options.deprecated` across FIELD / ENUM_VALUE / METHOD / MESSAGE / ENUM ElementKinds) and unblocks multi-language rule-set parity (R7 — 7 PACKAGE_SAME_* rules). Architectural additions: `compile_protos_to_result(include_source_info: bool = False)` opt-in parameter; `CompileResult.source_locations` field; a module-level `leading_comment()` free function; `FileLintContext.source_locations` + `FileLintContext.package_options` fields; an engine pre-walk pass that builds the per-package option-value accumulator. Wire-format: `LintRuntimeWarning.category` Literal widens to 5 values (`severities_unloaded_rule` split); `_LINT_JSON_SCHEMA_VERSION` bumps `"0.2"` → `"0.3"`; package version bumps `0.2.0` → `0.3.0`. `package/same-directory` (the 18th buf BASIC rule + cross-file rule kind) is deferred to D6c per the brainstorm.
+D6b ships protokit-lint's first comment-aware rule family (R6 — 5 rules covering `*Options.deprecated` across FIELD / ENUM_VALUE / METHOD / MESSAGE / ENUM ElementKinds) and unblocks multi-language rule-set parity (R7 — 7 PACKAGE_SAME_* rules). Architectural additions: `compile_protos_to_result(include_source_info: bool = False)` opt-in parameter; `CompileResult.source_info_descriptors` field; a module-level `leading_comment()` free function; `FileLintContext.source_info_descriptors` + `FileLintContext.package_options` fields; an engine pre-walk pass that builds the per-package option-value accumulator. Wire-format: `LintRuntimeWarning.category` Literal widens to 5 values (`severities_unloaded_rule` split); `_LINT_JSON_SCHEMA_VERSION` bumps `"0.2"` → `"0.3"`; package version bumps `0.2.0` → `0.3.0`. `package/same-directory` (the 18th buf BASIC rule + cross-file rule kind) is deferred to D6c per the brainstorm.
 
 ## Problem Frame
 
@@ -25,14 +25,14 @@ D6b closes both gaps in one delivery. **Headline:** option-aware path operationa
 
 - **R6.** 5 `@lint_rule` functions under `protokit.schema.lint.rules.options.deprecated_replacement` (one per `*Options.deprecated` ElementKind) sharing a `_check_replacement_comment` helper. Severity `warning` at launch. Profile `default` only. Each rule's `source_spec=""` (excluded from parity harness).
 - **R6a.** `compile_protos_to_result(include_source_info: bool = False)` opt-in parameter; threads through both backend functions which gain a third return element `Mapping[str, FileDescriptorProto] | None`. Lint CLI sets `True`; non-lint consumers (compat, codegen) stay on the pre-D6b default.
-- **R6b.** `CompileResult.source_locations: Mapping[str, FileDescriptorProto] | None` field; module-level `leading_comment(source_locations, file_name, path)` free function; `FileLintContext.source_locations` engine-injected field (single dataclass addition; the brainstorm's "contexts already reference compile_result" claim was incorrect — verified by Phase 1 research).
+- **R6b.** `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] | None` field; module-level `leading_comment(source_info_descriptors, file_name, path)` free function; `FileLintContext.source_info_descriptors` engine-injected field (single dataclass addition; the brainstorm's "contexts already reference compile_result" claim was incorrect — verified by Phase 1 research).
 - **R6c.** Inline reuse of existing `_safe_for_stderr` for comment-derived params (truncated to 500-char prefix to bound wire-format size against adversarial protos). No new sanitizer module.
 - **R7.** 7 `@lint_rule` functions in one module `protokit.schema.lint.rules.package_same` reading FileOptions string values. Engine pre-walk pass builds per-package option-value accumulator (`package_options: dict[str, dict[str, str | None]]`); rules read via new `FileLintContext.package_options` field. Emit-shape: one finding per file whose value disagrees with the canonical value (canonical = lexicographically-smallest filename in the package). Profile `recommended` + `default`. Severity `error`. `source_spec="buf:PACKAGE_SAME_*"` for parity harness auto-discovery.
 - **R9.** `LintRuntimeWarning.category` Literal widens from 4 → 5 values (`severities_unloaded_rule` added). CLI emit site at `src/protokit/schema/lint/cli.py:1062-1090` switches from `"unloaded_rule"` to `"severities_unloaded_rule"`. The 3-site discipline applies per [[semantic-category-conflation-accepted-tradeoff-literal-widening]]: Literal docstring + emit-site comment + TODOS.md entry retired.
 - **R9-bump.** `_LINT_JSON_SCHEMA_VERSION` bumps `"0.2"` → `"0.3"`; bump-contract docstring at `src/protokit/formatters/_builtin_lint.py:243-249` updates to refine the rule (closed-discriminator Literal additions DO bump; open severity-string additions don't). Both consumption sites (`lint_json:329` + `lint_sarif:673`) update via the single constant edit.
 - **R10.** Parity fixtures under `tests/parity/fixtures/package/same-{lang}/` — `good.proto` (all files agree), `bad-value.proto` (mixed values), `bad-presence.proto` (some declare, others omit). 7 rules × 3 fixtures = 21 fixture protos. Adversarial fixtures: `_evil_option_value.proto` (newline injection in FileOptions strings).
 - **R11.** Version bump `0.2.0` → `0.3.0` in pyproject.toml. CHANGELOG `### D6b — ...` plain section (no BREAKING prefix per [[pre-1.0-version-bump-as-communication-contract]]).
-- **R12.** Public Surface DRAFT additions per [[public-surface-draft-discipline-source-audit]]: `CompileResult.source_locations` (INTERNAL), `FileLintContext.source_locations` (INTERNAL), `FileLintContext.package_options` (INTERNAL), `compile_protos_to_result(include_source_info=)` parameter (IN), 5 R6 rule_ids (IN), 7 R7 rule_ids (IN), expanded `LintRuntimeWarning.category` Literal (IN — updated), bumped `schema_version: "0.3"` (IN — rows at README.md:760, 763 update).
+- **R12.** Public Surface DRAFT additions per [[public-surface-draft-discipline-source-audit]]: `CompileResult.source_info_descriptors` (INTERNAL), `FileLintContext.source_info_descriptors` (INTERNAL), `FileLintContext.package_options` (INTERNAL), `compile_protos_to_result(include_source_info=)` parameter (IN), 5 R6 rule_ids (IN), 7 R7 rule_ids (IN), expanded `LintRuntimeWarning.category` Literal (IN — updated), bumped `schema_version: "0.3"` (IN — rows at README.md:760, 763 update).
 
 ## Scope Boundaries
 
@@ -58,11 +58,11 @@ D6b closes both gaps in one delivery. **Headline:** option-aware path operationa
 ### Relevant Code and Patterns
 
 - **Compile backends:** `src/protokit/_cli_utils.py:219` (`_compile_with_protoxy`, `include_source_info=False` hard-coded at line 257) and `:275` (`_compile_with_protoc`, argv built at line 305 without `--include_source_info`). Both return `tuple[DescriptorPool, tuple[str, ...]]` today; R6a widens to `tuple[..., ..., Mapping[str, FileDescriptorProto] | None]`.
-- **CompileResult instantiation:** `src/protokit/schema/compile.py` — 5 sites (lines 374, 380, 396, 450) all need `source_locations` parameter; early-return paths pass `None`.
+- **CompileResult instantiation:** `src/protokit/schema/compile.py` — 5 sites (lines 374, 380, 396, 450) all need `source_info_descriptors` parameter; early-return paths pass `None`.
 - **CompileResult dataclass:** `src/protokit/schema/compile.py:145-187`. Already de-facto unhashable (DescriptorPool isn't hashable) — adding `Mapping[str, FileDescriptorProto] | None` doesn't introduce new hash regressions. `__post_init__` snapshot pattern at lines 177-187 mirrors for the new field per [[frozen-dataclass-mutable-fields-need-post-init-snapshot]].
 - **8 LintContext dataclasses:** `src/protokit/schema/lint/model.py:957-1209` — only `FileLintContext` (line 957) gains new fields per R6b/R7 plan. The other 7 contexts are untouched.
 - **`_LintContextEmitMixin`:** `src/protokit/schema/lint/model.py:878-954` — exposes only `emit()` and `location()` today. Intentionally minimal; staying minimal per scope-guardian review.
-- **`LintEngine.run`:** `src/protokit/schema/lint/engine.py:261-401`. Pre-walk hook point between Step 3 (line 377, after `group_by_kind` bucketing) and Step 4 (line 379, walking `root_files`). Context builders at 609 (`_build_file_ctx` — gets new `source_locations` + `package_options` params).
+- **`LintEngine.run`:** `src/protokit/schema/lint/engine.py:261-401`. Pre-walk hook point between Step 3 (line 377, after `group_by_kind` bucketing) and Step 4 (line 379, walking `root_files`). Context builders at 609 (`_build_file_ctx` — gets new `source_info_descriptors` + `package_options` params).
 - **`LintRuntimeWarning.category` Literal:** `src/protokit/schema/lint/model.py:344, 492-497`. Currently 4 values; widens to 5.
 - **`_LINT_JSON_SCHEMA_VERSION`:** `src/protokit/formatters/_builtin_lint.py:250`. Consumption: `lint_json:329`, `lint_sarif:673`. Bump-contract docstring lines 243-249 — needs refinement.
 - **`_safe_for_stderr` + `_CONTROL_CHAR_TABLE`:** `src/protokit/schema/lint/_cli_utils.py:198, 216`. Import path: `from protokit.schema.lint._cli_utils import _safe_for_stderr`.
@@ -79,10 +79,10 @@ D6b closes both gaps in one delivery. **Headline:** option-aware path operationa
 
 19 learnings bind to D6b (full mapping in research output):
 
-- [[frozen-dataclass-mutable-fields-need-post-init-snapshot]] — U2 must add `__post_init__` snapshot for `CompileResult.source_locations` AND for the new `FileLintContext` mapping fields.
+- [[frozen-dataclass-mutable-fields-need-post-init-snapshot]] — U2 must add `__post_init__` snapshot for `CompileResult.source_info_descriptors` AND for the new `FileLintContext` mapping fields.
 - [[frozen-dataclass-paired-field-invariant-post-init]] — Source-info-paired invariants on both CompileResult AND FileLintContext.
 - [[copytoproto-round-trip-for-proto-form-only-descriptor-fields]] — R6b's "preserve FileDescriptorProto before pool.Add()" pattern. Add `source_code_info` to the proto-form-only table in this learning.
-- [[circular-import-type-checking-cycle-break]] — `FileDescriptorProto` annotation on `CompileResult.source_locations` and `FileLintContext.source_locations`. TYPE_CHECKING-guard if cycles emerge.
+- [[circular-import-type-checking-cycle-break]] — `FileDescriptorProto` annotation on `CompileResult.source_info_descriptors` and `FileLintContext.source_info_descriptors`. TYPE_CHECKING-guard if cycles emerge.
 - [[normalize-at-input-boundary]] — R7's NULL-vs-default-value FileOptions semantics resolved at the pre-walk pass boundary.
 - [[cross-format-enum-string-parity]] — Schema version bump surfaces identically in `lint_json` + `lint_sarif`; new `severities_unloaded_rule` value emits identical strings across all 4 formatters.
 - [[wire-format-schema-version-bump-contract-and-absence-semantic]] — Bump-contract docstring at `_builtin_lint.py:243-249` REQUIRES refinement in U5; current docstring's "enum-value additions don't bump" stance contradicts the brainstorm decision. Refinement: closed-discriminator Literal additions DO bump; open severity-string ladder additions DON'T.
@@ -107,7 +107,7 @@ None — local patterns from D2-D6a are strong; no external research needed per 
 
 - **KTD-1: `include_source_info` opt-in at `compile_protos_to_result` API, not always-on at backend.** Per brainstorm document review (3-persona convergence). Non-lint consumers (`protokit compat`, codegen, direct Python API) keep the pre-D6b zero-cost contract. Lint CLI's compile invocation sets `True`. Atomic flip of BOTH backends preserves the byte-equivalence-between-backends invariant.
 
-- **KTD-2: `source_locations` is a direct field on `FileLintContext`, NOT via `compile_result` reference.** Phase 1 research surfaced that the brainstorm's claim "contexts already reference compile_result" was incorrect — contexts have `file`, `pool`, `profile`, and engine-injected fields, but no `compile_result`. Single-field addition (paralleling R7's `package_options`) is the leanest path and avoids any 8-context plumbing. Free function `leading_comment(ctx.source_locations, ctx.file.name, path)` reads from the single field.
+- **KTD-2: `source_info_descriptors` is a direct field on `FileLintContext`, NOT via `compile_result` reference.** Phase 1 research surfaced that the brainstorm's claim "contexts already reference compile_result" was incorrect — contexts have `file`, `pool`, `profile`, and engine-injected fields, but no `compile_result`. Single-field addition (paralleling R7's `package_options`) is the leanest path and avoids any 8-context plumbing. Free function `leading_comment(ctx.source_info_descriptors, ctx.file.name, path)` reads from the single field.
 
 - **KTD-3: `leading_comment` is a module-level free function**, NOT a method on `_LintContextEmitMixin`. Eliminates 8-dataclass plumbing for capabilities with one current consumer family. If a future delivery has 5+ comment-aware rules and a mixin method earns its keep on ergonomics, extract then.
 
@@ -181,7 +181,7 @@ tests/parity/test_parity_package_same.py  # NEW
 
 > *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
 
-### Data flow: source_locations from compile to rule
+### Data flow: source_info_descriptors from compile to rule
 
 ```
 User invokes `protokit lint` (CLI)
@@ -197,17 +197,17 @@ src/protokit/schema/compile.py:compile_protos_to_result(include_source_info=True
     │   protoxy.compile(include_source_info=True) → fds
     │   For each fd in fds.file:
     │     pool.Add(fd)              # ← pool.Add() DISCARDS source_code_info
-    │   Build source_locations[fd.name] = fd   # ← BEFORE pool.Add discards it
-    │   return (pool, root_names, source_locations)
+    │   Build source_info_descriptors[fd.name] = fd   # ← BEFORE pool.Add discards it
+    │   return (pool, root_names, source_info_descriptors)
     │
     └─→ _compile_with_protoc(..., include_source_info=True)
         cmd = ["protoc", ..., "--include_source_info"]
         Parse FileDescriptorSet from subprocess output
-        Build source_locations dict (same pattern)
-        return (pool, root_names, source_locations)
+        Build source_info_descriptors dict (same pattern)
+        return (pool, root_names, source_info_descriptors)
     │
     ▼
-CompileResult(pool=..., root_files=..., diagnostics=..., source_locations=source_locations)
+CompileResult(pool=..., root_files=..., diagnostics=..., source_info_descriptors=source_info_descriptors)
     │
     ▼
 src/protokit/schema/lint/engine.py:LintEngine.run(compile_result)
@@ -215,7 +215,7 @@ src/protokit/schema/lint/engine.py:LintEngine.run(compile_result)
     ├─ Step 3.5 (NEW pre-walk pass)
     │   package_options = {}
     │   for fname in sorted(compile_result.root_files):
-    │     fd_proto = compile_result.source_locations.get(fname)
+    │     fd_proto = compile_result.source_info_descriptors.get(fname)
     │     pkg = fd_proto.package
     │     for opt in ("go_package", "java_package", ...):
     │       package_options.setdefault(pkg, {})[opt] = getattr(fd_proto.options, opt) or None
@@ -223,12 +223,12 @@ src/protokit/schema/lint/engine.py:LintEngine.run(compile_result)
     ├─ Step 4 (walk root_files; build FileLintContext per file)
     │   ctx = _build_file_ctx(
     │     ...,
-    │     source_locations=compile_result.source_locations,    # ← injected
+    │     source_info_descriptors=compile_result.source_info_descriptors,    # ← injected
     │     package_options=package_options,                      # ← injected
     │   )
     │
     └─ R6 / R7 rules consume:
-        R6: leading_comment(ctx.source_locations, ctx.file.name, ctx.location.path)
+        R6: leading_comment(ctx.source_info_descriptors, ctx.file.name, ctx.location.path)
         R7: ctx.package_options[ctx.file.package][option_name]
 ```
 
@@ -276,7 +276,7 @@ Module structure:
     def check_deprecated_field_replacement_comment(ctx: FieldLintContext) -> None:
         if not ctx.field.options.deprecated:
             return
-        comment = leading_comment(ctx.source_locations, ctx.file.name, ctx.location.path)
+        comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, ctx.location.path)
         if not _check_replacement_comment(comment):
             ctx.emit(violation_kind="missing_replacement_comment",
                      params={"comment": _safe_for_stderr((comment or "")[:500])})
@@ -297,10 +297,10 @@ Module structure:
 **Dependencies:** None (foundation unit).
 
 **Files:**
-- Modify: `src/protokit/schema/compile.py` (compile_protos_to_result signature + threading; CompileResult dataclass gets `source_locations` field — see also U2 which extends this)
-- Modify: `src/protokit/_cli_utils.py` (`_compile_with_protoxy` line 219 — flip `include_source_info=False` to `include_source_info=include_source_info` parameter; `_compile_with_protoc` line 275 — append `--include_source_info` to cmd at line 305 when flag is True; both return 3-tuple including raw FDS-derived `source_locations` dict)
+- Modify: `src/protokit/schema/compile.py` (compile_protos_to_result signature + threading; CompileResult dataclass gets `source_info_descriptors` field — see also U2 which extends this)
+- Modify: `src/protokit/_cli_utils.py` (`_compile_with_protoxy` line 219 — flip `include_source_info=False` to `include_source_info=include_source_info` parameter; `_compile_with_protoc` line 275 — append `--include_source_info` to cmd at line 305 when flag is True; both return 3-tuple including raw FDS-derived `source_info_descriptors` dict)
 - Modify: `src/protokit/_cli_utils.py:251-258` byte-equivalence comment — update to reflect "both backends carry source-location info when requested; bytes still byte-equivalent across backends when `include_source_info=True`"
-- Test: `tests/test_compile_include_source_info.py` (NEW) — verifies opt-in parameter threading, source_locations populated on True, None on False, cross-backend byte-identical contents
+- Test: `tests/test_compile_include_source_info.py` (NEW) — verifies opt-in parameter threading, source_info_descriptors populated on True, None on False, cross-backend byte-identical contents
 
 **Approach:**
 - Both backends thread the new parameter atomically (preserves byte-equivalence-between-backends invariant).
@@ -311,29 +311,29 @@ Module structure:
 
 **Patterns to follow:**
 - Existing parameter threading in `compile_protos_to_result` (proto_paths handling at compile.py:327-330).
-- Backend dispatch pattern at compile.py:402, 420, 422 (5 instantiation sites of CompileResult — early-return paths at lines 374, 380, 396 will pass `source_locations=None`).
+- Backend dispatch pattern at compile.py:402, 420, 422 (5 instantiation sites of CompileResult — early-return paths at lines 374, 380, 396 will pass `source_info_descriptors=None`).
 
 **Test scenarios:**
-- *Happy path:* `compile_protos_to_result(paths, include_source_info=True)` returns a CompileResult where `source_locations` is a non-empty Mapping for each input file.
-- *Happy path:* `compile_protos_to_result(paths, include_source_info=False)` (default) returns CompileResult where `source_locations is None`.
-- *Edge case:* protoxy backend with `include_source_info=True` against a .proto containing leading comments — the source_locations entries have populated `source_code_info.location` arrays.
+- *Happy path:* `compile_protos_to_result(paths, include_source_info=True)` returns a CompileResult where `source_info_descriptors` is a non-empty Mapping for each input file.
+- *Happy path:* `compile_protos_to_result(paths, include_source_info=False)` (default) returns CompileResult where `source_info_descriptors is None`.
+- *Edge case:* protoxy backend with `include_source_info=True` against a .proto containing leading comments — the source_info_descriptors entries have populated `source_code_info.location` arrays.
 - *Edge case:* protoc backend with `include_source_info=True` against the same .proto — byte-identical `source_code_info.location` arrays vs protoxy.
 - *Edge case:* Mixed protobuf 4 + 5 runtimes — byte-identical `source_code_info` emission (cross-version pin per [[copytoproto-round-trip-for-proto-form-only-descriptor-fields]]).
-- *Error path:* `include_source_info=True` against a .proto with syntax errors — CompileResult diagnostics non-empty; `source_locations is None` (early-return path preserved).
-- *Edge case:* Empty input paths — CompileResult is empty; `source_locations is None`.
+- *Error path:* `include_source_info=True` against a .proto with syntax errors — CompileResult diagnostics non-empty; `source_info_descriptors is None` (early-return path preserved).
+- *Edge case:* Empty input paths — CompileResult is empty; `source_info_descriptors is None`.
 - *Integration:* Existing D1-D5 tests that call `compile_protos_to_result` without the new parameter continue passing (default False preserves zero-cost contract).
 
 **Verification:**
-- `compile_protos_to_result(paths, include_source_info=True)` returns CompileResult.source_locations as a non-empty Mapping.
+- `compile_protos_to_result(paths, include_source_info=True)` returns CompileResult.source_info_descriptors as a non-empty Mapping.
 - Default-False path produces byte-identical CompileResult output to pre-D6b.
 - Cross-runtime + cross-backend byte equivalence verified.
 - No D1-D5 test regressions.
 
 ---
 
-- [ ] **Unit 2: R6b — CompileResult.source_locations field + FileLintContext.source_locations field + leading_comment free function + CompileResult consumer audit**
+- [ ] **Unit 2: R6b — CompileResult.source_info_descriptors field + FileLintContext.source_info_descriptors field + leading_comment free function + CompileResult consumer audit**
 
-**Goal:** Add `CompileResult.source_locations: Mapping[str, FileDescriptorProto] | None` field with `__post_init__` snapshot. Add `FileLintContext.source_locations` engine-injected field (single-context addition; no other 7 contexts touched). Module-level `leading_comment(source_locations, file_name, path)` free function. Audit all CompileResult callers.
+**Goal:** Add `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] | None` field with `__post_init__` snapshot. Add `FileLintContext.source_info_descriptors` engine-injected field (single-context addition; no other 7 contexts touched). Module-level `leading_comment(source_info_descriptors, file_name, path)` free function. Audit all CompileResult callers.
 
 **Requirements:** R6b.
 
@@ -341,20 +341,20 @@ Module structure:
 
 **Files:**
 - Modify: `src/protokit/schema/compile.py:145-187` (`CompileResult` dataclass — new field + `__post_init__` MappingProxyType snapshot following the existing root_files/diagnostics pattern)
-- Modify: `src/protokit/schema/compile.py:327-454` (`compile_protos_to_result` — populate source_locations at all 5 CompileResult instantiation sites; early-return paths pass `None`)
-- Modify: `src/protokit/schema/lint/model.py:957` (`FileLintContext` — single new field `source_locations: Mapping[str, FileDescriptorProto] | None`; engine-injected; placed BEFORE the three existing engine-injected fields `_emit_fn` / `_rule_id` / `_effective_severity` to preserve "engine-injected last" convention)
-- Modify: `src/protokit/schema/lint/engine.py:609` (`_build_file_ctx` — passes `source_locations=compile_result.source_locations`)
+- Modify: `src/protokit/schema/compile.py:327-454` (`compile_protos_to_result` — populate source_info_descriptors at all 5 CompileResult instantiation sites; early-return paths pass `None`)
+- Modify: `src/protokit/schema/lint/model.py:957` (`FileLintContext` — single new field `source_info_descriptors: Mapping[str, FileDescriptorProto] | None`; engine-injected; placed BEFORE the three existing engine-injected fields `_emit_fn` / `_rule_id` / `_effective_severity` to preserve "engine-injected last" convention)
+- Modify: `src/protokit/schema/lint/engine.py:609` (`_build_file_ctx` — passes `source_info_descriptors=compile_result.source_info_descriptors`)
 - Create: `src/protokit/schema/lint/rules/options/__init__.py` (empty package marker)
-- Create: `src/protokit/schema/lint/rules/options/_comments.py` (module-level `leading_comment(source_locations, file_name, path)` function)
+- Create: `src/protokit/schema/lint/rules/options/_comments.py` (module-level `leading_comment(source_info_descriptors, file_name, path)` function)
 - Modify: `tests/test_static_analysis.py:_LINT_PATHS` — add `src/protokit/schema/lint/rules/options/` per [[pytest-static-analysis-gate-ratchet]]
 - Test: `tests/schema/lint/rules/options/__init__.py` (NEW, empty)
 - Test: `tests/schema/lint/rules/options/test_comments.py` (NEW — leading_comment unit tests + adversarial newline)
-- Test: `tests/schema/test_compile_result_source_locations.py` (NEW — CompileResult field tests + frozen-dataclass invariants)
+- Test: `tests/schema/test_compile_result_source_info_descriptors.py` (NEW — CompileResult field tests + frozen-dataclass invariants)
 
 **Approach:**
-- `CompileResult.source_locations` defaults to `None` for backward compatibility. `__post_init__` wraps a non-None mapping in `MappingProxyType` per [[frozen-dataclass-mutable-fields-need-post-init-snapshot]].
-- `FileLintContext.source_locations` field is engine-injected; same `None` semantic when `include_source_info=False`.
-- `leading_comment(source_locations, file_name, path)`: walks `source_locations[file_name].source_code_info.location[]` looking for a Location whose `path` field matches the input. Returns `Location.leading_comments` or `None` (when source_locations is None, or file not in mapping, or no Location matches path).
+- `CompileResult.source_info_descriptors` defaults to `None` for backward compatibility. `__post_init__` wraps a non-None mapping in `MappingProxyType` per [[frozen-dataclass-mutable-fields-need-post-init-snapshot]].
+- `FileLintContext.source_info_descriptors` field is engine-injected; same `None` semantic when `include_source_info=False`.
+- `leading_comment(source_info_descriptors, file_name, path)`: walks `source_info_descriptors[file_name].source_code_info.location[]` looking for a Location whose `path` field matches the input. Returns `Location.leading_comments` or `None` (when source_info_descriptors is None, or file not in mapping, or no Location matches path).
 - CompileResult consumer audit: grep callers for positional unpacking (`pool, root_files, diagnostics = result`), equality comparisons against goldens, repr-based assertions. Document findings in U2's commit message.
 
 **Patterns to follow:**
@@ -362,18 +362,18 @@ Module structure:
 - `FileLintContext` field ordering at model.py:957-988 (engine-injected fields LAST convention).
 
 **Test scenarios:**
-- *Happy path:* `leading_comment(source_locations, "test.proto", (4, 0, 2, 0))` returns the leading comment text when source_locations is populated and Location matches.
+- *Happy path:* `leading_comment(source_info_descriptors, "test.proto", (4, 0, 2, 0))` returns the leading comment text when source_info_descriptors is populated and Location matches.
 - *Happy path:* `leading_comment(None, "test.proto", path)` returns `None` (defensive None handling).
-- *Edge case:* file_name not in source_locations mapping → returns `None`.
+- *Edge case:* file_name not in source_info_descriptors mapping → returns `None`.
 - *Edge case:* path matches no Location in source_code_info → returns `None`.
-- *Edge case:* CompileResult constructed with `source_locations=None` — frozen-dataclass invariants hold; `__post_init__` doesn't crash on None.
-- *Edge case:* CompileResult constructed with `source_locations={"a.proto": fd_proto}` — `__post_init__` wraps in MappingProxyType; subsequent mutation attempt raises TypeError.
+- *Edge case:* CompileResult constructed with `source_info_descriptors=None` — frozen-dataclass invariants hold; `__post_init__` doesn't crash on None.
+- *Edge case:* CompileResult constructed with `source_info_descriptors={"a.proto": fd_proto}` — `__post_init__` wraps in MappingProxyType; subsequent mutation attempt raises TypeError.
 - *Adversarial path:* `leading_comment` returns a string containing `\n` characters or U+2028 — caller must sanitize before wire-format emission (verified in U3's test).
-- *Integration:* Engine builds FileLintContext with `source_locations` injected; rule body calls `leading_comment(ctx.source_locations, ctx.file.name, ctx.location.path)` end-to-end without errors.
+- *Integration:* Engine builds FileLintContext with `source_info_descriptors` injected; rule body calls `leading_comment(ctx.source_info_descriptors, ctx.file.name, ctx.location.path)` end-to-end without errors.
 
 **Verification:**
-- `CompileResult.source_locations` field accessible via `result.source_locations`.
-- `FileLintContext.source_locations` field accessible via `ctx.source_locations`.
+- `CompileResult.source_info_descriptors` field accessible via `result.source_info_descriptors`.
+- `FileLintContext.source_info_descriptors` field accessible via `ctx.source_info_descriptors`.
 - `leading_comment` returns expected values for all 8 test scenarios above.
 - CompileResult consumer audit finds no breakages; documented in commit message.
 
@@ -398,7 +398,7 @@ Module structure:
 - 5 rules, one per `*Options.deprecated` ElementKind (FIELD, ENUM_VALUE, METHOD, MESSAGE, ENUM). Each rule_id: `options/deprecated-{kind}-must-have-replacement-comment`.
 - Shared module-level `_REPLACEMENT_PATTERNS` tuple of compiled regexes (regex set finalized at U3 against the fixture corpus — implementation-time discovery per Open Questions).
 - Shared `_check_replacement_comment(text: str | None) -> bool` helper.
-- Each rule reads `*Options.deprecated` flag; if True, calls `leading_comment(ctx.source_locations, ctx.file.name, ctx.location.path)`; passes result to helper; on False return, emits a finding.
+- Each rule reads `*Options.deprecated` flag; if True, calls `leading_comment(ctx.source_info_descriptors, ctx.file.name, ctx.location.path)`; passes result to helper; on False return, emits a finding.
 - Sanitization: comment text truncated to 500-char prefix, passed through `_safe_for_stderr`, included in `params` for human-readable rendering. The 500-char cap prevents adversarial protos with multi-KB comments from bloating wire-format output.
 - `source_spec=""` (empty) on all 5 rules excludes them from parity harness per KTD-10.
 - Each rule's docstring documents the protokit-original status (no buf analogue) per [[buf-parity-divergence-documentation-discipline]].
@@ -415,7 +415,7 @@ Module structure:
 - *Happy path:* `.proto` with `deprecated = true` field + no leading comment produces exactly one `options/deprecated-field-must-have-replacement-comment` finding at `warning` severity.
 - *Edge case:* `.proto` with `deprecated = true` field + leading comment "deprecated" (no replacement phrasing) — fires finding.
 - *Edge case:* `.proto` with `deprecated = false` field + no comment — zero findings (rule only checks deprecated fields).
-- *Edge case:* `.proto` without `include_source_info=True` (i.e., `source_locations is None`) — rule emits findings for every deprecated element without a comment (leading_comment returns None, helper returns False).
+- *Edge case:* `.proto` without `include_source_info=True` (i.e., `source_info_descriptors is None`) — rule emits findings for every deprecated element without a comment (leading_comment returns None, helper returns False).
 - *Per-ElementKind coverage:* 5 separate proto fixtures, one per ElementKind (field, enum-value, method, message, enum), each demonstrating happy-path + sad-path for that kind's rule.
 - *Adversarial path:* `.proto` with `deprecated = true` field + leading comment containing `\n error[lint-evil]: forged` — finding emits sanitized comment in `params` (no newline injection into stderr).
 - *Adversarial path:* `.proto` with multi-KB comment — finding emits 500-char truncated + sanitized comment.
@@ -436,20 +436,20 @@ Module structure:
 
 **Requirements:** R7.
 
-**Dependencies:** Unit 2 (FileLintContext shape; same dataclass touched in U2 and U4 to add both `source_locations` and `package_options` fields).
+**Dependencies:** Unit 2 (FileLintContext shape; same dataclass touched in U2 and U4 to add both `source_info_descriptors` and `package_options` fields).
 
 **Files:**
 - Create: `src/protokit/schema/lint/rules/package_same.py` (7 rules + shared helper structure)
 - Modify: `src/protokit/schema/lint/rules/__init__.py:84` (`BUILTIN_PACKS` — append `package_same` module; updates the membership-pin test tuple)
 - Modify: `src/protokit/schema/lint/model.py:957` (`FileLintContext` — add `package_options: Mapping[str, Mapping[str, str | None]] | None` field; engine-injected; positioned BEFORE engine-injected last three)
-- Modify: `src/protokit/schema/lint/engine.py:261-401` (`LintEngine.run` — insert Step 3.5 pre-walk pass between line 377 and line 379; populate `package_options` dict from `compile_result.source_locations`)
+- Modify: `src/protokit/schema/lint/engine.py:261-401` (`LintEngine.run` — insert Step 3.5 pre-walk pass between line 377 and line 379; populate `package_options` dict from `compile_result.source_info_descriptors`)
 - Modify: `src/protokit/schema/lint/engine.py:609` (`_build_file_ctx` — passes `package_options=...` to FileLintContext constructor)
 - Modify: `tests/schema/lint/test_builtin_packs.py:79` (membership-pin test — extend `expected` tuple again)
 - Test: `tests/schema/lint/rules/test_package_same.py` (NEW — 7-rule family tests + adversarial fixture)
 - Test: `tests/schema/lint/test_engine_pre_walk.py` (NEW — engine pre-walk accumulator unit tests, including iteration-order determinism)
 
 **Approach:**
-- Pre-walk pass: iterates `sorted(compile_result.root_files)` (lexicographic sort for determinism per [[structural-pin-inspect-getsource-untestable-collision-branch]]). For each file, reads `source_locations[fname].options` and records `(go_package, java_package, csharp_namespace, php_namespace, ruby_package, swift_prefix, java_multiple_files)` into the accumulator keyed by `(package_name, option_name)`.
+- Pre-walk pass: iterates `sorted(compile_result.root_files)` (lexicographic sort for determinism per [[structural-pin-inspect-getsource-untestable-collision-branch]]). For each file, reads `source_info_descriptors[fname].options` and records `(go_package, java_package, csharp_namespace, php_namespace, ruby_package, swift_prefix, java_multiple_files)` into the accumulator keyed by `(package_name, option_name)`.
 - Each rule reads `ctx.package_options[ctx.file.package][option_name]`. The accumulator was built once at engine.run startup; rules don't re-iterate files.
 - Emit-shape: for each file whose value disagrees with the canonical value, emit one finding. Canonical = the value declared by the lexicographically-smallest filename in the package. Files that don't declare the option contribute `None` to the accumulator; whether `None` "agrees" or "disagrees" is finalized at U4 implementation time via buf-actual audit per [[audit-wire-format-before-claiming-sibling-parity]].
 - All 7 rules: `source_spec="buf:PACKAGE_SAME_<NAME>"`, `severity=LintSeverity.ERROR`, `profiles=("recommended", "default")`.
@@ -588,7 +588,7 @@ Module structure:
 - Modify: `pyproject.toml` (version `"0.2.0"` → `"0.3.0"`)
 - Modify: `CHANGELOG.md:555` (insert `### D6b — protokit-lint option-aware path operational + 17/18 buf BASIC parity (0.3.0)` section between D6a section and Rationale; plain heading, no BREAKING prefix per [[pre-1.0-version-bump-as-communication-contract]])
 - Modify: `README.md:480` (Schema Linting section — new rule counts: 17 + 5 R6 + 7 R7 + 0 R8-deferred = 29 rules total; new Worked Example subsection for R6; Profiles subsection updates with rule counts; demotion paths note R7's per-rule demotion via `[severities]`)
-- Modify: `README.md:740-779` (Public Surface DRAFT — new rows for `CompileResult.source_locations` (INTERNAL), `FileLintContext.source_locations` (INTERNAL), `FileLintContext.package_options` (INTERNAL), `compile_protos_to_result(include_source_info=)` (IN), 5 R6 rule_ids (IN), 7 R7 rule_ids (IN); update `LintRuntimeWarning.category` row to enumerate all 5 values; update `lint_json["schema_version"]: "0.2"` → `"0.3"` at line 760 + line 763)
+- Modify: `README.md:740-779` (Public Surface DRAFT — new rows for `CompileResult.source_info_descriptors` (INTERNAL), `FileLintContext.source_info_descriptors` (INTERNAL), `FileLintContext.package_options` (INTERNAL), `compile_protos_to_result(include_source_info=)` (IN), 5 R6 rule_ids (IN), 7 R7 rule_ids (IN); update `LintRuntimeWarning.category` row to enumerate all 5 values; update `lint_json["schema_version"]: "0.2"` → `"0.3"` at line 760 + line 763)
 - Modify: `TODOS.md` (D6a section marked SHIPPED → D6b section added; D6b status SHIPPED at this commit; D6c agenda includes `package/same-directory`, `strict` profile, R9b, expanded option-aware pack, per-file rule overrides)
 - Test: `tests/test_changelog_d6b_entry.py` (NEW — presence ratchet asserting `"D6b"` heading in CHANGELOG.md per [[presence-ratchet-test-pattern-for-prose-substrings]])
 - Test: `tests/test_bump_contract_refinement.py` (NEW — presence ratchet asserting the refined bump-contract docstring substring in `_builtin_lint.py:243-249` per [[presence-ratchet-test-pattern-for-prose-substrings]])
@@ -609,7 +609,7 @@ Module structure:
 - *Happy path:* `pyproject.toml` reads `version = "0.3.0"`.
 - *Happy path:* CHANGELOG.md contains `### D6b` heading (presence ratchet).
 - *Happy path:* README's Schema Linting section enumerates the new R6 + R7 families and total rule count.
-- *Happy path:* Public Surface DRAFT contains rows for `source_locations`, `package_options`, `include_source_info` parameter, 12 new rule_ids, schema_version "0.3".
+- *Happy path:* Public Surface DRAFT contains rows for `source_info_descriptors`, `package_options`, `include_source_info` parameter, 12 new rule_ids, schema_version "0.3".
 - *Happy path:* Bump-contract docstring contains refined wording distinguishing closed Literals from open ladders.
 - *Happy path:* Each of the 5 R6 rule docstrings contains "protokit-only" or equivalent marker.
 - *Edge case:* `protokit lint --version` reflects "0.3.0".
@@ -627,11 +627,11 @@ Module structure:
 
 ## System-Wide Impact
 
-- **Interaction graph:** R6a's `include_source_info` parameter threads through `compile_protos_to_result` → both compile backends. Pre-walk pass in `LintEngine.run` consumes `CompileResult.source_locations` to build per-package accumulator. R6/R7 rules consume `FileLintContext.source_locations` + `FileLintContext.package_options`. CLI emit site for `severities_unloaded_rule` in `cli.py:1062-1090` is the only emit-site change for R9.
+- **Interaction graph:** R6a's `include_source_info` parameter threads through `compile_protos_to_result` → both compile backends. Pre-walk pass in `LintEngine.run` consumes `CompileResult.source_info_descriptors` to build per-package accumulator. R6/R7 rules consume `FileLintContext.source_info_descriptors` + `FileLintContext.package_options`. CLI emit site for `severities_unloaded_rule` in `cli.py:1062-1090` is the only emit-site change for R9.
 
 - **Error propagation:** R6a's opt-in parameter doesn't change error paths; descriptor compilation failures still surface via existing `CompileResult.diagnostics`. R6/R7 rule exceptions remain captured by the engine guard (`(SystemExit, ValueError, TypeError, AttributeError, LookupError, LintRuleError)`).
 
-- **State lifecycle risks:** New `FileLintContext.source_locations` and `FileLintContext.package_options` are engine-injected (built once per `LintEngine.run`, shared across all rules within a run). No persistent state. `CompileResult.source_locations`'s MappingProxyType snapshot at `__post_init__` prevents post-construction mutation.
+- **State lifecycle risks:** New `FileLintContext.source_info_descriptors` and `FileLintContext.package_options` are engine-injected (built once per `LintEngine.run`, shared across all rules within a run). No persistent state. `CompileResult.source_info_descriptors`'s MappingProxyType snapshot at `__post_init__` prevents post-construction mutation.
 
 - **API surface parity:** `compile_protos_to_result` API gains optional parameter; existing positional and keyword callers unchanged. CompileResult dataclass gains optional field; positional unpacking of all 4 fields would break — Unit 2's audit step identifies any such callers. Mapping field isn't naturally hashable but CompileResult is already de-facto unhashable due to `pool: DescriptorPool`, so no new hash regression.
 
@@ -650,14 +650,14 @@ Module structure:
 | Risk | Mitigation |
 |------|------------|
 | `include_source_info=True` under lint breaks D1-D5 tests hardcoding descriptor-set bytes | Audit affected tests in U1; non-lint shared-backend callers stay on the pre-D6b default, scoping impact to lint paths only |
-| R6b's source_locations index doesn't survive `pool.Add()` ordering | Verified by D6a brainstorm's second-pass feasibility review + Phase 1 research: index built FROM raw set BEFORE pool consumes it. U2 includes an explicit assertion test. |
+| R6b's source_info_descriptors index doesn't survive `pool.Add()` ordering | Verified by D6a brainstorm's second-pass feasibility review + Phase 1 research: index built FROM raw set BEFORE pool consumes it. U2 includes an explicit assertion test. |
 | R6 false-positive epidemic on legitimate deprecation comments using non-canonical phrasings | Severity `warning` at launch limits CI blast radius. Heuristic regex set tuned in U3 against representative corpus. Per-rule demotion via `[severities]` available. Promotion to `error` deferred to D6c. |
 | R7 false positives on legitimate cross-language differences (vendor isolation, etc.) | Document each rule's heuristic limitations; users demote via `[severities]`. NULL semantics finalized at U4 against buf's actual emit. |
 | Adversarial protos with multi-KB comments or option strings inflate descriptor-set + finding params | R6 truncates to 500 chars; R6+R7 sanitize via `_safe_for_stderr`. Mandatory adversarial test fixtures per [[module-name-newline-injection-stderr-forge]]. |
 | Bump-contract docstring contradicted the brainstorm; not reconciling would leave the codebase inconsistent | KTD-5 refines the docstring in U5. Presence ratchet in U7 pins the refined wording. |
 | Cross-protobuf-runtime divergence (4 vs 5) produces different lint findings | U1's cross-version verification step compares byte-identical emission before R6 lands. Divergence resolved or documented. |
 | Brainstorm's "contexts already reference compile_result" claim was incorrect | Plan corrects to direct field on FileLintContext (KTD-2); single-field addition only (paralleling R7's package_options). |
-| 5 CompileResult instantiation sites (not 1) require source_locations parameter | U2 explicitly enumerates all 5 sites; early-return paths pass None. |
+| 5 CompileResult instantiation sites (not 1) require source_info_descriptors parameter | U2 explicitly enumerates all 5 sites; early-return paths pass None. |
 | R7 emit-shape order non-determinism across OS/CI | Canonical = lexicographically-smallest filename (KTD-6); pre-walk iteration uses `sorted()` per [[structural-pin-inspect-getsource-untestable-collision-branch]]. |
 | `severities_unloaded_rule` Literal addition is a wire-format change consumers must extend switch statements for | Bump-contract refinement (KTD-5) makes the rationale explicit. Schema_version bump 0.2 → 0.3 is the wire-format signal. |
 | `_LintContextEmitMixin` minimal-surface invariant violated if leading_comment is added as a method | Free function chosen (KTD-3); mixin surface unchanged. |
