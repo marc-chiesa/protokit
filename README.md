@@ -486,7 +486,7 @@ The built-in packs cover buf BASIC parity for single-language teams:
 for messages, enums, services, RPCs, oneofs, files, and packages),
 `enum` (`no-allow-alias`, `first-value-zero`), `imports`
 (`no-public`, `no-weak`, `unused`), `package` (`defined`,
-`directory-match`), and `file` (`syntax-specified`). 14 rules across
+`directory-match`), and `file` (`syntax-specified`). 17 rules across
 5 packs. Lint is intentionally orthogonal to `protokit compat` —
 compat answers "is this schema change safe for consumers?", lint
 answers "does this schema follow our style conventions?".
@@ -516,6 +516,89 @@ protokit lint --min-severity error protos/**/*.proto
 
 # Run without any pyproject configuration (use built-in defaults only)
 protokit lint --no-config protos/**/*.proto
+
+# Show the running version + the pinned buf parity reference
+protokit lint --version
+```
+
+### Profiles
+
+`protokit lint` exposes three protokit-native profile names plus two
+buf-compatibility aliases. Aliases resolve at the config-load
+input boundary, so user rule packs declaring an alias name (e.g.,
+`profiles=("basic",)`) will never match — the alias resolves to
+its target before rule-pack profile-name lookup.
+
+| Profile | Rules | Purpose |
+|---------|-------|---------|
+| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for the post-D6a curation. Empty in the 0.2.0 release; reserved for a curated subset once the rule library has a wider opt-in surface. |
+| `recommended` | 17 | Buf BASIC parity. The full D6a rule library — `naming` (9), `enum` (2), `imports` (3), `package` (2), `file` (1). |
+| `default` | 17 | Forward-placeholder for the D6b option-aware differentiator. Structurally equal to `recommended` in 0.2.0; consumers may target either name today. |
+| `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
+| `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
+
+The D6a rule library ships at the `error` severity floor (buf
+BASIC parity per KD-9). To soften the floor without dropping
+rules: use `--min-severity=warning` globally, or
+`[tool.protokit.lint.severities]` per-rule (see below).
+
+### Upgrade notes (0.1.x → 0.2.0)
+
+Upgrading from `protokit 0.1.x` to `0.2.0` expands `BUILTIN_PACKS`
+from 1 pack (`naming`, 9 rules) to 5 packs (17 rules total).
+Existing users will see new ERROR-severity findings on
+previously-green CI.
+
+Triage path:
+
+1. Upgrade `protokit` (`pip install -U protokit` or equivalent).
+2. Enumerate the new findings:
+
+   ```bash
+   protokit lint --format=json <inputs> | jq '.findings[] | {rule_id, severity, location}'
+   ```
+
+3. Decide per finding: fix the schema, or demote the rule (next
+   section). Per-rule demotion in `pyproject.toml` is the
+   lowest-cost option for category-wide noise (e.g.,
+   `imports/unused` on vendored protos — pair with `exclude` for
+   the vendored paths themselves).
+4. For an emergency revert, pin `protokit~=0.1.0` (which means
+   `>=0.1.0, <0.2.0`) and file an issue describing any
+   false-positives. Pre-1.0 is the right time to surface rule
+   heuristic gaps.
+
+### Demotion paths
+
+The 0.2.0 release ships rules at `error` severity (buf BASIC
+parity). Four demotion paths are available, in increasing
+specificity:
+
+1. **Pin to 0.1.x** (`protokit~=0.1.0`) — defers the upgrade
+   entirely.
+2. **Full opt-out** — `--no-builtin-rules` (CLI) or
+   `[tool.protokit.lint] no_builtin_rules = true` (pyproject)
+   skips `BUILTIN_PACKS` entirely. Pair with `--rule-pack
+   MODULE` to provide a custom rule set; an empty rule set
+   exits 2 via the `no-rules` error code.
+3. **Global severity floor** — `--min-severity=warning` or
+   `[tool.protokit.lint] min_severity = "warning"` raises the
+   floor across every rule. Cheapest if you want to keep
+   visibility without blocking CI on the new categories.
+4. **Per-rule severity overrides** —
+   `[tool.protokit.lint.severities] "imports/unused" = "warning"`
+   demotes one rule without touching the rest. Multiple keys
+   compose; user overrides always win on collision with profile
+   defaults. Unknown rule_ids fire an `unloaded_rule` runtime
+   warning naming each id (typo surfacing without blocking).
+
+```toml
+[tool.protokit.lint]
+profile = "recommended"
+
+[tool.protokit.lint.severities]
+"imports/unused" = "warning"
+"file/syntax-specified" = "info"
 ```
 
 ### `[tool.protokit.lint]` configuration
@@ -531,11 +614,13 @@ Recognized keys (every key is optional):
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `profile` | string or list of strings | Profile name(s) to compose. Single profile is the common case; multi-profile composition lifts the strictest floor and union-merges rule_ids. |
+| `profile` | string or list of strings | Profile name(s) to compose. Single profile is the common case; multi-profile composition lifts the strictest floor and union-merges rule_ids. Buf aliases (`minimal` → `essentials`, `basic` → `recommended`) resolve at the input boundary. |
 | `exclude` | list of strings | Gitignore-style globs matched against `FileDescriptorProto.name`. Patterns are additive with CLI `--exclude`. |
 | `min_severity` | string (`"info"`, `"warning"`, `"error"`) | Minimum severity to emit. Relaxing the composed profile floor fires a `min_severity_relaxed` runtime warning. |
 | `max_warnings` | integer | Non-error exit threshold for warning-level findings. |
 | `format` | string | Default output formatter (`"human"`, `"json"`, `"junit"`, `"sarif"`, or a `--formatter-module` name). |
+| `no_builtin_rules` | boolean | When `true`, skip loading `BUILTIN_PACKS` (the auto-loaded `naming` / `enum` / `imports` / `package` / `file` packs). User packs supplied via `--rule-pack MODULE` become load-bearing; an empty rule set exits 2 via the `no-rules` error code. |
+| `[tool.protokit.lint.severities]` | table (rule_id → severity string) | Per-rule severity overrides applied AFTER profile composition. User overrides always win on collision via post-compose dict-spread. Unknown rule_ids fire an `unloaded_rule` runtime warning (typo surfacing without blocking the run). |
 
 Unknown keys and type mismatches produce a hard error (exit 2)
 that names the recognized keys and offending field. List-valued
@@ -557,6 +642,8 @@ In addition to the pyproject keys, the CLI carries:
 | `--max-warnings N` | Override the pyproject `max_warnings` key for one run. |
 | `--format NAME` | Override the pyproject `format` key for one run. Also reads `PROTOKIT_FORMAT` envvar. |
 | `--rule-pack MODULE` | Load a user rule pack on top of the built-ins (repeatable). |
+| `--no-builtin-rules` | Skip `BUILTIN_PACKS` for this run. Pair with `--rule-pack MODULE` to supply a custom rule set; empty rule sets exit 2 via the `no-rules` error code. Mirrors `[tool.protokit.lint] no_builtin_rules = true`. |
+| `--version` | Print `protokit <version> (parity: buf <pin>)` and exit. The pinned buf version is `_BUF_PARITY_PIN` in `src/protokit/schema/lint/cli.py`; the parity CI job uses the same pin. |
 | `--proto` | Treat inputs as `.proto` source files instead of pre-built descriptor sets; invokes the in-process compile path. |
 | `--proto-path DIR` / `-I DIR` | Add an include directory to the `--proto` compile path (repeatable). |
 | `--statistics` / `--no-statistics` | Show / suppress the trailing statistics line (filtered count, runtime warnings). |
@@ -573,6 +660,7 @@ and agents. Top-level keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
+| `schema_version` | string | Wire-format version (currently `"0.2"`). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
 | `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"`), `rule_id` (string for engine-emitted categories, `null` for CLI-emitted categories), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
@@ -638,11 +726,16 @@ a specific, vetted config) instead of the default walk-up.
 
 `protokit` is pre-1.0. Minor-version releases may include
 breaking changes to public Python APIs and machine output formats
-(JSON, JUnit, SARIF). Breaking changes are explicitly marked
-`BREAKING:` in CHANGELOG entries; consumers should pin to a
-specific minor version (e.g., `protokit~=0.5.0`) until 1.0 ships.
-The 1.0 release will **define the stable public surface** and
-commit to semver compatibility for that surface.
+(JSON, JUnit, SARIF). Breaking changes are documented in the
+CHANGELOG — historically via `BREAKING:`-prefixed section
+headings (D2–D5), and from D6a (0.2.0) onward via plain
+delivery-named sections that describe the user-visible impact
+without a ceremonial prefix. The version bump itself is the
+authoritative signal; the CHANGELOG section is the communication
+contract. Consumers should pin to a specific minor version
+(e.g., `protokit~=0.5.0`) until 1.0 ships. The 1.0 release will
+**define the stable public surface** and commit to semver
+compatibility for that surface.
 
 ### Public Surface (DRAFT — frozen at 1.0)
 
@@ -664,10 +757,14 @@ accumulation.
 | Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
 | Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
 | JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
+| JSON wire | `lint_json["schema_version"]: "0.2"` (top-level wire-format version; absence → implicit "0.1") | IN |
 | SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
+| SARIF wire | `runs[].properties.lint_schema_version: "0.2"` (parity with `lint_json["schema_version"]`) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
-| CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack` | IN |
+| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` is forward-placeholder for D6b differentiator) | IN |
+| Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
+| CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--version` | IN |
 | Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
 | Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid` (full set in `_LINT_ERROR_CODES`) | IN |
 | Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
@@ -676,8 +773,10 @@ accumulation.
 | Threshold constants | `_LINT_HUMAN_SUMMARIZATION_THRESHOLD` (per-category human-stderr summarization) | INTERNAL |
 
 The surface above is a working draft. Names and signatures may
-shift before 1.0; the BREAKING marker in CHANGELOG entries is the
-authoritative signal for any individual change.
+shift before 1.0; the version bump + CHANGELOG section for each
+delivery is the authoritative signal for any individual change.
+Historical `BREAKING:`-prefixed sections (D2–D5) carry the same
+weight as plain delivery sections (D6a onward).
 
 ## Output Formatters
 

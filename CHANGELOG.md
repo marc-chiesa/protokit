@@ -432,6 +432,127 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D6a — `protokit lint` rule library expansion + buf BASIC parity (0.2.0)
+
+D6a grows `protokit lint` from the D2 `naming` canary (1 pack /
+9 rules) into a 5-pack / 17-rule library covering buf BASIC parity
+for single-language teams. Existing users upgrading from
+`protokit 0.1.x` will see new ERROR-severity findings on
+previously-green CI (matching buf's BASIC severity posture per
+KD-9). Pin to `protokit~=0.1.0` (which means `>=0.1.0, <0.2.0`) if
+you want to defer the upgrade; the demotion paths below cover the
+common triage flows for users who choose to upgrade now.
+
+- **`BUILTIN_PACKS` expansion (auto-loaded packs).** Four new
+  packs join `naming` in the auto-load set: `enum`
+  (`no-allow-alias`, `first-value-zero`), `imports`
+  (`no-public`, `no-weak`, `unused`), `package` (`defined`,
+  `directory-match`), and `file` (`syntax-specified`). Each rule
+  is tagged with `source_spec="buf:<RULE_ID>"` for parity
+  introspection; documented buf-parity divergences live in the
+  rule docstrings (notably `file/syntax-specified` fires on both
+  no-syntax AND explicit `syntax = "proto2";` files because the
+  compiler emits `fdp.syntax == ""` for both). The auto-load
+  expansion is gated on the `--no-builtin-rules` opt-out below.
+
+- **Wire format — `schema_version` field.** `lint_json` output
+  gains a top-level `"schema_version": "0.2"` key; `lint_sarif`
+  gains `runs[].properties.lint_schema_version: "0.2"` (namespaced
+  under SARIF's reserved property bag to coexist with the SARIF
+  spec's own `version` field). The bump contract: this constant
+  changes any time the JSON/SARIF wire shapes change in a way
+  consumers need to detect. Absence of the key (older output) is
+  the implicit "0.1" — consumers that need to support pre-0.2
+  output should treat a missing `schema_version` as `"0.1"`. The
+  JUnit `<system-out>` and human-stderr surfaces are unchanged.
+
+- **Pyproject schema additions.** `[tool.protokit.lint]` accepts
+  two new keys:
+  - `no_builtin_rules` (bool, default `false`) — when `true`,
+    skip loading `BUILTIN_PACKS` entirely. The `--rule-pack
+    MODULE` flag (or future pyproject `rule_packs = [...]`)
+    becomes load-bearing; without any user pack the engine has
+    no rules and exits 2 via the existing `no-rules` error code.
+  - `[tool.protokit.lint.severities]` (table; rule_id → severity
+    string) — per-rule severity overrides applied AFTER profile
+    composition. User overrides always win on collision via a
+    post-compose dict-spread (`{**profile_overrides,
+    **user_severities}`). Unknown rule_ids fire an `unloaded_rule`
+    runtime warning naming each rule_id but do NOT exit error —
+    the warning surfaces typos without blocking the lint run.
+
+- **CLI flags.** `--no-builtin-rules` mirrors the pyproject key;
+  parameter-source detection (`COMMANDLINE` / `ENVIRONMENT` /
+  `DEFAULT_MAP`) drives precedence per the D5 pattern. `protokit
+  lint --version` is new — prints `protokit <version> (parity:
+  buf <pin>)` where the buf pin is `_BUF_PARITY_PIN` in
+  `src/protokit/schema/lint/cli.py` (currently `v1.69.0`,
+  cross-referenced with the parity CI job).
+
+- **Profile names — protokit-native + buf aliases.** The primary
+  protokit-native profile names are `essentials` (lightweight
+  forward-placeholder), `recommended` (buf BASIC parity; the
+  17-rule D6a set), and `default` (forward-placeholder for the
+  D6b differentiator; structurally equal to `recommended` in
+  D6a). Buf compatibility aliases resolve at the
+  `_coerce_profile` input boundary in `_config.py`:
+  `minimal → essentials`, `basic → recommended`. A user pack
+  declaring `profiles=("basic",)` will never match — the alias
+  resolves before pack profile-name lookup. Document this in
+  custom rule packs.
+
+- **Opt-out / demotion paths.** Pre-1.0 the version bump itself
+  is the breaking-change signal; the four available demotion
+  paths are:
+  1. **Pin** — `protokit~=0.1.0` means `>=0.1.0, <0.2.0`, so
+     pinned users are NOT auto-bumped.
+  2. **Full opt-out** — `--no-builtin-rules` (CLI) or
+     `[tool.protokit.lint] no_builtin_rules = true` (pyproject)
+     skips `BUILTIN_PACKS` entirely. Pair with `--rule-pack
+     MODULE` to supply a custom rule set; an empty rule set
+     exits 2 via `no-rules`.
+  3. **Global severity demotion** — `--min-severity=warning`
+     (CLI) or `[tool.protokit.lint] min_severity = "warning"`
+     (pyproject) raises the floor across all rules. This is the
+     coarse hammer; finer control via the next option.
+  4. **Per-rule demotion** —
+     `[tool.protokit.lint.severities] "imports/unused" = "warning"`
+     (or `"info"`) demotes one rule without touching the rest.
+     Multiple keys compose. User overrides always win.
+
+- **Upgrade notes.** The recommended triage path for an existing
+  `protokit 0.1.x` user upgrading to `0.2.0`:
+  1. Upgrade `protokit` (`pip install -U protokit` or equivalent).
+  2. Run `protokit lint --format=json <inputs> | jq
+     '.findings[] | {rule_id, severity, location}'` to enumerate
+     the new findings.
+  3. Decide per finding: fix the schema, or demote the rule. If
+     a whole category is noise for your project (e.g.,
+     `imports/unused` on third-party vendored protos), the
+     pyproject `[severities]` table is the lowest-cost option;
+     pair with `exclude` for vendored paths.
+  4. For an emergency-revert, pin to `protokit~=0.1.0` and file
+     an issue describing the false-positive — pre-1.0 is the
+     right time to surface gaps in the rule heuristics.
+
+- **Parity test infrastructure (advisory).** `tests/parity/`
+  ships local fixtures + a pinned-buf CI job that runs against
+  every PR. The job is **advisory (J2)** — failures surface as a
+  yellow check, not a red block, so buf release shifts don't
+  hold up unrelated PRs. A separate scheduled "buf release
+  watcher" workflow opens a tracking issue weekly when upstream
+  ships a newer stable release; pin bumps land as discrete
+  reviewed PRs.
+
+- **Public Surface (DRAFT) additions.** Four new rows in the
+  README's Public Surface DRAFT table: protokit-native profile
+  names, buf alias mapping, `lint_json` top-level
+  `schema_version`, and SARIF `runs[].properties.lint_schema_version`.
+  Output ordering (sorted by `(file, location, rule_id)` per
+  KTD-6) is intentionally NOT listed as a Public Surface row —
+  it is an implementation detail subject to change pre-1.0;
+  consumers should not parse findings by positional invariants.
+
 ### Rationale (design decisions)
 
 See `TODOS.md` for the full decision log. Summary:

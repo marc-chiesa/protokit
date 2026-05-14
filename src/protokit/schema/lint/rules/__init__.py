@@ -19,27 +19,37 @@ KD-9 upgrade-safety policy
 
 ``BUILTIN_PACKS`` is the **single source of truth** for which packs
 auto-load when ``protokit lint`` runs without ``--no-builtin-rules``.
-**Adding a new pack to this tuple is an explicit decision tied to a
-major-version release with a CHANGELOG entry**, NOT a routine code
-change. The intent is upgrade safety: users who upgrade ``protokit``
-between minor versions should NOT silently see new lint findings on
-previously-green CI just because a new rule pack shipped.
+**Adding a new pack to this tuple is an explicit decision communicated
+via a CHANGELOG entry**, NOT a routine code change. The intent is
+upgrade safety: users who upgrade ``protokit`` between minor
+versions should be able to predict — via the CHANGELOG — when new
+lint findings will appear on previously-green CI because a new rule
+pack shipped.
 
 The protokit-lint policy for D6+ rule packs is **default opt-in
-registered, NOT auto-loaded**. New packs ship as importable
-modules under ``protokit.schema.lint.rules.*`` and users opt in
-via ``--rule-pack <module>``. Promotion of a pack into
+registered, NOT auto-loaded** *outside* of the deliberate
+``BUILTIN_PACKS`` curation. New packs ship as importable modules
+under ``protokit.schema.lint.rules.*`` and users opt in via
+``--rule-pack <module>``. Promotion of a pack into
 ``BUILTIN_PACKS`` happens only when:
 
 1. The pack has been validated against representative protobuf
    schemas (no false-positive epidemic).
-2. The protokit major version is being bumped (semver: adding to
-   the auto-load set is a breaking change to the ``protokit lint``
-   default behavior).
-3. The CHANGELOG entry explicitly calls out the auto-load
-   expansion + provides the opt-out path
-   (``--no-builtin-rules`` or pinning protokit to the prior
-   minor version).
+2. The protokit version policy is honored. **While protokit is
+   pre-1.0 there is no stability guarantee; new packs may be added
+   to BUILTIN_PACKS freely, accompanied by a CHANGELOG entry
+   describing what users will see on upgrade.** Post-1.0, additions
+   are gated on a major-version bump per the original intent
+   (adding to the auto-load set is a breaking change to the
+   ``protokit lint`` default behavior under semver).
+3. A CHANGELOG entry explicitly calls out the auto-load expansion +
+   provides the opt-out path (``--no-builtin-rules`` /
+   ``[tool.protokit.lint] no_builtin_rules = true`` /
+   ``--min-severity=warning`` global demotion /
+   ``[tool.protokit.lint.severities]`` per-rule demotion / pinning
+   protokit to the prior minor version). The plain CHANGELOG
+   description is the communication contract; pre-1.0 there is no
+   decorative marker requirement.
 
 Enforcement: ``tests/schema/lint/test_builtin_packs.py`` pins the
 exact membership of ``BUILTIN_PACKS``. Any change to the tuple
@@ -47,11 +57,10 @@ fails the test, forcing the contributor to update the test to
 match — a hard CI gate on **test consistency** that signals
 explicit intent for any change to the auto-load surface. The
 test does NOT enforce CHANGELOG-update-in-same-commit or
-major-version coordination; those remain **soft norms enforced
+version-bump coordination; those remain **soft norms enforced
 via PR review**, not structural gates. The right time to invest
-in a structural CHANGELOG-diff hook is when the second pack is
-added (D6) — at one pack, the carrying cost of the hook
-substrate exceeds present value.
+in a structural CHANGELOG-diff hook is post-1.0, when the
+auto-load set becomes a stability-bearing surface.
 """
 
 from __future__ import annotations
@@ -64,16 +73,14 @@ from protokit.schema.lint.rules import enum, file, imports, naming, package
 #: auto-loads at subcommand startup. See module docstring for the
 #: KD-9 upgrade-safety policy that governs additions.
 #:
-#: D6a Unit 4 added the ``enum`` semantic rules pack
-#: (``enum/no-allow-alias`` + ``enum/first-value-zero``). D6a
-#: Unit 5 added the ``imports`` pack (``imports/no-public`` +
-#: ``imports/no-weak`` + ``imports/unused``). D6a Unit 6 adds
-#: the ``package`` pack (``package/defined`` +
-#: ``package/directory-match``) and the ``file`` pack
-#: (``file/syntax-specified``). The KD-9 docstring amendment that
-#: authorizes pre-1.0 BUILTIN_PACKS growth lands in the D6a Unit 10
-#: final-commit per KTD-4 of the plan; the per-unit additions just
-#: add pack members.
+#: D6a 0.2.0 release adds four packs beyond the D2 ``naming``
+#: canary: ``enum`` (``no-allow-alias`` + ``first-value-zero``),
+#: ``imports`` (``no-public`` + ``no-weak`` + ``unused``),
+#: ``package`` (``defined`` + ``directory-match``), and ``file``
+#: (``syntax-specified``). 14 rules total across 5 packs, covering
+#: buf BASIC parity for single-language teams. The 0.2.0 CHANGELOG
+#: entry documents the auto-load expansion + demotion paths per the
+#: KD-9 communication contract.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,

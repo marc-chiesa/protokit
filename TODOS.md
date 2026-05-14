@@ -76,45 +76,55 @@ discussion around the stdout-write guard.
 
 ---
 
-## protokit-lint — remaining deliveries (D5, D6, D7)
+## protokit-lint — remaining deliveries (D6b, D7)
 
 D1 (foundation, 2026-05-02), D2 (engine + canary, 2026-05-03), and
 D3 (`protokit lint` CLI subcommand, 2026-05-09) all landed. D4
 (formatters / `_builtin_lint.py`) was absorbed into D3 U4a/U4b and
 shipped with D3 — `lint_human` / `lint_json` / `lint_junit` /
-`lint_sarif` are all registered.
+`lint_sarif` are all registered. D5 (pyproject `[tool.protokit.lint]`
+config + `--exclude`, 2026-05-11/12) landed. **D6a (rule library
++ buf BASIC parity, 0.2.0 release, 2026-05-13)** landed.
 
-`protokit lint <descriptor_set>` works end-to-end today against
-the always-on `naming/snake-case-fields` canary. The remaining
-deliveries make the tool useful at production scale: D5 brings
-per-project config (so users don't need flag soup on every
-invocation), D6 brings the actual rule library (so the canary
-stops being the only thing that fires), and D7 closes the
-plugin-API story.
+`protokit lint <inputs>` is now production-ready: 5 packs / 17
+rules across `naming` / `enum` / `imports` / `package` / `file`
+cover buf BASIC parity for single-language teams, per-rule
+severity overrides + `--no-builtin-rules` provide demotion paths,
+and `lint_json` / `lint_sarif` carry a `schema_version` wire
+field. The remaining sub-deliveries fill in scope deliberately
+deferred from D6a: **D6b** ships the option-aware differentiator
++ cross-language `PACKAGE_SAME_*` family + `strict` profile, and
+**D7** closes the plugin-API story.
 
-### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(next in sequence)*
+### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(SHIPPED 2026-05-11/12)*
 
 **What:** Read `[tool.protokit.lint]` from `pyproject.toml`:
 profile selection, rule overrides, exclude globs. Adds `tomli` to
 required deps (Python 3.10 lacks `tomllib`; 3.11+ has it). Includes
 the `tests/schema/lint/test_perf_smoke.py` measurement that A5
-deferred from D1. Likely also folds in:
+deferred from D1. Folded in:
 
 - R12's `LintRuntimeWarning(category="min_severity_relaxed")` emission
   — D3 R12 deferred this to "next delivery (pyproject config)"; D5
-  is that delivery.
+  shipped it.
 - R17 `--ignore PATH` flag — D3 R17 was explicitly deferred to D5
-  ("co-design with `[tool.protokit.lint] exclude` globs").
+  ("co-design with `[tool.protokit.lint] exclude` globs") and
+  shipped as `--exclude`.
 
 **Why:** Per-project config is how every other lint tool ships.
 Without it, every CLI invocation needs explicit flags.
 
-**Effort:** M. **Priority:** P1 (next in sequence after D3).
-**Depends on:** D3 (landed). **Discovered:** brainstorm step 6.
+**Status:** Shipped across D5 U1–U6 between 2026-05-11 and
+2026-05-12.
 
 ---
 
 ### D6 — Rule packs (built-in rules beyond the canary)
+
+**Status:** D6a (rule library + buf BASIC parity) shipped
+2026-05-13 as protokit 0.2.0; see CHANGELOG `### D6a` for the
+auto-load expansion + demotion paths. D6b remains open (backlog
+below).
 
 **What:** First concrete rules library. The brainstorm references
 AIP-style naming / linting (`naming/snake-case-fields` is the
