@@ -169,6 +169,13 @@ jobs:
   parity:
     runs-on: ubuntu-latest
 
+    # Cap the whole job: per-subprocess timeouts in
+    # tests/parity/conftest.py guard only the pytest phase; the setup
+    # steps (apt, pip, curl) are unprotected. 15 minutes covers a
+    # cold runner + slow CDN + full test pass with headroom; a hung
+    # step gets killed cleanly without burning a 6-hour default slot.
+    timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -203,15 +210,20 @@ jobs:
         # `-f` fails on HTTP errors (404 from a stale tag fails the
         # step rather than writing an HTML 404 body into the tarball);
         # `-sS` quiet but surface errors; `-L` follow redirects (the
-        # GitHub release CDN redirects).
+        # GitHub release CDN redirects); `--connect-timeout 30` caps
+        # the TCP handshake; `--max-time 120` bounds the full transfer
+        # so a stalled CDN connection fails cleanly rather than holding
+        # the step open until the job-level timeout-minutes fires.
         #
         # When bumping the version: update BOTH this curl URL AND
         # _BUF_PARITY_PIN in src/protokit/schema/lint/cli.py. The
         # tests/test_buf_parity_pin_drift.py drift-check enforces this.
         run: |
-          curl -fsSL -o buf-Linux-x86_64.tar.gz \
+          curl -fsSL --connect-timeout 30 --max-time 120 \
+            -o buf-Linux-x86_64.tar.gz \
             https://github.com/bufbuild/buf/releases/download/v1.69.0/buf-Linux-x86_64.tar.gz
-          curl -fsSL -o sha256.txt \
+          curl -fsSL --connect-timeout 30 --max-time 60 \
+            -o sha256.txt \
             https://github.com/bufbuild/buf/releases/download/v1.69.0/sha256.txt
 
       - name: Verify buf SHA-256 checksum
@@ -221,8 +233,16 @@ jobs:
         # this CI runner. The grep filter selects the line matching the
         # canonical filename; sha256sum reads that line from stdin and
         # re-hashes the local file with the matching name.
+        #
+        # ``--strict`` exits non-zero on improperly-formatted lines.
+        # Without it, a future buf release that changes sha256.txt
+        # format (different separator, missing hash column) could
+        # produce a line that matches the grep anchor but fails
+        # parsing — sha256sum emits a WARNING and exits 0, silently
+        # bypassing the verification. ``--strict`` makes the malformed-
+        # line case a hard failure.
         run: |
-          grep " buf-Linux-x86_64.tar.gz$" sha256.txt | sha256sum -c -
+          grep " buf-Linux-x86_64.tar.gz$" sha256.txt | sha256sum --strict -c -
 
       - name: Extract and install buf
         run: |

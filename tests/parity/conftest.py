@@ -56,6 +56,7 @@ from typing import Any, Literal, NoReturn
 
 import pytest
 
+from protokit.schema.lint.cli import _BUF_PARITY_PIN
 from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.rules import BUILTIN_PACKS
 
@@ -293,10 +294,10 @@ def buf_binary() -> Path:
     resolved = shutil.which("buf")
     if resolved is None:
         pytest.skip(
-            "buf binary not found: $BUF_BINARY is unset and `buf` is not on "
-            "PATH. Install buf v1.69.0 from "
-            "https://github.com/bufbuild/buf/releases/tag/v1.69.0 (or set "
-            "BUF_BINARY to a local install) to run parity tests."
+            f"buf binary not found: $BUF_BINARY is unset and `buf` is not on "
+            f"PATH. Install buf {_BUF_PARITY_PIN} from "
+            f"https://github.com/bufbuild/buf/releases/tag/{_BUF_PARITY_PIN} "
+            f"(or set BUF_BINARY to a local install) to run parity tests."
         )
     return Path(resolved)
 

@@ -41,9 +41,22 @@ permissions:
   issues: write
   contents: read
 
+# Two simultaneous workflow_dispatch invocations would otherwise both
+# pass the "no open issue" check and both create a tracking issue —
+# yielding duplicates. Serializing via concurrency-group makes the
+# check + create + edit pipeline atomic relative to other watcher runs.
+concurrency:
+  group: buf-release-watch
+  cancel-in-progress: false
+
 jobs:
   check-buf-release:
     runs-on: ubuntu-latest
+
+    # Cap the job: gh API calls can stall at the TCP layer (connection
+    # accepted, no response) which set -euo pipefail cannot detect.
+    # 10 minutes is generous for a few gh REST calls + grep + jq.
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -85,13 +98,16 @@ jobs:
       - name: Read pinned buf version from cli.py
         id: pinned
         if: steps.upstream.outputs.skip != 'true'
-        # Greps `_BUF_PARITY_PIN: str = "v1.69.0"` and extracts the
-        # quoted version. Matches the regex in
-        # tests/test_buf_parity_pin_drift.py so both consumers agree.
+        # Greps `_BUF_PARITY_PIN: <ANNOTATION> = "v1.69.0"` and
+        # extracts the quoted version. The annotation segment uses
+        # ``[^=]+`` so the grep tolerates any shape between ``:`` and
+        # ``=`` (str, Final[str], etc.) — matches the regex in
+        # tests/test_buf_parity_pin_drift.py so both consumers agree
+        # on the same line shape.
         run: |
           set -euo pipefail
           pin=$(
-            grep -E '^_BUF_PARITY_PIN\s*:\s*str\s*=\s*"v[^"]+"' \
+            grep -E '^_BUF_PARITY_PIN\s*:[^=]+=\s*"v[^"]+"' \
               src/protokit/schema/lint/cli.py \
               | head -n 1 \
               | sed -E 's/^[^"]*"(v[^"]+)".*/\1/'
@@ -105,15 +121,27 @@ jobs:
       - name: Compare pin against upstream
         id: compare
         if: steps.upstream.outputs.skip != 'true'
+        # Route step outputs through ``env:`` rather than inlining
+        # ``${{ }}`` expressions into the shell script. GH Actions
+        # evaluates ``${{ }}`` at YAML template expansion time
+        # BEFORE bash sees the script — surrounding single quotes
+        # are bash quoting, not GH-template quoting, so a value
+        # containing a single quote would break out of the shell
+        # context and inject commands. Today's `pin` (regex-
+        # constrained source) and `latest` (git tag name) cannot
+        # contain single quotes in practice, but the ``env:``
+        # pattern is the canonical GH Actions mitigation and matches
+        # what the "Find or create" step below already does.
+        env:
+          PIN: ${{ steps.pinned.outputs.pin }}
+          LATEST: ${{ steps.upstream.outputs.latest_tag }}
         run: |
           set -euo pipefail
-          pin='${{ steps.pinned.outputs.pin }}'
-          latest='${{ steps.upstream.outputs.latest_tag }}'
-          if [ "$pin" = "$latest" ]; then
-            echo "pin ($pin) matches upstream ($latest); no action needed"
+          if [ "$PIN" = "$LATEST" ]; then
+            echo "pin ($PIN) matches upstream ($LATEST); no action needed"
             echo "behind=false" >> "$GITHUB_OUTPUT"
           else
-            echo "pin ($pin) is behind upstream latest ($latest)"
+            echo "pin ($PIN) is behind upstream latest ($LATEST)"
             echo "behind=true" >> "$GITHUB_OUTPUT"
           fi
 
