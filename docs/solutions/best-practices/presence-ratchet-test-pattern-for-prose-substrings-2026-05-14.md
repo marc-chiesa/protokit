@@ -358,3 +358,11 @@ zero — the tests are self-explanatory at first read.
   extension target: critical Public Surface DRAFT rows could
   acquire presence ratchets to pin their inclusion against
   silent removal during table rewrites.
+- [[ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier]]
+  — natural extension target: presence ratchets pinned to
+  future-tense substrings ("will land in U3", "planned for U2")
+  would catch a regression to present-tense forward-looking
+  docstrings mechanically, before `ce:review` runs and 5
+  reviewers all read them. The ratchet is the mechanical guard
+  that prevents the shared-source misreading from arising in
+  the first place.

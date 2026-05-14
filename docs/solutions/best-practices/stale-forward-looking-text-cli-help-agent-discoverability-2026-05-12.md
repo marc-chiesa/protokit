@@ -103,6 +103,29 @@ An agent that reads `--help` to decide whether `--format=json` is safe to use co
 
 The U5 ce:review surfaced the finding at 0.97 confidence with two-reviewer convergence (agent-native C1b + cli-readiness CLR-U5-03). Cost of the fix: a rewrite of the `--format` help string. Cost of *not* catching it earlier: three cycles of accumulated misleading documentation, plus any downstream automation that made decisions based on stale `--help` output. The fact that two reviewers — each scoped to a different reviewer dimension — independently arrived at the same finding is structural evidence that the failure mode is recurring, not idiosyncratic.
 
+**Fourth consequence — ce:review confidence corruption.** Beyond
+misleading agents and corrupting CI automation, present-tense
+forward-looking docstrings also actively distort the multi-agent
+review pipeline's confidence signal during in-flight delivery
+units. When N reviewer personas all read the same forward-looking
+docstring and conclude the documented behavior is missing, they
+produce **apparent cross-reviewer convergence** — which the merge
+stage's agreement boost treats as N independent observations
+confirming a real finding. The convergence is spurious: it is one
+misreading amplified N times, not N independent confirmations.
+The D6b U1 anchor case (2026-05-14) saw 5 reviewers converge at
+near-1.0 merged confidence on a "missing CLI wire-up" finding that
+was in fact the plan's explicit U3 deferral being misread through
+three present-tense docstrings. See
+[[ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier]]
+for the reviewer-side mirror of this consequence and the merge-stage
+independence test that demotes the bogus boost. Combined with the
+agent-discoverability and CI-pipeline-decision consequences above,
+this means present-tense forward-looking text harms three distinct
+audiences — automated agents reading `--help`, CI pipelines making
+gating decisions, AND multi-agent review pipelines computing
+confidence scores.
+
 ## When to Apply
 
 - Any time a unit's docstring, help text, or CHANGELOG entry uses temporal language ("arrives in", "until X ships", "currently", "will be", "forthcoming") describing in-flight work
@@ -200,3 +223,4 @@ entry for the new prefix.
 - [[source-aware-error-messages-multi-source-resolved-value-2026-05-11]] — keeping output prose synchronized with the current resolved configuration state
 - [[public-surface-draft-discipline-source-audit]] — sibling failure mode: this learning covers stale **temporal phrasing** ("will land in U6", "currently exit 2 via ..."); the companion covers stale **factual surface enumeration** (dataclass field lists, error code names, CLI flags claimed in API tables that no longer match source). Both are documentation-drift problems with different remediation patterns: tense audit (this doc) vs source-grep audit (companion). Same broad documentation-discipline family, different granularities.
 - [[delivery-boundary-unit-commit-composition]] — the boundary unit invokes this sweep as one of its required deliverables; the triage rubric above is the discriminator that keeps the sweep efficient as the project ages.
+- [[ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier]] — **reviewer-side consequence.** This learning documents why forward-looking docstrings exist and how to triage them (author-side). The companion doc captures the reviewer-side failure mode: the same present-tense forward-looking docstrings prime multiple `ce:review` reviewer personas identically, producing apparent cross-reviewer convergence that the merge stage's agreement boost misinterprets as independent confirmation. A fourth consequence class for the "Why This Matters" enumeration (alongside agent-discoverability and CI-pipeline drift): unswept stale docstrings actively corrupt the multi-agent review pipeline's confidence signal during in-flight delivery units.
