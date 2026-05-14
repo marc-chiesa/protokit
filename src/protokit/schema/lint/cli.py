@@ -128,6 +128,26 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
 #: value, so D6+ tuning does not require coordinated test updates.
 _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 
+#: Pinned buf version for the parity CI job and ``tests/parity/``.
+#: D6a U8 Phase B+C contract: this constant and the corresponding
+#: ``releases/download/v<X>/buf-Linux-x86_64.tar.gz`` URL in
+#: ``.github/workflows/ci.yml``'s parity job MUST reference the same
+#: version. Drift between the two is caught by
+#: ``tests/test_buf_parity_pin_drift.py`` in the default
+#: ``pytest tests/`` invocation, so a contributor bumping one
+#: without the other fails locally before push.
+#:
+#: The release watcher at ``.github/workflows/buf-release-watch.yml``
+#: greps this line weekly and opens a tracking issue when upstream
+#: ships a newer stable release. Pin bumps are deliberate acts —
+#: the watcher surfaces the signal; a maintainer lands the bump as
+#: a discrete PR after fixture / parity-test review.
+#:
+#: Unit 9 (CLI wiring, deferred) will expose this constant in
+#: ``protokit lint --version`` output so users can verify the
+#: parity reference without reading CI YAML.
+_BUF_PARITY_PIN: str = "v1.69.0"
+
 
 def _emit_human_runtime_warnings(report: LintReport) -> None:
     """Emit ``report.runtime_warnings`` to stderr as human-format lines.

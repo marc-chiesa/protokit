@@ -1,0 +1,182 @@
+# D6a U8 Phase B+C — buf release watcher.
+#
+# Scheduled workflow that monitors `bufbuild/buf` for newer stable
+# releases than the version pinned in
+# `src/protokit/schema/lint/cli.py` via `_BUF_PARITY_PIN`. When the
+# upstream stable tag is ahead of the pin, opens (or updates) a
+# tracking issue titled exactly `"buf parity pin behind upstream"`.
+#
+# ----- Rationale (KTD-11 of the U8 plan) -----
+#
+# The parity job (in ci.yml) is advisory and runs against a pinned
+# buf version. Buf may ship a new release at any time with deprecated
+# / renamed / added BASIC rules; without surveillance, the pin would
+# silently rot. This watcher decouples buf's release cadence from PR
+# throughput: pin bumps become discrete tasks (a "buf parity pin
+# upgrade" PR a maintainer lands), not pressure on the current PR's
+# reviewers.
+#
+# ----- Schedule + dispatch -----
+#
+# Weekly cron on Mondays at 13:00 UTC (early Pacific morning,
+# mid-day European working hours). `workflow_dispatch` lets a
+# maintainer trigger the watcher manually after a known upstream
+# release.
+#
+# ----- Permissions -----
+#
+# `issues: write` to create / edit the tracking issue.
+# `contents: read` to read the constant from cli.py.
+# Uses the default `GITHUB_TOKEN`; no secrets needed.
+
+name: buf-release-watch
+
+on:
+  schedule:
+    # Mondays 13:00 UTC.
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check-buf-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Query upstream latest stable release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # `gh release list` returns the 5 most recent releases with
+        # the isLatest / isPrerelease metadata. `jq` filters to the
+        # one tagged latest AND not a pre-release. If buf has shipped
+        # only pre-releases recently, this returns empty and the
+        # subsequent step exits cleanly without opening an issue.
+        run: |
+          set -euo pipefail
+          gh release list \
+            -R bufbuild/buf \
+            --limit 5 \
+            --json tagName,isLatest,isPrerelease,publishedAt \
+            > releases.json
+          latest_tag=$(
+            jq -r '.[] | select(.isLatest == true and .isPrerelease == false) | .tagName' \
+              releases.json | head -n 1
+          )
+          published=$(
+            jq -r '.[] | select(.isLatest == true and .isPrerelease == false) | .publishedAt' \
+              releases.json | head -n 1
+          )
+          if [ -z "$latest_tag" ]; then
+            echo "no stable release found in last 5 entries; nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          echo "published=$published" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Read pinned buf version from cli.py
+        id: pinned
+        if: steps.upstream.outputs.skip != 'true'
+        # Greps `_BUF_PARITY_PIN: str = "v1.69.0"` and extracts the
+        # quoted version. Matches the regex in
+        # tests/test_buf_parity_pin_drift.py so both consumers agree.
+        run: |
+          set -euo pipefail
+          pin=$(
+            grep -E '^_BUF_PARITY_PIN\s*:\s*str\s*=\s*"v[^"]+"' \
+              src/protokit/schema/lint/cli.py \
+              | head -n 1 \
+              | sed -E 's/^[^"]*"(v[^"]+)".*/\1/'
+          )
+          if [ -z "$pin" ]; then
+            echo "could not extract _BUF_PARITY_PIN from cli.py; aborting"
+            exit 1
+          fi
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+
+      - name: Compare pin against upstream
+        id: compare
+        if: steps.upstream.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          pin='${{ steps.pinned.outputs.pin }}'
+          latest='${{ steps.upstream.outputs.latest_tag }}'
+          if [ "$pin" = "$latest" ]; then
+            echo "pin ($pin) matches upstream ($latest); no action needed"
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pin ($pin) is behind upstream latest ($latest)"
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find or create tracking issue
+        if: steps.upstream.outputs.skip != 'true' && steps.compare.outputs.behind == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PIN: ${{ steps.pinned.outputs.pin }}
+          LATEST: ${{ steps.upstream.outputs.latest_tag }}
+          PUBLISHED: ${{ steps.upstream.outputs.published }}
+        # GitHub search (`in:title`) is full-text and case-insensitive,
+        # not strict-equality. So we query, then POST-FILTER in jq for
+        # an exact title match before deciding create-vs-update. This
+        # avoids accidentally matching an issue titled
+        # `"buf parity pin behind upstream (manual override)"` or
+        # similar variant.
+        run: |
+          set -euo pipefail
+          title='buf parity pin behind upstream'
+          body=$(cat <<EOF
+          The pinned buf version is behind the latest upstream stable release.
+
+          - **Current pin**: \`$PIN\` (in \`src/protokit/schema/lint/cli.py\` and \`.github/workflows/ci.yml\`)
+          - **Latest stable**: \`$LATEST\` (released \`$PUBLISHED\`)
+          - **Release notes**: <https://github.com/bufbuild/buf/releases/tag/$LATEST>
+
+          ## Bump procedure
+
+          1. Update \`_BUF_PARITY_PIN\` in \`src/protokit/schema/lint/cli.py\` to \`$LATEST\`.
+          2. Update the curl URLs in \`.github/workflows/ci.yml\`'s parity job
+             (\`releases/download/$LATEST/buf-Linux-x86_64.tar.gz\` + \`sha256.txt\`).
+          3. Run \`tests/test_buf_parity_pin_drift.py\` locally — it asserts
+             both sites reference the same version.
+          4. Inspect buf's release notes for BASIC rule deprecations / renames / additions:
+             - Run \`buf config ls-lint-rules --version v2 --include-deprecated --format json\`
+               against the new buf binary and compare against the harness's
+               \`_BUF_DEPRECATED_RULES\` set in \`tests/parity/conftest.py\`.
+             - Update \`_BUF_DEPRECATED_RULES\` if any rule we ship parity for has been
+               deprecated, and add a docstring annotation on the corresponding protokit
+               rule per the upstream-rule-deprecation discipline.
+             - Refresh \`tests/parity/fixtures/\` if any rule was renamed.
+          5. Land the bump as a single PR with the CHANGELOG entry.
+
+          This issue is auto-generated by \`.github/workflows/buf-release-watch.yml\` and will
+          be updated in place on subsequent runs while the pin remains behind upstream.
+          Close it after the bump PR merges.
+          EOF
+          )
+
+          # gh issue list returns JSON; jq post-filters for exact title.
+          existing=$(
+            gh issue list \
+              --state open \
+              --search "in:title \"$title\"" \
+              --json number,title \
+              | jq -r --arg title "$title" '.[] | select(.title == $title) | .number' \
+              | head -n 1
+          )
+
+          if [ -n "$existing" ]; then
+            echo "updating existing tracking issue #$existing"
+            gh issue edit "$existing" --body "$body"
+          else
+            echo "opening new tracking issue"
+            gh issue create --title "$title" --body "$body"
+          fi

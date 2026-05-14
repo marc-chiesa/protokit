@@ -134,3 +134,108 @@ jobs:
 
       - name: Run test suite
         run: pytest tests/ -v
+
+  # =====================================================================
+  # D6a U8 Phase B parity job — buf v1.69.0 cross-tool parity checks.
+  # =====================================================================
+  #
+  # Runs every buf-equivalent protokit lint rule's fixture through both
+  # `protokit lint` and `buf lint` and asserts equivalent findings.
+  # See tests/parity/conftest.py for the harness and
+  # docs/plans/2026-05-13-001-feat-d6a-u8-parity-test-infra-plan.md for
+  # the design.
+  #
+  # ----- Advisory posture (DO NOT add to required-checks) -----
+  #
+  # This job is INTENTIONALLY ADVISORY per D6a U8 plan KTD-9 / J2. When
+  # branch protection is configured for `main`, the parity job MUST NOT
+  # be included in any required-checks rule. Buf releases independently
+  # of protokit and can deprecate / rename rules on its own cadence;
+  # a parity divergence is a signal to file as a follow-up (handled by
+  # buf-release-watch.yml), not a blocker on the current PR.
+  #
+  # GitHub's branch-protection UI defaults to listing every check that
+  # has run, so a contributor enabling protection may include `parity`
+  # by accident. If you're configuring branch protection, explicitly
+  # uncheck this job.
+  #
+  # ----- Pin discipline -----
+  #
+  # The buf version pinned below MUST match `_BUF_PARITY_PIN` in
+  # src/protokit/schema/lint/cli.py. The default test suite contains
+  # tests/test_buf_parity_pin_drift.py which fails locally and in CI
+  # before the parity job runs if either pin is bumped without the
+  # other.
+  parity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system protoc
+        # Mirrors the protoc install in the `test` job above. The
+        # parity tests invoke `protokit lint --proto` which compiles
+        # .proto source via protoxy (primary) or protoc (fallback);
+        # apt-shipped protoc on ubuntu-latest is sufficient for the
+        # proto3 fixtures in tests/parity/fixtures/.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install package + dev deps (with compiler extra)
+        run: pip install -e ".[compiler,dev]"
+
+      - name: Download buf v1.69.0 tarball + checksum
+        # Asset name is `buf-Linux-x86_64.tar.gz` (capital L) and the
+        # combined checksum file is `sha256.txt` (one file listing all
+        # release assets). The downloaded tarball MUST be saved under
+        # the canonical filename — `sha256sum -c -` reads filenames
+        # from the .sha256 line and re-hashes from CWD, so a mismatched
+        # local name would fail the verification step with
+        # "buf-Linux-x86_64.tar.gz: No such file or directory".
+        #
+        # `-f` fails on HTTP errors (404 from a stale tag fails the
+        # step rather than writing an HTML 404 body into the tarball);
+        # `-sS` quiet but surface errors; `-L` follow redirects (the
+        # GitHub release CDN redirects).
+        #
+        # When bumping the version: update BOTH this curl URL AND
+        # _BUF_PARITY_PIN in src/protokit/schema/lint/cli.py. The
+        # tests/test_buf_parity_pin_drift.py drift-check enforces this.
+        run: |
+          curl -fsSL -o buf-Linux-x86_64.tar.gz \
+            https://github.com/bufbuild/buf/releases/download/v1.69.0/buf-Linux-x86_64.tar.gz
+          curl -fsSL -o sha256.txt \
+            https://github.com/bufbuild/buf/releases/download/v1.69.0/sha256.txt
+
+      - name: Verify buf SHA-256 checksum
+        # NON-OPTIONAL supply-chain hardening. A skipped or commented-out
+        # checksum step is a P1 review block: a compromised GitHub
+        # release artifact would otherwise ship arbitrary code into
+        # this CI runner. The grep filter selects the line matching the
+        # canonical filename; sha256sum reads that line from stdin and
+        # re-hashes the local file with the matching name.
+        run: |
+          grep " buf-Linux-x86_64.tar.gz$" sha256.txt | sha256sum -c -
+
+      - name: Extract and install buf
+        run: |
+          tar -xzf buf-Linux-x86_64.tar.gz
+          sudo mv buf/bin/buf /usr/local/bin/buf
+          sudo chmod +x /usr/local/bin/buf
+
+      - name: Sanity — buf invocation succeeds
+        # Fail fast if the install is broken (e.g., wrong arch tarball,
+        # missing libc, etc.) before pytest starts.
+        run: buf --version
+
+      - name: Run parity tests
+        env:
+          BUF_BINARY: /usr/local/bin/buf
+        run: pytest tests/parity/ -m parity -v
