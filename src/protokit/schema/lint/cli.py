@@ -167,15 +167,20 @@ def _print_lint_version(
     is in progress, return immediately. Otherwise echo the version
     line and call ``ctx.exit(0)`` so the rest of the lint pipeline
     is skipped (just like Click's built-in ``version_option``).
+
+    **Output format stability**: the line shape
+    ``protokit <ver> (parity: buf <pin>)`` is a public contract.
+    Agents grep ``parity: buf v\\S+`` to extract the pin. Additional
+    tokens (e.g., ``protoc v...``) MUST append within the existing
+    parenthetical and require a minor-version bump. The literal
+    string ``"parity: buf "`` is a load-bearing anchor.
     """
     if not value or ctx.resilient_parsing:
         return
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        pkg_version = version("protokit")
-    except PackageNotFoundError:
-        pkg_version = "0.0.0"
-    click.echo(f"protokit {pkg_version} (parity: buf {_BUF_PARITY_PIN})")
+    from protokit._cli_utils import _get_protokit_version
+    click.echo(
+        f"protokit {_get_protokit_version()} (parity: buf {_BUF_PARITY_PIN})"
+    )
     ctx.exit(0)
 
 
@@ -506,16 +511,19 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     "no_builtin_rules",
     is_flag=True,
     default=False,
-    help="Skip loading ``BUILTIN_PACKS`` (D6a R9c). When set, the "
+    help="Skip loading BUILTIN_PACKS (D6a R9c). When set, the "
          "lint engine starts empty and only user-supplied packs via "
-         "``--rule-pack MODULE`` contribute rules. Use cases: "
+         "--rule-pack MODULE contribute rules. Use cases: "
          "(a) opt out of D6a's BUILTIN_PACKS expansion while triaging "
-         "newly-fired rules (pair with ``--min-severity warning`` to "
+         "newly-fired rules (pair with --min-severity warning to "
          "demote on a rule-by-rule basis via "
-         "``[tool.protokit.lint.severities]``); (b) run a pure "
+         "[tool.protokit.lint.severities]); (b) run a pure "
          "user-pack workflow without protokit's defaults. Pyproject "
-         "equivalent: ``[tool.protokit.lint] no_builtin_rules = true``. "
-         "CLI takes precedence over pyproject when both are set.",
+         "equivalent: [tool.protokit.lint] no_builtin_rules = true. "
+         "CLI takes precedence over pyproject when both are set. "
+         "Warning: if neither BUILTIN_PACKS nor --rule-pack supplies "
+         "any rules, the lint engine exits 2 with "
+         "'error[lint-no-rules]:' rather than emitting zero findings.",
 )
 @click.option(
     "--version",
@@ -857,7 +865,6 @@ def _main_impl(
     # via a synthesized ``unloaded_rule`` runtime warning — reusing
     # the existing category per KTD-2 to avoid widening the
     # LintRuntimeWarning.category Literal in D6a.
-    severities_unloaded_rule_ids: tuple[str, ...] = ()
     if resolved.severities:
         composed_profile = dataclasses.replace(
             composed_profile,
@@ -866,17 +873,17 @@ def _main_impl(
                 **resolved.severities,
             },
         )
-        # Collect unknown keys for the post-engine.run advisory
-        # emission. Comparing against composed_profile.rule_ids
-        # (the union of all loaded packs' rule_ids in the active
-        # profile) rather than RULE_ID_MAP keys, because
-        # rule_severity_overrides only takes effect when the rule
-        # is actually in the profile's run-set.
-        severities_unloaded_rule_ids = tuple(
-            sorted(
-                set(resolved.severities) - composed_profile.rule_ids,
-            ),
-        )
+    # Collect unknown keys for the post-engine.run advisory
+    # emission. Comparing against composed_profile.rule_ids (the
+    # union of all loaded packs' rule_ids in the active profile)
+    # rather than RULE_ID_MAP keys, because rule_severity_overrides
+    # only takes effect when the rule is actually in the profile's
+    # run-set. Empty severities → empty tuple (no extra branch).
+    severities_unloaded_rule_ids: tuple[str, ...] = tuple(
+        sorted(
+            set(resolved.severities) - composed_profile.rule_ids,
+        ),
+    )
 
     # Apply min_severity override (R12, R19a). Pure numeric override
     # that replaces the composed profile's min_severity. The R20

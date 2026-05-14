@@ -150,6 +150,40 @@ delivery. Standalone audit work belongs in the Phase 3
 **Depends on:** D2 + D3 (both landed). **Discovered:**
 brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
 
+**D6b backlog items surfaced during D6a:**
+
+- **`severities_unloaded_rule` category split**: D6a U9 introduced a
+  second emit site for the existing `LintRuntimeWarning.category =
+  "unloaded_rule"` value — engine-emitted (rule in profile but not
+  loaded) + CLI-synthesized (rule in `[tool.protokit.lint.severities]`
+  but not in composed profile). Per Unit 9 KTD-2 the semantic
+  conflation was accepted: both signals reach the user; agents
+  distinguish via message substring. The U9 ce:review F5 finding
+  (cli-readiness reviewer, 2026-05-13) recommends a dedicated
+  category value (`severities_unloaded_rule`) in D6b so consumers
+  can switch on `category` rather than message substring. This is
+  a wire-format addition (not a breaking change to the existing
+  `unloaded_rule` shape) and lands cleanly in a minor bump.
+- **R9b — per-rule disable/enable** (`disabled_rules` / `enabled_rules`
+  pyproject lists): deferred from D6a per the brainstorm; needs
+  real-demand evidence to design the 4 collision-shape precedence
+  semantics against.
+- **Cross-language `PACKAGE_SAME_*` rule family**: 7 rules
+  (CSHARP_NAMESPACE, GO_PACKAGE, JAVA_MULTIPLE_FILES, JAVA_PACKAGE,
+  PHP_NAMESPACE, RUBY_PACKAGE, SWIFT_PREFIX) make D6a a
+  single-language-only migration target; D6b adds these for
+  multi-language teams.
+- **`strict` profile**: deferred from D6a until strict-only rules
+  exist (COMMENT_* family, ENUM_ZERO_VALUE_SUFFIX, etc.) — shipping
+  `strict` empty would damage the public surface with a misleading
+  rule count.
+- **Option-aware differentiator path** (R6 + R6a + R6b + four-site
+  parity_note candidate): the option-aware rule
+  `options/deprecated-must-have-replacement-comment` + SourceCodeInfo
+  preservation in both compile backends + `CompileResult.source_locations`
+  index + `_safe_for_findings()` sanitizer were all deferred from D6a
+  to keep D6a a pure-parity story.
+
 ---
 
 ### D7 — Plugin API + `--compat-rule-pack` rename

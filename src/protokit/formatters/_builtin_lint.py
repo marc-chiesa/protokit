@@ -232,10 +232,14 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #: rely on the standard schema without protokit-specific extensions)
 #: deliberately do NOT carry this field.
 #:
-#: Consumer contract (also documented in the lint_json / lint_sarif
-#: docstrings and the D6a U10 CHANGELOG entry):
+#: Consumer contract:
 #:   - Consumers MUST treat unknown values as forward-compatible
 #:     (read what they can, ignore new keys they don't understand).
+#:   - Field-absent semantic: protokit output that predates this
+#:     constant (no ``schema_version`` key at all) is the implicit
+#:     version ``"0.1"`` — i.e., one bump below the first
+#:     documented value. Consumers comparing versions should treat
+#:     absence as a known-older release, NOT as an error.
 #:   - Protokit bumps this version on:
 #:       (a) addition of new top-level keys
 #:       (b) change in meaning of an existing field
@@ -319,19 +323,9 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
         "runtime_warning_count": len(report.runtime_warnings),
     }
     payload: dict[str, Any] = {
-        # D6a U9 R9d: lint_json schema_version is the wire-format
-        # version downstream consumers should key off when parsing
-        # this payload. Consumers MUST treat unknown values as
-        # forward-compatible (read what they can, ignore new keys
-        # they don't understand) rather than hard-rejecting.
-        # Protokit bumps schema_version on:
-        #   (a) addition of new top-level keys,
-        #   (b) change in MEANING of an existing field,
-        #   (c) removal of a previously documented field.
-        # Adding new severity-level or category strings to an
-        # existing enum field does NOT bump schema_version (the
-        # field's meaning is unchanged; the enum just gains a
-        # value). See the D6a U8 plan KTD-9d for the full contract.
+        # D6a U9 R9d wire-format version; see the
+        # ``_LINT_JSON_SCHEMA_VERSION`` constant's docstring for the
+        # full consumer contract (bump rules + absence semantic).
         "schema_version": _LINT_JSON_SCHEMA_VERSION,
         "findings": findings_payload,
         "filtered_count": report.filtered_count,
@@ -528,17 +522,16 @@ def _lint_rules_catalog(
 
 
 def _protokit_version() -> str:
-    """Best-effort lookup of the installed protokit version.
+    """Best-effort lookup of the installed protokit version for SARIF.
 
-    Falls back to ``"0.0.0"`` if the package isn't installed
-    (uninstalled checkout). Used in SARIF ``tool.driver.version``.
-    Mirrors compat's ``_builtin_compat._protokit_version``.
+    Thin wrapper around ``protokit._cli_utils._get_protokit_version``;
+    kept as a function (not a direct import alias) so the
+    ``tool.driver.version`` call site stays readable. Three independent
+    copies of the same try/except-PackageNotFoundError block collapsed
+    in D6a U9 ce:review (F11).
     """
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        return version("protokit")
-    except PackageNotFoundError:
-        return "0.0.0"
+    from protokit._cli_utils import _get_protokit_version
+    return _get_protokit_version()
 
 
 def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
@@ -567,6 +560,17 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
        carry only logical locations (``str(finding.location)``),
        since the descriptor-set input doesn't carry per-finding
        source-file URIs the way compat's git-mode runs do.
+
+    Stable schema (within ``runs[0]``):
+
+    - ``properties.lint_schema_version`` (D6a U9 R9d): wire-format
+      version string. Prefixed with ``lint_`` to namespace under
+      SARIF's reserved ``schema`` property; same value as
+      ``lint_json``'s top-level ``schema_version`` per cross-format
+      parity. Bag is unconditionally present after U9 — see
+      ``_LINT_JSON_SCHEMA_VERSION`` constant for the bump contract.
+    - ``properties.runtime_warnings`` (D5 U5 R21a): present only
+      when ``report.runtime_warnings`` is non-empty.
     """
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
@@ -643,9 +647,14 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     # ``run.setdefault("properties", {})`` rather than wholesale
     # assignment so a future delivery that adds other run-level
     # properties (e.g., ``tool_version`` / ``policy_hash``) before
-    # this block executes does not get silently overwritten.
+    # this block executes does not get silently overwritten. The
+    # shared ``run_props`` reference below avoids a second
+    # throwaway-dict allocation when the runtime_warnings block
+    # already initialized the bag — both keys assign into the same
+    # dict.
+    run_props: dict[str, Any] = run.setdefault("properties", {})
     if report.runtime_warnings:
-        run.setdefault("properties", {})["runtime_warnings"] = [
+        run_props["runtime_warnings"] = [
             {
                 "level": "warning",
                 "message": {"text": w.message},
@@ -657,18 +666,11 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
             for w in report.runtime_warnings
         ]
 
-    # D6a U9 R9d: wire-format schema version for lint_sarif rides in
-    # the same propertyBag as runtime_warnings. ``setdefault("properties", {})``
-    # keeps the property bag merge-safe regardless of whether the
-    # runtime_warnings block above already initialized it. The key
-    # name is ``lint_schema_version`` (not ``schema_version``) to
-    # avoid colliding with SARIF's own well-known ``schema`` property
-    # on the top-level document and to make protokit-specific
-    # properties greppable. Cross-format-enum-string-parity: the
-    # string value is identical to ``lint_json``'s ``schema_version``.
-    run.setdefault("properties", {})["lint_schema_version"] = (
-        _LINT_JSON_SCHEMA_VERSION
-    )
+    # D6a U9 R9d: wire-format schema version (key name
+    # ``lint_schema_version`` to namespace under SARIF's reserved
+    # ``schema`` property). Cross-format parity: same string value
+    # as ``lint_json``'s top-level ``schema_version``.
+    run_props["lint_schema_version"] = _LINT_JSON_SCHEMA_VERSION
 
     # default=str: same rationale as lint_json — preserve output when
     # a user-pack finding's params or message contains a

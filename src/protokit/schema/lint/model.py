@@ -356,14 +356,33 @@ class LintRuntimeWarning:
        caught exception's class name) and ``descriptor_path`` (a
        stable string locating the descriptor at which the rule was
        firing). Emitted by the engine.
-    2. ``"unloaded_rule"`` — the active profile's ``rule_ids``
-       referenced a ``rule_id`` not loaded into the engine. Computed
-       once at the start of ``LintEngine.run`` (set difference of
-       ``profile.rule_ids`` against the engine's loaded
-       ``rule_id``s); produces exactly one warning per missing
-       ``rule_id``. Carries no exception or descriptor context;
-       ``exception_type`` and ``descriptor_path`` are ``None``.
-       Emitted by the engine.
+    2. ``"unloaded_rule"`` — a ``rule_id`` was named in a context
+       where it cannot take effect. Two emit sites share the
+       category (per D6a U9 KTD-2; semantic conflation is
+       accepted — both signals reach the user). Distinguish via
+       message content:
+
+       (a) **Engine-emitted** (the original site): the active
+       profile's ``rule_ids`` referenced a ``rule_id`` not loaded
+       into the engine. Set difference of ``profile.rule_ids``
+       against loaded ``rule_id``s, computed once at the start of
+       ``LintEngine.run``. Message: ``rule {rid} is named in
+       profile {name} but not loaded into the engine``.
+
+       (b) **CLI-synthesized** (D6a U9 R9a): a key in
+       ``[tool.protokit.lint.severities]`` is not in the composed
+       profile's ``rule_ids``, so the severity override has no
+       effect. Message: ``rule {rid} is named in
+       [tool.protokit.lint.severities] but is not in the composed
+       profile — the severity override has no effect``.
+
+       Both shapes carry ``rule_id`` populated and ``exception_type``
+       / ``descriptor_path`` ``None``. Agents that need to
+       programmatically distinguish the two origins should match
+       the message substrings ``in profile`` (engine) vs
+       ``[tool.protokit.lint.severities]`` (CLI). A dedicated
+       category for the CLI-synthesized branch is a D6b candidate
+       if real consumer feedback shows the conflation is confusing.
     3. ``"min_severity_relaxed"`` (D5 U4) — the CLI-side relaxation
        notice fired when the resolved ``min_severity`` is more
        lenient than the composed profile's intrinsic floor. The

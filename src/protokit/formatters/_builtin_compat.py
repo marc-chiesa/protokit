@@ -225,20 +225,16 @@ def compat_junit(report: CompatibilityReport, ctx: FormatterContext) -> str:
 
 
 def _protokit_version() -> str:
-    """Best-effort lookup of the installed protokit version.
+    """Best-effort lookup of the installed protokit version for SARIF.
 
-    Falls back to ``"0.0.0"`` if the package isn't installed
-    (e.g. uninstalled checkout). Used in SARIF
-    ``tool.driver.version`` so consumers can attribute findings
-    to a specific protokit release. ``importlib.metadata`` is
-    stdlib on Python 3.10+ (the project's minimum), so the only
-    expected miss is ``PackageNotFoundError``.
+    Thin wrapper around ``protokit._cli_utils._get_protokit_version``;
+    kept as a function (not a direct import alias) so the
+    ``tool.driver.version`` call site stays readable. Three independent
+    copies of the same try/except-PackageNotFoundError block collapsed
+    in D6a U9 ce:review (F11).
     """
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        return version("protokit")
-    except PackageNotFoundError:
-        return "0.0.0"
+    from protokit._cli_utils import _get_protokit_version
+    return _get_protokit_version()
 
 
 def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:

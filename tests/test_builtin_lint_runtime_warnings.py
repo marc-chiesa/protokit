@@ -343,6 +343,36 @@ class TestLintSarifRuntimeWarningProperties:
         # with lint_json).
         assert properties["lint_schema_version"] == "0.2"
 
+    def test_runtime_warnings_and_schema_version_coexist(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """When the report carries runtime warnings AND R9d's
+        ``lint_schema_version`` is emitted, BOTH keys must appear in
+        the same ``runs[].properties`` propertyBag.
+
+        Without this assertion, a future conditional that only sets
+        ``lint_schema_version`` on empty-warning reports — or a
+        wholesale ``run["properties"] = {...}`` reassignment between
+        the two writes — would silently clobber one key. Per ce:review
+        F9 on commit c7a426b.
+        """
+        warning = LintRuntimeWarning(
+            category="rule_exception",
+            rule_id="naming/snake-case-fields",
+            message="cosmetic test warning",
+            exception_type="ValueError",
+            descriptor_path="acme.User.x",
+        )
+        report = LintReport(runtime_warnings=(warning,))
+        doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
+        run = doc["runs"][0]
+        properties = run["properties"]
+        assert "runtime_warnings" in properties, properties
+        assert "lint_schema_version" in properties, properties
+        assert len(properties["runtime_warnings"]) == 1
+        assert properties["lint_schema_version"] == "0.2"
+
     def test_empty_message_field_still_emits_one_entry(
         self, sarif_validator: jsonschema.Draft7Validator,
     ) -> None:

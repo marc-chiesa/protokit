@@ -111,6 +111,17 @@ class TestR9aSeveritiesOverlay:
         # The synthesized message names the [tool.protokit.lint.severities]
         # source so users can find the bad key.
         assert "severities" in unloaded[0]["message"], unloaded[0]
+        # The unknown rule_id MUST NOT appear in the findings array.
+        # The overlay touches rule_severity_overrides only, not
+        # rule_ids — but pinning this assertion catches a future
+        # implementation that accidentally extends the run-set with
+        # severities keys (ce:review F8).
+        assert all(
+            f["rule_id"] != "naming/does-not-exist" for f in payload["findings"]
+        ), (
+            f"unknown severities rule_id leaked into findings: "
+            f"{payload['findings']!r}"
+        )
 
     def test_empty_severities_table_is_noop(
         self,
@@ -144,6 +155,61 @@ class TestR9aSeveritiesOverlay:
         assert baseline == {"warning"}, (
             f"empty severities should leave the canary at its "
             f"declared severity; got {baseline!r}"
+        )
+
+    def test_user_severities_win_over_composed_overrides(
+        self,
+        tmp_path: Path,
+        bad_naming_descriptor_set: Path,
+    ) -> None:
+        """User severities table wins on collision with a composed
+        profile's existing ``rule_severity_overrides`` entry.
+
+        Plan line 764 / KTD-2 explicitly requires this. The
+        dict-spread overlay ``{**composed.rule_severity_overrides,
+        **user_severities}`` puts user keys after composed keys, so
+        Python's right-wins-on-collision semantics ensure the user
+        value overrides.
+
+        Synthesizing a pre-existing override is awkward at the
+        integration layer because BUILTIN_PACKS doesn't declare any
+        rule_severity_overrides on its profiles. As a closest-
+        achievable assertion, this test pins the dict-spread
+        ORDERING in the implementation: if the merge order is
+        reversed in the future, the test would NOT catch the change
+        directly, but the documented invariant lives in the
+        test_user_severities_win_over_composed_overrides docstring
+        and the cli.py source comment.
+
+        Per ce:review F1 finding on commit c7a426b. (Note: the
+        ideal test would construct a multi-pack composition where
+        pack A declares rule_severity_overrides; that requires a
+        user-pack fixture with an overrides-bearing profile, deferred
+        as a D6b enhancement.)
+        """
+        # The assertion is shape-pinning: import the cli module and
+        # verify the overlay code uses the user-wins dict order. This
+        # is structural rather than behavioral, but it prevents the
+        # most likely regression (reordering the spread).
+        import inspect
+
+        from protokit.schema.lint import cli as lint_cli_module
+
+        source = inspect.getsource(lint_cli_module)
+        # The overlay's signature line is: `**composed_profile.rule_severity_overrides,`
+        # immediately followed (after `**resolved.severities,`) by the
+        # closing brace. Pin both anchors so a future reorder
+        # `{**resolved.severities, **composed_profile.rule_severity_overrides}`
+        # (composed wins) fails this test.
+        assert (
+            "**composed_profile.rule_severity_overrides,\n"
+            "                **resolved.severities,"
+        ) in source, (
+            "expected user-wins dict spread order (composed first, "
+            "user second) in cli.py severities overlay; collision "
+            "semantics rely on Python's right-wins-on-collision behavior. "
+            "If the source has been reformatted, update this test to "
+            "track the new shape — DO NOT just remove the test."
         )
 
     @pytest.mark.parametrize(

@@ -39,6 +39,28 @@ from protokit.formatters import (
 _PROTOC_TIMEOUT_SECONDS_DEFAULT = 60.0
 
 
+def _get_protokit_version() -> str:
+    """Best-effort lookup of the installed protokit package version.
+
+    Falls back to ``"0.0.0"`` if the package isn't installed
+    (uninstalled checkout, namespace-package layout, etc.). The
+    ``importlib.metadata`` import is performed inside the function so
+    the cost is paid only when a caller actually needs the version
+    (e.g., the SARIF ``tool.driver.version`` field or the
+    ``protokit lint --version`` output), not on every CLI invocation.
+
+    Single source of truth for what were three independent copies
+    pre-D6a U9 (``_builtin_compat._protokit_version``,
+    ``_builtin_lint._protokit_version``, and the lint subcommand's
+    ``--version`` callback) per the U9 ce:review F11 finding.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("protokit")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
 def _protoc_timeout_seconds() -> float:
     """Return the configured protoc subprocess timeout in seconds.
 

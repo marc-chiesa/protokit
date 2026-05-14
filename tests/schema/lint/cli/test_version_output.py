@@ -28,7 +28,12 @@ class TestLintVersionFlag:
     """``protokit lint --version`` (D6a U9 / U8 R13)."""
 
     def test_version_flag_exits_zero(self) -> None:
-        result = CliRunner().invoke(lint_main, ["--version"])
+        # catch_exceptions=False so an unexpected raise from
+        # _print_lint_version surfaces as a clean assertion failure
+        # rather than Click swallowing it into result.output.
+        result = CliRunner().invoke(
+            lint_main, ["--version"], catch_exceptions=False,
+        )
         assert result.exit_code == 0, result.output
 
     def test_version_output_contains_package_version(self) -> None:

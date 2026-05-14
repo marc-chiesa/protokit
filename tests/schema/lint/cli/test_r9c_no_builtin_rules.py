@@ -102,6 +102,37 @@ class TestR9cPyprojectEquivalent:
         assert "error[lint-no-rules]:" not in result.stderr
 
 
+class TestR9cWithRulePack:
+    """``--no-builtin-rules`` + ``--rule-pack`` interaction (D6a R9c).
+
+    Plan line 771 names this as the canonical "pure user-pack
+    workflow" composition. With BUILTIN_PACKS skipped and at least
+    one user pack supplying rules, the engine has rules and lint
+    runs normally — no ``no-rules`` exit. Per ce:review F3 finding
+    on commit c7a426b.
+    """
+
+    def test_flag_with_user_pack_loads_only_user_rules(
+        self,
+        clean_descriptor_set: Path,
+    ) -> None:
+        """Synthetic user pack ``pack_user_a`` provides rules; the
+        BUILTIN_PACKS auto-load loop is skipped. Lint completes
+        without the no-rules error.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-builtin-rules",
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_user_a",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code in (0, 1), result.output
+        assert "error[lint-no-rules]:" not in result.stderr, result.stderr
+
+
 class TestR9cPrecedence:
     """CLI > pyproject precedence (D6a R9c)."""
 
