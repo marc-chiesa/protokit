@@ -358,3 +358,16 @@ fallback).
   pattern) auto-inject via parameter-name matching; plain helpers
   (that learning's pattern) require the relative import. Choose
   based on whether the helper has setup/teardown lifecycle needs.
+
+- [[structural-pin-inspect-getsource-untestable-collision-branch-2026-05-13]] —
+  adjacent "when a fixture can't construct the collision target"
+  testing problem. This learning uses class-accessor patching to
+  bypass a C-extension limitation that prevents normal mocking;
+  the cross-ref learning uses `inspect.getsource` to pin merge-
+  order when no runtime fixture can construct two
+  source-distinct-but-value-equal dicts. Both are workarounds for
+  the same structural test gap: the observable behavior is
+  identical across branches, so the test must verify
+  implementation structure directly. Together they form a
+  small family of "test the source when behavior is unreachable"
+  patterns in this codebase.

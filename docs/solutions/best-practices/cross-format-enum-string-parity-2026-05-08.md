@@ -408,6 +408,16 @@ test is the next defense-in-depth layer.)
   hostname matching, Unicode NFC/NFD." Enum `.name` vs `.value`
   is a direct instance of that policy-skew class. Same root
   cause, different domain.
+- [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]] —
+  sibling output-boundary discipline applied to a different
+  carrier. The `schema_version` field introduced in D6a U9 is
+  a new wire-format surface shared between `lint_json` (top-
+  level) and `lint_sarif` (`runs[0].properties.lint_schema_version`).
+  Bumping the version requires re-auditing the cross-format
+  string parity for the version field's own representation;
+  this learning is the discipline that catches divergence in
+  the value, and that learning is the consumer-contract that
+  governs when bumps are needed and what absence means.
 - Anchor commits: `6356cc8` (the one-line `.name` → `.value`
   fix in `lint_json`); `e547bff` (the U4b feat where the bug
   first shipped).

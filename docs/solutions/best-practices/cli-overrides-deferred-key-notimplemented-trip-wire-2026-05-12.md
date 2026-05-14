@@ -220,6 +220,7 @@ def from_dict(cls, table, cli_overrides):
 - [[frozen-dataclass-paired-field-invariant-post-init-2026-05-11]] — complementary defensive layer: `__post_init__` for field-relationship invariants, `from_dict` for integration-boundary key guards
 - [[shared-error-helper-source-label-caller-attribution-2026-05-11]] — same `_config.py` module; covers error message attribution when helpers are reachable from multiple sources
 - [[normalize-at-input-boundary-2026-05-07]] — meta-principle: apply the same defensive rule at every entry point that touches user input
+- [[semantic-category-conflation-accepted-tradeoff-literal-widening-2026-05-13]] — related deferral discipline at a different boundary. This learning hard-fails when a deferred key appears at the `from_dict` boundary; that learning accepts a deferred schema split at the `Literal` boundary (reuse the existing category until a second emit site justifies widening). Different sites, same "defer until justified" mindset. Note on this learning's status as of D6a U9: the `severities` key trip-wire remains valid — U9 wired pyproject `[tool.protokit.lint.severities]` only; the CLI `--severity-override` flag is still deferred to a later delivery, so the `cli_overrides["severities"]` guard is still load-bearing.
 
 ## Discovered During
 
