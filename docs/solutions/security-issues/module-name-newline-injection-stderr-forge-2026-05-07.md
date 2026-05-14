@@ -519,3 +519,16 @@ to pass user-supplied module paths.
 - Fix commit: `1249b10` — D3 unit 3 ce:review follow-ups
   (safe_auto + approved gated). The `_safe_module_name` helper and
   the call-site swaps landed in the safe_auto pass.
+- [[github-actions-expression-injection-env-block-mitigation-2026-05-13]] —
+  the GH Actions YAML-layer analog. This doc covers attacker-controlled
+  module names interpolated into stderr lines via f-string (breaking
+  the receiver's line parser); the cross-ref doc covers attacker-
+  controlled values interpolated into shell scripts via `${{ }}`
+  template expressions (breaking the shell's quoting). Same principle
+  ("treat dynamically-supplied metadata as user-controlled input and
+  sanitise/route at the output boundary"), different output boundary:
+  Python stderr line vs. YAML template substitution that feeds bash.
+  The architectural posture section's spatial-scope-audit checklist
+  extends naturally to GH Actions — every `${{ }}` in a `run:` block
+  is an audit site analogous to every `Path.is_file()` /
+  `importlib.import_module` in Python.

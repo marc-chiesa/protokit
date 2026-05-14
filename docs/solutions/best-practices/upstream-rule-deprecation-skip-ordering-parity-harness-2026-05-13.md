@@ -284,3 +284,13 @@ Plus a docstring update on `check_no_public_imports` mirroring the
   helper.
 - `src/protokit/schema/lint/rules/imports.py` —
   `check_no_weak_imports` docstring with the deprecation notice.
+- [[cross-file-pin-regex-anchor-structure-not-annotation-token-2026-05-13]] —
+  the test-layer regex discipline that keeps the drift-check
+  infrastructure (which enforces the pinned buf version across cli.py,
+  the CI tarball URL, and the sha256.txt URL) robust against
+  legitimate annotation refactors. Both this doc and the cross-ref
+  doc describe disciplines that keep the parity infrastructure
+  honest as it evolves: this doc covers upstream rule lifecycle
+  (when buf deprecates rules); the cross-ref doc covers the test
+  regex that anchors on the pin constant whose buf version drives
+  the deprecation check.

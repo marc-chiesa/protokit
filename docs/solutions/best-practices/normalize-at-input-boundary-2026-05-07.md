@@ -440,3 +440,11 @@ def test_severity_keys_normalized_at_boundary() -> None:
 - Plan: `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`,
   Unit 4a — defined the `--format` / `--quiet` / `--statistics`
   trust boundary that introduced the comparison sites.
+- [[cross-file-pin-regex-anchor-structure-not-annotation-token-2026-05-13]] —
+  extends this doc's "matcher and source must use identical
+  transformation policies" axiom to the regex-pattern domain. When
+  a regex anchors on a Python type-annotation token (``: str``) and
+  the annotation is later refactored (``: Final[str]``), every
+  consumer breaks silently. Same root cause class (matcher and
+  source drift on an incidental representational choice), different
+  surface (regex anchors instead of string-case normalisation).
