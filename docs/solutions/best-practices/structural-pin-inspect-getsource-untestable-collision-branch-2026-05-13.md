@@ -1,6 +1,7 @@
 ---
 title: "Pin merge-order invariants via inspect.getsource when no fixture can construct the collision target"
 date: 2026-05-13
+last_updated: 2026-05-14
 category: docs/solutions/best-practices
 module: tests/schema/lint/cli
 problem_type: best_practice
@@ -360,6 +361,15 @@ Behavior survives refactoring; the structural pin can be removed.
   applied to shared error helpers. Source-structure tests are
   a small family in this codebase; this learning adds the
   inspect.getsource variant.
+- [[presence-ratchet-test-pattern-for-prose-substrings]] —
+  sibling ratchet pattern at the prose layer: this learning
+  pins evaluation-order shape that fixtures can't exercise;
+  the presence-ratchet pins prose substrings that static
+  analysis can't read. Both are ratchets against silent
+  regression; choose the structural pin when the source shape
+  IS the contract, choose the presence ratchet when a
+  substring's meaning IS the contract and surrounding shape
+  is free to evolve.
 - Anchor commit: ``3c828a4`` (Unit 9 ce:review follow-up F1
   — testing reviewer surfaced the collision-branch gap;
   ``inspect.getsource`` test added as the structural pin).

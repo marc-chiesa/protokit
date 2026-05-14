@@ -1,6 +1,7 @@
 ---
 title: "Document both the bump contract and the field-absence semantic when introducing a wire-format schema_version"
 date: 2026-05-13
+last_updated: 2026-05-14
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -306,3 +307,20 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   ce-review/20260513-113000-u9/`` — api-contract reviewer
   surfaced AC-1 (P1, 0.82 confidence) as the field-absence-gap
   finding.
+- [[pre-1.0-version-bump-as-communication-contract]] — the
+  package-version-layer parallel. This doc covers the
+  wire-format `schema_version` constant's dual-clause contract
+  (bump triggers + absence semantic); the package-version
+  learning covers the project's version bump itself + the
+  CHANGELOG section as its communication contract. Same shape
+  at two different artifacts: the constant docstring is to the
+  wire-format-version what the CHANGELOG section is to the
+  package-version. Both eliminate ceremonial markers in favor
+  of explicit dual-clause communication.
+- [[delivery-boundary-unit-commit-composition]] — the
+  wire-format `schema_version` field introduced in U9 surfaced
+  in U10's CHANGELOG entry, README JSON-output table row, and
+  README Public Surface DRAFT row. The delivery-boundary unit
+  is where the wire-format version's user-facing communication
+  lands; the feature-unit commit ships the field, the boundary
+  commit communicates it.

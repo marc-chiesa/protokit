@@ -1,6 +1,7 @@
 ---
 title: "Anchor cross-file pin regexes on structure (``:[^=]+=``), not on the type-annotation token (``: str``), when both a test and a CI script grep the same Python constant"
 date: 2026-05-13
+last_updated: 2026-05-14
 category: best-practices
 module: tests/test_buf_parity_pin_drift.py
 problem_type: best_practice
@@ -230,3 +231,9 @@ confirming the relaxation is correct.
   it evolves.
 - Commit `f81f408` — original regex anchored on `: str`.
 - Commit `b425954` — relaxed to `:[^=]+=` in both consumers atomically.
+- [[presence-ratchet-test-pattern-for-prose-substrings]] — sibling
+  ratchet pattern at the prose layer. This doc covers multi-file
+  structural agreement (regex spans Python source + CI YAML); the
+  presence-ratchet is the single-file degenerate case (substring
+  pin against silent reversion in one doc/source file). Both
+  enforce a contract that no static analyzer reads.

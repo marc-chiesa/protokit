@@ -1,6 +1,7 @@
 ---
 title: "Forward-looking CLI help text becomes a P1 agent-discoverability defect the moment the referenced feature ships"
 date: 2026-05-12
+last_updated: 2026-05-14
 category: docs/solutions/best-practices
 module: protokit.schema.lint
 problem_type: best_practice
@@ -61,6 +62,36 @@ grep -rn \
 ```
 
 When a unit ships, the previous unit's "until X" references are the lowest-cost time to fix — the next ce:review will surface them otherwise, but as P1/P2 findings rather than as a 30-second maintenance task.
+
+### Triage rubric for grep hits — not every match is stale (added 2026-05-14)
+
+The canonical grep is intentionally broad, which means it catches three classes of hits with different remediation paths. The D6a Unit 10 delivery-boundary sweep (see [[delivery-boundary-unit-commit-composition]]) ran the expanded grep across `src/`, `tests/`, `docs/`, `README.md`, and `CHANGELOG.md` and produced ~40 hits, of which ZERO required rewriting once the rubric below was applied. Without the rubric, the temptation is to rewrite each hit; that erases legitimate history and inflates the boundary-unit diff.
+
+Classify each hit into one of three categories before acting:
+
+| Category | Shape | Remediation |
+|----------|-------|-------------|
+| **Forward-looking-from-now** (the original target) | Present- or future-tense prose describing a feature that does NOT exist yet at the current commit. `"--format json arrives in U4b and currently exits 2"` when U4b has shipped. | **Rewrite to present tense, or omit entirely if the feature still does not exist.** This is the original failure mode this learning was written for. |
+| **Past-tense historical reference** | Verb is past-tense; the prose records what shipped in a prior unit or delivery. `"Profile membership widened in D6a Unit 3 from ('default',) to ('recommended', 'default')"`. `"Three independent copies of the same try/except block collapsed in D6a U9 ce:review (F11)"`. | **Leave as-is.** The historical record is correct; the verb tense IS the discriminator. Rewriting past-tense references destroys the narrative that lets future readers reconstruct why the code looks the way it does. |
+| **Frozen planning artifact** | The hit lives in `docs/plans/`, `docs/brainstorms/`, or a learning under `docs/solutions/` that documents a past pattern. The forward-looking language was correct at authoring time and is deliberately preserved as a snapshot. `docs/plans/2026-05-04-...-d3-cli-plan.md` containing "until D6 ships". | **Leave as-is.** Plans and brainstorms are snapshots; refer to [[apply-institutional-learnings-postdating-plan-during-ce-review]] for how plan-vs-implementation drift surfaces at ce:review (the plan's forward-looking language is the planning record, not a runtime-discoverable claim). |
+
+**The verb tense is the primary discriminator** between forward-looking-from-now and past-tense historical reference. "Arrives in U4b" (present tense, claim about future) is forward-looking; "shipped in U4b" or "added in D6a U3" (past tense, claim about history) is reference. **The file location is the secondary discriminator**: hits in `docs/plans/` or `docs/brainstorms/` are almost always frozen artifacts; hits in `src/`, `tests/`, `CHANGELOG.md`, or `README.md` need the verb-tense check.
+
+A short post-grep triage loop:
+
+```text
+For each hit:
+  1. Read the surrounding sentence.
+  2. What verb tense does the claim use?
+     - Present/future tense about a feature → forward-looking; check feature status, rewrite or omit.
+     - Past tense about a shipped unit → historical; leave.
+  3. What file is the hit in?
+     - docs/plans/ or docs/brainstorms/ → frozen; leave.
+     - src/, tests/, CHANGELOG.md, README.md → verb tense decides.
+  4. If rewriting, prefer present-tense + remove the delivery name entirely.
+```
+
+**Why the rubric matters:** the grep is reusable across deliveries, but its precision degrades over time. By D6a (the fifth delivery), the codebase carries dozens of legitimate past-tense references that the original grep catches. Without the rubric, a contributor running the sweep at the boundary unit sees the long match list and either (a) rewrites them all, destroying history, or (b) abandons the sweep as too noisy. The rubric keeps the sweep usable indefinitely.
 
 ### Treat `agent-native-reviewer` and `cli-readiness-reviewer` as explicit gates for this defect class
 
@@ -164,7 +195,8 @@ entry for the new prefix.
 
 ## Related
 
-- [[apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09]] — the broader pattern of plan/implementation staleness; this learning is the runtime-discoverable-text variant (help text, docstrings, CHANGELOG forward references) of the same family
+- [[apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09]] — the broader pattern of plan/implementation staleness; this learning is the runtime-discoverable-text variant (help text, docstrings, CHANGELOG forward references) of the same family. **Triage cross-ref:** the "frozen planning artifact" category in the rubric above defers to that learning for how plan docs evolve.
 - [[click-parameter-source-detection-cli-config-precedence-2026-05-11]] — CLI parameter-source detection; adjacent CLI-help discipline
 - [[source-aware-error-messages-multi-source-resolved-value-2026-05-11]] — keeping output prose synchronized with the current resolved configuration state
 - [[public-surface-draft-discipline-source-audit]] — sibling failure mode: this learning covers stale **temporal phrasing** ("will land in U6", "currently exit 2 via ..."); the companion covers stale **factual surface enumeration** (dataclass field lists, error code names, CLI flags claimed in API tables that no longer match source). Both are documentation-drift problems with different remediation patterns: tense audit (this doc) vs source-grep audit (companion). Same broad documentation-discipline family, different granularities.
+- [[delivery-boundary-unit-commit-composition]] — the boundary unit invokes this sweep as one of its required deliverables; the triage rubric above is the discriminator that keeps the sweep efficient as the project ages.
