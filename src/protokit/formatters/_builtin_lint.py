@@ -224,11 +224,36 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 
 
 
+#: D6a U9 R9d: wire-format schema version for ``lint_json`` (top-level
+#: ``schema_version``) and ``lint_sarif`` (``runs[].properties.lint_schema_version``).
+#: Both formatters MUST emit the same string value per the
+#: cross-format-enum-string-parity discipline. ``lint_human`` (terminal-
+#: rendered text) and ``lint_junit`` (XML; downstream JUnit consumers
+#: rely on the standard schema without protokit-specific extensions)
+#: deliberately do NOT carry this field.
+#:
+#: Consumer contract (also documented in the lint_json / lint_sarif
+#: docstrings and the D6a U10 CHANGELOG entry):
+#:   - Consumers MUST treat unknown values as forward-compatible
+#:     (read what they can, ignore new keys they don't understand).
+#:   - Protokit bumps this version on:
+#:       (a) addition of new top-level keys
+#:       (b) change in meaning of an existing field
+#:       (c) removal of a previously documented field
+#:   - Adding new severity-level / category strings to an existing
+#:     enum field does NOT bump the version (the field's meaning is
+#:     unchanged; the enum just gains a value).
+_LINT_JSON_SCHEMA_VERSION: str = "0.2"
+
+
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
     """Render a LintReport as pretty-printed JSON.
 
     Top-level keys (stable schema):
 
+    - ``schema_version``: wire-format version string (D6a U9 R9d).
+      Consumers MUST treat unknown values as forward-compatible.
+      See :data:`_LINT_JSON_SCHEMA_VERSION` for the bump contract.
     - ``findings``: list of finding dicts (rule_id, severity,
       location, violation_kind, message).
     - ``filtered_count``: int (count of findings dropped by
@@ -294,6 +319,20 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
         "runtime_warning_count": len(report.runtime_warnings),
     }
     payload: dict[str, Any] = {
+        # D6a U9 R9d: lint_json schema_version is the wire-format
+        # version downstream consumers should key off when parsing
+        # this payload. Consumers MUST treat unknown values as
+        # forward-compatible (read what they can, ignore new keys
+        # they don't understand) rather than hard-rejecting.
+        # Protokit bumps schema_version on:
+        #   (a) addition of new top-level keys,
+        #   (b) change in MEANING of an existing field,
+        #   (c) removal of a previously documented field.
+        # Adding new severity-level or category strings to an
+        # existing enum field does NOT bump schema_version (the
+        # field's meaning is unchanged; the enum just gains a
+        # value). See the D6a U8 plan KTD-9d for the full contract.
+        "schema_version": _LINT_JSON_SCHEMA_VERSION,
         "findings": findings_payload,
         "filtered_count": report.filtered_count,
         "runtime_warnings": runtime_warnings_payload,
@@ -617,6 +656,19 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
             }
             for w in report.runtime_warnings
         ]
+
+    # D6a U9 R9d: wire-format schema version for lint_sarif rides in
+    # the same propertyBag as runtime_warnings. ``setdefault("properties", {})``
+    # keeps the property bag merge-safe regardless of whether the
+    # runtime_warnings block above already initialized it. The key
+    # name is ``lint_schema_version`` (not ``schema_version``) to
+    # avoid colliding with SARIF's own well-known ``schema`` property
+    # on the top-level document and to make protokit-specific
+    # properties greppable. Cross-format-enum-string-parity: the
+    # string value is identical to ``lint_json``'s ``schema_version``.
+    run.setdefault("properties", {})["lint_schema_version"] = (
+        _LINT_JSON_SCHEMA_VERSION
+    )
 
     # default=str: same rationale as lint_json — preserve output when
     # a user-pack finding's params or message contains a

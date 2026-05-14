@@ -143,10 +143,40 @@ _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 #: the watcher surfaces the signal; a maintainer lands the bump as
 #: a discrete PR after fixture / parity-test review.
 #:
-#: Unit 9 (CLI wiring, deferred) will expose this constant in
-#: ``protokit lint --version`` output so users can verify the
+#: Unit 9 wires this constant into ``protokit lint --version``
+#: output via ``_print_lint_version`` below so users can verify the
 #: parity reference without reading CI YAML.
 _BUF_PARITY_PIN: str = "v1.69.0"
+
+
+def _print_lint_version(
+    ctx: click.Context, _param: click.Parameter, value: bool,
+) -> None:
+    """Eager callback for ``protokit lint --version``.
+
+    Prints ``protokit X.Y.Z (parity: buf v<PIN>)`` and exits before
+    any other CLI option is parsed. The top-level
+    ``protokit --version`` (via ``@click.version_option`` at
+    ``src/protokit/cli.py:24``) outputs only the package version;
+    this callback extends the lint subcommand with the buf-parity
+    pin surface per R13 of the D6a U8 plan so users can verify
+    the parity reference without reading CI YAML.
+
+    Implementation: standard Click eager-flag callback shape — if
+    ``value`` is False (flag not set) or the resilient parsing pass
+    is in progress, return immediately. Otherwise echo the version
+    line and call ``ctx.exit(0)`` so the rest of the lint pipeline
+    is skipped (just like Click's built-in ``version_option``).
+    """
+    if not value or ctx.resilient_parsing:
+        return
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        pkg_version = version("protokit")
+    except PackageNotFoundError:
+        pkg_version = "0.0.0"
+    click.echo(f"protokit {pkg_version} (parity: buf {_BUF_PARITY_PIN})")
+    ctx.exit(0)
 
 
 def _emit_human_runtime_warnings(report: LintReport) -> None:
@@ -471,6 +501,34 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
          "configurations that override the project's default "
          "exclude policy.",
 )
+@click.option(
+    "--no-builtin-rules",
+    "no_builtin_rules",
+    is_flag=True,
+    default=False,
+    help="Skip loading ``BUILTIN_PACKS`` (D6a R9c). When set, the "
+         "lint engine starts empty and only user-supplied packs via "
+         "``--rule-pack MODULE`` contribute rules. Use cases: "
+         "(a) opt out of D6a's BUILTIN_PACKS expansion while triaging "
+         "newly-fired rules (pair with ``--min-severity warning`` to "
+         "demote on a rule-by-rule basis via "
+         "``[tool.protokit.lint.severities]``); (b) run a pure "
+         "user-pack workflow without protokit's defaults. Pyproject "
+         "equivalent: ``[tool.protokit.lint] no_builtin_rules = true``. "
+         "CLI takes precedence over pyproject when both are set.",
+)
+@click.option(
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_print_lint_version,
+    help="Show ``protokit X.Y.Z (parity: buf v<PIN>)`` and exit. The "
+         "buf-parity pin is the version that ``tests/parity/`` "
+         "verifies against in CI; surfacing it here lets users "
+         "verify the parity reference without reading CI YAML "
+         "(D6a U8 R13).",
+)
 @click.pass_context
 def main(
     ctx: click.Context,
@@ -488,6 +546,7 @@ def main(
     no_config: bool,
     exclude_patterns: tuple[str, ...],
     no_exclude: bool,
+    no_builtin_rules: bool,
 ) -> None:
     """Lint INPUTS for style and policy violations.
 
@@ -571,6 +630,16 @@ def main(
         cli_exclude_value = exclude_patterns
     else:
         cli_exclude_value = None
+    # D6a U9 R9c: --no-builtin-rules CLI flag. The flag is_flag=True with
+    # default=False; Click delivers True/False unambiguously. Use
+    # parameter-source detection to distinguish "user typed --no-builtin-rules"
+    # from "CLI default" — only honor it as an explicit override when the
+    # user genuinely typed it (or set it via env / DEFAULT_MAP). When the
+    # user did not set it explicitly, pass ``None`` so pyproject takes
+    # precedence per the ResolvedLintConfig.from_dict contract.
+    no_builtin_rules_explicit = (
+        ctx.get_parameter_source("no_builtin_rules") in explicit_sources
+    )
     cli_overrides: dict[str, Any] = {
         "profile": (
             (profile_name.strip().lower(),) if profile_explicit else None
@@ -585,6 +654,9 @@ def main(
             format_name.strip().lower() if format_explicit else None
         ),
         "exclude": cli_exclude_value,
+        "no_builtin_rules": (
+            no_builtin_rules if no_builtin_rules_explicit else None
+        ),
     }
     resolved = ResolvedLintConfig.from_dict(pyproject_config, cli_overrides)
     # quiet + non-human-format mutex applies to the RESOLVED format so
@@ -690,21 +762,29 @@ def _main_impl(
     # packs supplied via --rule-pack. The order matters because
     # user packs collide on rule_id with built-in packs surface as
     # DuplicateRuleError → error[lint-rule-collision]:.
+    #
+    # D6a U9 R9c: when ``resolved.no_builtin_rules`` is True (CLI
+    # ``--no-builtin-rules`` or pyproject ``no_builtin_rules = true``),
+    # skip the auto-load loop entirely. User packs supplied via
+    # ``--rule-pack`` still load. If neither builtin packs nor user
+    # packs are loaded, the engine starts empty and the no-rules
+    # exit-2 ladder (R20) catches it downstream.
     engine = LintEngine()
     # Track every successfully-loaded pack (built-ins + user packs)
     # so we can introspect declared profiles for R11 and contributing
     # rule_ids for R25.
     loaded_packs: list[ModuleType] = []
-    for pack in BUILTIN_PACKS:
-        try:
-            engine.load_rule_pack(pack)
-        except (DuplicateRuleError, TypeError, AttributeError) as exc:
-            error_exit_with_code(
-                "rule-pack-load",
-                f"kind=builtin: built-in pack {pack.__name__!r} failed "
-                f"to load: {_scrub_exc_message(exc)}",
-            )
-        loaded_packs.append(pack)
+    if not resolved.no_builtin_rules:
+        for pack in BUILTIN_PACKS:
+            try:
+                engine.load_rule_pack(pack)
+            except (DuplicateRuleError, TypeError, AttributeError) as exc:
+                error_exit_with_code(
+                    "rule-pack-load",
+                    f"kind=builtin: built-in pack {pack.__name__!r} failed "
+                    f"to load: {_scrub_exc_message(exc)}",
+                )
+            loaded_packs.append(pack)
 
     for module_name in rule_packs:
         # Stderr load-banner: every --rule-pack invocation emits
@@ -761,6 +841,42 @@ def _main_impl(
         if len(profiles_per_name) == 1
         else LintProfile.compose(*profiles_per_name)
     )
+
+    # Apply R9a severities overlay (D6a U9). User pyproject
+    # ``[tool.protokit.lint.severities]`` always wins on collision
+    # with the composed profile's rule_severity_overrides per KTD-2.
+    # The overlay must happen BEFORE min_severity replacement below
+    # so the engine sees the final composed profile shape; ordering
+    # does not affect correctness today since min_severity and
+    # rule_severity_overrides are independent fields, but pinning
+    # the order to "user severities first" makes the precedence
+    # explicit.
+    #
+    # Keys in ``resolved.severities`` that don't match any rule_id
+    # in the composed profile are diagnosed below (after engine.run)
+    # via a synthesized ``unloaded_rule`` runtime warning — reusing
+    # the existing category per KTD-2 to avoid widening the
+    # LintRuntimeWarning.category Literal in D6a.
+    severities_unloaded_rule_ids: tuple[str, ...] = ()
+    if resolved.severities:
+        composed_profile = dataclasses.replace(
+            composed_profile,
+            rule_severity_overrides={
+                **composed_profile.rule_severity_overrides,
+                **resolved.severities,
+            },
+        )
+        # Collect unknown keys for the post-engine.run advisory
+        # emission. Comparing against composed_profile.rule_ids
+        # (the union of all loaded packs' rule_ids in the active
+        # profile) rather than RULE_ID_MAP keys, because
+        # rule_severity_overrides only takes effect when the rule
+        # is actually in the profile's run-set.
+        severities_unloaded_rule_ids = tuple(
+            sorted(
+                set(resolved.severities) - composed_profile.rule_ids,
+            ),
+        )
 
     # Apply min_severity override (R12, R19a). Pure numeric override
     # that replaces the composed profile's min_severity. The R20
@@ -934,6 +1050,35 @@ def _main_impl(
             runtime_warnings=(
                 report.runtime_warnings + (relaxation_warning,)
             ),
+        )
+
+    # R9a (D6a U9): synthesize ``unloaded_rule`` runtime warnings for
+    # any ``severities`` keys that don't match a rule_id in the
+    # composed profile. Reuses the existing ``unloaded_rule`` category
+    # rather than introducing a new ``severities_unloaded_rule`` value
+    # in the LintRuntimeWarning.category Literal — the semantic fit is
+    # reasonable (both communicate "you named a rule_id that won't
+    # take effect") and avoids a wire-format change in D6a.
+    # Sanitize the rule_id (flows verbatim into lint_json/lint_sarif
+    # wire formats; json.dumps does NOT escape U+2028/U+2029) per the
+    # dual-sanitization model established in D5 U5.
+    if severities_unloaded_rule_ids:
+        new_warnings = tuple(
+            LintRuntimeWarning(
+                category="unloaded_rule",
+                rule_id=_safe_for_stderr(rid),
+                message=(
+                    f"rule {_safe_for_stderr(rid)!r} is named in "
+                    f"[tool.protokit.lint.severities] but is not "
+                    f"in the composed profile — the severity override "
+                    f"has no effect"
+                ),
+            )
+            for rid in severities_unloaded_rule_ids
+        )
+        report = dataclasses.replace(
+            report,
+            runtime_warnings=report.runtime_warnings + new_warnings,
         )
 
     try:

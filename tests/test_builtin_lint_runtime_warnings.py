@@ -317,14 +317,31 @@ class TestLintSarifRuntimeWarningProperties:
         assert "ruleId" not in entry
         assert "descriptor" not in entry
 
-    def test_empty_runtime_warnings_omits_properties_block(
+    def test_empty_runtime_warnings_omits_runtime_warnings_key(
         self, sarif_validator: jsonschema.Draft7Validator,
     ) -> None:
+        """When the report carries no runtime warnings, the SARIF
+        ``runs[].properties.runtime_warnings`` key MUST NOT appear —
+        otherwise a clean-report SARIF document would contain an
+        empty list that downstream consumers might iterate.
+
+        D6a U9 R9d adds ``lint_schema_version`` to the same
+        ``properties`` propertyBag, so the bag itself is now always
+        present; the assertion narrows from "no properties block" to
+        "no runtime_warnings key inside properties, but lint_schema_version
+        is present" so the two SARIF property contracts stay
+        independently testable.
+        """
         report = LintReport()
         doc = json.loads(lint_sarif(report, _ctx()))
         sarif_validator.validate(doc)
         run = doc["runs"][0]
-        assert "properties" not in run, run
+        assert "properties" in run, doc
+        properties = run["properties"]
+        assert "runtime_warnings" not in properties, properties
+        # Schema version is unconditional (R9d cross-format-enum-string-parity
+        # with lint_json).
+        assert properties["lint_schema_version"] == "0.2"
 
     def test_empty_message_field_still_emits_one_entry(
         self, sarif_validator: jsonschema.Draft7Validator,
