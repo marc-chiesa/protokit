@@ -132,10 +132,10 @@ class TestCompileProtoxyFallback:
         field.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
         field.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
 
-        def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             pool = descriptor_pool.DescriptorPool()
             pool.Add(fdp)
-            return pool, ("demo.proto",)
+            return pool, ("demo.proto",), None
 
         monkeypatch.setattr(protoxy, "compile", fake_protoxy_compile)
         monkeypatch.setattr(
@@ -222,7 +222,7 @@ class TestCompileProtoxyFallback:
         def fake_protoxy_compile(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise _make_protoxy_error("synthetic parse error")
 
-        def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             raise exc
 
         monkeypatch.setattr(protoxy, "compile", fake_protoxy_compile)

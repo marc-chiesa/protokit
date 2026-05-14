@@ -238,7 +238,7 @@ class TestCompileFailureCategories:
         """
         monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
 
-        def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             raise exc_cls("synthetic unexpected failure")
 
         monkeypatch.setattr(
@@ -311,7 +311,7 @@ class TestCompileFailureCategories:
         """
         monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
 
-        def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             raise exc_cls()
 
         monkeypatch.setattr(

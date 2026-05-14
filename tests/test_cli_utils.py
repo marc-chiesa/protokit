@@ -85,7 +85,7 @@ class TestProtoxyBackend:
         ``(pool, root_names)`` where ``root_names`` is a tuple of the
         ``.proto``-relative names that came from the user's input paths.
         """
-        pool, root_names = _cli_utils._compile_with_protoxy(
+        pool, root_names, source_locations = _cli_utils._compile_with_protoxy(
             [demo_proto_file], (),
         )
         # Pool is fully populated.
@@ -97,6 +97,8 @@ class TestProtoxyBackend:
         # root_names matches the input — basename since parent is the
         # auto-included directory.
         assert root_names == ("demo.proto",)
+        # D6b R6a: source_locations is None by default (no opt-in).
+        assert source_locations is None
 
     def test_compile_with_explicit_include_path(
         self, tmp_path: Path,
@@ -125,7 +127,7 @@ class TestProtoxyBackend:
             'message User { string name = 1; common.Address addr = 2; }\n'
         )
 
-        pool, root_names = _cli_utils._compile_with_protoxy(
+        pool, root_names, source_locations = _cli_utils._compile_with_protoxy(
             [main_proto], (str(common_dir),),
         )
         # Both messages reachable.
@@ -133,6 +135,8 @@ class TestProtoxyBackend:
         assert pool.FindMessageTypeByName("common.Address")
         # Only main is a root; addr was a transitive import.
         assert root_names == ("user.proto",)
+        # D6b R6a: source_locations is None by default (no opt-in).
+        assert source_locations is None
 
     def test_compile_with_protoxy_raises_on_parse_error(
         self, tmp_path: Path,
@@ -182,13 +186,13 @@ class TestBackendDispatch:
         # compile_proto returns identity rather than dropping it.
         sentinel_pool = _dp.DescriptorPool()
 
-        def fake_protoxy(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoxy(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoxy"] += 1
-            return sentinel_pool, ()
+            return sentinel_pool, (), None
 
-        def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoc"] += 1
-            return _dp.DescriptorPool(), ()
+            return _dp.DescriptorPool(), (), None
 
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoc", fake_protoc)
@@ -205,14 +209,14 @@ class TestBackendDispatch:
         """Without protoxy, ``compile_proto`` routes to the protoc path."""
         calls = {"protoxy": 0, "protoc": 0}
 
-        def fake_protoxy(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoxy(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoxy"] += 1
             raise AssertionError("protoxy should not be called")
 
-        def fake_protoc(paths, ip):  # type: ignore[no-untyped-def]
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoc"] += 1
             from google.protobuf import descriptor_pool
-            return descriptor_pool.DescriptorPool(), ()
+            return descriptor_pool.DescriptorPool(), (), None
 
         monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: False)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)

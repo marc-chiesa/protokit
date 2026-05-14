@@ -13,13 +13,16 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 from google.protobuf import descriptor_pb2, descriptor_pool
+
+if TYPE_CHECKING:
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
 from protokit.formatters import (
     Formatter,
@@ -186,9 +189,9 @@ def compile_proto(
     pool: descriptor_pool.DescriptorPool | None = None
     try:
         if has_protoxy:
-            pool, _ = _compile_with_protoxy([proto_path], proto_paths)
+            pool, _, _ = _compile_with_protoxy([proto_path], proto_paths)
         else:
-            pool, _ = _compile_with_protoc([proto_path], proto_paths)
+            pool, _, _ = _compile_with_protoc([proto_path], proto_paths)
     except FileNotFoundError:
         # Both backends absent — preserve the install-hint message that
         # the previous implementation emitted from inside _compile_with_protoc.
@@ -219,7 +222,13 @@ def compile_proto(
 def _compile_with_protoxy(
     proto_paths_in: Sequence[Path],
     include_paths: Sequence[str] = (),
-) -> tuple[descriptor_pool.DescriptorPool, tuple[str, ...]]:
+    *,
+    include_source_info: bool = False,
+) -> tuple[
+    descriptor_pool.DescriptorPool,
+    tuple[str, ...],
+    Mapping[str, FileDescriptorProto] | None,
+]:
     """Multi-path compile via the in-process ``protoxy`` (Rust) backend.
 
     Raises on failure (does NOT call ``error_exit``); callers translate
@@ -232,13 +241,23 @@ def _compile_with_protoxy(
         include_paths: Additional ``-I``-style include directories. Each
             input path's parent is automatically added to the include
             list (deduped via ``dict.fromkeys`` for deterministic order).
+        include_source_info: When ``True`` (D6b R6a), the backend
+            requests ``source_code_info`` preservation in the emitted
+            ``FileDescriptorSet`` and returns a third tuple element
+            mapping ``fd.name`` → ``FileDescriptorProto`` captured BEFORE
+            ``pool.Add()`` consumes (and discards) the source-location
+            data. When ``False`` (default), the third element is
+            ``None`` and the backend behaves as it did pre-D6b. The
+            lint CLI passes ``True``; ``protokit compat`` / codegen /
+            direct API callers stay on the default to avoid the 10-30%
+            descriptor-size cost of preserving comments.
 
     Returns:
-        Tuple of ``(DescriptorPool, root_names)`` where ``root_names`` is
-        a tuple of the ``.proto``-relative names that came from the
-        user's input paths (NOT including transitive imports), in input
-        order. Used by ``compile_protos_to_result`` to populate
-        ``CompileResult.root_files``.
+        Tuple of ``(DescriptorPool, root_names, source_locations)`` where
+        ``root_names`` is a tuple of the ``.proto``-relative names that
+        came from the user's input paths (NOT including transitive
+        imports), in input order; and ``source_locations`` is the raw
+        ``Mapping[str, FileDescriptorProto] | None`` described above.
 
     Raises:
         protoxy.ProtoxyError: On parse / compile failure.
@@ -252,15 +271,29 @@ def _compile_with_protoxy(
         files=[str(p) for p in proto_paths_in],
         includes=includes,
         include_imports=True,
-        # Keep the in-memory FileDescriptorSet byte-equivalent between
-        # backends — neither carries source-location info into the pool.
-        include_source_info=False,
+        # Pre-D6b this was hard-coded ``False`` to keep the in-memory
+        # FileDescriptorSet byte-equivalent between backends — neither
+        # carried source-location info into the pool. D6b R6a opts in
+        # at the API boundary: when ``include_source_info=True``, both
+        # backends carry source-location info, and bytes remain
+        # byte-equivalent across backends when the flag's value agrees
+        # (verified by tests/schema/lint/test_compile_include_source_info.py).
+        include_source_info=include_source_info,
     )
     pool = descriptor_pool.DescriptorPool()
     expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
     expected_set = set(expected_in_order)
     emitted: set[str] = set()
+    # Capture FileDescriptorProto BEFORE pool.Add() discards
+    # source_code_info (per docs/solutions/.../copytoproto-round-trip-...
+    # learning — pool.Add() consumes source_code_info regardless of the
+    # FileDescriptorProto's serialized state).
+    source_locations: dict[str, FileDescriptorProto] | None = (
+        {} if include_source_info else None
+    )
     for fd in fds.file:
+        if source_locations is not None:
+            source_locations[fd.name] = fd
         pool.Add(fd)
         if fd.name in expected_set:
             emitted.add(fd.name)
@@ -269,13 +302,19 @@ def _compile_with_protoxy(
     # CompileResult.root_files). Filter by `emitted` for defensiveness
     # against any future matcher/backend skew.
     root_names = tuple(name for name in expected_in_order if name in emitted)
-    return pool, root_names
+    return pool, root_names, source_locations
 
 
 def _compile_with_protoc(
     proto_paths_in: Sequence[Path],
     include_paths: Sequence[str] = (),
-) -> tuple[descriptor_pool.DescriptorPool, tuple[str, ...]]:
+    *,
+    include_source_info: bool = False,
+) -> tuple[
+    descriptor_pool.DescriptorPool,
+    tuple[str, ...],
+    Mapping[str, FileDescriptorProto] | None,
+]:
     """Multi-path compile by shelling out to ``protoc`` on PATH.
 
     Raises on failure (does NOT call ``error_exit``).
@@ -283,10 +322,18 @@ def _compile_with_protoc(
     Args:
         proto_paths_in: Sequence of root ``.proto`` file paths.
         include_paths: Additional ``-I``-style include directories.
+        include_source_info: When ``True`` (D6b R6a), the backend
+            appends ``--include_source_info`` to the protoc argv and
+            captures every emitted ``FileDescriptorProto`` BEFORE
+            ``pool.Add()`` consumes (and discards) ``source_code_info``.
+            Returned as the third tuple element. Default ``False``
+            preserves pre-D6b behavior for non-lint consumers.
 
     Returns:
-        Tuple of ``(DescriptorPool, root_names)`` where ``root_names`` is
-        a tuple of input-order ``fd.name`` strings.
+        Tuple of ``(DescriptorPool, root_names, source_locations)`` where
+        ``root_names`` is a tuple of input-order ``fd.name`` strings and
+        ``source_locations`` is the raw
+        ``Mapping[str, FileDescriptorProto] | None`` described above.
 
     Raises:
         FileNotFoundError: ``protoc`` not on PATH.
@@ -303,6 +350,14 @@ def _compile_with_protoc(
 
     try:
         cmd = ["protoc", "--descriptor_set_out", str(tmp_path), "--include_imports"]
+        if include_source_info:
+            # D6b R6a: opt-in source-info preservation. protoc's flag
+            # mirrors protoxy's ``include_source_info`` keyword; both
+            # backends must flip atomically when the caller opts in so
+            # the byte-equivalence-between-backends invariant continues
+            # to hold (cross-checked by
+            # tests/schema/lint/test_compile_include_source_info.py).
+            cmd.append("--include_source_info")
         for inc in includes:
             cmd.extend(["-I", inc])
         # End-of-options separator: protoc treats positional args
@@ -338,12 +393,19 @@ def _compile_with_protoc(
         expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
         expected_set = set(expected_in_order)
         emitted: set[str] = set()
+        # Capture FileDescriptorProto BEFORE pool.Add() discards
+        # source_code_info — same discipline as the protoxy backend.
+        source_locations: dict[str, FileDescriptorProto] | None = (
+            {} if include_source_info else None
+        )
         for fd in fds.file:
+            if source_locations is not None:
+                source_locations[fd.name] = fd
             pool.Add(fd)
             if fd.name in expected_set:
                 emitted.add(fd.name)
         root_names = tuple(name for name in expected_in_order if name in emitted)
-        return pool, root_names
+        return pool, root_names, source_locations
     finally:
         tmp_path.unlink(missing_ok=True)
 

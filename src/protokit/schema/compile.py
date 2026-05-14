@@ -26,10 +26,11 @@ Callers must import directly from ``protokit.schema.compile``.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Literal
 
 from google.protobuf import descriptor_pool
 
@@ -38,6 +39,9 @@ from protokit._cli_utils import (
     _compile_with_protoxy,
     _has_protoxy,
 )
+
+if TYPE_CHECKING:
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
 DiagnosticCategory = Literal[
     "protoxy_fallback",
@@ -168,23 +172,50 @@ class CompileResult:
             protoc failure), the protoxy-fallback info diagnostic
             comes FIRST per the A2-2 ordering invariant; the
             protoc-failure error diagnostic comes second.
+        source_locations: Optional read-only mapping from
+            ``fd.name`` to the raw :class:`FileDescriptorProto`
+            captured BEFORE ``pool.Add()`` discards
+            ``source_code_info``. Populated only when
+            :func:`compile_protos_to_result` is called with
+            ``include_source_info=True``; ``None`` otherwise. The
+            lint engine reads this via the module-level
+            ``leading_comment`` helper in
+            ``protokit.schema.lint.rules.options._comments`` to
+            implement comment-aware rules (D6b R6 family). The
+            field is wrapped in :class:`types.MappingProxyType` at
+            construction time so the frozen-dataclass guarantee
+            holds against post-hoc mutation. Defaults to ``None``
+            so D1-D5 callers and the ``protokit compat`` /
+            non-lint paths pay zero descriptor-size cost.
     """
 
     pool: descriptor_pool.DescriptorPool
     root_files: tuple[str, ...] = ()
     diagnostics: tuple[LintCompileDiagnostic, ...] = ()
+    source_locations: Mapping[str, FileDescriptorProto] | None = None
 
     def __post_init__(self) -> None:
-        """Snapshot caller-supplied sequences into immutable tuples.
+        """Snapshot caller-supplied sequences into immutable tuples / mappings.
 
         The dataclass is ``frozen=True``, but a caller could still
         pass a ``list`` for ``root_files`` / ``diagnostics`` and
         mutate it later. We snapshot here so the frozen guarantee
         is real. Mirrors the pattern in
         :class:`protokit.schema.profiles.LintProfile`.
+
+        ``source_locations`` (D6b R6b) follows the same discipline:
+        when non-None, the caller's mapping is wrapped in
+        :class:`types.MappingProxyType` so post-construction mutation
+        cannot affect the stored mapping.
         """
         object.__setattr__(self, "root_files", tuple(self.root_files))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        if self.source_locations is not None:
+            object.__setattr__(
+                self,
+                "source_locations",
+                MappingProxyType(dict(self.source_locations)),
+            )
 
 
 def _detect_same_basename_collision(
@@ -327,6 +358,8 @@ def _diagnostic_same_basename_collision(
 def compile_protos_to_result(
     paths: Sequence[Path],
     proto_paths: Sequence[str] = (),
+    *,
+    include_source_info: bool = False,
 ) -> CompileResult:
     """Compile one or more ``.proto`` files into a :class:`CompileResult`.
 
@@ -362,12 +395,23 @@ def compile_protos_to_result(
             an empty :class:`CompileResult` (no error).
         proto_paths: Additional ``-I``-style include directories.
             Each input's parent directory is automatically added.
+        include_source_info: When ``True`` (D6b R6a), both backends
+            preserve ``source_code_info`` and the returned
+            :class:`CompileResult` carries a non-None
+            :attr:`CompileResult.source_locations` mapping. Default
+            ``False`` preserves pre-D6b behavior for ``protokit
+            compat``, codegen, and other non-lint consumers. The
+            lint CLI sets ``True`` so comment-aware rules (D6b R6
+            family) can read leading comments. Early-return paths
+            (basename collision, empty input, irrecoverable failure)
+            pass ``source_locations=None`` regardless of the flag.
 
     Returns:
         A :class:`CompileResult`. On any failure, ``pool`` is a
         fresh empty :class:`DescriptorPool` (does NOT contain WKTs),
-        ``root_files`` is empty, and ``diagnostics`` carries one or
-        two entries describing what went wrong.
+        ``root_files`` is empty, ``source_locations`` is ``None``,
+        and ``diagnostics`` carries one or two entries describing
+        what went wrong.
     """
     collision = _detect_same_basename_collision(paths)
     if collision:
@@ -375,13 +419,18 @@ def compile_protos_to_result(
             pool=descriptor_pool.DescriptorPool(),
             root_files=(),
             diagnostics=(_diagnostic_same_basename_collision(collision),),
+            source_locations=None,
         )
     if not paths:
-        return CompileResult(pool=descriptor_pool.DescriptorPool())
+        return CompileResult(
+            pool=descriptor_pool.DescriptorPool(),
+            source_locations=None,
+        )
 
     diagnostics: list[LintCompileDiagnostic] = []
     pool: descriptor_pool.DescriptorPool | None = None
     root_files: tuple[str, ...] = ()
+    source_locations: Mapping[str, FileDescriptorProto] | None = None
 
     try:
         if _has_protoxy():
@@ -397,9 +446,14 @@ def compile_protos_to_result(
                     pool=descriptor_pool.DescriptorPool(),
                     root_files=(),
                     diagnostics=tuple(diagnostics),
+                    source_locations=None,
                 )
             try:
-                pool, root_files = _compile_with_protoxy(paths, proto_paths)
+                pool, root_files, source_locations = _compile_with_protoxy(
+                    paths,
+                    proto_paths,
+                    include_source_info=include_source_info,
+                )
             except (protoxy.ProtoxyError, ValueError, TypeError) as exc:
                 # ProtoxyError/ValueError: parse-time failures from
                 # protoxy.compile itself.
@@ -417,9 +471,17 @@ def compile_protos_to_result(
                 # Re-attempt with protoc. Any exception here propagates
                 # to the outer catch tree, which appends the SECOND
                 # diagnostic (the both-fail composition contract).
-                pool, root_files = _compile_with_protoc(paths, proto_paths)
+                pool, root_files, source_locations = _compile_with_protoc(
+                    paths,
+                    proto_paths,
+                    include_source_info=include_source_info,
+                )
         else:
-            pool, root_files = _compile_with_protoc(paths, proto_paths)
+            pool, root_files, source_locations = _compile_with_protoc(
+                paths,
+                proto_paths,
+                include_source_info=include_source_info,
+            )
     except FileNotFoundError as exc:
         diagnostics.append(_diagnostic_backend_missing(exc))
     except subprocess.CalledProcessError as exc:
@@ -446,9 +508,13 @@ def compile_protos_to_result(
         # correction, DescriptorPool() does NOT contain WKTs — callers
         # that need WKTs must check diagnostics first.
         pool = descriptor_pool.DescriptorPool()
+        # Source locations from a partial-success backend are not
+        # actionable when the pool itself is invalid; clear them.
+        source_locations = None
 
     return CompileResult(
         pool=pool,
         root_files=root_files,
         diagnostics=tuple(diagnostics),
+        source_locations=source_locations,
     )
