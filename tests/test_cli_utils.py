@@ -85,7 +85,7 @@ class TestProtoxyBackend:
         ``(pool, root_names)`` where ``root_names`` is a tuple of the
         ``.proto``-relative names that came from the user's input paths.
         """
-        pool, root_names, source_locations = _cli_utils._compile_with_protoxy(
+        pool, root_names, source_info_descriptors = _cli_utils._compile_with_protoxy(
             [demo_proto_file], (),
         )
         # Pool is fully populated.
@@ -97,8 +97,8 @@ class TestProtoxyBackend:
         # root_names matches the input — basename since parent is the
         # auto-included directory.
         assert root_names == ("demo.proto",)
-        # D6b R6a: source_locations is None by default (no opt-in).
-        assert source_locations is None
+        # D6b R6a: source_info_descriptors is None by default (no opt-in).
+        assert source_info_descriptors is None
 
     def test_compile_with_explicit_include_path(
         self, tmp_path: Path,
@@ -127,7 +127,7 @@ class TestProtoxyBackend:
             'message User { string name = 1; common.Address addr = 2; }\n'
         )
 
-        pool, root_names, source_locations = _cli_utils._compile_with_protoxy(
+        pool, root_names, source_info_descriptors = _cli_utils._compile_with_protoxy(
             [main_proto], (str(common_dir),),
         )
         # Both messages reachable.
@@ -135,8 +135,8 @@ class TestProtoxyBackend:
         assert pool.FindMessageTypeByName("common.Address")
         # Only main is a root; addr was a transitive import.
         assert root_names == ("user.proto",)
-        # D6b R6a: source_locations is None by default (no opt-in).
-        assert source_locations is None
+        # D6b R6a: source_info_descriptors is None by default (no opt-in).
+        assert source_info_descriptors is None
 
     def test_compile_with_protoxy_raises_on_parse_error(
         self, tmp_path: Path,

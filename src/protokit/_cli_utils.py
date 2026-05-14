@@ -13,16 +13,13 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import Any, NoReturn
 
 import click
 from google.protobuf import descriptor_pb2, descriptor_pool
-
-if TYPE_CHECKING:
-    from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
 from protokit.formatters import (
     Formatter,
@@ -205,10 +202,12 @@ def compile_proto(
         stderr = exc.stderr.strip() if exc.stderr else str(exc)
         error_exit(f"protoc compile failed: {stderr}")
     except subprocess.TimeoutExpired as exc:
-        # subprocess.TimeoutExpired is NOT an OSError subclass — sibling
-        # tree under SubprocessError. Today's _compile_with_protoc does
-        # not pass timeout=, so this catch is defensive coverage for the
-        # future case where a timeout is added.
+        # subprocess.TimeoutExpired is NOT an OSError subclass — it sits
+        # under SubprocessError, so it must be caught explicitly before
+        # the broader OSError clause below. ``_compile_with_protoc`` passes
+        # ``timeout=_protoc_timeout_seconds()`` (override via
+        # ``PROTOKIT_PROTOC_TIMEOUT``); under ``include_source_info=True``
+        # the larger descriptor set may push protoc past the default.
         error_exit(f"compile infrastructure error: {exc}")
     except OSError as exc:
         # PermissionError, BrokenPipeError, etc.
@@ -219,6 +218,58 @@ def compile_proto(
     return pool
 
 
+def _populate_pool_with_capture(
+    fds_file: Iterable[descriptor_pb2.FileDescriptorProto],
+    pool: descriptor_pool.DescriptorPool,
+    expected_names: set[str],
+    *,
+    capture: bool,
+) -> tuple[dict[str, descriptor_pb2.FileDescriptorProto] | None, set[str]]:
+    """Walk emitted FileDescriptorProtos, ``pool.Add()`` each, and
+    optionally capture a ``fd.name`` → ``FileDescriptorProto`` dict
+    BEFORE ``pool.Add()`` discards ``source_code_info``.
+
+    Both compile backends call this helper so the capture-before-Add
+    ordering invariant lives in one place. ``pool.Add()`` consumes
+    ``source_code_info`` regardless of the FileDescriptorProto's
+    serialized state, so the capture must happen on the in-memory
+    proto BEFORE Add is called — see
+    docs/solutions/best-practices/
+    copytoproto-round-trip-for-proto-form-only-descriptor-fields-2026-05-13.md.
+
+    Args:
+        fds_file: Iterable of ``FileDescriptorProto`` from the
+            backend's emitted ``FileDescriptorSet``.
+        pool: DescriptorPool to populate via ``pool.Add(fd)``.
+        expected_names: Set of ``fd.name`` strings the caller wants
+            tracked as "roots" (vs. transitive imports). Membership
+            is tested per fd to build the returned emitted set.
+        capture: When ``True``, build and return a dict keyed by
+            ``fd.name``. When ``False``, the dict is ``None`` and the
+            helper only calls ``pool.Add()`` and tracks emitted names
+            — preserves the pre-D6b zero-cost contract for non-lint
+            consumers.
+
+    Returns:
+        ``(captured, emitted)`` where ``captured`` is ``None`` when
+        ``capture`` is ``False``, else a ``dict[fd.name → fd]`` with
+        every emitted fd's ``source_code_info`` intact. ``emitted``
+        is the set of fd.name strings that appeared in
+        ``expected_names``.
+    """
+    captured: dict[str, descriptor_pb2.FileDescriptorProto] | None = (
+        {} if capture else None
+    )
+    emitted: set[str] = set()
+    for fd in fds_file:
+        if captured is not None:
+            captured[fd.name] = fd
+        pool.Add(fd)
+        if fd.name in expected_names:
+            emitted.add(fd.name)
+    return captured, emitted
+
+
 def _compile_with_protoxy(
     proto_paths_in: Sequence[Path],
     include_paths: Sequence[str] = (),
@@ -227,7 +278,7 @@ def _compile_with_protoxy(
 ) -> tuple[
     descriptor_pool.DescriptorPool,
     tuple[str, ...],
-    Mapping[str, FileDescriptorProto] | None,
+    Mapping[str, descriptor_pb2.FileDescriptorProto] | None,
 ]:
     """Multi-path compile via the in-process ``protoxy`` (Rust) backend.
 
@@ -248,15 +299,16 @@ def _compile_with_protoxy(
             ``pool.Add()`` consumes (and discards) the source-location
             data. When ``False`` (default), the third element is
             ``None`` and the backend behaves as it did pre-D6b. The
-            lint CLI passes ``True``; ``protokit compat`` / codegen /
-            direct API callers stay on the default to avoid the 10-30%
-            descriptor-size cost of preserving comments.
+            lint CLI will pass ``True`` in D6b U3; ``protokit compat``
+            / codegen / direct API callers stay on the default to
+            avoid the 10-30% descriptor-size cost of preserving
+            comments.
 
     Returns:
-        Tuple of ``(DescriptorPool, root_names, source_locations)`` where
+        Tuple of ``(DescriptorPool, root_names, source_info_descriptors)`` where
         ``root_names`` is a tuple of the ``.proto``-relative names that
         came from the user's input paths (NOT including transitive
-        imports), in input order; and ``source_locations`` is the raw
+        imports), in input order; and ``source_info_descriptors`` is the raw
         ``Mapping[str, FileDescriptorProto] | None`` described above.
 
     Raises:
@@ -282,27 +334,16 @@ def _compile_with_protoxy(
     )
     pool = descriptor_pool.DescriptorPool()
     expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
-    expected_set = set(expected_in_order)
-    emitted: set[str] = set()
-    # Capture FileDescriptorProto BEFORE pool.Add() discards
-    # source_code_info (per docs/solutions/.../copytoproto-round-trip-...
-    # learning — pool.Add() consumes source_code_info regardless of the
-    # FileDescriptorProto's serialized state).
-    source_locations: dict[str, FileDescriptorProto] | None = (
-        {} if include_source_info else None
+    source_info_descriptors, emitted = _populate_pool_with_capture(
+        fds.file, pool, set(expected_in_order),
+        capture=include_source_info,
     )
-    for fd in fds.file:
-        if source_locations is not None:
-            source_locations[fd.name] = fd
-        pool.Add(fd)
-        if fd.name in expected_set:
-            emitted.add(fd.name)
     # Walk expected_in_order so root_names preserves the user's input
     # order (fds.file iterates in backend topological order, wrong for
     # CompileResult.root_files). Filter by `emitted` for defensiveness
     # against any future matcher/backend skew.
     root_names = tuple(name for name in expected_in_order if name in emitted)
-    return pool, root_names, source_locations
+    return pool, root_names, source_info_descriptors
 
 
 def _compile_with_protoc(
@@ -313,7 +354,7 @@ def _compile_with_protoc(
 ) -> tuple[
     descriptor_pool.DescriptorPool,
     tuple[str, ...],
-    Mapping[str, FileDescriptorProto] | None,
+    Mapping[str, descriptor_pb2.FileDescriptorProto] | None,
 ]:
     """Multi-path compile by shelling out to ``protoc`` on PATH.
 
@@ -330,16 +371,20 @@ def _compile_with_protoc(
             preserves pre-D6b behavior for non-lint consumers.
 
     Returns:
-        Tuple of ``(DescriptorPool, root_names, source_locations)`` where
+        Tuple of ``(DescriptorPool, root_names, source_info_descriptors)`` where
         ``root_names`` is a tuple of input-order ``fd.name`` strings and
-        ``source_locations`` is the raw
+        ``source_info_descriptors`` is the raw
         ``Mapping[str, FileDescriptorProto] | None`` described above.
 
     Raises:
         FileNotFoundError: ``protoc`` not on PATH.
         subprocess.CalledProcessError: ``protoc`` returned non-zero.
-        subprocess.TimeoutExpired: ``protoc`` exceeded a future
-            ``timeout=`` kwarg (not currently passed; defensive).
+        subprocess.TimeoutExpired: ``protoc`` ran longer than
+            :func:`_protoc_timeout_seconds` (60s default, override via
+            ``PROTOKIT_PROTOC_TIMEOUT``). Note that
+            ``include_source_info=True`` makes the descriptor set
+            10-30% larger and may require raising the timeout on
+            very large repos.
         OSError: Other infrastructure failures (permission denied, etc.).
     """
     parents = list(dict.fromkeys(str(p.parent) for p in proto_paths_in))
@@ -391,21 +436,12 @@ def _compile_with_protoc(
             )
         pool = descriptor_pool.DescriptorPool()
         expected_in_order = _expected_root_names_ordered(proto_paths_in, includes)
-        expected_set = set(expected_in_order)
-        emitted: set[str] = set()
-        # Capture FileDescriptorProto BEFORE pool.Add() discards
-        # source_code_info — same discipline as the protoxy backend.
-        source_locations: dict[str, FileDescriptorProto] | None = (
-            {} if include_source_info else None
+        source_info_descriptors, emitted = _populate_pool_with_capture(
+            fds.file, pool, set(expected_in_order),
+            capture=include_source_info,
         )
-        for fd in fds.file:
-            if source_locations is not None:
-                source_locations[fd.name] = fd
-            pool.Add(fd)
-            if fd.name in expected_set:
-                emitted.add(fd.name)
         root_names = tuple(name for name in expected_in_order if name in emitted)
-        return pool, root_names, source_locations
+        return pool, root_names, source_info_descriptors
     finally:
         tmp_path.unlink(missing_ok=True)
 

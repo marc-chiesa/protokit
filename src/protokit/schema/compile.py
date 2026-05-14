@@ -50,6 +50,7 @@ DiagnosticCategory = Literal[
     "infrastructure",
     "unexpected",
     "same_basename_collision",
+    "root_transitive_shadow",
 ]
 """Closed set of diagnostic categories.
 
@@ -87,6 +88,17 @@ class LintCompileDiagnostic:
       (``category="same_basename_collision"``, ``level="error"``):
       ``message`` (lists the colliding paths),
       ``exception_type="SameBasenameCollision"`` populated.
+    - **Pre-flight root↔transitive shadow**
+      (``category="root_transitive_shadow"``, ``level="error"``):
+      ``message`` (lists the root path and the shadowing
+      candidate(s) on the user-supplied ``-I`` search path),
+      ``exception_type="RootTransitiveShadow"`` populated. Raised
+      when a root proto's basename ALSO exists under one of the
+      caller's ``proto_paths`` entries as a different physical
+      file — the backend's ``-I`` resolution would silently pick
+      one over the other, and the resulting ``fd.name`` entry in
+      ``source_info_descriptors`` could carry the wrong file's
+      ``source_code_info``.
 
     Attributes:
         level: Severity ladder. ``"info"`` is reserved for the
@@ -172,27 +184,27 @@ class CompileResult:
             protoc failure), the protoxy-fallback info diagnostic
             comes FIRST per the A2-2 ordering invariant; the
             protoc-failure error diagnostic comes second.
-        source_locations: Optional read-only mapping from
+        source_info_descriptors: Optional read-only mapping from
             ``fd.name`` to the raw :class:`FileDescriptorProto`
             captured BEFORE ``pool.Add()`` discards
             ``source_code_info``. Populated only when
             :func:`compile_protos_to_result` is called with
-            ``include_source_info=True``; ``None`` otherwise. The
-            lint engine reads this via the module-level
-            ``leading_comment`` helper in
-            ``protokit.schema.lint.rules.options._comments`` to
-            implement comment-aware rules (D6b R6 family). The
-            field is wrapped in :class:`types.MappingProxyType` at
-            construction time so the frozen-dataclass guarantee
-            holds against post-hoc mutation. Defaults to ``None``
-            so D1-D5 callers and the ``protokit compat`` /
-            non-lint paths pay zero descriptor-size cost.
+            ``include_source_info=True``; ``None`` otherwise.
+            Will be consumed by comment-aware lint rules (D6b R6
+            family) once the matching ``leading_comment`` helper
+            lands in D6b U2; the lint CLI call site is wired in
+            D6b U3. The field is wrapped in
+            :class:`types.MappingProxyType` at construction time
+            so the frozen-dataclass guarantee holds against
+            post-hoc mutation. Defaults to ``None`` so D1-D5
+            callers and the ``protokit compat`` / non-lint paths
+            pay zero descriptor-size cost.
     """
 
     pool: descriptor_pool.DescriptorPool
     root_files: tuple[str, ...] = ()
     diagnostics: tuple[LintCompileDiagnostic, ...] = ()
-    source_locations: Mapping[str, FileDescriptorProto] | None = None
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None = None
 
     def __post_init__(self) -> None:
         """Snapshot caller-supplied sequences into immutable tuples / mappings.
@@ -203,19 +215,70 @@ class CompileResult:
         is real. Mirrors the pattern in
         :class:`protokit.schema.profiles.LintProfile`.
 
-        ``source_locations`` (D6b R6b) follows the same discipline:
+        ``source_info_descriptors`` (D6b R6b) follows the same discipline:
         when non-None, the caller's mapping is wrapped in
         :class:`types.MappingProxyType` so post-construction mutation
         cannot affect the stored mapping.
         """
         object.__setattr__(self, "root_files", tuple(self.root_files))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
-        if self.source_locations is not None:
+        if self.source_info_descriptors is not None:
             object.__setattr__(
                 self,
-                "source_locations",
-                MappingProxyType(dict(self.source_locations)),
+                "source_info_descriptors",
+                MappingProxyType(dict(self.source_info_descriptors)),
             )
+
+
+def _detect_root_transitive_shadow(
+    paths: Sequence[Path],
+    proto_paths: Sequence[str],
+) -> list[tuple[Path, list[Path]]] | None:
+    """Pre-flight check for root↔transitive ``fd.name`` shadowing.
+
+    When the caller passes ``proto_paths = ['/a', '/b']`` and a root
+    input ``/c/foo.proto``, the backend resolves transitive imports by
+    walking the ``-I`` paths in declared order. If ``/a/foo.proto``
+    ALSO exists as a different physical file, the backend may emit a
+    ``FileDescriptorProto`` for that shadow instead of the root the
+    user passed — and ``source_info_descriptors['foo.proto']`` would
+    carry the shadow's ``source_code_info``, not the root's.
+
+    This is distinct from :func:`_detect_same_basename_collision`,
+    which checks that 2+ root inputs don't share a basename across
+    different parents. This function checks that each root input is
+    not shadowed by a same-named file on the user-supplied include
+    path.
+
+    Args:
+        paths: Sequence of input ``.proto`` file paths.
+        proto_paths: User-supplied ``-I``-style include directories.
+            Auto-included parent directories (one per root input) are
+            NOT checked here — they are by definition the root's own
+            parent and cannot shadow it.
+
+    Returns:
+        ``None`` if no shadow is detected. Otherwise a list of
+        ``(root_path, [shadowing_candidates...])`` tuples, one entry
+        per affected root, sorted by root path string for
+        deterministic diagnostic output.
+    """
+    findings: list[tuple[Path, list[Path]]] = []
+    for root in paths:
+        shadows: list[Path] = []
+        for inc in proto_paths:
+            candidate = Path(inc) / root.name
+            try:
+                if candidate.is_file() and not candidate.samefile(root):
+                    shadows.append(candidate)
+            except OSError:
+                # samefile() can raise on broken symlinks / permission
+                # errors. Treat as "can't prove a shadow" — defer to
+                # the backend rather than guessing.
+                continue
+        if shadows:
+            findings.append((root, shadows))
+    return findings or None
 
 
 def _detect_same_basename_collision(
@@ -325,6 +388,36 @@ def _diagnostic_unexpected(exc: Exception) -> LintCompileDiagnostic:
     )
 
 
+def _diagnostic_root_transitive_shadow(
+    findings: list[tuple[Path, list[Path]]],
+) -> LintCompileDiagnostic:
+    """Build the pre-flight error diagnostic for root↔transitive shadows.
+
+    Names paths by basename and parent only (no absolute path leak)
+    so CI logs / formatter output don't expose developer filesystem
+    layout. Mirrors the discipline applied by
+    :func:`_diagnostic_same_basename_collision`.
+    """
+    rendered_entries = []
+    for root, shadows in findings:
+        shadow_parents = sorted(str(s.parent) for s in shadows)
+        rendered_entries.append(
+            f"{root.name} (root parent: {root.parent!s}; "
+            f"shadowed by parents: {shadow_parents})"
+        )
+    rendered = "; ".join(rendered_entries)
+    return LintCompileDiagnostic(
+        level="error",
+        category="root_transitive_shadow",
+        message=(
+            "root proto basename also exists on the -I search path "
+            f"as a different file: {rendered}. Remove the conflicting "
+            "include path or rename the colliding file."
+        ),
+        exception_type="RootTransitiveShadow",
+    )
+
+
 def _diagnostic_same_basename_collision(
     colliding: list[Path],
 ) -> LintCompileDiagnostic:
@@ -398,18 +491,20 @@ def compile_protos_to_result(
         include_source_info: When ``True`` (D6b R6a), both backends
             preserve ``source_code_info`` and the returned
             :class:`CompileResult` carries a non-None
-            :attr:`CompileResult.source_locations` mapping. Default
+            :attr:`CompileResult.source_info_descriptors` mapping. Default
             ``False`` preserves pre-D6b behavior for ``protokit
             compat``, codegen, and other non-lint consumers. The
-            lint CLI sets ``True`` so comment-aware rules (D6b R6
-            family) can read leading comments. Early-return paths
-            (basename collision, empty input, irrecoverable failure)
-            pass ``source_locations=None`` regardless of the flag.
+            lint CLI will pass ``True`` in D6b U3 so comment-aware
+            rules (D6b R6 family) can read leading comments; until
+            then every consumer keeps the zero-cost default.
+            Early-return paths (basename collision, empty input,
+            irrecoverable failure) pass ``source_info_descriptors=None``
+            regardless of the flag.
 
     Returns:
         A :class:`CompileResult`. On any failure, ``pool`` is a
         fresh empty :class:`DescriptorPool` (does NOT contain WKTs),
-        ``root_files`` is empty, ``source_locations`` is ``None``,
+        ``root_files`` is empty, ``source_info_descriptors`` is ``None``,
         and ``diagnostics`` carries one or two entries describing
         what went wrong.
     """
@@ -419,18 +514,26 @@ def compile_protos_to_result(
             pool=descriptor_pool.DescriptorPool(),
             root_files=(),
             diagnostics=(_diagnostic_same_basename_collision(collision),),
-            source_locations=None,
+            source_info_descriptors=None,
+        )
+    shadow = _detect_root_transitive_shadow(paths, proto_paths)
+    if shadow:
+        return CompileResult(
+            pool=descriptor_pool.DescriptorPool(),
+            root_files=(),
+            diagnostics=(_diagnostic_root_transitive_shadow(shadow),),
+            source_info_descriptors=None,
         )
     if not paths:
         return CompileResult(
             pool=descriptor_pool.DescriptorPool(),
-            source_locations=None,
+            source_info_descriptors=None,
         )
 
     diagnostics: list[LintCompileDiagnostic] = []
     pool: descriptor_pool.DescriptorPool | None = None
     root_files: tuple[str, ...] = ()
-    source_locations: Mapping[str, FileDescriptorProto] | None = None
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None = None
 
     try:
         if _has_protoxy():
@@ -446,10 +549,19 @@ def compile_protos_to_result(
                     pool=descriptor_pool.DescriptorPool(),
                     root_files=(),
                     diagnostics=tuple(diagnostics),
-                    source_locations=None,
+                    source_info_descriptors=None,
                 )
             try:
-                pool, root_files, source_locations = _compile_with_protoxy(
+                # Tuple-unpacking atomicity is load-bearing: if
+                # ``_compile_with_protoxy`` raises mid-call, none of
+                # ``pool`` / ``root_files`` / ``source_info_descriptors`` is
+                # rebound, so the fallback ``_compile_with_protoc`` below
+                # starts from the init values (None / () / None) — not a
+                # partially populated state. A refactor that split this
+                # assignment (e.g., assigning ``source_info_descriptors`` from a
+                # separate call) would silently expose partial state to
+                # the fallback arm.
+                pool, root_files, source_info_descriptors = _compile_with_protoxy(
                     paths,
                     proto_paths,
                     include_source_info=include_source_info,
@@ -471,13 +583,13 @@ def compile_protos_to_result(
                 # Re-attempt with protoc. Any exception here propagates
                 # to the outer catch tree, which appends the SECOND
                 # diagnostic (the both-fail composition contract).
-                pool, root_files, source_locations = _compile_with_protoc(
+                pool, root_files, source_info_descriptors = _compile_with_protoc(
                     paths,
                     proto_paths,
                     include_source_info=include_source_info,
                 )
         else:
-            pool, root_files, source_locations = _compile_with_protoc(
+            pool, root_files, source_info_descriptors = _compile_with_protoc(
                 paths,
                 proto_paths,
                 include_source_info=include_source_info,
@@ -488,10 +600,11 @@ def compile_protos_to_result(
         diagnostics.append(_diagnostic_protoc_subprocess(exc))
     except subprocess.TimeoutExpired as exc:
         # subprocess.TimeoutExpired is NOT an OSError subclass — it sits
-        # under SubprocessError. Listed before OSError so the catch order
-        # is unambiguous even though they're disjoint trees today; the
-        # current _compile_with_protoc doesn't pass timeout=, so this
-        # is defensive coverage for future changes.
+        # under SubprocessError, so it must be caught explicitly before
+        # the broader OSError clause below. ``_compile_with_protoc`` passes
+        # ``timeout=_protoc_timeout_seconds()`` (default 60s, override via
+        # ``PROTOKIT_PROTOC_TIMEOUT``); under ``include_source_info=True``
+        # the larger descriptor set may push protoc past the default.
         diagnostics.append(_diagnostic_infrastructure(exc))
     except OSError as exc:
         # PermissionError, BrokenPipeError, etc.
@@ -508,13 +621,31 @@ def compile_protos_to_result(
         # correction, DescriptorPool() does NOT contain WKTs — callers
         # that need WKTs must check diagnostics first.
         pool = descriptor_pool.DescriptorPool()
-        # Source locations from a partial-success backend are not
-        # actionable when the pool itself is invalid; clear them.
-        source_locations = None
+        # Source info from a partial-success backend is not actionable
+        # when the pool itself is invalid; clear it.
+        source_info_descriptors = None
 
-    return CompileResult(
-        pool=pool,
-        root_files=root_files,
-        diagnostics=tuple(diagnostics),
-        source_locations=source_locations,
-    )
+    # Wrap the final construction in the same Exception catch-all so
+    # ``__post_init__`` failures (e.g., a caller-supplied custom
+    # Mapping for ``source_info_descriptors`` whose iteration raises)
+    # surface as a category-#5 diagnostic rather than escaping the
+    # A2-1 "never raises on backend failure" contract. The bundled
+    # backends always return ``dict | None``, so this only kicks in
+    # for direct external construction with non-standard Mappings.
+    try:
+        return CompileResult(
+            pool=pool,
+            root_files=root_files,
+            diagnostics=tuple(diagnostics),
+            source_info_descriptors=source_info_descriptors,
+        )
+    except Exception as exc:  # noqa: BLE001 — see comment above
+        diagnostics.append(_diagnostic_unexpected(exc))
+        # Re-build with cleared source_info_descriptors so the second
+        # attempt can't trip the same __post_init__ failure.
+        return CompileResult(
+            pool=pool,
+            root_files=root_files,
+            diagnostics=tuple(diagnostics),
+            source_info_descriptors=None,
+        )
