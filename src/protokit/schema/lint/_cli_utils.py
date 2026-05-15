@@ -337,6 +337,19 @@ def _load_descriptor_sets_to_result(
     seen_names: set[str] = set()
     duplicates: list[LintCompileDiagnostic] = []
     root_files: list[str] = []
+    # D6b U3b: capture FileDescriptorProto references BEFORE pool.Add()
+    # consumes source_code_info. The Python-level fd reference retains
+    # its .source_code_info field for downstream R6 comment-aware rules.
+    # When the input descriptor set was built without
+    # ``protoc --include_source_info``, each fd's source_code_info.location
+    # array will be empty — leading_comment() returns None for every
+    # lookup, R6 rules emit findings for every deprecated element (the
+    # documented descriptor-set-mode caveat per the D6b U3 plan K-9).
+    # Mirrors the U1 capture-around-Add pattern at
+    # src/protokit/_cli_utils.py:264-267 (_populate_pool_with_capture).
+    source_info_descriptors: dict[
+        str, descriptor_pb2.FileDescriptorProto,
+    ] = {}
 
     for input_path in paths:
         try:
@@ -361,8 +374,20 @@ def _load_descriptor_sets_to_result(
                         category="same_basename_collision",
                     )
                 )
+                # Dedup-skipped fds are NOT inserted into the accumulator
+                # — symmetric with their absence from pool.Add. The
+                # invariant is: source_info_descriptors keys exactly
+                # match the set of fd.name strings that made it into
+                # the pool.
                 continue
             seen_names.add(fd.name)
+            # PRE-ADD capture per K-7/K-8: pool.Add(fd) consumes
+            # source_code_info regardless of fd's serialized state, so
+            # the capture must precede Add. See U1's
+            # _populate_pool_with_capture docstring at
+            # src/protokit/_cli_utils.py:230-238 for the load-bearing
+            # invariant this mirrors.
+            source_info_descriptors[fd.name] = fd
             try:
                 pool.Add(fd)
             except (TypeError, ValueError) as exc:
@@ -390,6 +415,11 @@ def _load_descriptor_sets_to_result(
                 # Either explicit duplicate-symbol or unmatched —
                 # both route to pool-conflict (legacy behavior
                 # preserved for unmatched paths).
+                # The partial source_info_descriptors state (carrying
+                # the failing fd's entry) is harmlessly discarded by
+                # SystemExit — no caller observes the partial dict
+                # because the CompileResult is never constructed on
+                # this path.
                 error_exit_with_code(
                     "pool-conflict",
                     f"{input_path}: {_scrub_exc_message(exc)}",
@@ -399,6 +429,11 @@ def _load_descriptor_sets_to_result(
     return CompileResult(
         pool=pool,
         root_files=tuple(root_files),
+        # CompileResult.__post_init__ wraps the dict in MappingProxyType
+        # per the U1-established pattern at
+        # src/protokit/schema/compile.py:225-229. We pass a plain dict
+        # here; the wrap is automatic.
+        source_info_descriptors=source_info_descriptors,
         diagnostics=tuple(duplicates),
     )
 
