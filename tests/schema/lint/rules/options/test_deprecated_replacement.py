@@ -34,7 +34,6 @@ from protokit.schema.lint.model import (
     LintReport,
     LintSeverity,
 )
-from protokit.schema.lint.rules import options as options_pkg  # noqa: F401
 from protokit.schema.lint.rules.options import deprecated_replacement
 from protokit.schema.lint.rules.options.deprecated_replacement import (
     _REPLACEMENT_PATTERNS,
@@ -94,11 +93,6 @@ def _run_single(
         min_severity=LintSeverity.INFO,
     )
     return engine.run(result, profile=profile)
-
-
-_ALL_R6_RULE_IDS: frozenset[str] = frozenset(
-    fn._lint_spec.rule_id for fn in RULES  # type: ignore[attr-defined]
-)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +213,25 @@ class TestReplacementPatterns:
         assert _check_replacement_comment("See NewField for replacement.")
         assert _check_replacement_comment("see com.acme.NewType for the replacement")
 
+    def test_javadoc_brace_form_matches(self) -> None:
+        """Optional outer braces accommodate Javadoc-style references.
+
+        Per the adversarial reviewer finding (D6b U3 /ce:review): protobuf
+        authors borrowing JavaDoc-style conventions write
+        ``Use {NewField} instead.`` instead of bare ``Use NewField instead.``.
+        Without the optional ``\\{?...\\}?`` anchors in each pattern,
+        ``[\\w.]+`` cannot match the braced token (``{`` is not a word
+        char), producing a false negative on a canonical replacement
+        reference. The brace anchors close that gap.
+        """
+        assert _check_replacement_comment("Use {NewField} instead.")
+        assert _check_replacement_comment("use {new_field} instead")
+        assert _check_replacement_comment("Replaced by {NewType}.")
+        assert _check_replacement_comment("Migrate to {v2.NewField}.")
+        assert _check_replacement_comment(
+            "See {com.acme.NewType} for the replacement"
+        )
+
     def test_non_canonical_phrasings_do_not_match(self) -> None:
         # Documented false negatives — precision-first per parent brainstorm.
         # These are deliberately ALLOWED to miss in the starting set.
@@ -264,10 +277,10 @@ class TestSanitizeCommentForParams:
         assert "instead" in result
 
     def test_u2028_u2029_sanitized(self) -> None:
-        text = "line one line two line three"
+        text = "line one\u2028line two\u2029line three"
         result = _sanitize_comment_for_params(text)
-        assert " " not in result
-        assert " " not in result
+        assert "\u2028" not in result
+        assert "\u2029" not in result
 
     def test_braces_doubled(self) -> None:
         text = "Use {NewField} instead."
@@ -413,6 +426,26 @@ enum Status {
 }
 """
 
+_ENUM_VALUE_PROTO_NO_COMMENT = """\
+syntax = "proto3";
+package demo;
+
+enum Status {
+    UNKNOWN = 0;
+    LEGACY = 1 [deprecated = true];
+}
+"""
+
+_ENUM_VALUE_PROTO_NOT_DEPRECATED = """\
+syntax = "proto3";
+package demo;
+
+enum Status {
+    UNKNOWN = 0;
+    LEGACY = 1;
+}
+"""
+
 
 class TestDeprecatedEnumValueRule:
     def test_happy_path_matching_comment(self, tmp_path: Path) -> None:
@@ -433,6 +466,23 @@ class TestDeprecatedEnumValueRule:
         f = report.findings[0]
         assert f.severity is LintSeverity.WARNING
         assert f.params["name"] == "LEGACY"
+
+    def test_no_comment_yields_one_finding(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _ENUM_VALUE_PROTO_NO_COMMENT},
+            "options/deprecated-enum-value-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 1
+        assert report.findings[0].params["comment"] == ""
+
+    def test_not_deprecated_yields_no_findings(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _ENUM_VALUE_PROTO_NOT_DEPRECATED},
+            "options/deprecated-enum-value-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 0
 
 
 _METHOD_PROTO_HAPPY = """\
@@ -466,6 +516,33 @@ service S {
 """
 
 
+_METHOD_PROTO_NO_COMMENT = """\
+syntax = "proto3";
+package demo;
+
+message Req {}
+message Resp {}
+
+service S {
+    rpc GetUser (Req) returns (Resp) {
+        option deprecated = true;
+    }
+}
+"""
+
+_METHOD_PROTO_NOT_DEPRECATED = """\
+syntax = "proto3";
+package demo;
+
+message Req {}
+message Resp {}
+
+service S {
+    rpc GetUser (Req) returns (Resp);
+}
+"""
+
+
 class TestDeprecatedMethodRule:
     def test_happy_path_matching_comment(self, tmp_path: Path) -> None:
         report = _run_single(
@@ -483,6 +560,23 @@ class TestDeprecatedMethodRule:
         )
         assert len(report.findings) == 1
         assert report.findings[0].params["name"] == "GetUser"
+
+    def test_no_comment_yields_one_finding(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _METHOD_PROTO_NO_COMMENT},
+            "options/deprecated-method-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 1
+        assert report.findings[0].params["comment"] == ""
+
+    def test_not_deprecated_yields_no_findings(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _METHOD_PROTO_NOT_DEPRECATED},
+            "options/deprecated-method-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 0
 
 
 _MESSAGE_PROTO_HAPPY = """\
@@ -508,6 +602,26 @@ message User {
 """
 
 
+_MESSAGE_PROTO_NO_COMMENT = """\
+syntax = "proto3";
+package demo;
+
+message User {
+    option deprecated = true;
+    string name = 1;
+}
+"""
+
+_MESSAGE_PROTO_NOT_DEPRECATED = """\
+syntax = "proto3";
+package demo;
+
+message User {
+    string name = 1;
+}
+"""
+
+
 class TestDeprecatedMessageRule:
     def test_happy_path_matching_comment(self, tmp_path: Path) -> None:
         report = _run_single(
@@ -525,6 +639,23 @@ class TestDeprecatedMessageRule:
         )
         assert len(report.findings) == 1
         assert report.findings[0].params["name"] == "User"
+
+    def test_no_comment_yields_one_finding(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _MESSAGE_PROTO_NO_COMMENT},
+            "options/deprecated-message-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 1
+        assert report.findings[0].params["comment"] == ""
+
+    def test_not_deprecated_yields_no_findings(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _MESSAGE_PROTO_NOT_DEPRECATED},
+            "options/deprecated-message-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 0
 
 
 _ENUM_PROTO_HAPPY = """\
@@ -550,6 +681,25 @@ enum Status {
 }
 """
 
+_ENUM_PROTO_NO_COMMENT = """\
+syntax = "proto3";
+package demo;
+
+enum Status {
+    option deprecated = true;
+    UNKNOWN = 0;
+}
+"""
+
+_ENUM_PROTO_NOT_DEPRECATED = """\
+syntax = "proto3";
+package demo;
+
+enum Status {
+    UNKNOWN = 0;
+}
+"""
+
 
 class TestDeprecatedEnumRule:
     def test_happy_path_matching_comment(self, tmp_path: Path) -> None:
@@ -568,6 +718,23 @@ class TestDeprecatedEnumRule:
         )
         assert len(report.findings) == 1
         assert report.findings[0].params["name"] == "Status"
+
+    def test_no_comment_yields_one_finding(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _ENUM_PROTO_NO_COMMENT},
+            "options/deprecated-enum-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 1
+        assert report.findings[0].params["comment"] == ""
+
+    def test_not_deprecated_yields_no_findings(self, tmp_path: Path) -> None:
+        report = _run_single(
+            tmp_path,
+            {"demo.proto": _ENUM_PROTO_NOT_DEPRECATED},
+            "options/deprecated-enum-must-have-replacement-comment",
+        )
+        assert len(report.findings) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -649,32 +816,41 @@ class TestAdversarial:
             "options/deprecated-field-must-have-replacement-comment",
         )
         assert len(report.findings) == 1
-        # Truncated to 500 chars in params.
-        assert len(report.findings[0].params["comment"]) <= 500
+        # Truncated to 500 chars BEFORE brace-escape. Brace-escape can
+        # double each `{`/`}` to `{{`/`}}`, so the post-pipeline upper
+        # bound is 1000 chars in the worst case (all-brace input).
+        # This fixture uses 'a' * 5000 (no braces), so the actual length
+        # is exactly 500, but the bound below documents the general case.
+        assert len(report.findings[0].params["comment"]) <= 1000
 
     def test_control_chars_sanitized(self, tmp_path: Path) -> None:
-        # Proto-comment // lines can't contain raw newlines in the
-        # comment body itself (// ends at newline), but we can embed
-        # control chars within the // text (e.g., tabs are fine).
-        # U+2028 / U+2029 / U+0085 / NUL / 0x7F are the targets.
-        body = "UseNewField instead of\x7Fthis."
+        # Proto-comment // lines can't carry raw newlines in the body
+        # itself (// ends at the next \n), but they CAN carry U+0085 /
+        # U+2028 / U+2029 / NUL / DEL as bytes embedded in the // text.
+        # The comment body deliberately does NOT match any pattern in
+        # _REPLACEMENT_PATTERNS so the rule fires unconditionally and
+        # the sanitization assertions are never skipped via a vacuous
+        # early-return. The forbidden chars are written as escape
+        # sequences (\u2028 etc.) rather than raw literals so the source
+        # file stays editor-safe and review-diffable.
+        body = (
+            "Removed nel\x85 line\u2028 para\u2029 del\x7f nul\x00 chars"
+        )
         proto = _make_adversarial_proto(body)
         report = _run_single(
             tmp_path,
             {"adv.proto": proto},
             "options/deprecated-field-must-have-replacement-comment",
         )
-        # The 4-pattern set DOES match "Use NewField instead" because
-        # _safe_for_stderr runs at finding-construction time but
-        # _check_replacement_comment runs BEFORE on the unsanitized
-        # comment. Whether this matches or not depends on the regex
-        # behavior with U+2028/U+0085 between word boundaries. The
-        # important assertion is sanitization in params.
-        if len(report.findings) > 0:
-            sanitized = report.findings[0].params["comment"]
-            # Confirm no raw control chars remain.
-            for forbidden in (" ", " ", "", "\x7F"):
-                assert forbidden not in sanitized
+        # Body matches no replacement pattern → exactly one finding fires.
+        assert len(report.findings) == 1
+        sanitized = report.findings[0].params["comment"]
+        # Confirm every targeted control char was collapsed by
+        # _safe_for_stderr.
+        for forbidden in ("\x85", "\u2028", "\u2029", "\x7f", "\x00"):
+            assert forbidden not in sanitized, (
+                f"forbidden char {forbidden!r} survived sanitization"
+            )
 
     def test_braces_in_comment_safe_for_format(self, tmp_path: Path) -> None:
         body = "Use {NewField} for replacement key {foo}"

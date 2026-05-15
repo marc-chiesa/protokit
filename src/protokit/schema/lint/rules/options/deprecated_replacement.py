@@ -103,6 +103,14 @@ if TYPE_CHECKING:
 #: All patterns are case-insensitive and use ``\b`` word boundaries to
 #: avoid matching mid-word coincidences.
 #:
+#: **Optional outer braces** (``\{?...\}?``) accommodate Javadoc-style
+#: replacement references like ``// Use {NewField} instead.`` that
+#: protobuf authors borrowing JavaDoc-style conventions write. Without
+#: the optional braces, the inner ``[\w.]+`` token class cannot match
+#: ``{NewField}`` (``{`` is not a word char), causing a false negative
+#: for a canonical replacement reference; the post-review fix added the
+#: optional brace anchors to close that gap.
+#:
 #: Corpus tuning against googleapis + grpc-proto + envoy +
 #: opentelemetry-proto deprecation comments was DEFERRED at U3a
 #: implementation time (offline environment without network egress).
@@ -112,11 +120,11 @@ if TYPE_CHECKING:
 #: Pattern REMOVAL or REPLACEMENT would break previously-matching
 #: comments and requires explicit user communication (CHANGELOG entry).
 _REPLACEMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\buse\s+[\w.]+\s+instead\b", re.IGNORECASE),
-    re.compile(r"\breplaced?\s+(?:by|with)\s+[\w.]+", re.IGNORECASE),
-    re.compile(r"\bmigrate\s+to\s+[\w.]+\b", re.IGNORECASE),
+    re.compile(r"\buse\s+\{?[\w.]+\}?\s+instead\b", re.IGNORECASE),
+    re.compile(r"\breplaced?\s+(?:by|with)\s+\{?[\w.]+\}?", re.IGNORECASE),
+    re.compile(r"\bmigrate\s+to\s+\{?[\w.]+\}?", re.IGNORECASE),
     re.compile(
-        r"\bsee\s+[\w.]+\s+for\s+(?:the\s+)?replacement\b",
+        r"\bsee\s+\{?[\w.]+\}?\s+for\s+(?:the\s+)?replacement\b",
         re.IGNORECASE,
     ),
 )
@@ -154,6 +162,19 @@ def _sanitize_comment_for_params(comment: str | None) -> str:
        ``message_template.format(**params)`` from ``KeyError`` when
        attacker-controlled comment bytes contain literal braces.
 
+    **Invariant — brace-escape vs ``!r`` conversion.** The brace-escape
+    is the PRIMARY injection guard for any ``message_template`` that
+    interpolates ``{comment}`` WITHOUT the ``!r`` conversion. All 5
+    current R6 templates use ``{comment!r}`` and so have ``repr()``-based
+    defense-in-depth (Python's repr renders literal braces as part of
+    the quoted string, never as format markers). A future R6-family
+    rule (or a sibling pack) that drops ``!r`` would silently lose the
+    repr defense AND would rely solely on this brace-escape to remain
+    safe. Callers that interpolate ``{comment}`` directly MUST call
+    this function; callers using ``{comment!r}`` should still call it
+    for forward-safety. Do not relax the brace-escape without auditing
+    every consumer of ``params["comment"]``.
+
     Args:
         comment: The unsanitized leading comment, or ``None``.
 
@@ -164,6 +185,18 @@ def _sanitize_comment_for_params(comment: str | None) -> str:
     truncated = text[:500]
     sanitized = _safe_for_stderr(truncated)
     return sanitized.replace("{", "{{").replace("}", "}}")
+
+
+#: Shared boilerplate appended to every R6 rule's ``message_template``.
+#: The 4-pattern enumeration matches ``_REPLACEMENT_PATTERNS`` above —
+#: any pattern addition that ships in a future delivery should update
+#: this constant so the rendered help text stays accurate. Keeping the
+#: phrase in one place prevents drift between the 5 rules' templates.
+_REPLACEMENT_HINT: str = (
+    "leading comment (expected phrasing like 'Use X instead.', "
+    "'Replaced by X.', 'Migrate to X.', or 'See X for the replacement.'; "
+    "got: {comment!r})"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -178,9 +211,7 @@ def _sanitize_comment_for_params(comment: str | None) -> str:
     element=ElementKind.FIELD,
     message_template=(
         "Deprecated field {name!r} is missing a replacement-instruction "
-        "leading comment (expected phrasing like 'Use X instead.', "
-        "'Replaced by X.', 'Migrate to X.', or 'See X for the replacement.'; "
-        "got: {comment!r})"
+        + _REPLACEMENT_HINT
     ),
     source_spec="",
 )
@@ -220,9 +251,7 @@ def check_deprecated_field_must_have_replacement_comment(
     element=ElementKind.ENUM_VALUE,
     message_template=(
         "Deprecated enum value {name!r} is missing a replacement-instruction "
-        "leading comment (expected phrasing like 'Use X instead.', "
-        "'Replaced by X.', 'Migrate to X.', or 'See X for the replacement.'; "
-        "got: {comment!r})"
+        + _REPLACEMENT_HINT
     ),
     source_spec="",
 )
@@ -260,9 +289,7 @@ def check_deprecated_enum_value_must_have_replacement_comment(
     element=ElementKind.METHOD,
     message_template=(
         "Deprecated RPC method {name!r} is missing a replacement-instruction "
-        "leading comment (expected phrasing like 'Use X instead.', "
-        "'Replaced by X.', 'Migrate to X.', or 'See X for the replacement.'; "
-        "got: {comment!r})"
+        + _REPLACEMENT_HINT
     ),
     source_spec="",
 )
@@ -300,9 +327,7 @@ def check_deprecated_method_must_have_replacement_comment(
     element=ElementKind.MESSAGE,
     message_template=(
         "Deprecated message {name!r} is missing a replacement-instruction "
-        "leading comment (expected phrasing like 'Use X instead.', "
-        "'Replaced by X.', 'Migrate to X.', or 'See X for the replacement.'; "
-        "got: {comment!r})"
+        + _REPLACEMENT_HINT
     ),
     source_spec="",
 )
@@ -340,9 +365,7 @@ def check_deprecated_message_must_have_replacement_comment(
     element=ElementKind.ENUM,
     message_template=(
         "Deprecated enum {name!r} is missing a replacement-instruction "
-        "leading comment (expected phrasing like 'Use X instead.', "
-        "'Replaced by X.', 'Migrate to X.', or 'See X for the replacement.'; "
-        "got: {comment!r})"
+        + _REPLACEMENT_HINT
     ),
     source_spec="",
 )

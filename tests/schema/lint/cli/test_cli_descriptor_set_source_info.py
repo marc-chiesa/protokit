@@ -209,6 +209,55 @@ class TestLoaderDedupSkipsAccumulator:
         assert len(result.source_info_descriptors) == 1
 
 
+class TestLoaderPoolAddFailure:
+    """``pool.Add`` failure raises SystemExit; partial accumulator discarded."""
+
+    def test_missing_imports_raises_system_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        """A descriptor set whose fds reference unresolved imports
+        triggers ``pool.Add`` to raise TypeError, which the loader
+        routes to ``error_exit_with_code('missing-imports', ...)``.
+        The partial ``source_info_descriptors`` accumulator carrying
+        the failing fd's entry is discarded by SystemExit propagation
+        — no caller observes the partial state because
+        ``CompileResult`` is never constructed on this path.
+        """
+        # Build a descriptor set whose fd declares a dependency on a
+        # file that is NOT included in the set. pool.Add(fd) raises
+        # TypeError on the missing-imports marker.
+        proto_path = tmp_path / "demo.proto"
+        proto_path.write_text(
+            'syntax = "proto3";\n'
+            'package demo;\n'
+            'import "missing.proto";\n'
+            'message X { string name = 1; }\n',
+        )
+        # We can't compile this directly (the compile step would fail
+        # at the proto-resolution layer). Instead, hand-construct a
+        # minimal FileDescriptorProto that declares a missing import.
+        fds = descriptor_pb2.FileDescriptorSet()
+        fp = fds.file.add()
+        fp.name = "demo.proto"
+        fp.package = "demo"
+        fp.syntax = "proto3"
+        fp.dependency.append("missing.proto")  # Never resolved.
+        msg = fp.message_type.add()
+        msg.name = "X"
+        field = msg.field.add()
+        field.name = "name"
+        field.number = 1
+        field.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+        pbset = tmp_path / "bad.pbset"
+        pbset.write_bytes(fds.SerializeToString())
+
+        # The loader must raise SystemExit (via error_exit_with_code)
+        # — the partial accumulator state is never returned.
+        import pytest
+        with pytest.raises(SystemExit):
+            _load_descriptor_sets_to_result((pbset,))
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: R6 rules fire correctly through the descriptor-set mode
 # ---------------------------------------------------------------------------
