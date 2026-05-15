@@ -125,6 +125,7 @@ def _make_method_ctx(**user_kwargs: Any) -> MethodLintContext:
         "file": _mock_descriptor("demo.proto"),
         "pool": MagicMock(),
         "profile": "default",
+        "source_info_descriptors": None,
         **_DEFAULT_INJECTED,
     }
     return MethodLintContext(**{**defaults, **user_kwargs})
@@ -136,6 +137,7 @@ def _make_enum_ctx(**user_kwargs: Any) -> EnumLintContext:
         "file": _mock_descriptor("demo.proto"),
         "pool": MagicMock(),
         "profile": "default",
+        "source_info_descriptors": None,
         **_DEFAULT_INJECTED,
     }
     return EnumLintContext(**{**defaults, **user_kwargs})
@@ -148,6 +150,7 @@ def _make_enum_value_ctx(**user_kwargs: Any) -> EnumValueLintContext:
         "file": _mock_descriptor("demo.proto"),
         "pool": MagicMock(),
         "profile": "default",
+        "source_info_descriptors": None,
         **_DEFAULT_INJECTED,
     }
     return EnumValueLintContext(**{**defaults, **user_kwargs})
@@ -159,6 +162,7 @@ def _make_message_ctx(**user_kwargs: Any) -> MessageLintContext:
         "file": _mock_descriptor("demo.proto"),
         "pool": MagicMock(),
         "profile": "default",
+        "source_info_descriptors": None,
         **_DEFAULT_INJECTED,
     }
     return MessageLintContext(**{**defaults, **user_kwargs})
@@ -169,6 +173,8 @@ def _make_field_ctx(**user_kwargs: Any) -> FieldLintContext:
 
     Domain fields (field, message, file, pool, profile) all have
     sensible mock defaults; callers override only what they need.
+    ``source_info_descriptors`` defaults to ``None`` — the legitimate
+    "caller did not opt into ``include_source_info=True``" state.
     """
     defaults: dict[str, Any] = {
         "field": _mock_descriptor("email"),
@@ -176,6 +182,7 @@ def _make_field_ctx(**user_kwargs: Any) -> FieldLintContext:
         "file": _mock_descriptor("demo.proto"),
         "pool": MagicMock(),
         "profile": "default",
+        "source_info_descriptors": None,
         **_DEFAULT_INJECTED,
     }
     return FieldLintContext(**{**defaults, **user_kwargs})

@@ -464,7 +464,7 @@ src/protokit/schema/lint/rules/options/_comments.py):
 
 ## Implementation Units
 
-- [ ] **Unit 2: R6b — `descriptor_path` + `leading_comment` helpers + 5 ElementKind context wiring + CompileResult consumer audit**
+- [x] **Unit 2: R6b — `descriptor_path` + `leading_comment` helpers + 5 ElementKind context wiring + CompileResult consumer audit**
 
 **Goal:** Land the consumer-side plumbing for R6a/R6b: 5 context-field additions, engine instance-state wiring to 5 builder methods, the `descriptor_path` + `leading_comment` free functions in `_comments.py`, and a documented audit of all existing CompileResult instantiation sites.
 

@@ -35,7 +35,7 @@ are documented in ``docs/plans/2026-05-02-001-feat-protokit-lint-d2-engine-plan.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from protokit._cli_utils import _scrub_exc_message
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from google.protobuf import descriptor as proto_descriptor
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
     from protokit.schema.compile import CompileResult
 
@@ -103,13 +104,14 @@ class LintEngine:
 
     **Not thread-safe; not reentrant.** Per-run accumulators
     (``_findings``, ``_runtime_warnings``, ``_filtered_count``,
-    ``_current_profile``) are instance attributes mutated during
-    :meth:`run`. Concurrent or nested ``run()`` calls on the same
-    engine corrupt the accumulators silently. :meth:`run` raises
-    ``RuntimeError`` on detected reentrancy (a rule recursing into
-    ``engine.run()`` mid-walk). Concurrent threads must use one
-    engine instance per thread. Engines themselves are cheap to
-    construct, so per-thread instances are the recommended pattern.
+    ``_current_profile``, ``_current_source_info_descriptors``) are
+    instance attributes mutated during :meth:`run`. Concurrent or
+    nested ``run()`` calls on the same engine corrupt the accumulators
+    silently. :meth:`run` raises ``RuntimeError`` on detected reentrancy
+    (a rule recursing into ``engine.run()`` mid-walk). Concurrent
+    threads must use one engine instance per thread. Engines themselves
+    are cheap to construct, so per-thread instances are the recommended
+    pattern.
 
     Attributes (introspectable for tests / D3 CLI ``--list-rules``):
         See :meth:`__init__`.
@@ -125,6 +127,18 @@ class LintEngine:
         self._runtime_warnings: list[LintRuntimeWarning] = []
         self._filtered_count: int = 0
         self._current_profile: LintProfile | None = None
+        # Per-run snapshot of the active ``CompileResult.source_info_descriptors``
+        # (D6b U2 / R6b). Read by the 5 R6 ElementKind context builders
+        # so comment-aware rules in U3 can call ``leading_comment`` on the
+        # ctx-provided mapping without parameter-threading through every
+        # dispatch helper. Set immediately after the reentrancy guard in
+        # :meth:`run` and cleared in the ``finally`` block. The set-after-
+        # guard ordering is load-bearing: it lets the existing
+        # ``_current_profile`` guard catch reentrant ``run()`` calls
+        # before this field can be corrupted.
+        self._current_source_info_descriptors: (
+            Mapping[str, FileDescriptorProto] | None
+        ) = None
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -327,6 +341,14 @@ class LintEngine:
         self._runtime_warnings = []
         self._filtered_count = 0
         self._current_profile = profile
+        # Snapshot the source-info mapping for the 5 R6 ElementKind
+        # context builders (D6b U2 / R6b). Set AFTER the reentrancy
+        # guard above so the guard fires first if a rule recurses into
+        # ``run()`` mid-walk — preserving the K-1 set-after-guard
+        # invariant called out in the U2 plan.
+        self._current_source_info_descriptors = (
+            compile_result.source_info_descriptors
+        )
 
         try:
             # Step 2: unloaded-rule diff (one warning per missing rule_id).
@@ -412,6 +434,10 @@ class LintEngine:
             # NEXT run() call AND so escaped-ctx.emit() calls hit the
             # _emit-time guard rather than appending to a stale _findings.
             self._current_profile = None
+            # Clear the per-run source-info snapshot too so a subsequent
+            # run() with a different compile_result cannot leak the
+            # previous run's mapping into rule callbacks.
+            self._current_source_info_descriptors = None
 
     # ------------------------------------------------------------------
     # Dispatch helpers — one per ElementKind
@@ -652,6 +678,7 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
+            source_info_descriptors=self._current_source_info_descriptors,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),
@@ -669,6 +696,7 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
+            source_info_descriptors=self._current_source_info_descriptors,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),
@@ -688,6 +716,7 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
+            source_info_descriptors=self._current_source_info_descriptors,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),
@@ -705,6 +734,7 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
+            source_info_descriptors=self._current_source_info_descriptors,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),
@@ -724,6 +754,7 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
+            source_info_descriptors=self._current_source_info_descriptors,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),

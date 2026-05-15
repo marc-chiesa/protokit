@@ -55,6 +55,14 @@ from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
 if TYPE_CHECKING:
+    # ``FileDescriptorProto`` is referenced only by the 5 R6 ElementKind
+    # contexts' ``source_info_descriptors`` annotation (D6b U2 / R6b).
+    # Gated under TYPE_CHECKING so importing ``model.py`` does NOT pull
+    # in ``descriptor_pb2`` and its ~8 transitive protobuf modules — a
+    # module-weight argument distinct from the cold-import contract
+    # below (which is about ``protokit.schema`` not loading lint at all).
+    from google.protobuf.descriptor_pb2 import FileDescriptorProto
+
     # TYPE_CHECKING is False at runtime, so this import is invisible
     # to ``import protokit.schema.lint.model`` and preserves the
     # cold-import contract for ``protokit compat`` (compile.py is not
@@ -1028,6 +1036,17 @@ class MethodLintContext(_LintContextEmitMixin):
         pool: Descriptor pool the method was resolved from. Rules
             MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
+        source_info_descriptors: Optional mapping from ``file.name`` to
+            the raw ``FileDescriptorProto`` carrying preserved
+            ``source_code_info``. Populated when the caller passed
+            ``include_source_info=True`` to
+            :func:`protokit.schema.compile.compile_protos_to_result`;
+            otherwise ``None``. Comment-aware lint rules (the D6b U3
+            R6 deprecated-replacement family) will read this through
+            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            ``None`` is the legitimate "caller did not opt in" state;
+            rules consuming this field treat it accordingly per the
+            accepted false-positive tradeoff (parent plan U2 K-6).
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1038,6 +1057,7 @@ class MethodLintContext(_LintContextEmitMixin):
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]
@@ -1061,6 +1081,17 @@ class EnumLintContext(_LintContextEmitMixin):
         pool: Descriptor pool the enum was resolved from. Rules MUST
             NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
+        source_info_descriptors: Optional mapping from ``file.name`` to
+            the raw ``FileDescriptorProto`` carrying preserved
+            ``source_code_info``. Populated when the caller passed
+            ``include_source_info=True`` to
+            :func:`protokit.schema.compile.compile_protos_to_result`;
+            otherwise ``None``. Comment-aware lint rules (the D6b U3
+            R6 deprecated-replacement family) will read this through
+            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            ``None`` is the legitimate "caller did not opt in" state;
+            rules consuming this field treat it accordingly per the
+            accepted false-positive tradeoff (parent plan U2 K-6).
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1070,6 +1101,7 @@ class EnumLintContext(_LintContextEmitMixin):
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]
@@ -1093,6 +1125,17 @@ class EnumValueLintContext(_LintContextEmitMixin):
         pool: Descriptor pool the enum value was resolved from. Rules
             MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
+        source_info_descriptors: Optional mapping from ``file.name`` to
+            the raw ``FileDescriptorProto`` carrying preserved
+            ``source_code_info``. Populated when the caller passed
+            ``include_source_info=True`` to
+            :func:`protokit.schema.compile.compile_protos_to_result`;
+            otherwise ``None``. Comment-aware lint rules (the D6b U3
+            R6 deprecated-replacement family) will read this through
+            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            ``None`` is the legitimate "caller did not opt in" state;
+            rules consuming this field treat it accordingly per the
+            accepted false-positive tradeoff (parent plan U2 K-6).
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1103,6 +1146,7 @@ class EnumValueLintContext(_LintContextEmitMixin):
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]
@@ -1126,6 +1170,17 @@ class MessageLintContext(_LintContextEmitMixin):
         pool: Descriptor pool the message was resolved from. Rules
             MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
+        source_info_descriptors: Optional mapping from ``file.name`` to
+            the raw ``FileDescriptorProto`` carrying preserved
+            ``source_code_info``. Populated when the caller passed
+            ``include_source_info=True`` to
+            :func:`protokit.schema.compile.compile_protos_to_result`;
+            otherwise ``None``. Comment-aware lint rules (the D6b U3
+            R6 deprecated-replacement family) will read this through
+            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            ``None`` is the legitimate "caller did not opt in" state;
+            rules consuming this field treat it accordingly per the
+            accepted false-positive tradeoff (parent plan U2 K-6).
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1135,6 +1190,7 @@ class MessageLintContext(_LintContextEmitMixin):
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]
@@ -1158,6 +1214,17 @@ class FieldLintContext(_LintContextEmitMixin):
         pool: Descriptor pool the field was resolved from. Rules MUST
             NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile.
+        source_info_descriptors: Optional mapping from ``file.name`` to
+            the raw ``FileDescriptorProto`` carrying preserved
+            ``source_code_info``. Populated when the caller passed
+            ``include_source_info=True`` to
+            :func:`protokit.schema.compile.compile_protos_to_result`;
+            otherwise ``None``. Comment-aware lint rules (the D6b U3
+            R6 deprecated-replacement family) will read this through
+            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            ``None`` is the legitimate "caller did not opt in" state;
+            rules consuming this field treat it accordingly per the
+            accepted false-positive tradeoff (parent plan U2 K-6).
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1168,6 +1235,7 @@ class FieldLintContext(_LintContextEmitMixin):
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]

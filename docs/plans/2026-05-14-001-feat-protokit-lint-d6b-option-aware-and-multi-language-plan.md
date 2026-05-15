@@ -331,7 +331,7 @@ Module structure:
 
 ---
 
-- [ ] **Unit 2: R6b — CompileResult.source_info_descriptors field + FileLintContext.source_info_descriptors field + leading_comment free function + CompileResult consumer audit**
+- [x] **Unit 2: R6b — CompileResult.source_info_descriptors field + FileLintContext.source_info_descriptors field + leading_comment free function + CompileResult consumer audit**
 
 > **See [`docs/plans/2026-05-14-002-feat-d6b-u2-leading-comment-helper-plan.md`](2026-05-14-002-feat-d6b-u2-leading-comment-helper-plan.md) for the implementation-ready U2 plan.** The per-unit plan supersedes this section on four specifics:
 >
