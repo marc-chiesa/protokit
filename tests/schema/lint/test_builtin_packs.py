@@ -82,6 +82,7 @@ class TestBuiltinPacks:
             "protokit.schema.lint.rules.imports",
             "protokit.schema.lint.rules.package",
             "protokit.schema.lint.rules.file",
+            "protokit.schema.lint.rules.options.deprecated_replacement",
         )
         assert actual == expected, (
             f"BUILTIN_PACKS changed: {actual!r} != {expected!r}.\n"

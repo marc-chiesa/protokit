@@ -728,9 +728,19 @@ def _main_impl(
       former CLI-flag-direct usage.
     """
     if use_proto:
+        # D6b U3a: ``include_source_info=True`` enables the D6b R6
+        # deprecated-replacement family (and any future comment-aware
+        # rules) to read proto-source leading comments via the
+        # U2-shipped ``leading_comment`` helper. Cost is ~10-30%
+        # descriptor-set size per the U1 cross-runtime measurement;
+        # paid universally on every proto-mode lint invocation. Non-
+        # lint consumers (``protokit compat``, codegen, direct Python
+        # API) keep the pre-D6b zero-cost contract via the parameter
+        # default.
         result = compile_protos_to_result(
             paths=list(inputs),
             proto_paths=list(proto_paths),
+            include_source_info=True,
         )
         # Surface non-error info/warning diagnostics to stderr so
         # protoxy fallback notices and import-resolution warnings

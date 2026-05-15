@@ -68,6 +68,7 @@ from __future__ import annotations
 from types import ModuleType
 
 from protokit.schema.lint.rules import enum, file, imports, naming, package
+from protokit.schema.lint.rules.options import deprecated_replacement
 
 #: Curated set of rule pack modules that ``protokit lint``
 #: auto-loads at subcommand startup. See module docstring for the
@@ -81,12 +82,22 @@ from protokit.schema.lint.rules import enum, file, imports, naming, package
 #: buf BASIC parity for single-language teams. The 0.2.0 CHANGELOG
 #: entry documents the auto-load expansion + demotion paths per the
 #: KD-9 communication contract.
+#:
+#: D6b U3a adds the ``options/deprecated_replacement`` pack — the
+#: first comment-aware rule family (5 rules), one per
+#: ``*Options.deprecated`` ElementKind (FIELD, ENUM_VALUE, METHOD,
+#: MESSAGE, ENUM). The pack ships in ``default`` profile only; the
+#: ``recommended`` profile stays at buf BASIC parity (R6 has no buf
+#: analogue). Severity ``warning`` bounds the heuristic-regex
+#: blast radius. See the D6b U3 plan for the CHANGELOG-communication
+#: contract that the auto-load expansion brings.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,
     imports,
     package,
     file,
+    deprecated_replacement,
 )
 
 __all__ = ["BUILTIN_PACKS"]
