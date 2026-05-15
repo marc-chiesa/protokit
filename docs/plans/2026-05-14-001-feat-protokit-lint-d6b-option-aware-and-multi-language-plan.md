@@ -58,7 +58,7 @@ D6b closes both gaps in one delivery. **Headline:** option-aware path operationa
 ### Relevant Code and Patterns
 
 - **Compile backends:** `src/protokit/_cli_utils.py:219` (`_compile_with_protoxy`, `include_source_info=False` hard-coded at line 257) and `:275` (`_compile_with_protoc`, argv built at line 305 without `--include_source_info`). Both return `tuple[DescriptorPool, tuple[str, ...]]` today; R6a widens to `tuple[..., ..., Mapping[str, FileDescriptorProto] | None]`.
-- **CompileResult instantiation:** `src/protokit/schema/compile.py` — 5 sites (lines 374, 380, 396, 450) all need `source_info_descriptors` parameter; early-return paths pass `None`.
+- **CompileResult instantiation:** **Post-U1 audit:** 7 production sites + 6 test sites carry `source_info_descriptors`. Production: 6 in `src/protokit/schema/compile.py` (collision early-return, root-transitive-shadow early-return, empty-paths early-return, ImportError early-return, main success path, pool-is-None forced-reset, post_init-exception rebuild — `__post_init__` MappingProxyType snapshot is at lines 197-219 after U1) + 1 in `src/protokit/schema/lint/_cli_utils.py:399` (`merge_descriptor_sets`, defaults to `None`). All paths correctly handle the field's `None` default after U1; explicit `source_info_descriptors=None` keywords are only added on the early-return paths in `compile.py` for readability. Test sites use keyword args throughout — backward-compatible. (Original parent-plan enumeration of "5 sites" was pre-U1; corrected during U2's per-unit plan audit.)
 - **CompileResult dataclass:** `src/protokit/schema/compile.py:145-187`. Already de-facto unhashable (DescriptorPool isn't hashable) — adding `Mapping[str, FileDescriptorProto] | None` doesn't introduce new hash regressions. `__post_init__` snapshot pattern at lines 177-187 mirrors for the new field per [[frozen-dataclass-mutable-fields-need-post-init-snapshot]].
 - **8 LintContext dataclasses:** `src/protokit/schema/lint/model.py:957-1209` — only `FileLintContext` (line 957) gains new fields per R6b/R7 plan. The other 7 contexts are untouched.
 - **`_LintContextEmitMixin`:** `src/protokit/schema/lint/model.py:878-954` — exposes only `emit()` and `location()` today. Intentionally minimal; staying minimal per scope-guardian review.
@@ -332,6 +332,15 @@ Module structure:
 ---
 
 - [ ] **Unit 2: R6b — CompileResult.source_info_descriptors field + FileLintContext.source_info_descriptors field + leading_comment free function + CompileResult consumer audit**
+
+> **See [`docs/plans/2026-05-14-002-feat-d6b-u2-leading-comment-helper-plan.md`](2026-05-14-002-feat-d6b-u2-leading-comment-helper-plan.md) for the implementation-ready U2 plan.** The per-unit plan supersedes this section on four specifics:
+>
+> 1. **CompileResult field + `__post_init__` snapshot — already shipped in U1** (commits `d6b6713` + `f33fb2a`). U2's `compile.py` modifications are now zero.
+> 2. **Field lands on 5 contexts, not 1.** The per-unit plan's document-review pass surfaced that R6's 5 rules dispatch as FIELD / ENUM_VALUE / METHOD / MESSAGE / ENUM ElementKinds (per brainstorm line 33 + this plan's U3 lines 398-401), not FILE. The field goes on `FieldLintContext`, `EnumValueLintContext`, `MethodLintContext`, `MessageLintContext`, and `EnumLintContext`. `FileLintContext` / `ServiceLintContext` / `OneofLintContext` stay untouched per YAGNI.
+> 3. **Engine wiring uses instance state, not parameter threading.** `LintEngine._current_source_info_descriptors` mirrors the existing `_current_profile` pattern (set after the reentrancy guard, cleared in `finally`); each of the 5 builder methods reads it and passes to the corresponding context constructor.
+> 4. **Two helpers in `_comments.py`, not one.** `descriptor_path(descriptor) -> tuple[int, ...]` (descriptor introspection) + `leading_comment(source_info_descriptors, file_name, path) -> str | None` (mapping lookup with `.strip()`-based whitespace normalization).
+>
+> The section below remains valid for delivery-level structure (R6b's overall scope, dependencies on U1, the U2 → U3 sequencing). Implementation details below are now historical context.
 
 **Goal:** Add `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] | None` field with `__post_init__` snapshot. Add `FileLintContext.source_info_descriptors` engine-injected field (single-context addition; no other 7 contexts touched). Module-level `leading_comment(source_info_descriptors, file_name, path)` free function. Audit all CompileResult callers.
 
@@ -657,7 +666,7 @@ Module structure:
 | Bump-contract docstring contradicted the brainstorm; not reconciling would leave the codebase inconsistent | KTD-5 refines the docstring in U5. Presence ratchet in U7 pins the refined wording. |
 | Cross-protobuf-runtime divergence (4 vs 5) produces different lint findings | U1's cross-version verification step compares byte-identical emission before R6 lands. Divergence resolved or documented. |
 | Brainstorm's "contexts already reference compile_result" claim was incorrect | Plan corrects to direct field on FileLintContext (KTD-2); single-field addition only (paralleling R7's package_options). |
-| 5 CompileResult instantiation sites (not 1) require source_info_descriptors parameter | U2 explicitly enumerates all 5 sites; early-return paths pass None. |
+| 7 production + 6 test CompileResult instantiation sites require correct `source_info_descriptors` handling | U1's ce:review audit enumerated all 13 sites (6 production in `compile.py`, 1 in `schema/lint/_cli_utils.py:399`, 6 in tests); all paths use the field's `None` default correctly. U2's per-unit plan documents the audit conclusion in its commit message body. (Corrected from the original "5 sites" estimate, which pre-dated U1's audit.) |
 | R7 emit-shape order non-determinism across OS/CI | Canonical = lexicographically-smallest filename (KTD-6); pre-walk iteration uses `sorted()` per [[structural-pin-inspect-getsource-untestable-collision-branch]]. |
 | `severities_unloaded_rule` Literal addition is a wire-format change consumers must extend switch statements for | Bump-contract refinement (KTD-5) makes the rationale explicit. Schema_version bump 0.2 → 0.3 is the wire-format signal. |
 | `_LintContextEmitMixin` minimal-surface invariant violated if leading_comment is added as a method | Free function chosen (KTD-3); mixin surface unchanged. |
