@@ -73,7 +73,7 @@ from protokit.schema.lint.rules import (
     imports,
     naming,
     package,
-    package_same,
+    package_same,  # noqa: F401
 )
 from protokit.schema.lint.rules.options import deprecated_replacement
 
@@ -87,8 +87,11 @@ from protokit.schema.lint.rules.options import deprecated_replacement
 # [[pre-1.0-version-bump-as-communication-contract]]. Loading the
 # module is dormant-by-default: dormant code is the explicit opt-in
 # pattern this delivery uses to ship R7 without auto-failing every
-# pull-from-main between U4b and U7.
-_ = package_same  # silence "unused import" lints; the import is intentional.
+# pull-from-main between U4b and U7. The trailing F401 suppression
+# on the import line keeps ruff quiet about the apparently-unused
+# import without polluting the module namespace with a discard
+# binding — matches the suppression idiom used at
+# ``cli.py:81`` and ``formatters/__init__.py:65-71``.
 
 #: Curated set of rule pack modules that ``protokit lint``
 #: auto-loads at subcommand startup. See module docstring for the

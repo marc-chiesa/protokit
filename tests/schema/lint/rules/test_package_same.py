@@ -43,11 +43,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
     ElementKind,
     LintProfile,
     LintReport,
+    LintRuleSpec,
     LintSeverity,
 )
 from protokit.schema.lint.rules import package_same
@@ -85,33 +87,25 @@ from tests.schema.lint.rules.fixtures.package_same.proto_templates import (
 # ---------------------------------------------------------------------------
 
 
-# Maps option_attr -> (rule_id, decorated callable). Tests parametrize
-# over this so the 7-rule symmetry is enforced at the test level — a
-# new attr added to the rule pack must add its row here, otherwise the
-# per-attr parametrized tests fail at the lookup.
-_ATTR_TO_RULE: dict[str, tuple[str, Any]] = {
-    "go_package": ("package/same-go-package", check_same_go_package),
-    "java_package": ("package/same-java-package", check_same_java_package),
-    "csharp_namespace": (
-        "package/same-csharp-namespace",
-        check_same_csharp_namespace,
-    ),
-    "php_namespace": (
-        "package/same-php-namespace",
-        check_same_php_namespace,
-    ),
-    "ruby_package": (
-        "package/same-ruby-package",
-        check_same_ruby_package,
-    ),
-    "swift_prefix": (
-        "package/same-swift-prefix",
-        check_same_swift_prefix,
-    ),
-    "java_multiple_files": (
-        "package/same-java-multiple-files",
-        check_same_java_multiple_files,
-    ),
+# Maps option_attr -> rule_id. Tests parametrize over this so the
+# 7-rule symmetry is enforced at the test level — a new attr added
+# to the rule pack must add its row here, otherwise the per-attr
+# parametrized tests fail at the lookup.
+#
+# The original design carried the decorated callable as a second
+# tuple element, but no call site ever used the callable (every
+# unpack discarded it as ``_fn``). The simplified shape eliminates
+# 7 Any-typed dead slots and 6 unused-variable bindings without
+# loss of coverage; the in-RULES enforcement is preserved by
+# ``test_attr_to_rule_table_matches_production``.
+_ATTR_TO_RULE: dict[str, str] = {
+    "go_package": "package/same-go-package",
+    "java_package": "package/same-java-package",
+    "csharp_namespace": "package/same-csharp-namespace",
+    "php_namespace": "package/same-php-namespace",
+    "ruby_package": "package/same-ruby-package",
+    "swift_prefix": "package/same-swift-prefix",
+    "java_multiple_files": "package/same-java-multiple-files",
 }
 
 
@@ -175,7 +169,7 @@ class TestPackShape:
 
     def test_rules_tuple_order_is_deterministic(self) -> None:
         """Order doesn't carry public semantics but is fixed for diff stability."""
-        seen_rule_ids = [fn._lint_spec.rule_id for fn in RULES]  # type: ignore[attr-defined]
+        seen_rule_ids = [get_lint_spec(fn).rule_id for fn in RULES]
         # No duplicates.
         assert len(set(seen_rule_ids)) == 7
 
@@ -218,8 +212,8 @@ class TestSharedConstants:
 class TestRuleSpecs:
     """Each rule carries the expected D6b U4b spec metadata."""
 
-    def _spec_for(self, fn: Any) -> Any:
-        return fn._lint_spec  # type: ignore[attr-defined]
+    def _spec_for(self, fn: Any) -> LintRuleSpec:
+        return get_lint_spec(fn)
 
     def test_all_rules_severity_error(self) -> None:
         for fn in RULES:
@@ -293,6 +287,11 @@ class TestRuleSpecs:
 # ---------------------------------------------------------------------------
 
 
+# Intentionally re-declared (NOT imported from production) so the test acts as
+# an independent oracle. If production's ``_MESSAGE_TEMPLATE`` ever drifts,
+# ``test_template_byte_identical_across_rules`` fails loudly and forces an
+# explicit acknowledgement here — preventing a silent buf-parity regression
+# from sliding through a production-side template edit.
 _EXPECTED_TEMPLATE = (
     'Files in package "{package}" have {values_payload} '
     'for option "{option_attr}" and all values must be equal.'
@@ -305,7 +304,7 @@ class TestMessageTemplateUniformity:
     def test_template_byte_identical_across_rules(self) -> None:
         templates: set[str] = set()
         for fn in RULES:
-            spec = fn._lint_spec  # type: ignore[attr-defined]
+            spec = get_lint_spec(fn)
             assert isinstance(spec.message_template, str), (
                 f"{spec.rule_id}: multi-kind templates not supported by R7"
             )
@@ -315,7 +314,7 @@ class TestMessageTemplateUniformity:
         )
 
     def test_template_contains_three_named_placeholders(self) -> None:
-        template = check_same_go_package._lint_spec.message_template  # type: ignore[attr-defined]
+        template = get_lint_spec(check_same_go_package).message_template
         # All three placeholders present in the canonical template.
         assert "{package}" in template
         assert "{values_payload}" in template
@@ -346,7 +345,10 @@ class TestPerRuleHappyAndSadPaths:
         self._check_happy_path(tmp_path, "csharp_namespace", "Acme.X")
 
     def test_php_namespace_happy_path(self, tmp_path: Path) -> None:
-        self._check_happy_path(tmp_path, "php_namespace", "Acme\\X")
+        # ASCII-only value (no backslash separator) per the
+        # _SAMPLE_STRING_VALUES comment — the fixture builder does NOT
+        # escape backslashes inside option-literal bodies.
+        self._check_happy_path(tmp_path, "php_namespace", "AcmeX")
 
     def test_ruby_package_happy_path(self, tmp_path: Path) -> None:
         self._check_happy_path(tmp_path, "ruby_package", "Acme::X")
@@ -360,7 +362,7 @@ class TestPerRuleHappyAndSadPaths:
     def _check_happy_path(
         self, tmp_path: Path, attr: str, value: str | bool,
     ) -> None:
-        rule_id, _fn = _ATTR_TO_RULE[attr]
+        rule_id = _ATTR_TO_RULE[attr]
         sources = all_agree(attr, value=value)
         report = _run_single(tmp_path, sources, rule_id, package_same)
         assert len(report.findings) == 0, (
@@ -389,7 +391,7 @@ class TestPerRuleHappyAndSadPaths:
 
     def test_java_multiple_files_mixed_value(self, tmp_path: Path) -> None:
         """Boolean attr renders lowercase ``false,true`` in alphabetic order."""
-        rule_id, _fn = _ATTR_TO_RULE["java_multiple_files"]
+        rule_id = _ATTR_TO_RULE["java_multiple_files"]
         # Three-file package: a=true, b=false, c=true → declared={"true","false"}
         # → payload="multiple values \"false,true\"" (alphabetic, lowercase).
         sources = mixed_value(
@@ -407,7 +409,7 @@ class TestPerRuleHappyAndSadPaths:
             )
 
     def _check_mixed_value_string(self, tmp_path: Path, attr: str) -> None:
-        rule_id, _fn = _ATTR_TO_RULE[attr]
+        rule_id = _ATTR_TO_RULE[attr]
         value_x, value_y = _SAMPLE_STRING_VALUES[attr]
         # a=X, b=Y, c=X → declared={X,Y} → "multiple values \"X,Y\"".
         sources = mixed_value(
@@ -451,7 +453,7 @@ class TestPerRuleHappyAndSadPaths:
 
     def test_java_multiple_files_mixed_presence(self, tmp_path: Path) -> None:
         """Bool single-declarer + omitters: payload renders lowercase ``true``."""
-        rule_id, _fn = _ATTR_TO_RULE["java_multiple_files"]
+        rule_id = _ATTR_TO_RULE["java_multiple_files"]
         sources = mixed_presence(
             "java_multiple_files",
             declared_value=True,
@@ -467,7 +469,7 @@ class TestPerRuleHappyAndSadPaths:
             )
 
     def _check_mixed_presence_string(self, tmp_path: Path, attr: str) -> None:
-        rule_id, _fn = _ATTR_TO_RULE[attr]
+        rule_id = _ATTR_TO_RULE[attr]
         value_x, _value_y = _SAMPLE_STRING_VALUES[attr]
         sources = mixed_presence(
             attr,
@@ -773,19 +775,36 @@ class TestAdversarialSanitization:
     def test_u2028_u2029_in_option_value_neutralized(
         self, tmp_path: Path,
     ) -> None:
-        """U+2028 / U+2029 collapsed to spaces by ``_safe_for_stderr``."""
+        """U+2028 / U+2029 collapsed to spaces by ``_safe_for_stderr``.
+
+        Uses explicit ``\\u2028`` / ``\\u2029`` escape sequences in
+        the proto-source values AND the assertions instead of raw
+        codepoints embedded in the Python source. Raw codepoints are
+        visually indistinguishable from ASCII space in most editors and
+        code-review tools, AND can be silently normalized away by
+        overzealous editor or git-attribute settings, turning a
+        security-critical sentinel into a trivially-passing space
+        check. The escape-sequence form is normalization-resistant and
+        self-documenting.
+
+        Threat: U+2028 / U+2029 are Unicode line terminators that log
+        aggregators (Datadog, Splunk, CloudWatch) split records on,
+        even though terminals do not. An attacker-controlled option
+        value containing one of these codepoints could inject a fake
+        ``error[lint-CODE]:``-prefixed record into a downstream
+        aggregator even when the on-disk stderr looks like a single
+        line.
+        """
         sources = {
             "a.proto": (
                 'syntax = "proto3";\n'
                 "package smoke.uni;\n"
-                # U+2028 (line separator) embedded directly.
-                'option go_package = "github.com/x/A split";\n'
+                'option go_package = "github.com/x/A\u2028split";\n'
             ),
             "b.proto": (
                 'syntax = "proto3";\n'
                 "package smoke.uni;\n"
-                # U+2029 (paragraph separator) embedded directly.
-                'option go_package = "github.com/x/B split";\n'
+                'option go_package = "github.com/x/B\u2029split";\n'
             ),
         }
         report = _run_single(
@@ -794,8 +813,10 @@ class TestAdversarialSanitization:
         assert len(report.findings) == 2
         for _fname, params in _findings_sorted_by_file(report):
             payload = params["values_payload"]
-            assert " " not in payload, payload
-            assert " " not in payload, payload
+            # Explicit escape sequences keep these assertions resistant
+            # to git normalization / editor save-on-format hazards.
+            assert "\u2028" not in payload, payload
+            assert "\u2029" not in payload, payload
 
     def test_multi_kb_value_truncated(self, tmp_path: Path) -> None:
         """A multi-KB option value triggers the 500-char composed cap."""
@@ -822,6 +843,55 @@ class TestAdversarialSanitization:
             assert len(params["values_payload"]) <= 500, (
                 f"values_payload length {len(params['values_payload'])} "
                 f"exceeds 500-char cap"
+            )
+
+    def test_truncation_never_strands_backslash_from_split_escape_pair(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: 500-char cap must not split a ``\\"`` escape pair.
+
+        Adversarial/correctness convergence (D6b U4b ce:review): with a
+        long string value that contains an inner quote, the per-value
+        ``_escape_inner_quote`` step expands the quote to ``\\"`` (2
+        chars) before composition. A naive ``[:500]`` truncation can
+        land precisely between the ``\\`` and its ``"`` partner,
+        leaving a stranded backslash at position 499 with no semantic
+        meaning. Buf v1.69.0 never produces such an output — the rule
+        helper's :func:`_truncate_values_payload` guard strips the
+        trailing backslash to preserve escape-pair integrity.
+
+        This fixture is engineered to land the truncation precisely on
+        the escape pair: 482 ``A`` chars plus a trailing ``"`` produce
+        an escaped value of 484 chars; with the second value of 483
+        ``B`` chars, the composed string crosses 500 right at the
+        ``\\"`` boundary of the first sorted value (``A`` &lt; ``B``).
+        """
+        # 482 'A' chars + literal '"' — proto-source escape is \" to
+        # embed a literal quote in the option string.
+        proto_a = (
+            'syntax = "proto3";\n'
+            "package smoke.boundary;\n"
+            'option go_package = "' + ("A" * 482) + '\\"' + '";\n'
+        )
+        proto_b = (
+            'syntax = "proto3";\n'
+            "package smoke.boundary;\n"
+            'option go_package = "' + ("B" * 483) + '";\n'
+        )
+        sources = {"a.proto": proto_a, "b.proto": proto_b}
+        report = _run_single(
+            tmp_path, sources, "package/same-go-package", package_same,
+        )
+        assert len(report.findings) == 2
+        for _fname, params in _findings_sorted_by_file(report):
+            payload = params["values_payload"]
+            assert len(payload) <= 500, (
+                f"payload length {len(payload)} exceeds cap"
+            )
+            # Most critical assertion: no stranded backslash at the end.
+            assert not payload.endswith("\\"), (
+                f"payload ends with stranded backslash from split escape "
+                f"pair: ...{payload[-20:]!r}"
             )
 
     def test_control_chars_collapsed(self, tmp_path: Path) -> None:
@@ -862,7 +932,7 @@ class TestPerRuleSeveritiesDemotion:
         attr: str,
         target_severity: LintSeverity,
     ) -> LintReport:
-        rule_id, _fn = _ATTR_TO_RULE[attr]
+        rule_id = _ATTR_TO_RULE[attr]
         # Construct a mixed-value scenario — string attr uses sample
         # strings, bool attr uses (True, False, True).
         if attr == BOOL_ATTR:
@@ -1120,10 +1190,8 @@ def test_all_attrs_helper_table_matches_production() -> None:
 
 def test_attr_to_rule_table_matches_production() -> None:
     """``_ATTR_TO_RULE`` covers every production rule."""
-    table_rule_ids = {rule_id for rule_id, _ in _ATTR_TO_RULE.values()}
-    production_rule_ids = {
-        fn._lint_spec.rule_id for fn in RULES  # type: ignore[attr-defined]
-    }
+    table_rule_ids = set(_ATTR_TO_RULE.values())
+    production_rule_ids = {get_lint_spec(fn).rule_id for fn in RULES}
     assert table_rule_ids == production_rule_ids
     assert set(_ATTR_TO_RULE.keys()) == set(_PACKAGE_SAME_OPTION_ATTR_NAMES)
 

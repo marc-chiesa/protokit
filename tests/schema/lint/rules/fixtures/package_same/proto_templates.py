@@ -65,6 +65,20 @@ def _option_line(attr: str, value: str | bool) -> str:
     String values are wrapped in double quotes; bool values render
     as the lowercase ``true`` / ``false`` keywords required by the
     proto3 grammar.
+
+    **Backslash precondition.** This helper does NOT escape backslashes
+    or quotes inside ``value`` — callers must pass a value that is
+    already a valid proto3 string-literal body. A naive
+    ``options={"php_namespace": "Acme\\Sub"}`` would produce
+    ``option php_namespace = "Acme\\Sub";`` in the emitted source,
+    where ``\\S`` is not a valid proto3 escape and protoc / protoxy
+    will reject the file. The PHP-namespace fixtures intentionally
+    use ASCII-only values for this reason; the
+    ``TestInnerQuoteByteParity`` regression test handles quote
+    escaping inline rather than relying on the builder. The assertion
+    below catches the foot-gun loudly at fixture-build time instead
+    of letting it surface as a confusing compile failure deep in
+    ``_run_single``.
     """
     if attr == BOOL_ATTR:
         assert isinstance(value, bool), (
@@ -74,6 +88,12 @@ def _option_line(attr: str, value: str | bool) -> str:
     else:
         assert isinstance(value, str), (
             f"{attr} requires str, got {type(value).__name__}"
+        )
+        assert "\\" not in value, (
+            f"{attr}: ``make_proto`` does not escape backslashes inside "
+            f"option-literal bodies; got {value!r}. Use ASCII-only values "
+            f"here OR construct the proto source manually with explicit "
+            f"proto3 escapes (e.g. ``\\\\\\\\`` for a literal backslash)."
         )
         literal = f'"{value}"'
     return f"option {attr} = {literal};"

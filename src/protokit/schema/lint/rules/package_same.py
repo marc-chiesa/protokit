@@ -210,6 +210,35 @@ def _escape_inner_quote(value: str) -> str:
     return value.replace('"', '\\"')
 
 
+def _truncate_values_payload(payload: str) -> str:
+    """``_safe_for_stderr`` + 500-char cap with backslash-escape-safe boundary.
+
+    The naive ``payload[:500]`` slice can land between the ``\\`` and
+    the ``"`` of a backslash-quote escape pair inserted by
+    :func:`_escape_inner_quote`, leaving a stranded trailing
+    backslash that has no semantic partner. The dangling ``\\``
+    survives into the rendered message and is byte-divergent from
+    buf's emit format (which never produces an unbalanced escape).
+    The post-truncation guard strips a lone trailing backslash so
+    the cap never splits an escape pair.
+
+    Concrete repro (D6b U4b adversarial / correctness convergence):
+    two files in the same package with ``go_package = "A"*482 + '"'``
+    and ``"B"*483`` produce a composed payload of ~986 chars. The
+    ``[:500]`` slice lands precisely on the backslash of the
+    first value's trailing ``\\"`` escape. Without this guard,
+    ``params["values_payload"]`` ends with a lone ``\\``.
+    """
+    safe = _safe_for_stderr(payload)[:500]
+    if safe.endswith("\\"):
+        # Strip the orphaned backslash from a split ``\"`` escape pair.
+        # Worst case: truncation removes one informational character
+        # to preserve the escape-pair invariant. Vs the alternative
+        # (a malformed trailing ``\``), this is byte-clean.
+        safe = safe[:-1]
+    return safe
+
+
 def _check_package_option(
     ctx: FileLintContext, option_attr: str, rule_id: str,
 ) -> None:
@@ -291,7 +320,9 @@ def _check_package_option(
         params={
             "package": _safe_for_stderr(ctx.file.package)[:500],
             "option_attr": _safe_for_stderr(option_attr)[:500],
-            "values_payload": _safe_for_stderr(values_payload)[:500],
+            # Escape-pair-safe truncation: never strands a lone
+            # backslash from a split ``\"`` escape pair.
+            "values_payload": _truncate_values_payload(values_payload),
         },
     )
 
