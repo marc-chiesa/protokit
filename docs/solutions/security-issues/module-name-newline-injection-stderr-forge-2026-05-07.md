@@ -1,7 +1,7 @@
 ---
 title: "Rule-pack __name__ newline injection forges fake lint error lines on stderr"
 date: 2026-05-07
-last_updated: 2026-05-12
+last_updated: 2026-05-17
 category: docs/solutions/security-issues
 module: protokit.schema.lint
 problem_type: security_issue
@@ -451,6 +451,72 @@ a sanitization table is built programmatically from a `range()`,
 Unicode terminator range (U+0085 is at decimal 133, above 0x1F = 31)
 — making this an easy gap to miss without an explicit threat-model
 check.
+
+### Structural escaping and neutralization are separate layers — ordering matters
+
+(Added 2026-05-17 from the D6b U4b ce:review.) The "every
+interpolated slot" extended principle above asserts that every
+`{...}` slot in an f-string must pass through `_safe_for_stderr`.
+That principle is necessary but not sufficient when a slot also
+needs **structural** escaping for wire-format byte-parity with an
+external tool (e.g., the `\"` escape that buf v1.69.0 inserts for
+inner quote characters in its NDJSON `message` field).
+
+Structural escaping and control-char neutralization are
+**complementary layers**, not alternatives. They serve different
+purposes:
+
+| Layer | Purpose | Operates on |
+|-------|---------|-------------|
+| Structural escape (e.g., `_escape_inner_quote`) | Preserve byte-parity with external tool's wire format | Per-value, before composition |
+| Control-char neutralization (`_safe_for_stderr`) | Prevent line-break / aggregator-split injection | Composed string, before emission |
+
+The order MUST be: per-value structural escape → composition →
+control-char sanitization → length cap → escape-pair repair.
+
+```python
+# R7 PACKAGE_SAME_* helper composition (canonical order):
+# Step 1: per-value structural escape
+escaped_values = [_escape_inner_quote(v) for v in sorted(declared_set)]
+# Step 2: composition
+values_payload = f'multiple values "{",".join(escaped_values)}"'
+# Steps 3-5: sanitization + cap + escape-pair repair, bundled:
+"values_payload": _truncate_values_payload(values_payload),
+```
+
+Where `_truncate_values_payload` applies `_safe_for_stderr(payload)`,
+then `[:500]`, then the `endswith("\\")` orphan-backslash guard
+(see [[escape-pair-aware-truncation-dangling-backslash-wire-format-divergence-2026-05-17]]
+for the escape-pair-aware truncation step).
+
+**Why the order is load-bearing.** Sanitizing before structural
+escaping is not a correctness bug for current inputs (the two
+operations act on non-overlapping character classes:
+`_safe_for_stderr` neutralizes control chars; `_escape_inner_quote`
+replaces `"`). But the ordering is resilient to future change. If a
+future refactor widens `_CONTROL_CHAR_TABLE` to include `"`
+(incorrect, but plausible if someone over-applies the "neutralize
+every special character" intuition), pre-escape sanitization would
+silently transform `X"Y` into `X Y` and the downstream
+`_escape_inner_quote` would produce `X Y` with no quote to escape
+— breaking byte-parity. Post-composition sanitization is
+structurally resilient: the structural-escape layer runs first on
+the raw value and produces `X\"Y`; sanitization then operates on
+the composed string and treats `\` + `"` as ordinary characters
+that pass through unchanged.
+
+**Pattern**: when an interpolated slot must achieve byte-parity
+with an external tool's wire format, identify whether the parity
+requires structural multi-character escape sequences (e.g., `\"`,
+`\\`, `&amp;`). If yes, apply the structural escape per-value BEFORE
+composition; apply `_safe_for_stderr` AFTER composition. Add an
+escape-pair-safe length cap (see the cross-ref above) if the
+emission boundary has a length budget that could split a structural
+escape pair.
+
+Cross-ref: the D6b U4b `_check_package_option` helper in
+`src/protokit/schema/lint/rules/package_same.py:241-326` is the
+reference implementation of this five-stage pipeline.
 
 ### Architectural posture — extend the parent's posture to data flow
 
