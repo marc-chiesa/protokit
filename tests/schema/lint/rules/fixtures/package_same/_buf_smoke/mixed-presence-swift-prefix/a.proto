@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_presence_swift_prefix;
+
+option swift_prefix = "FX";
+
+message StubA {}

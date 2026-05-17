@@ -1,10 +1,14 @@
 ---
-title: "feat: protokit-lint D6b U4 — R7 PACKAGE_SAME_* family + engine pre-walk accumulator"
+title: "feat: protokit-lint D6b U4 — R7 PACKAGE_SAME_* family + engine pre-walk accumulator (SUPERSEDED)"
 type: feat
-status: active
+status: superseded
+superseded_by: docs/plans/2026-05-17-002-feat-d6b-u4-r7-package-same-revised-plan.md
 date: 2026-05-17
 origin: docs/brainstorms/2026-05-15-d6b-u4-r7-package-same-family-requirements.md
 ---
+
+> **⚠️ SUPERSEDED 2026-05-17.** This plan's architecture (lex-smallest-canonical, empty-package skip, WKT filter) was invalidated by the `/ce:work` U0 buf-smoke preflight (Outcome C — material divergence from buf v1.69.0 actual behavior). The 14 buf v1.69.0 NDJSON snapshots at `tests/schema/lint/rules/fixtures/package_same/_buf_smoke/recorded/` are the empirical evidence. The revised architecture (all-disagreers-fire, empty-package enforced, no WKT filter, alphabetic-by-value sort, lowercase bool render) is captured in [`docs/plans/2026-05-17-002-feat-d6b-u4-r7-package-same-revised-plan.md`](2026-05-17-002-feat-d6b-u4-r7-package-same-revised-plan.md) which is the current plan. This document is preserved for audit trail and the [[audit-wire-format-before-claiming-sibling-parity]] learning archive.
+
 
 # protokit-lint D6b U4 — R7 PACKAGE_SAME_* family + engine pre-walk accumulator
 

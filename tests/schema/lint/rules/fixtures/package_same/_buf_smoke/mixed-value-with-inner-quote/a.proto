@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_value_with_inner_quote;
+
+option go_package = "github.com/x/X\"quoted";
+
+message StubA {}

@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_presence_java_multiple_files;
+
+option java_multiple_files = true;
+
+message StubA {}

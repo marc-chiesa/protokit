@@ -1,0 +1,5 @@
+syntax = "proto3";
+
+package smoke.mixed_presence_php_namespace;
+
+message StubB {}
