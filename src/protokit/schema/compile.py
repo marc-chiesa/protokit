@@ -51,6 +51,11 @@ DiagnosticCategory = Literal[
     "unexpected",
     "same_basename_collision",
     "root_transitive_shadow",
+    # D6b U4a: CompileResult.__post_init__ invariant violation —
+    # caller-supplied (root_files, pool_file_names) inconsistency.
+    # NOT raised; surfaces via this diagnostic + pool_file_names
+    # reset to () so the engine pre-walk early-returns.
+    "pool_file_names_invariant",
 ]
 """Closed set of diagnostic categories.
 
@@ -178,31 +183,50 @@ class CompileResult:
             ``.proto`` path the user passed (NOT including
             transitive imports). Empty tuple on failure or when
             no input paths were given.
+        pool_file_names: Tuple of every ``fd.name`` registered in
+            :attr:`pool`, INCLUDING transitive imports
+            (``include_imports=True`` on both compile backends).
+            Superset of :attr:`root_files`. Populated by both
+            compile-mode (via 4-tuple backend return) and
+            descriptor-set-mode (via
+            :func:`protokit.schema.lint._cli_utils._load_descriptor_sets_to_result`).
+            Default ``()`` for test-helper / direct construction
+            without backend invocation. Consumed by R7's engine
+            pre-walk pass to detect cross-file option-value
+            disagreement; emits only on root_files via the existing
+            Step 4 dispatch gate. INTERNAL field added in D6b U4a;
+            subject to change pre-1.0 — consumers should not depend
+            on this field.
         diagnostics: Tuple of :class:`LintCompileDiagnostic`
             instances. Empty tuple on clean success. On
             both-backend failure (protoxy parse error followed by
             protoc failure), the protoxy-fallback info diagnostic
             comes FIRST per the A2-2 ordering invariant; the
             protoc-failure error diagnostic comes second.
+            Also receives a ``pool_file_names_invariant`` error
+            diagnostic when ``__post_init__`` detects
+            ``root_files`` not a subset of ``pool_file_names``
+            (D6b U4a: surfaces caller-supplied inconsistency
+            without raising; ``pool_file_names`` is reset to ``()``
+            so the engine pre-walk early-returns instead of
+            mis-firing on partial state).
         source_info_descriptors: Optional read-only mapping from
             ``fd.name`` to the raw :class:`FileDescriptorProto`
             captured BEFORE ``pool.Add()`` discards
             ``source_code_info``. Populated only when
             :func:`compile_protos_to_result` is called with
             ``include_source_info=True``; ``None`` otherwise.
-            Will be consumed by comment-aware lint rules (D6b R6
-            family) once the matching ``leading_comment`` helper
-            lands in D6b U2; the lint CLI call site is wired in
-            D6b U3. The field is wrapped in
-            :class:`types.MappingProxyType` at construction time
-            so the frozen-dataclass guarantee holds against
-            post-hoc mutation. Defaults to ``None`` so D1-D5
-            callers and the ``protokit compat`` / non-lint paths
-            pay zero descriptor-size cost.
+            Consumed by R6 comment-aware lint rules (D6b U2/U3).
+            Wrapped in :class:`types.MappingProxyType` at
+            construction time so the frozen-dataclass guarantee
+            holds against post-hoc mutation. Defaults to ``None``
+            so D1-D5 callers and the ``protokit compat`` / non-lint
+            paths pay zero descriptor-size cost.
     """
 
     pool: descriptor_pool.DescriptorPool
     root_files: tuple[str, ...] = ()
+    pool_file_names: tuple[str, ...] = ()
     diagnostics: tuple[LintCompileDiagnostic, ...] = ()
     source_info_descriptors: Mapping[str, FileDescriptorProto] | None = None
 
@@ -219,9 +243,45 @@ class CompileResult:
         when non-None, the caller's mapping is wrapped in
         :class:`types.MappingProxyType` so post-construction mutation
         cannot affect the stored mapping.
+
+        ``pool_file_names`` (D6b U4a) also snapshots into an immutable
+        tuple. **Invariant check via diagnostic emission, NOT raise:**
+        if ``pool_file_names`` is non-empty but does not include every
+        entry in ``root_files``, append a ``pool_file_names_invariant``
+        error diagnostic and reset ``pool_file_names`` to ``()`` so the
+        engine pre-walk early-returns instead of mis-firing on partial
+        state. The mechanism preserves the documented no-raise contract
+        (``assert`` would strip under ``python -O`` → silent rule
+        disablement; ``raise ValueError`` would violate the
+        "Always returned (never raised)" guarantee at the top of this
+        docstring).
         """
         object.__setattr__(self, "root_files", tuple(self.root_files))
+        object.__setattr__(self, "pool_file_names", tuple(self.pool_file_names))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        # D6b U4a invariant check (after the tuple snapshots above so we
+        # operate on the immutable forms).
+        if self.pool_file_names and not set(self.root_files).issubset(
+            self.pool_file_names
+        ):
+            missing = sorted(set(self.root_files) - set(self.pool_file_names))
+            invariant_diag = LintCompileDiagnostic(
+                level="error",
+                category="pool_file_names_invariant",
+                message=(
+                    f"CompileResult invariant violated: root_files contains "
+                    f"{len(missing)} entr{'y' if len(missing) == 1 else 'ies'} "
+                    f"not present in pool_file_names "
+                    f"(first: {missing[0]!r}). pool_file_names reset to () "
+                    f"so the engine pre-walk early-returns; lint rules "
+                    f"depending on pool_file_names will silently no-op on "
+                    f"this CompileResult."
+                ),
+            )
+            object.__setattr__(
+                self, "diagnostics", (*self.diagnostics, invariant_diag),
+            )
+            object.__setattr__(self, "pool_file_names", ())
         if self.source_info_descriptors is not None:
             object.__setattr__(
                 self,
@@ -533,6 +593,7 @@ def compile_protos_to_result(
     diagnostics: list[LintCompileDiagnostic] = []
     pool: descriptor_pool.DescriptorPool | None = None
     root_files: tuple[str, ...] = ()
+    pool_file_names: tuple[str, ...] = ()
     source_info_descriptors: Mapping[str, FileDescriptorProto] | None = None
 
     try:
@@ -554,14 +615,18 @@ def compile_protos_to_result(
             try:
                 # Tuple-unpacking atomicity is load-bearing: if
                 # ``_compile_with_protoxy`` raises mid-call, none of
-                # ``pool`` / ``root_files`` / ``source_info_descriptors`` is
-                # rebound, so the fallback ``_compile_with_protoc`` below
-                # starts from the init values (None / () / None) — not a
-                # partially populated state. A refactor that split this
-                # assignment (e.g., assigning ``source_info_descriptors`` from a
-                # separate call) would silently expose partial state to
-                # the fallback arm.
-                pool, root_files, source_info_descriptors = _compile_with_protoxy(
+                # ``pool`` / ``root_files`` / ``source_info_descriptors`` /
+                # ``pool_file_names`` is rebound, so the fallback
+                # ``_compile_with_protoc`` below starts from the init values
+                # — not a partially populated state. A refactor that split
+                # this assignment would silently expose partial state to
+                # the fallback arm. D6b U4a extends to a 4-tuple unpack.
+                (
+                    pool,
+                    root_files,
+                    source_info_descriptors,
+                    pool_file_names,
+                ) = _compile_with_protoxy(
                     paths,
                     proto_paths,
                     include_source_info=include_source_info,
@@ -583,13 +648,23 @@ def compile_protos_to_result(
                 # Re-attempt with protoc. Any exception here propagates
                 # to the outer catch tree, which appends the SECOND
                 # diagnostic (the both-fail composition contract).
-                pool, root_files, source_info_descriptors = _compile_with_protoc(
+                (
+                    pool,
+                    root_files,
+                    source_info_descriptors,
+                    pool_file_names,
+                ) = _compile_with_protoc(
                     paths,
                     proto_paths,
                     include_source_info=include_source_info,
                 )
         else:
-            pool, root_files, source_info_descriptors = _compile_with_protoc(
+            (
+                pool,
+                root_files,
+                source_info_descriptors,
+                pool_file_names,
+            ) = _compile_with_protoc(
                 paths,
                 proto_paths,
                 include_source_info=include_source_info,
@@ -621,9 +696,10 @@ def compile_protos_to_result(
         # correction, DescriptorPool() does NOT contain WKTs — callers
         # that need WKTs must check diagnostics first.
         pool = descriptor_pool.DescriptorPool()
-        # Source info from a partial-success backend is not actionable
-        # when the pool itself is invalid; clear it.
+        # Source info / pool_file_names from a partial-success backend
+        # are not actionable when the pool itself is invalid; clear both.
         source_info_descriptors = None
+        pool_file_names = ()
 
     # Wrap the final construction in the same Exception catch-all so
     # ``__post_init__`` failures (e.g., a caller-supplied custom
@@ -636,16 +712,20 @@ def compile_protos_to_result(
         return CompileResult(
             pool=pool,
             root_files=root_files,
+            pool_file_names=pool_file_names,
             diagnostics=tuple(diagnostics),
             source_info_descriptors=source_info_descriptors,
         )
     except Exception as exc:  # noqa: BLE001 — see comment above
         diagnostics.append(_diagnostic_unexpected(exc))
-        # Re-build with cleared source_info_descriptors so the second
-        # attempt can't trip the same __post_init__ failure.
+        # Re-build with cleared source_info_descriptors AND pool_file_names
+        # so the second attempt can't trip the same __post_init__ failure
+        # (e.g., a pool_file_names_invariant violation would re-fire if we
+        # re-passed the same value).
         return CompileResult(
             pool=pool,
             root_files=root_files,
+            pool_file_names=(),
             diagnostics=tuple(diagnostics),
             source_info_descriptors=None,
         )

@@ -186,9 +186,9 @@ def compile_proto(
     pool: descriptor_pool.DescriptorPool | None = None
     try:
         if has_protoxy:
-            pool, _, _ = _compile_with_protoxy([proto_path], proto_paths)
+            pool, _, _, _ = _compile_with_protoxy([proto_path], proto_paths)
         else:
-            pool, _, _ = _compile_with_protoc([proto_path], proto_paths)
+            pool, _, _, _ = _compile_with_protoc([proto_path], proto_paths)
     except FileNotFoundError:
         # Both backends absent — preserve the install-hint message that
         # the previous implementation emitted from inside _compile_with_protoc.
@@ -279,6 +279,7 @@ def _compile_with_protoxy(
     descriptor_pool.DescriptorPool,
     tuple[str, ...],
     Mapping[str, descriptor_pb2.FileDescriptorProto] | None,
+    tuple[str, ...],
 ]:
     """Multi-path compile via the in-process ``protoxy`` (Rust) backend.
 
@@ -305,11 +306,19 @@ def _compile_with_protoxy(
             comments.
 
     Returns:
-        Tuple of ``(DescriptorPool, root_names, source_info_descriptors)`` where
-        ``root_names`` is a tuple of the ``.proto``-relative names that
-        came from the user's input paths (NOT including transitive
-        imports), in input order; and ``source_info_descriptors`` is the raw
-        ``Mapping[str, FileDescriptorProto] | None`` described above.
+        Tuple of ``(DescriptorPool, root_names, source_info_descriptors,
+        pool_file_names)`` where ``root_names`` is a tuple of the
+        ``.proto``-relative names that came from the user's input paths
+        (NOT including transitive imports), in input order;
+        ``source_info_descriptors`` is the raw
+        ``Mapping[str, FileDescriptorProto] | None`` described above;
+        and ``pool_file_names`` (D6b U4a) is the full set of fd.name
+        strings registered in the returned ``DescriptorPool``, including
+        transitive imports brought in via ``include_imports=True``. R7's
+        engine pre-walk pass consumes ``pool_file_names`` to detect
+        per-package option disagreements; the tuple is in
+        ``fds.file`` iteration order (topological, byte-identical
+        across backends per the U1 cross-backend equivalence pattern).
 
     Raises:
         protoxy.ProtoxyError: On parse / compile failure.
@@ -343,7 +352,13 @@ def _compile_with_protoxy(
     # CompileResult.root_files). Filter by `emitted` for defensiveness
     # against any future matcher/backend skew.
     root_names = tuple(name for name in expected_in_order if name in emitted)
-    return pool, root_names, source_info_descriptors
+    # D6b U4a: pool_file_names captures every fd.name (transitive imports
+    # included via include_imports=True above). Same order as fds.file
+    # iteration; identical across backends (verified by
+    # TestPoolFileNamesCrossBackendByteEquivalence
+    # in tests/schema/lint/test_compile_pool_file_names.py).
+    pool_file_names = tuple(fd.name for fd in fds.file)
+    return pool, root_names, source_info_descriptors, pool_file_names
 
 
 def _compile_with_protoc(
@@ -355,6 +370,7 @@ def _compile_with_protoc(
     descriptor_pool.DescriptorPool,
     tuple[str, ...],
     Mapping[str, descriptor_pb2.FileDescriptorProto] | None,
+    tuple[str, ...],
 ]:
     """Multi-path compile by shelling out to ``protoc`` on PATH.
 
@@ -441,7 +457,11 @@ def _compile_with_protoc(
             capture=include_source_info,
         )
         root_names = tuple(name for name in expected_in_order if name in emitted)
-        return pool, root_names, source_info_descriptors
+        # D6b U4a: see _compile_with_protoxy for the byte-equivalence
+        # contract — both backends produce identical fds.file iteration
+        # order for the same input.
+        pool_file_names = tuple(fd.name for fd in fds.file)
+        return pool, root_names, source_info_descriptors, pool_file_names
     finally:
         tmp_path.unlink(missing_ok=True)
 

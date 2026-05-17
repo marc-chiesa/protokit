@@ -102,6 +102,10 @@ def _make_file_ctx(**user_kwargs: Any) -> FileLintContext:
         "file": _mock_descriptor("demo.proto"),
         "pool": MagicMock(),
         "profile": "default",
+        # D6b U4a: package_options is engine-injected by Step 3.5 pre-walk;
+        # test helpers default to None (R7 helpers early-return on None).
+        # Pass explicitly via user_kwargs to exercise the populated path.
+        "package_options": None,
         **_DEFAULT_INJECTED,
     }
     return FileLintContext(**{**defaults, **user_kwargs})

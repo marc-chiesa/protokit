@@ -35,7 +35,9 @@ are documented in ``docs/plans/2026-05-02-001-feat-protokit-lint-d2-engine-plan.
 from __future__ import annotations
 
 import os
+import posixpath
 from collections.abc import Callable, Iterable, Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 from protokit._cli_utils import _scrub_exc_message
@@ -138,6 +140,15 @@ class LintEngine:
         # before this field can be corrupted.
         self._current_source_info_descriptors: (
             Mapping[str, FileDescriptorProto] | None
+        ) = None
+        # Per-run snapshot of the Step 3.5 pre-walk's package_options
+        # accumulator (D6b U4a / R7). Shape:
+        # Mapping[package, Mapping[option_attr, Mapping[fname, str | None]]]
+        # with 3-level MappingProxyType wraps. None when the pre-walk
+        # early-returned (pool_file_names was empty). Set in ``run()``
+        # after Step 3 + cleared in the ``finally`` block.
+        self._current_package_options: (
+            Mapping[str, Mapping[str, Mapping[str, str | None]]] | None
         ) = None
 
     # ------------------------------------------------------------------
@@ -398,6 +409,23 @@ class LintEngine:
             for spec in active_specs:
                 group_by_kind[spec.element].append(spec)
 
+            # Step 3.5: pre-walk file-options accumulator for R7 cross-file
+            # PACKAGE_SAME_* rules (D6b U4a). Iterates the FULL pool —
+            # including transitively-imported protos — so the canonical
+            # value computation matches buf's full-module walk; findings
+            # still emit only on root_files via Step 4's dispatch gate.
+            # Built unconditionally when pool_file_names is non-empty (no
+            # lazy-gating; deferred to D6c if SC E7 benchmark exceeds 50ms).
+            # No WKT filter (empirically dropped per
+            # tests/schema/lint/rules/fixtures/package_same/_buf_smoke/
+            # recorded/wkt-conflict.json — buf fires on disagreeing
+            # google.protobuf files, so protokit must too).
+            # Defensive try/except KeyError mirrors Step 4 below (root_files
+            # name not in pool → compile-failure path skip).
+            self._current_package_options = self._build_package_options_accumulator(
+                compile_result,
+            )
+
             # Step 4: walk root_files (sorted by basename for cross-platform
             # stability; tie-break by full path for absolute determinism).
             for fname in sorted(
@@ -438,6 +466,106 @@ class LintEngine:
             # run() with a different compile_result cannot leak the
             # previous run's mapping into rule callbacks.
             self._current_source_info_descriptors = None
+            # D6b U4a: clear the per-run package_options accumulator for
+            # the same reason — prevent leak across run() invocations.
+            self._current_package_options = None
+
+    # ------------------------------------------------------------------
+    # Pre-walk accumulator (D6b U4a — R7 PACKAGE_SAME_* infrastructure)
+    # ------------------------------------------------------------------
+
+    # WKT path prefix is NOT filtered (D6b U4a empirical: buf v1.69.0
+    # fires on disagreeing google.protobuf files per the wkt-conflict
+    # smoke fixture). Real WKTs have consistent options across the
+    # protobuf-runtime corpus so they never trigger findings in practice;
+    # synthetic disagreement cases (vendored stubs, accidental
+    # `package google.protobuf` declarations) correctly fire to match buf.
+
+    def _build_package_options_accumulator(
+        self, compile_result: CompileResult,
+    ) -> Mapping[str, Mapping[str, Mapping[str, str | None]]] | None:
+        """Construct the 3-level ``package_options`` accumulator for R7.
+
+        Iterates ``compile_result.pool_file_names`` (the FULL pool
+        including transitive imports — superset of ``root_files``) and
+        captures each file's ``FileOptions`` values for the 7
+        PACKAGE_SAME_* attrs. Bool ``java_multiple_files`` is captured
+        as a lowercase string ("true" / "false") to byte-match buf's
+        emit format per the empirical mixed-value-java-multiple-files
+        smoke fixture.
+
+        Returns ``None`` when ``pool_file_names`` is empty — early-return
+        signals to ``_build_file_ctx`` that no accumulator was built
+        (test-helper paths + compile-failure paths). Otherwise returns a
+        3-level ``MappingProxyType``-wrapped Mapping; mutation at any
+        nesting depth raises ``TypeError``.
+
+        Iteration uses ``posixpath.basename`` (NOT ``os.path.basename``)
+        so the sort key is platform-independent — protobuf-canonical
+        paths use forward slashes regardless of host OS.
+
+        Defensive ``try/except KeyError: continue`` mirrors Step 4's
+        existing pattern at the per-fd lookup; matches the existing
+        partial-pool-state tolerance and avoids regressing
+        compile-failure paths that today produce partial lint reports.
+
+        Lazy import of ``_PACKAGE_SAME_OPTION_ATTR_NAMES`` from
+        ``protokit.schema.lint.rules.package_same`` is deferred to
+        runtime (not module-top) to preserve the cold-import contract
+        for ``protokit.schema`` per
+        ``tests/schema/lint/test_cold_import_extended.py``. Once U7
+        registers ``package_same`` in BUILTIN_PACKS, the package_same
+        module loads at engine-init time anyway, so this deferred
+        import becomes a no-op.
+        """
+        if not compile_result.pool_file_names:
+            return None
+
+        # Lazy import — see method docstring for cold-import contract.
+        from protokit.schema.lint.rules.package_same import (  # noqa: PLC0415
+            _PACKAGE_SAME_OPTION_ATTR_NAMES,
+        )
+
+        package_options: dict[str, dict[str, dict[str, str | None]]] = {}
+        for fname in sorted(
+            compile_result.pool_file_names,
+            key=lambda f: (posixpath.basename(f), f),
+        ):
+            try:
+                fd = compile_result.pool.FindFileByName(fname)
+            except KeyError:
+                # Defensive: pool_file_names contains a name absent from
+                # the pool (compile-failure path; mirrors Step 4's existing
+                # try/except at engine.py:407-412). Omit from accumulator.
+                continue
+            pkg = fd.package
+            opts = fd.GetOptions()
+            per_pkg = package_options.setdefault(pkg, {})
+            for attr in _PACKAGE_SAME_OPTION_ATTR_NAMES:
+                per_attr = per_pkg.setdefault(attr, {})
+                if opts.HasField(attr):
+                    raw = getattr(opts, attr)
+                    # D6b U4a empirical: buf renders booleans as lowercase
+                    # ("false"/"true"), not Python's title-case ("False"/"True").
+                    # Per recorded/mixed-value-java-multiple-files.json.
+                    if isinstance(raw, bool):
+                        per_attr[fname] = str(raw).lower()
+                    else:
+                        per_attr[fname] = str(raw)
+                else:
+                    per_attr[fname] = None
+
+        # 3-level MappingProxyType wrap (D6b U4a — defense-in-depth against
+        # accidental mutation by co-authored rule code; NOT a security
+        # boundary, since user-pack code via --rule-pack runs in-process
+        # with full Python introspection).
+        wrapped: dict[str, Mapping[str, Mapping[str, str | None]]] = {}
+        for pkg, per_pkg_dict in package_options.items():
+            wrapped_per_pkg: dict[str, Mapping[str, str | None]] = {}
+            for attr, per_attr_dict in per_pkg_dict.items():
+                wrapped_per_pkg[attr] = MappingProxyType(per_attr_dict)
+            wrapped[pkg] = MappingProxyType(wrapped_per_pkg)
+        return MappingProxyType(wrapped)
 
     # ------------------------------------------------------------------
     # Dispatch helpers — one per ElementKind
@@ -642,6 +770,11 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
+            # D6b U4a: R7's engine pre-walk populates _current_package_options
+            # before Step 4's per-file walk; this snapshot is what R7 rules
+            # consume via ctx.package_options. None when the pre-walk
+            # early-returned (pool_file_names was empty).
+            package_options=self._current_package_options,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),

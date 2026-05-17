@@ -85,7 +85,7 @@ class TestProtoxyBackend:
         ``(pool, root_names)`` where ``root_names`` is a tuple of the
         ``.proto``-relative names that came from the user's input paths.
         """
-        pool, root_names, source_info_descriptors = _cli_utils._compile_with_protoxy(
+        pool, root_names, source_info_descriptors, _ = _cli_utils._compile_with_protoxy(
             [demo_proto_file], (),
         )
         # Pool is fully populated.
@@ -127,7 +127,7 @@ class TestProtoxyBackend:
             'message User { string name = 1; common.Address addr = 2; }\n'
         )
 
-        pool, root_names, source_info_descriptors = _cli_utils._compile_with_protoxy(
+        pool, root_names, source_info_descriptors, _ = _cli_utils._compile_with_protoxy(
             [main_proto], (str(common_dir),),
         )
         # Both messages reachable.
@@ -188,11 +188,11 @@ class TestBackendDispatch:
 
         def fake_protoxy(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoxy"] += 1
-            return sentinel_pool, (), None
+            return sentinel_pool, (), None, ()
 
         def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoc"] += 1
-            return _dp.DescriptorPool(), (), None
+            return _dp.DescriptorPool(), (), None, ()
 
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoc", fake_protoc)
@@ -216,7 +216,7 @@ class TestBackendDispatch:
         def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             calls["protoc"] += 1
             from google.protobuf import descriptor_pool
-            return descriptor_pool.DescriptorPool(), (), None
+            return descriptor_pool.DescriptorPool(), (), None, ()
 
         monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: False)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)

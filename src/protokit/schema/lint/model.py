@@ -973,6 +973,14 @@ class FileLintContext(_LintContextEmitMixin):
             Rules MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile (e.g., ``"default"``).
             Rules can branch on this for profile-specific behavior.
+        package_options: Engine-injected accumulator built by Step 3.5
+            pre-walk (D6b U4a / R7). Shape:
+            ``Mapping[package, Mapping[option_attr, Mapping[filename, str | None]]]``.
+            All 3 nesting levels wrapped in ``MappingProxyType`` so
+            mutation at any depth raises ``TypeError``. ``None`` when
+            constructed via test helpers without engine injection.
+            INTERNAL field; consumers are R7 rules (U4b), not external
+            callers — subject to change pre-1.0.
         _emit_fn: Engine-injected closure that records findings into
             the report. Use ``self.emit(...)`` instead of calling.
         _rule_id: Engine-injected rule_id stamped on every emitted
@@ -985,6 +993,9 @@ class FileLintContext(_LintContextEmitMixin):
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
+    package_options: Mapping[
+        str, Mapping[str, Mapping[str, str | None]]
+    ] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]

@@ -135,7 +135,7 @@ class TestCompileProtoxyFallback:
         def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             pool = descriptor_pool.DescriptorPool()
             pool.Add(fdp)
-            return pool, ("demo.proto",), None
+            return pool, ("demo.proto",), None, ("demo.proto",)
 
         monkeypatch.setattr(protoxy, "compile", fake_protoxy_compile)
         monkeypatch.setattr(

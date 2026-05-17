@@ -429,6 +429,15 @@ def _load_descriptor_sets_to_result(
     return CompileResult(
         pool=pool,
         root_files=tuple(root_files),
+        # D6b U4a: pool_file_names mirrors root_files for descriptor-set-mode
+        # because every fd added to the pool via this loader is, by
+        # definition, a "root" the user passed on the CLI (transitive
+        # imports must be pre-bundled into the descriptor set by
+        # ``protoc --include_imports``; this loader does not resolve
+        # them on the fly). The dedup-skipped fds (continue branch
+        # above) are absent from both root_files AND pool_file_names,
+        # preserving the invariant set(pool_file_names) >= set(root_files).
+        pool_file_names=tuple(root_files),
         # CompileResult.__post_init__ wraps the dict in MappingProxyType
         # per the U1-established pattern at
         # src/protokit/schema/compile.py:225-229. We pass a plain dict

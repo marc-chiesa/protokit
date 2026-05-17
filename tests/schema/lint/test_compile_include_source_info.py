@@ -174,11 +174,11 @@ class TestSourceInfoDescriptorsCrossBackendByteEquivalence:
         # backend directly (sidesteps the dispatcher's _has_protoxy check
         # which can't be reliably patched at compile.py's bound reference).
         proto = _write_proto(tmp_path, "demo.proto", _PROTO_WITH_COMMENTS)
-        _, _, protoxy_sl = _cli_utils._compile_with_protoxy(
+        _, _, protoxy_sl, _ = _cli_utils._compile_with_protoxy(
             [proto], (), include_source_info=True
         )
         try:
-            _, _, protoc_sl = _cli_utils._compile_with_protoc(
+            _, _, protoc_sl, _ = _cli_utils._compile_with_protoc(
                 [proto], (), include_source_info=True
             )
         except FileNotFoundError:
@@ -532,7 +532,7 @@ class TestPostInitExceptionContainment:
             *,
             include_source_info: bool = False,
         ):
-            return descriptor_pool.DescriptorPool(), (), _BuggyMapping()
+            return descriptor_pool.DescriptorPool(), (), _BuggyMapping(), ()
 
         monkeypatch.setattr(compile_module, "_has_protoxy", lambda: True)
         monkeypatch.setattr(
