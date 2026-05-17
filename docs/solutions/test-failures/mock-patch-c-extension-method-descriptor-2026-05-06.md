@@ -371,3 +371,12 @@ fallback).
   implementation structure directly. Together they form a
   small family of "test the source when behavior is unreachable"
   patterns in this codebase.
+
+- [[capture-setup-without-dispatch-false-test-confidence-2026-05-17]] —
+  same meta-pattern at a different boundary: setup completes silently
+  but the observed signal never fires. Here the C-extension `pool.Add`
+  silently no-ops the patch; there the engine's dispatch walk silently
+  skips when no rules of the triggering ElementKind are loaded.
+  Prevention Rule 4 here ("assert that the patch actually replaced the
+  target") is the conceptual sibling to the capture learning's "assert
+  `len(captured) > 0` before checking downstream state."

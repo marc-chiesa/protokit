@@ -361,6 +361,15 @@ Behavior survives refactoring; the structural pin can be removed.
   applied to shared error helpers. Source-structure tests are
   a small family in this codebase; this learning adds the
   inspect.getsource variant.
+- [[capture-setup-without-dispatch-false-test-confidence-2026-05-17]] —
+  third member of the "untestable branch" family. This learning
+  uses inspect.getsource when no fixture can trigger the branch;
+  the capture-setup learning uses _make_capture_pack to LOAD a
+  rule that triggers the dispatch path so a previously-untestable
+  branch becomes observable. Both address the same gap (test
+  silently passes while the relevant code path is never exercised)
+  from opposite ends: structural pinning when behavior is
+  unreachable, vs. wiring infrastructure so behavior fires.
 - [[presence-ratchet-test-pattern-for-prose-substrings]] —
   sibling ratchet pattern at the prose layer: this learning
   pins evaluation-order shape that fixtures can't exercise;

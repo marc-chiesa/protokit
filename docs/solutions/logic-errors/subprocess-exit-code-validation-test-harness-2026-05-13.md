@@ -255,6 +255,15 @@ A checklist for any new subprocess wrapper in a test harness:
   code skew producing `findings = []`. Together they map two distinct
   mechanisms for the same symptom: a test reports a green run on a
   pipeline that never produced real output.
+- [[capture-setup-without-dispatch-false-test-confidence-2026-05-17]] —
+  third mechanism in the silent-green family. This doc covers
+  exit-code skew producing `findings = []`; that doc covers
+  dispatch-walk skip producing `captured = []` when capture infrastructure
+  is set up but no rule of the triggering ElementKind is loaded.
+  Prevention rule 7 here (sanity test invoking the tool with known-bad
+  input to verify the wrapper raises) is the structural analog to the
+  capture learning's "deletion test" — both verify that the captured
+  signal can fail loudly rather than silently produce wrong-empty output.
 - [[formatter-systemexit-exit-code-bypass-2026-04-19]] — exit-code
   contract from the OUTBOUND side (CLI emitter wrapping rule execution).
   This doc is the INBOUND companion (test harness consumer reading
