@@ -67,8 +67,28 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from protokit.schema.lint.rules import enum, file, imports, naming, package
+from protokit.schema.lint.rules import (
+    enum,
+    file,
+    imports,
+    naming,
+    package,
+    package_same,
+)
 from protokit.schema.lint.rules.options import deprecated_replacement
+
+# ``package_same`` (D6b U4b R7 PACKAGE_SAME_* family) is imported here
+# so users can opt in via ``--rule-pack=protokit.schema.lint.rules.package_same``
+# without typing the import path themselves AND so the cold-import
+# regression test at ``tests/schema/lint/test_cold_import_extended.py``
+# has a known forbidden-modules target to assert against. It is
+# **DELIBERATELY NOT** in ``BUILTIN_PACKS`` below — registration is
+# deferred to U7 alongside the 0.2.0 -> 0.3.0 version bump per
+# [[pre-1.0-version-bump-as-communication-contract]]. Loading the
+# module is dormant-by-default: dormant code is the explicit opt-in
+# pattern this delivery uses to ship R7 without auto-failing every
+# pull-from-main between U4b and U7.
+_ = package_same  # silence "unused import" lints; the import is intentional.
 
 #: Curated set of rule pack modules that ``protokit lint``
 #: auto-loads at subcommand startup. See module docstring for the
