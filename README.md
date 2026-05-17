@@ -589,8 +589,8 @@ specificity:
    `[tool.protokit.lint.severities] "imports/unused" = "warning"`
    demotes one rule without touching the rest. Multiple keys
    compose; user overrides always win on collision with profile
-   defaults. Unknown rule_ids fire an `unloaded_rule` runtime
-   warning naming each id (typo surfacing without blocking).
+   defaults. Unknown rule_ids fire a `severities_unloaded_rule`
+   runtime warning naming each id (typo surfacing without blocking).
 
 ```toml
 [tool.protokit.lint]
@@ -620,7 +620,7 @@ Recognized keys (every key is optional):
 | `max_warnings` | integer | Non-error exit threshold for warning-level findings. |
 | `format` | string | Default output formatter (`"human"`, `"json"`, `"junit"`, `"sarif"`, or a `--formatter-module` name). |
 | `no_builtin_rules` | boolean | When `true`, skip loading `BUILTIN_PACKS` (the auto-loaded `naming` / `enum` / `imports` / `package` / `file` packs). User packs supplied via `--rule-pack MODULE` become load-bearing; an empty rule set exits 2 via the `no-rules` error code. |
-| `[tool.protokit.lint.severities]` | table (rule_id → severity string) | Per-rule severity overrides applied AFTER profile composition. User overrides always win on collision via post-compose dict-spread. Unknown rule_ids fire an `unloaded_rule` runtime warning (typo surfacing without blocking the run). |
+| `[tool.protokit.lint.severities]` | table (rule_id → severity string) | Per-rule severity overrides applied AFTER profile composition. User overrides always win on collision via post-compose dict-spread. Unknown rule_ids fire a `severities_unloaded_rule` runtime warning (typo surfacing without blocking the run). |
 
 Unknown keys and type mismatches produce a hard error (exit 2)
 that names the recognized keys and offending field. List-valued
@@ -660,10 +660,10 @@ and agents. Top-level keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `schema_version` | string | Wire-format version (currently `"0.2"`). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
+| `schema_version` | string | Wire-format version (currently `"0.3"`). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
-| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"`), `rule_id` (string for engine-emitted categories, `null` for CLI-emitted categories), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
+| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"`), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
 | `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty for `--input` descriptor-set mode. |
 | `summary` | object | Aggregate counts. Keys: `errors`, `warnings`, `info`, `total`, `filtered_count`, `runtime_warning_count`. |
 
@@ -757,10 +757,10 @@ accumulation.
 | Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
 | Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
 | JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
-| JSON wire | `lint_json["schema_version"]: "0.2"` (top-level wire-format version; absence → implicit "0.1") | IN |
+| JSON wire | `lint_json["schema_version"]: "0.3"` (top-level wire-format version; absence → implicit "0.1") | IN |
 | SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
-| SARIF wire | `runs[].properties.lint_schema_version: "0.2"` (parity with `lint_json["schema_version"]`) | IN |
+| SARIF wire | `runs[].properties.lint_schema_version: "0.3"` (parity with `lint_json["schema_version"]`) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` is forward-placeholder for D6b differentiator) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |

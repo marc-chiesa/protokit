@@ -10,10 +10,11 @@ Tests cover:
 - Happy path: severity override on a built-in rule_id takes effect.
 - User-wins on collision: user severities override engine-composed
   rule_severity_overrides for the same rule_id.
-- Edge case: unknown rule_id in ``severities`` emits an
-  ``unloaded_rule`` runtime warning (reuses the existing category
-  per KTD-2; no new ``LintRuntimeWarning.category`` Literal value
-  in D6a).
+- Edge case: unknown rule_id in ``severities`` emits a
+  ``severities_unloaded_rule`` runtime warning (D6b U5 split the
+  category from the original ``unloaded_rule`` per D6a U9 KTD-2's
+  deferred resolution; the schema_version 0.2 → 0.3 bump is the
+  consumer-facing wire-format signal).
 - Edge case: empty ``severities`` is a no-op.
 """
 
@@ -77,13 +78,17 @@ class TestR9aSeveritiesOverlay:
             f"expected severity=info; got {canary_findings!r}"
         )
 
-    def test_unknown_rule_id_emits_unloaded_rule_warning(
+    def test_unknown_rule_id_emits_severities_unloaded_rule_warning(
         self,
         tmp_path: Path,
         clean_descriptor_set: Path,
     ) -> None:
         """Severity override on a rule_id NOT in the composed profile
-        emits an ``unloaded_rule`` runtime warning naming the bad id.
+        emits a ``severities_unloaded_rule`` runtime warning naming
+        the bad id. D6b U5 split this category from the original
+        ``unloaded_rule`` so consumers can switch on ``category``
+        directly instead of matching the
+        ``[tool.protokit.lint.severities]`` message substring.
         """
         pyproject = _write_pyproject_severities(
             tmp_path,
@@ -101,12 +106,13 @@ class TestR9aSeveritiesOverlay:
         payload = json.loads(result.stdout)
         unloaded = [
             w for w in payload["runtime_warnings"]
-            if w["category"] == "unloaded_rule"
+            if w["category"] == "severities_unloaded_rule"
             and w["rule_id"] == "naming/does-not-exist"
         ]
         assert unloaded, (
-            f"expected unloaded_rule warning for the unknown id; "
-            f"got runtime_warnings={payload['runtime_warnings']!r}"
+            f"expected severities_unloaded_rule warning for the "
+            f"unknown id; got runtime_warnings="
+            f"{payload['runtime_warnings']!r}"
         )
         # The synthesized message names the [tool.protokit.lint.severities]
         # source so users can find the bad key.

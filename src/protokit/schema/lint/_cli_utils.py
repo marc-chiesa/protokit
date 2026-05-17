@@ -53,13 +53,14 @@ from protokit.schema.lint.model import DuplicateRuleError
 #:   info[lint-pack-profiles]:          R11 per-pack introspection (pack= profiles= ...)
 #:   warning[lint-compile]:             backend warning diagnostics in --proto mode
 #:   warning[lint-cli]:                 CLI-layer advisories (e.g. ignored flags)
-#:   protokit lint: warning [<category>]: D5 U5 R21a runtime-warning stderr family (4 categories)
+#:   protokit lint: warning [<category>]: D5 U5 R21a runtime-warning stderr family
+#:                                         (5 categories as of D6b U5)
 #:   error[lint-CODE]:                  exit-2 paths; CODE must be in this tuple
 #:
 #: Note: the legacy ``warning[lint-runtime]:`` stderr prefix was
 #: removed in D5 U4 (R21) and is not restored. Runtime warnings
-#: (``rule_exception``, ``unloaded_rule``, ``min_severity_relaxed``,
-#: ``all_files_excluded``) are carried in
+#: (``rule_exception``, ``unloaded_rule``, ``severities_unloaded_rule``,
+#: ``min_severity_relaxed``, ``all_files_excluded``) are carried in
 #: ``LintReport.runtime_warnings``. Under ``--format=human`` (the
 #: default) they surface on stderr via the D5 U5 CLI-side hook as
 #: ``protokit lint: warning [<category>]: <message>`` — see

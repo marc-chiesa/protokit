@@ -855,6 +855,30 @@ class TestLintRuntimeWarning:
         assert warning.exception_type is None
         assert warning.descriptor_path is None
 
+    def test_severities_unloaded_rule_category_constructs_with_rule_id_populated(self) -> None:
+        """``category="severities_unloaded_rule"`` (D6b U5) is CLI-emitted but
+        rule-scoped — populates ``rule_id`` + leaves ``exception_type`` /
+        ``descriptor_path`` ``None``. Mirrors the
+        ``unloaded_rule`` field-population shape (both are rule-scoped
+        warnings), but the category discriminator is distinct so
+        consumers can switch on ``category`` directly instead of
+        matching message substrings.
+        """
+        warning = LintRuntimeWarning(
+            category="severities_unloaded_rule",
+            rule_id="missing/severities-key",
+            message=(
+                "rule 'missing/severities-key' is named in "
+                "[tool.protokit.lint.severities] but is not in the "
+                "composed profile — the severity override has no effect"
+            ),
+        )
+        assert warning.category == "severities_unloaded_rule"
+        assert warning.rule_id == "missing/severities-key"
+        assert "[tool.protokit.lint.severities]" in warning.message
+        assert warning.exception_type is None
+        assert warning.descriptor_path is None
+
     def test_runtime_warning_supports_value_equality(self) -> None:
         """Two warnings with the same fields compare equal (frozen dataclass)."""
         a = LintRuntimeWarning(

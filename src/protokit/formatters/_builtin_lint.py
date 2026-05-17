@@ -244,10 +244,31 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:       (a) addition of new top-level keys
 #:       (b) change in meaning of an existing field
 #:       (c) removal of a previously documented field
-#:   - Adding new severity-level / category strings to an existing
-#:     enum field does NOT bump the version (the field's meaning is
-#:     unchanged; the enum just gains a value).
-_LINT_JSON_SCHEMA_VERSION: str = "0.2"
+#:   - **Bump-trigger refinement (closed Literals vs open ladders):**
+#:     Adding new string values to an existing enum field has two
+#:     consumer-impact regimes that determine whether a bump is
+#:     needed:
+#:       * **Open severity-string ladders** — for fields like
+#:         ``severity`` (``"error"`` / ``"warning"`` / ``"info"``)
+#:         where consumers tolerate unknown values gracefully (the
+#:         field's role is to be rendered or compared, not switched
+#:         on; an unknown value can still be rendered as a string or
+#:         compared by ordering), additions DO NOT bump the version.
+#:       * **Closed Literal discriminators** — for fields like
+#:         ``LintRuntimeWarning.category`` (``"rule_exception"`` /
+#:         ``"unloaded_rule"`` / ...) where consumers exhaustively
+#:         switch on the value (each case handled with different
+#:         logic; an unknown value would fall through to a default
+#:         branch the consumer didn't expect), additions DO bump the
+#:         version. Every consumer must extend their switch / match
+#:         construct to handle the new case.
+#:     The discriminating question: can a consumer that doesn't know
+#:     about the new value still produce a correct result? Open
+#:     ladders: yes. Closed discriminators: no. D6b U5's addition of
+#:     ``"severities_unloaded_rule"`` to the ``category`` Literal is
+#:     the first closed-Literal addition under this contract; it
+#:     bumps schema_version from ``"0.2"`` to ``"0.3"``.
+_LINT_JSON_SCHEMA_VERSION: str = "0.3"
 
 
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
@@ -264,11 +285,12 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       ``--min-severity`` filtering).
     - ``runtime_warnings``: list of warning dicts (category,
       rule_id, message, exception_type, descriptor_path). The
-      ``rule_id`` field is ``null`` for the CLI-emitted categories
-      (``min_severity_relaxed``, ``all_files_excluded``) and a
-      string for engine-emitted categories (``rule_exception``,
-      ``unloaded_rule``) — see :class:`LintRuntimeWarning` for the
-      contract.
+      ``rule_id`` field is populated for rule-scoped categories
+      (``rule_exception``, ``unloaded_rule``,
+      ``severities_unloaded_rule``) and ``null`` for non-rule-scoped
+      categories (``min_severity_relaxed``, ``all_files_excluded``).
+      See :class:`LintRuntimeWarning` for the full per-category
+      field-population contract.
     - ``diagnostics``: list of compile-time diagnostic dicts
       (level, category, message); empty unless ``--proto`` mode
       surfaced backend notices.
@@ -408,9 +430,10 @@ def _build_lint_testsuite(
     #
     # Per D5 U5 R21a, the cross-formatter render contract: every
     # ``LintRuntimeWarning`` category (``rule_exception``,
-    # ``unloaded_rule``, ``min_severity_relaxed``, ``all_files_excluded``,
-    # plus any future category) renders here regardless of source —
-    # closes the D3-era silent-warning regression for ``lint_junit``.
+    # ``unloaded_rule``, ``severities_unloaded_rule``,
+    # ``min_severity_relaxed``, ``all_files_excluded``, plus any
+    # future category) renders here regardless of source — closes the
+    # D3-era silent-warning regression for ``lint_junit``.
     system_out_lines: list[str] = [
         f"{d.level} [{d.category}]: {d.message}" for d in warning_diags
     ]
@@ -628,7 +651,7 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     #         "level": "warning",
     #         "message": {"text": "..."},
     #         "properties": {
-    #             "category": "<one of the four categories>",
+    #             "category": "<one of the five categories>",
     #             "subcategory": "runtime",
     #         },
     #     }

@@ -1073,20 +1073,22 @@ def _main_impl(
             ),
         )
 
-    # R9a (D6a U9): synthesize ``unloaded_rule`` runtime warnings for
-    # any ``severities`` keys that don't match a rule_id in the
-    # composed profile. Reuses the existing ``unloaded_rule`` category
-    # rather than introducing a new ``severities_unloaded_rule`` value
-    # in the LintRuntimeWarning.category Literal — the semantic fit is
-    # reasonable (both communicate "you named a rule_id that won't
-    # take effect") and avoids a wire-format change in D6a.
+    # R9a (D6a U9, split in D6b U5): synthesize
+    # ``severities_unloaded_rule`` runtime warnings for any
+    # ``severities`` keys that don't match a rule_id in the composed
+    # profile. The dedicated category landed in D6b U5 (resolved
+    # D6a U9 KTD-2's accepted conflation); see
+    # :class:`LintRuntimeWarning.category` docstring for the
+    # per-emit-site contract. The schema_version 0.2 → 0.3 bump in
+    # ``_LINT_JSON_SCHEMA_VERSION`` is the consumer-facing wire-format
+    # signal that switch tables need re-checking.
     # Sanitize the rule_id (flows verbatim into lint_json/lint_sarif
     # wire formats; json.dumps does NOT escape U+2028/U+2029) per the
     # dual-sanitization model established in D5 U5.
     if severities_unloaded_rule_ids:
         new_warnings = tuple(
             LintRuntimeWarning(
-                category="unloaded_rule",
+                category="severities_unloaded_rule",
                 rule_id=_safe_for_stderr(rid),
                 message=(
                     f"rule {_safe_for_stderr(rid)!r} is named in "

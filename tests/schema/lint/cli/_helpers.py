@@ -10,8 +10,8 @@ D5 U5 added the cross-formatter render contract. The
 ``LINT_RUNTIME_WARNING_CATEGORIES`` tuple + ``warning_for_category``
 factory live here so the formatter test (``tests/test_builtin_lint_runtime_warnings.py``)
 and the CLI human-stderr test (``test_human_stderr_render.py``)
-share one definition — a 5th category lands by editing this file
-alone.
+share one definition — a 6th category lands by editing this file
+alone (D6b U5 added the 5th, ``severities_unloaded_rule``).
 """
 
 from __future__ import annotations
@@ -21,16 +21,17 @@ from typing import Any
 
 from protokit.schema.lint.model import LintRuntimeWarning
 
-#: The four ``LintRuntimeWarning`` categories that exist as of D5
+#: The five ``LintRuntimeWarning`` categories that exist as of D6b
 #: U5. Keep this tuple in sync with ``LintRuntimeWarning.category``'s
-#: ``Literal[...]`` in ``protokit.schema.lint.model``. Adding a 5th
-#: category is a deliberate D6+ act that requires updating both the
+#: ``Literal[...]`` in ``protokit.schema.lint.model``. Adding a 6th
+#: category is a deliberate act that requires updating both the
 #: model Literal AND this tuple — the cross-formatter parametrized
 #: matrix tests will then fail until every formatter render site is
 #: covered.
 LINT_RUNTIME_WARNING_CATEGORIES: tuple[str, ...] = (
     "rule_exception",
     "unloaded_rule",
+    "severities_unloaded_rule",
     "min_severity_relaxed",
     "all_files_excluded",
 )
@@ -66,11 +67,11 @@ def warning_for_category(
 
     Mirrors the engine/CLI emission contract:
 
-    - Engine-emitted (``rule_exception`` / ``unloaded_rule``):
-      ``rule_id`` is a non-``None`` string + ``descriptor_path`` is
-      populated for ``rule_exception``.
-    - CLI-emitted (``min_severity_relaxed`` / ``all_files_excluded``):
-      ``rule_id`` is ``None``.
+    - Rule-scoped (``rule_exception`` / ``unloaded_rule`` /
+      ``severities_unloaded_rule``): ``rule_id`` is a non-``None``
+      string + ``descriptor_path`` is populated for ``rule_exception``.
+    - Non-rule-scoped CLI-emitted (``min_severity_relaxed`` /
+      ``all_files_excluded``): ``rule_id`` is ``None``.
 
     The optional ``index`` parameter makes each invocation produce
     a distinguishable instance — useful for threshold-boundary tests
@@ -91,6 +92,17 @@ def warning_for_category(
             category="unloaded_rule",
             rule_id=f"missing/never-registered-{index}",
             message=f"rule pack 'missing.pack.{index}' could not be loaded",
+        )
+    if category == "severities_unloaded_rule":
+        return LintRuntimeWarning(
+            category="severities_unloaded_rule",
+            rule_id=f"missing/severities-key-{index}",
+            message=(
+                f"rule 'missing/severities-key-{index}' is named in "
+                f"[tool.protokit.lint.severities] but is not in the "
+                f"composed profile — the severity override has no "
+                f"effect"
+            ),
         )
     if category == "min_severity_relaxed":
         return LintRuntimeWarning(

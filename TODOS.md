@@ -162,18 +162,13 @@ brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
 
 **D6b backlog items surfaced during D6a:**
 
-- **`severities_unloaded_rule` category split**: D6a U9 introduced a
-  second emit site for the existing `LintRuntimeWarning.category =
-  "unloaded_rule"` value — engine-emitted (rule in profile but not
-  loaded) + CLI-synthesized (rule in `[tool.protokit.lint.severities]`
-  but not in composed profile). Per Unit 9 KTD-2 the semantic
-  conflation was accepted: both signals reach the user; agents
-  distinguish via message substring. The U9 ce:review F5 finding
-  (cli-readiness reviewer, 2026-05-13) recommends a dedicated
-  category value (`severities_unloaded_rule`) in D6b so consumers
-  can switch on `category` rather than message substring. This is
-  a wire-format addition (not a breaking change to the existing
-  `unloaded_rule` shape) and lands cleanly in a minor bump.
+- **`severities_unloaded_rule` category split**: Shipped in D6b
+  0.3.0 (U5, 2026-05-17). See
+  `docs/brainstorms/2026-05-17-d6b-u5-r9-severities-category-split-requirements.md`
+  + `docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md`.
+  Closed the D6a U9 KTD-2 accepted-conflation trip-wire; consumers
+  now switch on `category` directly. Schema_version bumped 0.2 →
+  0.3 as the consumer-facing wire-format signal.
 - **R9b — per-rule disable/enable** (`disabled_rules` / `enabled_rules`
   pyproject lists): deferred from D6a per the brainstorm; needs
   real-demand evidence to design the 4 collision-shape precedence

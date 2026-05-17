@@ -341,7 +341,7 @@ class TestLintSarifRuntimeWarningProperties:
         assert "runtime_warnings" not in properties, properties
         # Schema version is unconditional (R9d cross-format-enum-string-parity
         # with lint_json).
-        assert properties["lint_schema_version"] == "0.2"
+        assert properties["lint_schema_version"] == "0.3"
 
     def test_runtime_warnings_and_schema_version_coexist(
         self, sarif_validator: jsonschema.Draft7Validator,
@@ -371,7 +371,7 @@ class TestLintSarifRuntimeWarningProperties:
         assert "runtime_warnings" in properties, properties
         assert "lint_schema_version" in properties, properties
         assert len(properties["runtime_warnings"]) == 1
-        assert properties["lint_schema_version"] == "0.2"
+        assert properties["lint_schema_version"] == "0.3"
 
     def test_empty_message_field_still_emits_one_entry(
         self, sarif_validator: jsonschema.Draft7Validator,

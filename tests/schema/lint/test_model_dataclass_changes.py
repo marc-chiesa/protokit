@@ -2,18 +2,22 @@
 
 Covers:
 
-- **Literal extension** from 2 → 4 categories: ``rule_exception``,
-  ``unloaded_rule`` (existing), plus ``min_severity_relaxed`` and
-  ``all_files_excluded`` (NEW, both CLI-emitted).
+- **Literal extension** from 2 → 4 → 5 categories: ``rule_exception``,
+  ``unloaded_rule`` (engine-emitted), plus ``min_severity_relaxed``
+  and ``all_files_excluded`` (D5 U3/U4, CLI-emitted), plus
+  ``severities_unloaded_rule`` (D6b U5, CLI-emitted with rule_id
+  populated — closes D6a U9 KTD-2 accepted tradeoff).
 - ``rule_id: str`` → ``rule_id: str | None`` widening (BREAKING per
-  R18/R18a). The two existing engine-emitted categories continue to
-  populate ``rule_id`` with a non-None string at every emit site;
-  only the two new CLI-emitted categories construct with
-  ``rule_id=None``.
+  R18/R18a). The three rule-scoped categories
+  (``rule_exception``, ``unloaded_rule``,
+  ``severities_unloaded_rule``) continue to populate ``rule_id`` with
+  a non-None string at every emit site; only the two non-rule-scoped
+  CLI-emitted categories construct with ``rule_id=None``.
 - Frozen-dataclass mutation discipline still enforced for every
-  field across all four categories.
+  field across all five categories.
 - Field-population invariants per the docstring table (rule_id is
-  None ↔ category is one of the two CLI-emitted categories).
+  None ↔ category is one of the two non-rule-scoped CLI-emitted
+  categories).
 
 These tests pin the BREAKING wire-format change so D6+ consumers
 that iterate ``w.rule_id`` see a regression if the type widens
@@ -35,9 +39,9 @@ from protokit.schema.lint.model import LintRuntimeWarning
 
 
 class TestCategoryLiteral:
-    def test_literal_lists_all_four_categories(self) -> None:
-        """The Literal annotation must enumerate exactly 4 category
-        names. A drift to 3 or 5 indicates an accidental break in the
+    def test_literal_lists_all_five_categories(self) -> None:
+        """The Literal annotation must enumerate exactly 5 category
+        names. A drift to 4 or 6 indicates an accidental break in the
         category contract that this test catches at import time.
         """
         type_hints = typing.get_type_hints(LintRuntimeWarning)
@@ -46,18 +50,19 @@ class TestCategoryLiteral:
         assert set(literal_args) == {
             "rule_exception",
             "unloaded_rule",
+            "severities_unloaded_rule",
             "min_severity_relaxed",
             "all_files_excluded",
         }
-        # And exactly 4 — not "a superset" — so adding a fifth without
+        # And exactly 5 — not "a superset" — so adding a sixth without
         # a corresponding test update will fail this assertion.
-        assert len(literal_args) == 4
+        assert len(literal_args) == 5
 
     def test_test_helper_mirror_stays_in_sync_with_model(self) -> None:
         """``LINT_RUNTIME_WARNING_CATEGORIES`` in ``tests/schema/lint/cli/_helpers.py``
         is a manually-maintained mirror of the model Literal — the
         cross-formatter parametrized matrix iterates that tuple, so a
-        5th category added to the model but missed in the helper
+        6th category added to the model but missed in the helper
         silently stops getting matrix coverage. Fail the test now if
         the two diverge so the discipline is mechanically enforced
         rather than relying on the helper docstring's "Keep in sync"
@@ -136,7 +141,7 @@ class TestRuleIdWidened:
 
 
 # ---------------------------------------------------------------------------
-# Frozen-dataclass discipline preserved across all four categories
+# Frozen-dataclass discipline preserved across all five categories
 # ---------------------------------------------------------------------------
 
 
@@ -146,6 +151,7 @@ class TestFrozen:
         [
             ("rule_exception", "rule/id"),
             ("unloaded_rule", "rule/id"),
+            ("severities_unloaded_rule", "rule/id"),
             ("min_severity_relaxed", None),
             ("all_files_excluded", None),
         ],

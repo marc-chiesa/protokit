@@ -1,6 +1,6 @@
 """D6a U9 R9d — wire-format schema_version tests.
 
-``lint_json`` gains a top-level ``"schema_version": "0.2"`` key.
+``lint_json`` gains a top-level ``"schema_version": "0.3"`` key.
 ``lint_sarif`` gains ``runs[].properties.lint_schema_version`` with the
 same string value (cross-format-enum-string-parity discipline).
 ``lint_human`` and ``lint_junit`` deliberately do NOT carry the field —
@@ -18,7 +18,7 @@ from click.testing import CliRunner
 
 from protokit.schema.lint.cli import main as lint_main
 
-_SCHEMA_VERSION = "0.2"
+_SCHEMA_VERSION = "0.3"
 
 
 class TestR9dLintJsonSchemaVersion:

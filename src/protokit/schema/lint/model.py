@@ -353,7 +353,7 @@ class LintFinding:
 class LintRuntimeWarning:
     """Engine- or CLI-stage warning recorded during a lint run.
 
-    Four structurally distinct events share this type via the
+    Five structurally distinct events share this type via the
     ``category`` discriminator (mirrors ``LintCompileDiagnostic``'s
     ``category: Literal[...]`` pattern in
     ``protokit.schema.compile``):
@@ -364,41 +364,44 @@ class LintRuntimeWarning:
        caught exception's class name) and ``descriptor_path`` (a
        stable string locating the descriptor at which the rule was
        firing). Emitted by the engine.
-    2. ``"unloaded_rule"`` — a ``rule_id`` was named in a context
-       where it cannot take effect. Two emit sites share the
-       category (per D6a U9 KTD-2; semantic conflation is
-       accepted — both signals reach the user). Distinguish via
-       message content:
-
-       (a) **Engine-emitted** (the original site): the active
+    2. ``"unloaded_rule"`` (engine-emitted only) — the active
        profile's ``rule_ids`` referenced a ``rule_id`` not loaded
        into the engine. Set difference of ``profile.rule_ids``
        against loaded ``rule_id``s, computed once at the start of
        ``LintEngine.run``. Message: ``rule {rid} is named in
-       profile {name} but not loaded into the engine``.
-
-       (b) **CLI-synthesized** (D6a U9 R9a): a key in
-       ``[tool.protokit.lint.severities]`` is not in the composed
-       profile's ``rule_ids``, so the severity override has no
-       effect. Message: ``rule {rid} is named in
+       profile {name} but not loaded into the engine``. Carries
+       ``rule_id`` populated; ``exception_type`` / ``descriptor_path``
+       ``None``.
+    3. ``"severities_unloaded_rule"`` (CLI-synthesized only, D6b U5)
+       — a key in ``[tool.protokit.lint.severities]`` is not in the
+       composed profile's ``rule_ids``, so the severity override has
+       no effect. Message: ``rule {rid} is named in
        [tool.protokit.lint.severities] but is not in the composed
-       profile — the severity override has no effect``.
+       profile — the severity override has no effect``. Carries
+       ``rule_id`` populated; ``exception_type`` / ``descriptor_path``
+       ``None``.
 
-       Both shapes carry ``rule_id`` populated and ``exception_type``
-       / ``descriptor_path`` ``None``. Agents that need to
-       programmatically distinguish the two origins should match
-       the message substrings ``in profile`` (engine) vs
-       ``[tool.protokit.lint.severities]`` (CLI). A dedicated
-       category for the CLI-synthesized branch is a D6b candidate
-       if real consumer feedback shows the conflation is confusing.
-    3. ``"min_severity_relaxed"`` (D5 U4) — the CLI-side relaxation
+       **U5 split note.** Categories 2 and 3 were a single
+       ``"unloaded_rule"`` value through D6a (per U9 KTD-2; semantic
+       conflation accepted with message-substring discrimination).
+       D6b U5 split them so programmatic consumers can switch on
+       ``category`` directly instead of matching message substrings.
+       The schema_version 0.2 → 0.3 bump (see
+       ``_LINT_JSON_SCHEMA_VERSION`` in
+       ``protokit.formatters._builtin_lint``) is the consumer-facing
+       wire-format signal that switch statements need re-checking.
+       Consumers that previously matched the
+       ``"[tool.protokit.lint.severities]"`` substring on
+       ``unloaded_rule`` warnings should now switch on
+       ``category == "severities_unloaded_rule"`` directly.
+    4. ``"min_severity_relaxed"`` (D5 U4) — the CLI-side relaxation
        notice fired when the resolved ``min_severity`` is more
        lenient than the composed profile's intrinsic floor. The
        message field carries the R20 source-attributed text
        (CLI-source / pyproject-source / both branches). Emitted
        CLI-side, NOT by the engine. ``rule_id`` is ``None`` because
        the warning is not scoped to a single rule.
-    4. ``"all_files_excluded"`` (D5 U3) — the CLI-side notice fired
+    5. ``"all_files_excluded"`` (D5 U3) — the CLI-side notice fired
        when ``--exclude`` / pyproject ``exclude`` filters drop every
        file from the descriptor pool before ``engine.run``. The
        message field describes how many files were excluded. Emitted
@@ -407,15 +410,17 @@ class LintRuntimeWarning:
        a single rule.
 
     **BREAKING (D5 U3)**: ``rule_id`` was widened from ``str`` to
-    ``str | None``. The two existing engine-emitted categories
-    (``rule_exception``, ``unloaded_rule``) continue to populate
-    ``rule_id`` with a non-``None`` value at every emit site; the
-    type widening only allows the two NEW CLI-emitted categories to
-    populate ``None``. Consumers iterating ``w.rule_id`` (e.g.,
-    ``w.rule_id.upper()``) on the new categories will raise
-    ``AttributeError`` — migrate to ``str | None``-aware narrowing
-    per the mypy-strict pattern below. See the CHANGELOG D5 entry
-    for the BREAKING marker and migration recipes.
+    ``str | None``. The three rule-scoped categories
+    (``rule_exception``, ``unloaded_rule``, ``severities_unloaded_rule``)
+    continue to populate ``rule_id`` with a non-``None`` value at every
+    emit site; the type widening only allows the two non-rule-scoped
+    CLI-emitted categories (``min_severity_relaxed``,
+    ``all_files_excluded``) to populate ``None``. Consumers iterating
+    ``w.rule_id`` (e.g., ``w.rule_id.upper()``) on the non-rule-scoped
+    categories will raise ``AttributeError`` — migrate to
+    ``str | None``-aware narrowing per the mypy-strict pattern below.
+    See the CHANGELOG D5 entry for the BREAKING marker and migration
+    recipes.
 
     **Field-population per category** (enforced by tests, not by the
     type system):
@@ -429,6 +434,15 @@ class LintRuntimeWarning:
     ``"unloaded_rule"`` (engine-emitted):
         - ``rule_id``: populated (``str``)
         - ``message``: human-readable "id is in profile but not loaded"
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
+    ``"severities_unloaded_rule"`` (CLI-synthesized, D6b U5):
+        - ``rule_id``: populated (``str``) — the bad key from
+          ``[tool.protokit.lint.severities]``
+        - ``message``: human-readable
+          "id is named in [tool.protokit.lint.severities] but is not
+          in the composed profile — the severity override has no effect"
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
@@ -467,27 +481,31 @@ class LintRuntimeWarning:
     then ``assert w.descriptor_path is not None`` (or use ``cast``)
     inside the ``"rule_exception"`` branch before reading. After D5
     U3 the same pattern extends to ``rule_id``: branch on
-    ``category``, then ``assert w.rule_id is not None`` inside the
-    ``"rule_exception"`` / ``"unloaded_rule"`` branches. This is the
-    same pattern ``LintCompileDiagnostic`` requires for its own
+    ``category``, then ``assert w.rule_id is not None`` inside any
+    of the three rule-scoped branches (``"rule_exception"`` /
+    ``"unloaded_rule"`` / ``"severities_unloaded_rule"``). This is
+    the same pattern ``LintCompileDiagnostic`` requires for its own
     Optional fields (``command``, ``exit_code``, ``stderr``,
     ``exception_type``); D2 introduced the convention, D5 U3
-    extended it to ``rule_id``.
+    extended it to ``rule_id``, D6b U5 added
+    ``severities_unloaded_rule`` to the rule-scoped set.
 
     Attributes:
-        category: Discriminator for the four event shapes. Two
+        category: Discriminator for the five event shapes. Two
             engine-emitted (``rule_exception``, ``unloaded_rule``)
-            and two CLI-emitted (``min_severity_relaxed``,
-            ``all_files_excluded``).
+            and three CLI-emitted (``severities_unloaded_rule``,
+            ``min_severity_relaxed``, ``all_files_excluded``).
         rule_id: The id of the rule the warning is about. For
             ``"rule_exception"`` this is the rule that raised; for
-            ``"unloaded_rule"`` this is the missing id; for the two
-            CLI-emitted categories this is ``None`` (not
-            rule-scoped).
+            ``"unloaded_rule"`` this is the missing id named in the
+            profile; for ``"severities_unloaded_rule"`` this is the
+            bad key from ``[tool.protokit.lint.severities]``; for
+            the two non-rule-scoped CLI-emitted categories this is
+            ``None``.
         message: Human-readable description. For
-            ``"rule_exception"`` typically ``str(exc)``; for
-            ``"unloaded_rule"`` an explanation that the id was named
-            in a profile but not loaded; for the CLI-emitted
+            ``"rule_exception"`` typically ``str(exc)``; for the two
+            ``*unloaded_rule`` categories an explanation of the
+            scope mismatch; for the non-rule-scoped CLI-emitted
             categories see the per-category description above.
         exception_type: ``__name__`` of the caught exception class
             for ``"rule_exception"``; ``None`` for every other
@@ -500,6 +518,7 @@ class LintRuntimeWarning:
     category: Literal[
         "rule_exception",
         "unloaded_rule",
+        "severities_unloaded_rule",
         "min_severity_relaxed",
         "all_files_excluded",
     ]
@@ -540,11 +559,12 @@ class LintReport:
             matched the profile filter — even if its ``fn`` was never
             invoked because no element of its ``ElementKind`` was
             present in any walked file. Defaults to ``()``.
-        runtime_warnings: Tuple of engine-stage warnings raised during
-            the run. Four categories share the type:
+        runtime_warnings: Tuple of engine- AND CLI-stage warnings
+            raised during the run. Five categories share the type:
             ``rule_exception`` and ``unloaded_rule`` (engine-emitted)
-            plus ``min_severity_relaxed`` (D5 U4) and
-            ``all_files_excluded`` (D5 U3) (both CLI-emitted). See
+            plus ``severities_unloaded_rule`` (D6b U5),
+            ``min_severity_relaxed`` (D5 U4), and
+            ``all_files_excluded`` (D5 U3) (all CLI-emitted). See
             :class:`LintRuntimeWarning` for the full per-category
             field-population contract. Defaults to ``()``.
         filtered_count: Count of findings dropped at emit time
