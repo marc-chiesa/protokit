@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package smoke.wkt_conflict;
+
+option go_package = "github.com/x/y";
+
+import "google/protobuf/extension_a.proto";
+
+message StubA {
+  google.protobuf.ExtensionAStub ext = 1;
+}
