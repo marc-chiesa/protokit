@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package google.api;
+
+option go_package = "google.golang.org/genproto/googleapis/api/different_path";
+
+message HttpStub {}

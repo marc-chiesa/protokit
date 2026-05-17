@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package smoke.googleapis_import;
+
+option go_package = "github.com/x/y";
+
+import "google/api/annotations.proto";
+
+message StubA {
+  google.api.AnnotationsStub annotation = 1;
+}

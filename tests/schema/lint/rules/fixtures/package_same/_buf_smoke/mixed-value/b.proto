@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_value;
+
+option go_package = "github.com/x/Y";
+
+message StubB {}

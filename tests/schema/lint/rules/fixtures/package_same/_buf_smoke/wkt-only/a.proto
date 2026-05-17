@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package smoke.wkt_only;
+
+option go_package = "github.com/x/y";
+
+import "google/protobuf/any.proto";
+
+message StubA {
+  google.protobuf.Any payload = 1;
+}
