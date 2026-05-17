@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_value_csharp_namespace;
+
+option csharp_namespace = "Foo.X";
+
+message StubA {}

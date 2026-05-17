@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_value_ruby_package;
+
+option ruby_package = "Foo::X";
+
+message StubA {}

@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_value_php_namespace;
+
+option php_namespace = "Foo\\X";
+
+message StubC {}

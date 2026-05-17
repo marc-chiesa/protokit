@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.mixed_value_java_package;
+
+option java_package = "com.example.Y";
+
+message StubB {}

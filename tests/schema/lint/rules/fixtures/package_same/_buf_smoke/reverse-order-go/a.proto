@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.reverse_order_go;
+
+option go_package = "github.com/x/Y";
+
+message StubA {}
