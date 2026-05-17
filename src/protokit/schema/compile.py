@@ -51,10 +51,10 @@ DiagnosticCategory = Literal[
     "unexpected",
     "same_basename_collision",
     "root_transitive_shadow",
-    # D6b U4a: CompileResult.__post_init__ invariant violation —
-    # caller-supplied (root_files, pool_file_names) inconsistency.
-    # NOT raised; surfaces via this diagnostic + pool_file_names
-    # reset to () so the engine pre-walk early-returns.
+    # CompileResult.__post_init__ invariant violation — caller-supplied
+    # (root_files, pool_file_names) inconsistency. NOT raised; surfaces
+    # via this diagnostic + pool_file_names reset to () so the engine
+    # pre-walk early-returns.
     "pool_file_names_invariant",
 ]
 """Closed set of diagnostic categories.
@@ -254,15 +254,27 @@ class CompileResult:
         (``assert`` would strip under ``python -O`` → silent rule
         disablement; ``raise ValueError`` would violate the
         "Always returned (never raised)" guarantee at the top of this
-        docstring).
+        docstring). See
+        ``docs/solutions/best-practices/no-raise-contract-extends-to-post-init-failures-2026-05-14.md``
+        for the canonical rationale and
+        ``docs/solutions/best-practices/frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md``
+        for the paired-field invariant pattern this check applies to
+        ``(pool_file_names, root_files)``.
         """
         object.__setattr__(self, "root_files", tuple(self.root_files))
         object.__setattr__(self, "pool_file_names", tuple(self.pool_file_names))
         object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
-        # D6b U4a invariant check (after the tuple snapshots above so we
-        # operate on the immutable forms).
-        if self.pool_file_names and not set(self.root_files).issubset(
+        # pool_file_names invariant check (after the tuple snapshots
+        # above so we operate on the immutable forms). ce:review
+        # follow-up (Finding #10): also
+        # short-circuit on empty root_files so test-helper paths and
+        # compile-failure results (which construct CompileResult with
+        # root_files=()) don't materialise set(pool_file_names) twice for
+        # an invariant that is trivially satisfied.
+        if (
             self.pool_file_names
+            and self.root_files
+            and not set(self.root_files).issubset(self.pool_file_names)
         ):
             missing = sorted(set(self.root_files) - set(self.pool_file_names))
             invariant_diag = LintCompileDiagnostic(

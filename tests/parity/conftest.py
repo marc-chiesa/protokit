@@ -45,20 +45,22 @@ Resolved decisions (see ``docs/plans/2026-05-13-001-feat-d6a-u8-parity-test-infr
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal
 
 import pytest
 
-from protokit.schema.lint.cli import _BUF_PARITY_PIN
 from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.rules import BUILTIN_PACKS
+
+# ce:review follow-up (Finding #9): subprocess + buf-discovery helpers
+# live in tests/_buf_helpers.py so the U4 smoke harness and the parity
+# harness share one source of truth. The local _run_subprocess +
+# buf_binary fixture body below now delegate to the shared module.
+from tests._buf_helpers import discover_buf_binary, run_buf_subprocess
 
 #: Type alias for the parity-exceptions mapping. Keys are
 #: ``(protokit_rule_id, fixture_stem)``; values are
@@ -269,37 +271,15 @@ def skip_if_buf_deprecated(buf_rule_id: str, protokit_rule_id: str) -> None:
 
 @pytest.fixture(scope="session")
 def buf_binary() -> Path:
-    """Resolve the buf binary from $BUF_BINARY then PATH; skip the test otherwise.
+    """Resolve the buf binary; session-scoped wrapper around shared helper.
 
-    Returning a Path makes downstream subprocess invocations clean
-    (str-coerced at the boundary). A missing binary triggers
-    ``pytest.skip(...)`` so the parity tests are graceful in
-    default ``pytest tests/`` runs on machines without buf
-    installed (the ``@pytest.mark.parity`` marker is documentary;
-    CI's dedicated parity job installs buf and runs the tests
-    with the marker explicitly selected). $BUF_BINARY pointing at
-    a non-existent file is a misconfiguration, not a missing
-    install, so it fails loudly instead of skipping.
+    Delegates to :func:`tests._buf_helpers.discover_buf_binary`. Kept
+    as a session-scoped fixture so the parity harness skips cleanly
+    when buf isn't available without re-running discovery for every
+    parametrized test. The shared module references ``_BUF_PARITY_PIN``
+    in its skip message, so the actionable error remains identical.
     """
-    env_var = os.environ.get("BUF_BINARY")
-    if env_var:
-        path = Path(env_var)
-        if not path.is_file():
-            pytest.fail(
-                f"$BUF_BINARY is set to {env_var!r} but the file does not exist. "
-                "Set BUF_BINARY to a valid buf executable, or unset it to fall "
-                "back to PATH lookup."
-            )
-        return path
-    resolved = shutil.which("buf")
-    if resolved is None:
-        pytest.skip(
-            f"buf binary not found: $BUF_BINARY is unset and `buf` is not on "
-            f"PATH. Install buf {_BUF_PARITY_PIN} from "
-            f"https://github.com/bufbuild/buf/releases/tag/{_BUF_PARITY_PIN} "
-            f"(or set BUF_BINARY to a local install) to run parity tests."
-        )
-    return Path(resolved)
+    return discover_buf_binary()
 
 
 @pytest.fixture(scope="session")
@@ -309,63 +289,13 @@ def fixtures_root() -> Path:
 
 
 # ---- Subprocess helpers -----------------------------------------------------
-
-
-def _fail_subprocess(msg: str) -> NoReturn:
-    """``pytest.fail`` typed as ``NoReturn`` so mypy/readers see the
-    contract: ``_run_subprocess``'s except arms never fall through."""
-    pytest.fail(msg)
-    raise AssertionError("unreachable")  # pragma: no cover -- defense vs stub rot
-
-
-def _stderr_repr(stderr: bytes | str | None) -> str:
-    """Render ``TimeoutExpired.stderr`` regardless of bytes/str/None.
-
-    On POSIX, ``subprocess.TimeoutExpired.stderr`` is ``bytes`` even
-    when the subprocess.run call passed ``text=True`` (the decode
-    path runs only on the normal-exit branch). Normalize to a clean
-    str repr so diagnostic messages don't show ``b'...'`` prefixes.
-    """
-    if stderr is None or stderr == b"" or stderr == "":
-        return "(empty)"
-    if isinstance(stderr, bytes):
-        return repr(stderr.decode("utf-8", errors="replace"))
-    return repr(stderr)
-
-
-def _run_subprocess(
-    argv: list[str], cwd: Path, label: str
-) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess with a 30s wall-clock cap and triple-arm guard.
-
-    The triple-arm guard ensures a Ctrl-C mid-invocation surfaces
-    cleanly to pytest rather than corrupting session state. Errors
-    re-raise as pytest failures with the tool's stderr attached
-    for diagnostic context.
-    """
-    try:
-        return subprocess.run(  # noqa: S603 -- argv is constructed in-test, never user input
-            argv,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        _fail_subprocess(
-            f"{label} invocation exceeded 30s wall-clock cap "
-            f"(cwd={cwd}, argv={argv!r}). stderr so far: {_stderr_repr(exc.stderr)}"
-        )
-    except KeyboardInterrupt:
-        raise
-    except SystemExit:
-        raise
-    except Exception as exc:
-        _fail_subprocess(
-            f"{label} subprocess raised {type(exc).__name__}: {exc} "
-            f"(cwd={cwd}, argv={argv!r})"
-        )
+# ce:review follow-up (Finding #9): the previous in-line
+# _fail_subprocess + _stderr_repr + _run_subprocess implementations
+# were moved verbatim to tests/_buf_helpers.py so the U4 smoke harness
+# (tests/schema/lint/test_buf_smoke_assumptions.py) could reuse them.
+# Parity-harness callers now route through run_buf_subprocess imported
+# at the top of this module — same 30s timeout + triple-arm guard +
+# diagnostic message format.
 
 
 #: Buf exit codes that the harness treats as "ran successfully":
@@ -391,7 +321,7 @@ def run_buf_lint(
     crash, missing binary) — surface those as test failures rather
     than silently returning ``[]``.
     """
-    result = _run_subprocess(
+    result = run_buf_subprocess(
         [str(buf_binary_path), "lint", "--error-format=json", "."],
         cwd=fixture_dir,
         label="buf lint",
@@ -442,7 +372,7 @@ def run_protokit_lint(
     # ``__main__``; the console_script entry point in pyproject.toml
     # is the only public invocation surface. Using ``sys.executable``
     # ensures the test inherits the venv pytest is running under.
-    result = _run_subprocess(
+    result = run_buf_subprocess(
         [
             sys.executable,
             "-c",

@@ -32,11 +32,14 @@ def test_import_protokit_schema_does_not_load_lint_cli_or_builtin_lint() -> None
     ``protokit.schema.lint.rules.options.deprecated_replacement`` and its
     U2-shipped sibling helper module
     ``protokit.schema.lint.rules.options._comments`` remain off the
-    cold-import path. The existing substring check on
-    ``protokit.schema.lint.cli`` already catches the CLI-and-formatter
-    half of the contract; this explicit list nails the rule-pack module
-    so future BUILTIN_PACKS additions that accidentally pull the
-    submodule eagerly trip the gate.
+    cold-import path, as does the D6b U4a-added
+    ``protokit.schema.lint.rules.package_same`` shell module (lazily
+    imported inside ``_build_package_options_accumulator`` so the
+    engine pre-walk does not pull rule-pack modules at import time).
+    The existing substring check on ``protokit.schema.lint.cli``
+    already catches the CLI-and-formatter half of the contract; this
+    explicit list nails the rule-pack modules so future BUILTIN_PACKS
+    additions that accidentally pull a submodule eagerly trip the gate.
     """
     result = subprocess.run(
         [
@@ -51,6 +54,7 @@ def test_import_protokit_schema_does_not_load_lint_cli_or_builtin_lint() -> None
                 "    or k == 'protokit.formatters._builtin_lint'\n"
                 "    or k == 'protokit.schema.lint.rules.options.deprecated_replacement'\n"
                 "    or k == 'protokit.schema.lint.rules.options._comments'\n"
+                "    or k == 'protokit.schema.lint.rules.package_same'\n"
                 ")\n"
                 "assert not forbidden, "
                 "f'cold-import contract broken: {forbidden}'\n"

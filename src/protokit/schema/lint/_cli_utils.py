@@ -337,6 +337,17 @@ def _load_descriptor_sets_to_result(
     seen_names: set[str] = set()
     duplicates: list[LintCompileDiagnostic] = []
     root_files: list[str] = []
+    # ce:review follow-up (Finding #2): track pool membership separately
+    # from root_files. They are CURRENTLY identical content (the loader
+    # treats every fd in fds.file as a "root"), but the semantic meanings
+    # diverge: root_files is "files the lint engine emits findings on";
+    # pool_names is "files available for cross-file lookups in pre-walks".
+    # A future refactor that distinguishes user-passed roots from
+    # transitively-bundled --include_imports files needs pool_names to
+    # remain the SUPERSET per the CompileResult.pool_file_names docstring's
+    # documented invariant. Maintained in parse-order parallel to
+    # root_files so the two stay in step.
+    pool_names: list[str] = []
     # D6b U3b: capture FileDescriptorProto references BEFORE pool.Add()
     # consumes source_code_info. The Python-level fd reference retains
     # its .source_code_info field for downstream R6 comment-aware rules.
@@ -425,19 +436,22 @@ def _load_descriptor_sets_to_result(
                     f"{input_path}: {_scrub_exc_message(exc)}",
                 )
             root_files.append(fd.name)
+            pool_names.append(fd.name)
 
     return CompileResult(
         pool=pool,
         root_files=tuple(root_files),
-        # D6b U4a: pool_file_names mirrors root_files for descriptor-set-mode
-        # because every fd added to the pool via this loader is, by
-        # definition, a "root" the user passed on the CLI (transitive
-        # imports must be pre-bundled into the descriptor set by
-        # ``protoc --include_imports``; this loader does not resolve
-        # them on the fly). The dedup-skipped fds (continue branch
-        # above) are absent from both root_files AND pool_file_names,
-        # preserving the invariant set(pool_file_names) >= set(root_files).
-        pool_file_names=tuple(root_files),
+        # D6b U4a + ce:review follow-up (Finding #2): pool_file_names tracks
+        # pool membership via the parallel `pool_names` list (NOT root_files),
+        # so the invariant set(pool_file_names) >= set(root_files) is
+        # source-of-truth-driven rather than incidental. Today the two
+        # lists are identical content because this loader treats every fd
+        # in fds.file as a root, but the rename future-proofs against a
+        # refactor that distinguishes user-passed roots from
+        # transitively-bundled --include_imports files. Dedup-skipped fds
+        # (continue branch above) are absent from both lists, preserving
+        # the invariant.
+        pool_file_names=tuple(pool_names),
         # CompileResult.__post_init__ wraps the dict in MappingProxyType
         # per the U1-established pattern at
         # src/protokit/schema/compile.py:225-229. We pass a plain dict

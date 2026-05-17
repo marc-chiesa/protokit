@@ -13,8 +13,10 @@ Two public functions:
   and triple-arm guard (``KeyboardInterrupt``/``SystemExit``/``Exception``)
   so a hung tool invocation surfaces cleanly to pytest.
 
-The original parity-conftest fixtures continue to use these helpers
-internally; refactoring those callers is a follow-up task.
+The parity conftest's ``buf_binary`` session fixture wraps
+:func:`discover_buf_binary` so the parity harness keeps its session-
+scoped reuse, and ``run_buf_lint`` routes through
+:func:`run_buf_subprocess` for the 30s timeout + triple-arm guard.
 """
 
 from __future__ import annotations

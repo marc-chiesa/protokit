@@ -31,6 +31,17 @@ import pytest
 
 from tests._buf_helpers import discover_buf_binary, run_buf_subprocess
 
+# ce:review follow-up (Finding #12 / subprocess-exit-code-validation-
+# test-harness-2026-05-13): module-level constant rather than inline
+# tuple, so the contract is verifiable in one place and downstream test
+# additions cannot silently drift the accepted set.
+# - 0: buf lint clean (no findings)
+# - 100: buf lint found violations
+# Anything else (1=error, 2=usage, 127=binary missing) indicates a
+# buf-side failure that would silently produce false-pass via empty
+# stdout fall-through.
+_BUF_OK_EXIT_CODES: frozenset[int] = frozenset({0, 100})
+
 # All 21 smoke fixtures under _buf_smoke/. Each has a corresponding
 # recorded/<name>.json snapshot.
 _SMOKE_FIXTURES: tuple[str, ...] = (
@@ -96,15 +107,11 @@ def test_buf_v1_69_0_matches_recorded_snapshot(fixture: str) -> None:
         cwd=fixture_dir,
         label=f"buf lint ({fixture})",
     )
-    # buf exits 0 when clean (no findings) and 100 when findings exist;
-    # both are valid for our smoke contract. Anything else (1=error,
-    # 2=usage, 127=binary missing) indicates a buf-side failure that
-    # would silently produce false-pass via empty stdout fall-through.
-    if result.returncode not in (0, 100):
+    if result.returncode not in _BUF_OK_EXIT_CODES:
         pytest.fail(
             f"buf lint exited {result.returncode} on {fixture} "
-            f"(expected 0 or 100). stderr: {result.stderr!r}, "
-            f"stdout: {result.stdout!r}"
+            f"(expected one of {sorted(_BUF_OK_EXIT_CODES)}). "
+            f"stderr: {result.stderr!r}, stdout: {result.stdout!r}"
         )
 
     recorded_text = recorded_path.read_text()

@@ -352,7 +352,7 @@ def _compile_with_protoxy(
     # CompileResult.root_files). Filter by `emitted` for defensiveness
     # against any future matcher/backend skew.
     root_names = tuple(name for name in expected_in_order if name in emitted)
-    # D6b U4a: pool_file_names captures every fd.name (transitive imports
+    # pool_file_names captures every fd.name (transitive imports
     # included via include_imports=True above). Same order as fds.file
     # iteration; identical across backends (verified by
     # TestPoolFileNamesCrossBackendByteEquivalence
@@ -457,9 +457,9 @@ def _compile_with_protoc(
             capture=include_source_info,
         )
         root_names = tuple(name for name in expected_in_order if name in emitted)
-        # D6b U4a: see _compile_with_protoxy for the byte-equivalence
-        # contract — both backends produce identical fds.file iteration
-        # order for the same input.
+        # See _compile_with_protoxy for the byte-equivalence contract —
+        # both backends produce identical fds.file iteration order for
+        # the same input.
         pool_file_names = tuple(fd.name for fd in fds.file)
         return pool, root_names, source_info_descriptors, pool_file_names
     finally:

@@ -106,11 +106,15 @@ class LintEngine:
 
     **Not thread-safe; not reentrant.** Per-run accumulators
     (``_findings``, ``_runtime_warnings``, ``_filtered_count``,
-    ``_current_profile``, ``_current_source_info_descriptors``) are
-    instance attributes mutated during :meth:`run`. Concurrent or
-    nested ``run()`` calls on the same engine corrupt the accumulators
-    silently. :meth:`run` raises ``RuntimeError`` on detected reentrancy
-    (a rule recursing into ``engine.run()`` mid-walk). Concurrent
+    ``_current_profile``, ``_current_source_info_descriptors``,
+    ``_current_package_options``) are instance attributes mutated
+    during :meth:`run`. Concurrent or nested ``run()`` calls on the
+    same engine corrupt the accumulators silently. :meth:`run` raises
+    ``RuntimeError`` on detected reentrancy (a rule recursing into
+    ``engine.run()`` mid-walk). The two ``_current_*`` snapshot fields
+    are ``None`` at construction time and cleaned by the ``finally``
+    block of every :meth:`run` invocation — ``reset()`` does not touch
+    them since every entry to ``run()`` re-snapshots them. Concurrent
     threads must use one engine instance per thread. Engines themselves
     are cheap to construct, so per-thread instances are the recommended
     pattern.
@@ -410,7 +414,7 @@ class LintEngine:
                 group_by_kind[spec.element].append(spec)
 
             # Step 3.5: pre-walk file-options accumulator for R7 cross-file
-            # PACKAGE_SAME_* rules (D6b U4a). Iterates the FULL pool —
+            # PACKAGE_SAME_* rules. Iterates the FULL pool —
             # including transitively-imported protos — so the canonical
             # value computation matches buf's full-module walk; findings
             # still emit only on root_files via Step 4's dispatch gate.
@@ -466,17 +470,17 @@ class LintEngine:
             # run() with a different compile_result cannot leak the
             # previous run's mapping into rule callbacks.
             self._current_source_info_descriptors = None
-            # D6b U4a: clear the per-run package_options accumulator for
-            # the same reason — prevent leak across run() invocations.
+            # Clear the per-run package_options accumulator for the same
+            # reason — prevent leak across run() invocations.
             self._current_package_options = None
 
     # ------------------------------------------------------------------
-    # Pre-walk accumulator (D6b U4a — R7 PACKAGE_SAME_* infrastructure)
+    # Pre-walk accumulator (R7 PACKAGE_SAME_* infrastructure)
     # ------------------------------------------------------------------
 
-    # WKT path prefix is NOT filtered (D6b U4a empirical: buf v1.69.0
-    # fires on disagreeing google.protobuf files per the wkt-conflict
-    # smoke fixture). Real WKTs have consistent options across the
+    # WKT path prefix is NOT filtered (empirical: buf v1.69.0 fires on
+    # disagreeing google.protobuf files per the wkt-conflict smoke
+    # fixture). Real WKTs have consistent options across the
     # protobuf-runtime corpus so they never trigger findings in practice;
     # synthetic disagreement cases (vendored stubs, accidental
     # `package google.protobuf` declarations) correctly fire to match buf.
@@ -502,7 +506,10 @@ class LintEngine:
 
         Iteration uses ``posixpath.basename`` (NOT ``os.path.basename``)
         so the sort key is platform-independent — protobuf-canonical
-        paths use forward slashes regardless of host OS.
+        paths use forward slashes regardless of host OS. See
+        ``docs/solutions/best-practices/pureposixpath-for-proto-descriptor-file-stem-2026-05-12.md``
+        for the canonical rationale (descriptor-walking code outside
+        rule callables must use posixpath, not os.path).
 
         Defensive ``try/except KeyError: continue`` mirrors Step 4's
         existing pattern at the per-fd lookup; matches the existing
@@ -531,31 +538,36 @@ class LintEngine:
             compile_result.pool_file_names,
             key=lambda f: (posixpath.basename(f), f),
         ):
+            # ce:review follow-up: widened from KeyError-only to also catch
+            # AttributeError + ValueError. opts.HasField() raises ValueError
+            # for non-presence-tracked fields (proto3 repeated/map/implicit
+            # scalars); a future _PACKAGE_SAME_OPTION_ATTRS extension to
+            # such a field would otherwise propagate uncaught out of run()
+            # and violate the engine's failure-containment posture. All
+            # current 7 attrs are presence-tracked FileOptions scalars —
+            # defensive, not currently-firing.
             try:
                 fd = compile_result.pool.FindFileByName(fname)
-            except KeyError:
-                # Defensive: pool_file_names contains a name absent from
-                # the pool (compile-failure path; mirrors Step 4's existing
-                # try/except at engine.py:407-412). Omit from accumulator.
-                continue
-            pkg = fd.package
-            opts = fd.GetOptions()
-            per_pkg = package_options.setdefault(pkg, {})
-            for attr in _PACKAGE_SAME_OPTION_ATTR_NAMES:
-                per_attr = per_pkg.setdefault(attr, {})
-                if opts.HasField(attr):
-                    raw = getattr(opts, attr)
-                    # D6b U4a empirical: buf renders booleans as lowercase
-                    # ("false"/"true"), not Python's title-case ("False"/"True").
-                    # Per recorded/mixed-value-java-multiple-files.json.
-                    if isinstance(raw, bool):
-                        per_attr[fname] = str(raw).lower()
+                pkg = fd.package
+                opts = fd.GetOptions()
+                per_pkg = package_options.setdefault(pkg, {})
+                for attr in _PACKAGE_SAME_OPTION_ATTR_NAMES:
+                    per_attr = per_pkg.setdefault(attr, {})
+                    if opts.HasField(attr):
+                        raw = getattr(opts, attr)
+                        # Empirical: buf renders booleans as lowercase
+                        # ("false"/"true"), not Python's title-case ("False"/"True").
+                        # Per recorded/mixed-value-java-multiple-files.json.
+                        if isinstance(raw, bool):
+                            per_attr[fname] = str(raw).lower()
+                        else:
+                            per_attr[fname] = str(raw)
                     else:
-                        per_attr[fname] = str(raw)
-                else:
-                    per_attr[fname] = None
+                        per_attr[fname] = None
+            except (KeyError, AttributeError, ValueError):
+                continue
 
-        # 3-level MappingProxyType wrap (D6b U4a — defense-in-depth against
+        # 3-level MappingProxyType wrap (defense-in-depth against
         # accidental mutation by co-authored rule code; NOT a security
         # boundary, since user-pack code via --rule-pack runs in-process
         # with full Python introspection).
@@ -770,7 +782,7 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
-            # D6b U4a: R7's engine pre-walk populates _current_package_options
+            # R7's engine pre-walk populates _current_package_options
             # before Step 4's per-file walk; this snapshot is what R7 rules
             # consume via ctx.package_options. None when the pre-walk
             # early-returned (pool_file_names was empty).

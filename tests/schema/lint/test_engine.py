@@ -810,6 +810,13 @@ class TestReentrancyAndLifetime:
         # After the propagating exception, _current_profile must be None
         # so the next run() doesn't trip the reentrancy guard.
         assert engine._current_profile is None
+        # ce:review follow-up (Finding #6 / Testing T-3): every per-run
+        # snapshot field in the finally block must be cleared
+        # independently. _current_source_info_descriptors (D6b U1/U2) +
+        # _current_package_options (D6b U4a) both alias compile_result
+        # state; a missing clear leaks across run() invocations.
+        assert engine._current_source_info_descriptors is None
+        assert engine._current_package_options is None
         # A subsequent normal run must work.
         report = engine.run(
             result,

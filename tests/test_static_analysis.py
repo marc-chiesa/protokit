@@ -33,6 +33,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
+    "tests/_buf_helpers.py",
     "tests/parity",
     "tests/schema/lint",
     "tests/test_buf_parity_pin_drift.py",

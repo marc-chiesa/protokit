@@ -148,78 +148,179 @@ def _make_capture_pack(profile_name: str, rule_id: str, captured: list[Any]) -> 
 
 
 class TestAccumulatorConstruction:
-    """``LintEngine.run`` builds ``package_options`` from the full pool."""
+    """``LintEngine.run`` builds ``package_options`` from the full pool.
+
+    ce:review follow-up (Finding #3 / Testing T-1 + T-2 + Maintainability
+    M1 + Adversarial ADV-U4a-003): the original two tests in this class
+    set up monkeypatch-based captures but the captures never fired (no
+    FILE-element rules were loaded → ``_build_file_ctx`` was never
+    invoked). Both tests fell back to asserting on
+    ``result.pool_file_names`` — a ``CompileResult`` field already
+    covered by ``test_compile_pool_file_names.py``. Deleting
+    ``_build_package_options_accumulator`` from the engine would not
+    have failed those tests. Rewritten here using ``_make_capture_pack``
+    (the same pattern used by ``TestPreWalkPackageOptionsInjection``
+    immediately below) so the accumulator is actually observed.
+    """
 
     def test_accumulator_built_from_pool_file_names_not_root_files(
         self, tmp_path: Path,
     ) -> None:
-        """Pre-walk iterates ``pool_file_names``, not ``root_files``."""
-        proto_dir = _three_files_same_package(tmp_path)
-        # Pass only a.proto on the CLI; b.proto + c.proto are transitively
-        # imported. (Use --proto-paths to enable cross-file resolution.)
-        result = compile_protos_to_result(
-            [proto_dir / "a.proto", proto_dir / "b.proto", proto_dir / "c.proto"],
+        """Pre-walk iterates ``pool_file_names``, not ``root_files``.
+
+        Verifies the load-bearing semantic difference between the two
+        fields: ``pool_file_names`` includes transitively-imported
+        files, ``root_files`` does not. The fixture has a.proto import
+        b.proto + c.proto, so passing only a.proto as root pulls b/c
+        into the pool transitively — the precise scenario where
+        ``pool_file_names`` and ``root_files`` diverge. The captured
+        ``ctx.package_options`` must include accumulator entries for
+        b.proto + c.proto (transitive) alongside a.proto (root). If a
+        regression caused the pre-walk to iterate ``root_files``
+        instead, only ``a.proto`` would appear and this test fails.
+        """
+        # Three files: a.proto imports b.proto + c.proto. All in the
+        # same package so they share a per-pkg accumulator entry.
+        proto_dir = tmp_path / "transitive_fixture"
+        proto_dir.mkdir(parents=True, exist_ok=True)
+        (proto_dir / "b.proto").write_text(
+            'syntax = "proto3";\n'
+            'package u4a.transitive;\n'
+            'option go_package = "github.com/x/b";\n'
+            'message StubB {}\n'
         )
-        # Engine pre-walk should produce package_options keyed by package.
-        # Capture by introspection: pre-walk wires into FileLintContext.
-        captured: list[Mapping[Any, Any] | None] = []
+        (proto_dir / "c.proto").write_text(
+            'syntax = "proto3";\n'
+            'package u4a.transitive;\n'
+            'option go_package = "github.com/x/c";\n'
+            'message StubC {}\n'
+        )
+        (proto_dir / "a.proto").write_text(
+            'syntax = "proto3";\n'
+            'package u4a.transitive;\n'
+            'import "b.proto";\n'
+            'import "c.proto";\n'
+            'option go_package = "github.com/x/a";\n'
+            'message StubA { StubB b = 1; StubC c = 2; }\n'
+        )
 
-        engine = _build_engine_with_no_rules()
-        original_build = engine._build_file_ctx
+        a_only = compile_protos_to_result(
+            [proto_dir / "a.proto"],
+            proto_paths=(str(proto_dir),),
+        )
+        # Pool contains all 3 (transitive imports); root_files only a.
+        assert set(a_only.pool_file_names) >= {
+            "a.proto", "b.proto", "c.proto",
+        }, (
+            f"pool_file_names should be a superset of root_files via "
+            f"transitive imports; got {a_only.pool_file_names}"
+        )
+        assert a_only.root_files == ("a.proto",), (
+            f"root_files should reflect CLI argv only; got "
+            f"{a_only.root_files}"
+        )
 
-        def _capture(fd: Any, spec: Any, profile: Any) -> FileLintContext:
-            ctx = original_build(fd, spec, profile)
-            captured.append(ctx.package_options)
-            return ctx
+        # Capture the accumulator via a FILE-element rule consumer.
+        captured: list[Mapping[str, Mapping[str, Mapping[str, str | None]]] | None] = []
+        rule_id = "u4a-followup/capture-superset"
+        pack = _make_capture_pack(
+            "u4a-followup-capture-superset", rule_id, captured,
+        )
+        engine = LintEngine()
+        engine.load_rule_pack(pack)
+        engine.run(
+            a_only,
+            profile=LintProfile(
+                name="default",
+                rule_ids=frozenset({rule_id}),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
 
-        engine._build_file_ctx = _capture  # type: ignore[assignment]
-        engine.run(result, profile=_default_profile())
-
-        # No rules loaded, so _build_file_ctx isn't invoked — assert
-        # at the engine level by reading package_options off CompileResult-side.
-        # Actually pre-walk produces the accumulator inside engine.run; we
-        # need to test via a different path — synthesise a FILE rule
-        # consumer that captures the ctx.
-        # For now this test verifies the basic shape via the
-        # compile_result.pool_file_names being non-empty.
-        assert result.pool_file_names != ()
-        assert set(result.pool_file_names) >= {"a.proto", "b.proto", "c.proto"}
+        # The capture rule fires for a.proto (the only root); the
+        # captured ``package_options`` must include EVERY pool file's
+        # entry, not just root_files. Concrete invariant: the per-attr
+        # inner map for go_package keys on every fixture file.
+        assert len(captured) >= 1, (
+            "FILE-element capture rule should have fired at least once"
+        )
+        pkg_options = captured[0]
+        assert pkg_options is not None, (
+            "ctx.package_options should be populated when pool is non-empty"
+        )
+        per_attr = pkg_options["u4a.transitive"]["go_package"]
+        keys = set(per_attr.keys())
+        assert keys >= {"a.proto", "b.proto", "c.proto"}, (
+            f"per-attr inner map must include every pool file (roots + "
+            f"transitive imports); got keys {keys}. If a regression caused "
+            f"the pre-walk to iterate root_files instead of "
+            f"pool_file_names, only 'a.proto' would appear."
+        )
 
     def test_accumulator_3_level_dict_shape(self, tmp_path: Path) -> None:
-        """``package_options[pkg][attr][fname] = str | None`` shape."""
-        proto_dir = _three_files_same_package(tmp_path)
+        """``package_options[pkg][attr][fname] = str | None`` shape.
+
+        Captures the actual ``ctx.package_options`` accumulator (via
+        ``_make_capture_pack``) and walks its 3-level structure:
+        outer keys are package names (str); each inner map keys on
+        option attr name (str); each leaf map keys on filename (str)
+        with values ``str | None``.
+        """
+        # Mixed-value fixture: a + b declare go_package; c omits.
+        # Helper prefixes each non-None value with 'github.com/x/'.
+        proto_dir = _three_files_same_package(
+            tmp_path,
+            pkg="shape.test",
+            go_packages=("a", "b", None),
+        )
         result = compile_protos_to_result(
-            [proto_dir / "a.proto", proto_dir / "b.proto", proto_dir / "c.proto"],
+            [
+                proto_dir / "a.proto",
+                proto_dir / "b.proto",
+                proto_dir / "c.proto",
+            ],
         )
 
-        # Capture via a FILE-element rule consumer (registered at module-load
-        # time would interfere; do it test-locally via _build_file_ctx mock).
-        captured_ctxs: list[FileLintContext] = []
-        engine = _build_engine_with_no_rules()
-        original_build = engine._build_file_ctx
+        captured: list[Mapping[str, Mapping[str, Mapping[str, str | None]]] | None] = []
+        rule_id = "u4a-followup/capture-shape"
+        pack = _make_capture_pack(
+            "u4a-followup-capture-shape", rule_id, captured,
+        )
+        engine = LintEngine()
+        engine.load_rule_pack(pack)
+        engine.run(
+            result,
+            profile=LintProfile(
+                name="default",
+                rule_ids=frozenset({rule_id}),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
 
-        def _capture(fd: Any, spec: Any, profile: Any) -> FileLintContext:
-            ctx = original_build(fd, spec, profile)
-            captured_ctxs.append(ctx)
-            return ctx
+        assert len(captured) >= 1
+        pkg_options = captured[0]
+        assert pkg_options is not None
 
-        engine._build_file_ctx = _capture  # type: ignore[assignment]
+        # Level 1: package keys.
+        assert "shape.test" in pkg_options, (
+            f"package_options outer should key on package name; "
+            f"got keys {list(pkg_options)}"
+        )
 
-        # Need at least one FILE-element spec for the dispatch walk to fire.
-        # The bare profile loads no rules; the pre-walk should still run
-        # because it's pool-driven, not rule-driven. We assert pre-walk
-        # ran by checking package_options were populated on built contexts.
-        engine.run(result, profile=_default_profile())
+        # Level 2: option_attr keys per package.
+        per_pkg = pkg_options["shape.test"]
+        assert "go_package" in per_pkg, (
+            f"per-package map should include every PACKAGE_SAME_* attr; "
+            f"got keys {sorted(per_pkg)}"
+        )
 
-        # If no FILE rules are loaded, _build_file_ctx isn't called and
-        # captured_ctxs is empty. That's fine — pre-walk still runs and
-        # populates the accumulator; we just can't observe it through ctx
-        # without a rule consumer. Test the shape via a direct integration
-        # test in test_package_same.py once U4b lands.
-        # For now, assert pool_file_names contains every fixture file.
-        assert "a.proto" in result.pool_file_names
-        assert "b.proto" in result.pool_file_names
-        assert "c.proto" in result.pool_file_names
+        # Level 3: filename → str | None per attr.
+        go_pkg_per_file = per_pkg["go_package"]
+        assert go_pkg_per_file["a.proto"] == "github.com/x/a"
+        assert go_pkg_per_file["b.proto"] == "github.com/x/b"
+        assert go_pkg_per_file["c.proto"] is None, (
+            "omitted option should appear as None, not absent"
+        )
 
 
 class TestPreWalkPackageOptionsInjection:
@@ -324,6 +425,216 @@ class TestPreWalkPackageOptionsInjection:
         # google.protobuf package IS in the accumulator — buf v1.69.0 does
         # NOT special-case it (recorded/wkt-conflict.json).
         assert "google.protobuf" in captured[0]
+
+
+class TestPlanRequiredScenarios:
+    """ce:review follow-up (Finding #8 / Testing T-5): 5 scenarios called
+    out in plan L334 that the original U4a test suite missed.
+
+    - **multi-package isolation:** two packages in the pool produce
+      independent per-pkg entries (no aliasing).
+    - **single-file package:** exactly one .proto in a package → per-attr
+      map has exactly one entry.
+    - **all-omit:** every file in a package omits a given option → every
+      per-attr value is None.
+    - **all-same:** every file declares the same value (clean-pass case
+      for U4b R7 rule emission — accumulator captures uniformly).
+    - **transitive-import contribution:** a transitively-imported file
+      (not in root_files) contributes to the per-pkg accumulator entry
+      for ITS package.
+    """
+
+    def _capture(
+        self, result: Any, captured: list[Any],
+    ) -> None:
+        """Register a FILE-element capture rule + run the engine."""
+        rule_id = "u4a-followup/plan-scenarios"
+        pack = _make_capture_pack(
+            "u4a-followup-plan-scenarios", rule_id, captured,
+        )
+        engine = LintEngine()
+        engine.load_rule_pack(pack)
+        engine.run(
+            result,
+            profile=LintProfile(
+                name="u4a-followup-plan-scenarios",
+                rule_ids=frozenset({rule_id}),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+
+    def test_multi_package_isolation(self, tmp_path: Path) -> None:
+        """Two packages → independent per-pkg accumulator entries."""
+        # alpha.proto in package u4a.scenarios.alpha
+        # beta.proto in package u4a.scenarios.beta
+        # Both declare go_package; different values.
+        _write_proto(
+            tmp_path, "alpha.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.alpha;\n'
+            'option go_package = "github.com/x/alpha";\n'
+            'message AlphaStub {}\n',
+        )
+        _write_proto(
+            tmp_path, "beta.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.beta;\n'
+            'option go_package = "github.com/x/beta";\n'
+            'message BetaStub {}\n',
+        )
+        result = compile_protos_to_result(
+            [tmp_path / "alpha.proto", tmp_path / "beta.proto"],
+        )
+        captured: list[Any] = []
+        self._capture(result, captured)
+        pkg_opts = captured[0]
+
+        assert "u4a.scenarios.alpha" in pkg_opts
+        assert "u4a.scenarios.beta" in pkg_opts
+        # Each package's per-attr entry references only its own file.
+        alpha_go = pkg_opts["u4a.scenarios.alpha"]["go_package"]
+        beta_go = pkg_opts["u4a.scenarios.beta"]["go_package"]
+        assert "alpha.proto" in alpha_go and "beta.proto" not in alpha_go, (
+            f"alpha pkg entry must not contain beta's file; got {alpha_go}"
+        )
+        assert "beta.proto" in beta_go and "alpha.proto" not in beta_go, (
+            f"beta pkg entry must not contain alpha's file; got {beta_go}"
+        )
+        # Values are isolated too.
+        assert alpha_go["alpha.proto"] == "github.com/x/alpha"
+        assert beta_go["beta.proto"] == "github.com/x/beta"
+
+    def test_single_file_package(self, tmp_path: Path) -> None:
+        """One .proto in a package → per-attr map has exactly one entry."""
+        _write_proto(
+            tmp_path, "solo.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.solo;\n'
+            'option go_package = "github.com/x/solo";\n'
+            'message SoloStub {}\n',
+        )
+        result = compile_protos_to_result([tmp_path / "solo.proto"])
+        captured: list[Any] = []
+        self._capture(result, captured)
+        pkg_opts = captured[0]
+
+        per_pkg = pkg_opts["u4a.scenarios.solo"]
+        go_pkg = per_pkg["go_package"]
+        assert list(go_pkg.keys()) == ["solo.proto"], (
+            f"single-file package's per-attr map must have exactly one "
+            f"key; got {list(go_pkg.keys())}"
+        )
+        assert go_pkg["solo.proto"] == "github.com/x/solo"
+
+    def test_all_omit(self, tmp_path: Path) -> None:
+        """All files in a package omit go_package → every value is None."""
+        # 3 files, none declare go_package.
+        _write_proto(
+            tmp_path, "x.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.allomit;\n'
+            'message X {}\n',
+        )
+        _write_proto(
+            tmp_path, "y.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.allomit;\n'
+            'message Y {}\n',
+        )
+        _write_proto(
+            tmp_path, "z.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.allomit;\n'
+            'message Z {}\n',
+        )
+        result = compile_protos_to_result(
+            [tmp_path / "x.proto", tmp_path / "y.proto", tmp_path / "z.proto"],
+        )
+        captured: list[Any] = []
+        self._capture(result, captured)
+        pkg_opts = captured[0]
+
+        go_pkg = pkg_opts["u4a.scenarios.allomit"]["go_package"]
+        assert set(go_pkg.keys()) == {"x.proto", "y.proto", "z.proto"}
+        assert all(v is None for v in go_pkg.values()), (
+            f"all-omit scenario should have every per-file value None; "
+            f"got {dict(go_pkg)}"
+        )
+
+    def test_all_same(self, tmp_path: Path) -> None:
+        """All files declare the same value → accumulator captures uniformly."""
+        for fname in ("p.proto", "q.proto", "r.proto"):
+            _write_proto(
+                tmp_path, fname,
+                f'syntax = "proto3";\n'
+                f'package u4a.scenarios.allsame;\n'
+                f'option go_package = "github.com/x/unified";\n'
+                f'message {fname[0].upper()} {{}}\n',
+            )
+        result = compile_protos_to_result(
+            [tmp_path / "p.proto", tmp_path / "q.proto", tmp_path / "r.proto"],
+        )
+        captured: list[Any] = []
+        self._capture(result, captured)
+        pkg_opts = captured[0]
+
+        go_pkg = pkg_opts["u4a.scenarios.allsame"]["go_package"]
+        assert set(go_pkg.values()) == {"github.com/x/unified"}, (
+            f"all-same scenario should have one distinct value; "
+            f"got {set(go_pkg.values())}"
+        )
+        # U4b R7 rule will treat this as the clean-pass case (no finding).
+
+    def test_transitive_import_contribution(self, tmp_path: Path) -> None:
+        """Transitively-imported file contributes to its package's entry.
+
+        Root: root.proto in package u4a.scenarios.transitive_root,
+        imports dep.proto.
+        Dep: dep.proto in package u4a.scenarios.transitive_dep (different
+        package), declares its own go_package.
+
+        Even though dep.proto is NOT a root, the pre-walk must include
+        its package's accumulator entry because the pool contains dep.
+        Validates the load-bearing 'pool-driven, not root-driven' design.
+        """
+        proto_dir = tmp_path / "transitive_scenario"
+        proto_dir.mkdir(parents=True, exist_ok=True)
+        _write_proto(
+            proto_dir, "dep.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.transitive_dep;\n'
+            'option go_package = "github.com/x/dep";\n'
+            'message DepStub {}\n',
+        )
+        _write_proto(
+            proto_dir, "root.proto",
+            'syntax = "proto3";\n'
+            'package u4a.scenarios.transitive_root;\n'
+            'import "dep.proto";\n'
+            'option go_package = "github.com/x/root";\n'
+            'message RootStub { u4a.scenarios.transitive_dep.DepStub d = 1; }\n',
+        )
+        result = compile_protos_to_result(
+            [proto_dir / "root.proto"],
+            proto_paths=(str(proto_dir),),
+        )
+        # root_files contains only root.proto; pool_file_names also has dep.
+        assert result.root_files == ("root.proto",)
+        assert "dep.proto" in result.pool_file_names
+
+        captured: list[Any] = []
+        self._capture(result, captured)
+        pkg_opts = captured[0]
+
+        # BOTH packages appear in the accumulator (transitive contributes).
+        assert "u4a.scenarios.transitive_root" in pkg_opts
+        assert "u4a.scenarios.transitive_dep" in pkg_opts, (
+            f"transitive dep's package must appear in accumulator; got "
+            f"{set(pkg_opts.keys())}"
+        )
+        # dep's package entry has dep's go_package value.
+        dep_go = pkg_opts["u4a.scenarios.transitive_dep"]["go_package"]
+        assert dep_go == {"dep.proto": "github.com/x/dep"}
 
 
 class TestLowercaseBoolRendering:
@@ -463,26 +774,37 @@ class TestStructuralPin:
     def test_pre_walk_precedes_step_4_root_files_walk(self) -> None:
         """``run()`` invokes the pre-walk helper BEFORE Step 4's root_files walk.
 
-        Matches the actual Step 4 walk substring (``for fname in
-        sorted(compile_result.root_files,``) rather than a bare
-        ``compile_result.root_files`` which also appears in the
-        docstring earlier in the method body.
+        ce:review follow-up (Finding #14 / Testing T-6): regex-based
+        match (whitespace-tolerant) instead of the previous exact
+        16-space-indented substring, so a non-behavioral reformatter
+        run cannot break this ordering pin. The ordering invariant
+        itself (pre-walk before Step 4) is what we lock — not the
+        formatter's choice of indentation.
         """
+        import re
+
         run_source = inspect.getsource(LintEngine.run)
         pre_walk_call_pos = run_source.find(
             "_build_package_options_accumulator"
         )
-        step_4_walk_pos = run_source.find(
-            "for fname in sorted(\n                compile_result.root_files"
+        # Match `for fname in sorted(` followed by any whitespace then
+        # `compile_result.root_files`. Tolerates one-line, multi-line,
+        # and varying indentation while still anchoring on the Step 4
+        # walk signature (distinguishes it from the docstring earlier
+        # in the method that mentions `compile_result.root_files` in
+        # prose).
+        step_4_match = re.search(
+            r"for\s+fname\s+in\s+sorted\(\s*compile_result\.root_files",
+            run_source,
         )
         assert pre_walk_call_pos != -1, (
             "run() must invoke _build_package_options_accumulator"
         )
-        assert step_4_walk_pos != -1, (
-            "Step 4's `for fname in sorted(compile_result.root_files,` "
+        assert step_4_match is not None, (
+            "Step 4's `for fname in sorted(compile_result.root_files, ...)` "
             "walk pattern not found in run() source"
         )
-        assert pre_walk_call_pos < step_4_walk_pos, (
+        assert pre_walk_call_pos < step_4_match.start(), (
             "pre-walk helper call must precede Step 4's root_files walk"
         )
 
@@ -525,12 +847,26 @@ class TestSanitizerQuoteCharacterRoundTrip:
 
 
 class TestPreWalkBenchmark:
-    """Pre-walk completes under the SC E7 threshold on a 1K-file fixture."""
+    """Pre-walk completes under the SC E7 threshold on a 1K-file fixture.
 
-    @pytest.mark.slow
-    def test_pre_walk_under_50ms_on_1k_file_fixture(self, tmp_path: Path) -> None:
-        """1000 .proto files in 100 packages → pre-walk < 50ms."""
-        # Generate 1000 protos programmatically (avoids committing fixtures).
+    ce:review follow-up (Finding #5 / PERF-2 + PERF-3 + Testing T-7):
+    split into two assertions. The plan's SC E7 target (<50ms) applies
+    specifically to the pre-walk accumulator build — NOT to full
+    ``engine.run`` (which also walks 1000 root files for the capture
+    rule dispatch). Measuring only ``engine.run`` conflated pre-walk
+    cost with per-file rule dispatch, so a 30ms→180ms pre-walk
+    regression could pass silently under a 200ms full-envelope ceiling.
+    Now: ``test_pre_walk_isolated_under_50ms_on_1k_file_fixture``
+    asserts the plan target directly against
+    ``_build_package_options_accumulator``; the legacy full-envelope
+    assertion is renamed and retained at a documented CI-headroom
+    ceiling. Both use warmup + median-of-3 for stability against OS
+    scheduling jitter (single-shot timing was previously susceptible).
+    """
+
+    @staticmethod
+    def _make_1k_fixture(tmp_path: Path) -> tuple[Path, ...]:
+        """Generate 1000 .proto files in 100 packages."""
         for pkg_idx in range(100):
             pkg = f"u4a.benchmark.pkg{pkg_idx}"
             for file_idx in range(10):
@@ -543,15 +879,68 @@ class TestPreWalkBenchmark:
                     f'option go_package = "{go_pkg}";\n\n'
                     f'message Stub{file_idx} {{}}\n',
                 )
-        paths = sorted(tmp_path.rglob("*.proto"))
+        paths = tuple(sorted(tmp_path.rglob("*.proto")))
         assert len(paths) == 1000, f"expected 1000 fixtures, got {len(paths)}"
+        return paths
 
-        result = compile_protos_to_result(paths)
+    @staticmethod
+    def _median_of_3_ms(fn: Any) -> float:
+        """Run ``fn`` once for warmup + 3 timed iterations, return median ms."""
+        fn()  # warmup — primes pool caches + lazy imports
+        timings_ms: list[float] = []
+        for _ in range(3):
+            start = time.perf_counter()
+            fn()
+            timings_ms.append((time.perf_counter() - start) * 1000)
+        timings_ms.sort()
+        return timings_ms[1]  # median
 
-        # Capture pre-walk cost via a minimal rule consumer that measures
-        # how long engine.run takes.
+    @pytest.mark.slow
+    def test_pre_walk_isolated_under_50ms_on_1k_file_fixture(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pre-walk accumulator build alone < 50ms (plan SC E7).
+
+        Measures ``_build_package_options_accumulator`` in isolation,
+        not via ``engine.run`` — separates pre-walk cost from per-file
+        rule dispatch so a regression in EITHER component is caught
+        individually. Plan SC E7's <50ms target applies here.
+        """
+        paths = self._make_1k_fixture(tmp_path)
+        result = compile_protos_to_result(list(paths))
+        engine = LintEngine()
+
+        elapsed_ms = self._median_of_3_ms(
+            lambda: engine._build_package_options_accumulator(result),
+        )
+
+        # Plan SC E7: <50ms on 1K files. If CI runners consistently
+        # exceed this, surface it via an issue + the deferred-D6c
+        # lazy-gating discussion — do NOT silently raise the ceiling.
+        assert elapsed_ms < 50, (
+            f"_build_package_options_accumulator on 1K-file fixture "
+            f"took {elapsed_ms:.1f}ms (median of 3); plan SC E7 target "
+            f"is <50ms. Investigate before relaxing the ceiling: either "
+            f"the pre-walk has a real regression or it's time to revisit "
+            f"the deferred-D6c lazy-gating discussion."
+        )
+
+    @pytest.mark.slow
+    def test_engine_run_under_200ms_on_1k_file_fixture(
+        self, tmp_path: Path,
+    ) -> None:
+        """Full ``engine.run`` envelope < 200ms (CI-headroom ceiling).
+
+        Includes pre-walk + Step 4 per-file walk + 1000 capture-rule
+        invocations. NOT the SC E7 target (that's the isolated
+        pre-walk above); this is a sanity envelope so a per-file
+        regression in Step 4 dispatch doesn't slip past the smaller
+        SC E7 gate.
+        """
+        paths = self._make_1k_fixture(tmp_path)
+        result = compile_protos_to_result(list(paths))
+
         rule_id = "u4a/bench"
-        # Reuse the capture-pack helper but ignore the captures.
         ignored: list[Any] = []
         pack = _make_capture_pack("u4a-bench", rule_id, ignored)
         engine = LintEngine()
@@ -562,15 +951,14 @@ class TestPreWalkBenchmark:
             rule_ids=frozenset({rule_id}),
         )
 
-        start = time.perf_counter()
-        engine.run(result, profile=profile)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        elapsed_ms = self._median_of_3_ms(
+            lambda: engine.run(result, profile=profile),
+        )
 
-        # SC E7: pre-walk + per-file walk for 1K files < 50ms is the
-        # qualitative target. CI runners may be slower; raise to 200ms
-        # if CI cells consistently exceed (document rationale in the
-        # docstring at that point).
         assert elapsed_ms < 200, (
-            f"engine.run on 1K-file fixture took {elapsed_ms:.1f}ms; "
-            f"SC E7 target is <50ms, with 200ms CI-headroom ceiling."
+            f"engine.run on 1K-file fixture took {elapsed_ms:.1f}ms "
+            f"(median of 3); full-envelope ceiling is 200ms (includes "
+            f"pre-walk + 1000 capture-rule dispatches). The isolated "
+            f"SC E7 pre-walk gate catches pre-walk-only regressions; "
+            f"this gate catches per-file dispatch regressions."
         )

@@ -973,14 +973,6 @@ class FileLintContext(_LintContextEmitMixin):
             Rules MUST NOT mutate this pool during the walk (AC-05).
         profile: Name of the active profile (e.g., ``"default"``).
             Rules can branch on this for profile-specific behavior.
-        package_options: Engine-injected accumulator built by Step 3.5
-            pre-walk (D6b U4a / R7). Shape:
-            ``Mapping[package, Mapping[option_attr, Mapping[filename, str | None]]]``.
-            All 3 nesting levels wrapped in ``MappingProxyType`` so
-            mutation at any depth raises ``TypeError``. ``None`` when
-            constructed via test helpers without engine injection.
-            INTERNAL field; consumers are R7 rules (U4b), not external
-            callers — subject to change pre-1.0.
         _emit_fn: Engine-injected closure that records findings into
             the report. Use ``self.emit(...)`` instead of calling.
         _rule_id: Engine-injected rule_id stamped on every emitted
@@ -988,17 +980,37 @@ class FileLintContext(_LintContextEmitMixin):
         _effective_severity: Engine-injected resolver that maps a
             ``violation_kind`` to the effective ``LintSeverity`` for
             this rule under the active profile.
+        package_options: Engine-injected accumulator built by Step 3.5
+            pre-walk (D6b U4a / R7). Shape:
+            ``Mapping[package, Mapping[option_attr, Mapping[filename, str | None]]]``.
+            All 3 nesting levels wrapped in ``MappingProxyType`` so
+            mutation at any depth raises ``TypeError``. Defaults to
+            ``None`` so test helpers can construct ``FileLintContext``
+            without threading the accumulator through every call site;
+            R7 rules early-return on ``None``. INTERNAL field; consumers
+            are R7 rules (U4b), not external callers — subject to
+            change pre-1.0.
     """
 
     file: proto_descriptor.FileDescriptor
     pool: descriptor_pool.DescriptorPool
     profile: str
-    package_options: Mapping[
-        str, Mapping[str, Mapping[str, str | None]]
-    ] | None
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]
+    # ce:review follow-up (Finding #4): moved to the end of the
+    # engine-injected group + default `= None`. Originally positioned
+    # before the engine-injected triple per U2 convention ("required
+    # position"), but the no-default form forced every test helper that
+    # constructs FileLintContext directly to thread `package_options=None`
+    # explicitly — a U4b test-author footgun. With the default, the field
+    # behaves like a sibling engine-injected optional (parallel to the
+    # `source_info_descriptors` pattern on peer context types) and direct
+    # test construction stays terse. The engine continues to pass it
+    # explicitly via kwarg in `_build_file_ctx`.
+    package_options: Mapping[
+        str, Mapping[str, Mapping[str, str | None]]
+    ] | None = None
 
     def location(self) -> LintLocation:
         """Return ``FileLocation(file=self.file.name)``."""
