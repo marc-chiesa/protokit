@@ -100,7 +100,10 @@ class TestRuleIdWidened:
 
     def test_engine_categories_accept_populated_rule_id(self) -> None:
         """The two engine-emitted categories continue to take a
-        non-None ``rule_id`` (existing behavior preserved).
+        non-None ``rule_id`` (existing behavior preserved). The third
+        rule-scoped category, ``severities_unloaded_rule`` (D6b U5,
+        CLI-synthesized), is covered separately in
+        ``tests/schema/lint/test_model.py``.
         """
         w_exc = LintRuntimeWarning(
             category="rule_exception",
@@ -122,8 +125,11 @@ class TestRuleIdWidened:
         assert w_unloaded.rule_id == "acme/missing-rule"
 
     def test_cli_categories_accept_none_rule_id(self) -> None:
-        """The two CLI-emitted categories construct with
-        ``rule_id=None`` (NEW behavior).
+        """The two non-rule-scoped CLI-emitted categories construct
+        with ``rule_id=None`` (NEW behavior in D5 U3). Note: the
+        third CLI-emitted category ``severities_unloaded_rule``
+        (D6b U5) is rule-scoped and carries a populated ``rule_id``
+        — covered in ``tests/schema/lint/test_model.py``.
         """
         w_relaxed = LintRuntimeWarning(
             category="min_severity_relaxed",

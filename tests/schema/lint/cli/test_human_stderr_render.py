@@ -62,7 +62,7 @@ from tests.schema.lint.cli._helpers import (
 
 
 class TestHumanStderrEmissionPerCategory:
-    """Each of the four ``LintRuntimeWarning`` categories renders on
+    """Each of the five ``LintRuntimeWarning`` categories renders on
     stderr with the prefix ``protokit lint: warning [{category}]:``.
     """
 

@@ -73,13 +73,13 @@ def _ctx() -> FormatterContext:
     return FormatterContext(subcommand="lint")
 
 
-# ``_CATEGORIES`` (the canonical four ``LintRuntimeWarning`` category
-# strings) and ``_warning_for_category`` (the per-category factory)
-# live in ``tests/schema/lint/cli/_helpers.py`` so this file and
-# ``tests/schema/lint/cli/test_human_stderr_render.py`` share a
-# single definition. Adding a 5th category requires editing only the
-# shared helper; the parametrized matrix tests in this file then
-# fail until every formatter render site is covered.
+# ``_CATEGORIES`` (the canonical five ``LintRuntimeWarning`` category
+# strings as of D6b U5) and ``_warning_for_category`` (the
+# per-category factory) live in ``tests/schema/lint/cli/_helpers.py``
+# so this file and ``tests/schema/lint/cli/test_human_stderr_render.py``
+# share a single definition. Adding a 6th category requires editing
+# only the shared helper; the parametrized matrix tests in this file
+# then fail until every formatter render site is covered.
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +90,12 @@ def _ctx() -> FormatterContext:
 class TestLintJsonRuntimeWarningParity:
     """Every category renders in ``lint_json.runtime_warnings`` with
     every field populated according to category semantics. The
-    BREAKING-rule_id contract (CLI categories produce ``None``) is
-    pinned per category so a silent rule_id widening regression
-    surfaces here.
+    BREAKING-rule_id contract is pinned per category: rule-scoped
+    categories (``rule_exception``, ``unloaded_rule``,
+    ``severities_unloaded_rule``) carry a populated ``rule_id``,
+    while non-rule-scoped CLI-emitted categories
+    (``min_severity_relaxed``, ``all_files_excluded``) carry
+    ``None``. A silent rule_id widening regression surfaces here.
     """
 
     @pytest.mark.parametrize("category", _CATEGORIES)

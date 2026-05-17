@@ -210,7 +210,7 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     defense-in-depth measure (per KTD-9): construction-time
     sanitization in engine.py / cli.py already collapses control
     characters in the message field, and the ``category`` field is
-    typed as a closed ``Literal[...]`` set whose four values are all
+    typed as a closed ``Literal[...]`` set whose five values are all
     ASCII tokens — but Python does not enforce ``Literal`` at
     runtime, so a future emission site that constructs a
     ``LintRuntimeWarning`` with a control-character-bearing category
@@ -876,9 +876,10 @@ def _main_impl(
     #
     # Keys in ``resolved.severities`` that don't match any rule_id
     # in the composed profile are diagnosed below (after engine.run)
-    # via a synthesized ``unloaded_rule`` runtime warning — reusing
-    # the existing category per KTD-2 to avoid widening the
-    # LintRuntimeWarning.category Literal in D6a.
+    # via a synthesized ``severities_unloaded_rule`` runtime warning
+    # (D6b U5 split this from the original ``unloaded_rule`` category
+    # per D6a U9 KTD-2's deferred resolution; see
+    # :class:`LintRuntimeWarning.category` docstring).
     if resolved.severities:
         composed_profile = dataclasses.replace(
             composed_profile,

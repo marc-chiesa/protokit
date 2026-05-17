@@ -252,9 +252,11 @@ class TestDirectConstructionSourceDiscrimination:
 
     This complements the integration tests above by pinning the
     contract at the type-system level — if a future refactor
-    accidentally aliased the two values, this test fails at import
-    time rather than waiting for an integration test to surface the
-    drift.
+    accidentally aliased the two values, this test fails at test
+    execution time independently of the integration-layer tests
+    above (the count-pin at
+    ``tests/schema/lint/test_model_dataclass_changes.py:54`` is the
+    sibling import-time guard against Literal-set drift).
     """
 
     def test_engine_emit_shape_is_distinct_from_cli_emit_shape(self) -> None:
