@@ -3,10 +3,15 @@
 This conftest powers ``tests/parity/`` — the in-repo harness that
 runs every D6a buf-equivalent rule's fixtures through both
 ``protokit lint`` and ``buf lint`` and asserts equivalent findings.
-Tests under this tree are gated by ``@pytest.mark.parity`` (each
-module sets ``pytestmark = pytest.mark.parity``); default
-``pytest tests/`` skips the entire tree because the marker is not
-selected by default.
+The ``parity`` marker is **documentary**: default ``pytest tests/``
+DOES collect parity tests (verified at ``pyproject.toml:86-87``);
+the marker is only honored by jobs that explicitly select via
+``-m parity`` (e.g., the advisory CI ``parity`` job). Per-module
+opt-in via ``pytestmark = pytest.mark.parity`` therefore decides
+whether that module shows up in the advisory parity job, NOT
+whether it runs at all. D6b U6's ``test_parity_package_same.py``
+deliberately omits the marker so its recorded-snapshot tests run
+in the required ``test`` job on every PR (no BUF_BINARY dep).
 
 Resolved decisions (see ``docs/plans/2026-05-13-001-feat-d6a-u8-parity-test-infra-plan.md``):
 
@@ -46,10 +51,10 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import pytest
 
@@ -69,6 +74,30 @@ from tests._buf_helpers import discover_buf_binary, run_buf_subprocess
 ParityPosture = Literal["protokit_stricter", "protokit_looser"]
 ParityExceptionsMap = Mapping[tuple[str, str], tuple[ParityPosture, str]]
 _VALID_POSTURES: frozenset[str] = frozenset({"protokit_stricter", "protokit_looser"})
+
+
+class BufFinding(NamedTuple):
+    """Typed view of one buf v1.69.0 NDJSON finding.
+
+    Field set verified empirically against
+    ``tests/schema/lint/rules/fixtures/package_same/_buf_smoke/recorded/*.json``
+    (D6b U4a). All 7 fields are present in every non-empty buf-emitted
+    finding; ``parse_buf_recorded_snapshot`` below raises on missing
+    fields so a future buf release that changes the NDJSON shape
+    surfaces loudly rather than via silent KeyError.
+
+    Used by D6b U6's multi-file parity harness (``test_parity_package_same.py``)
+    + reusable by future multi-file rule families that need typed
+    NDJSON parsing of recorded buf snapshots.
+    """
+
+    path: str
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int
+    type: str
+    message: str
 
 #: Functional buf-parity override for the D2 canary
 #: ``naming/snake-case-fields``. The canary's ``source_spec`` is
@@ -421,6 +450,105 @@ def run_protokit_lint(
     return findings_obj
 
 
+def run_protokit_lint_multi_file(
+    fixture_dir: Path,
+    *,
+    rule_pack: str | None = None,
+    proto_paths: tuple[Path, ...] | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Run ``protokit lint --proto --format json`` against ALL ``.proto``
+    files in ``fixture_dir`` (recursive). Multi-file analog of
+    ``run_protokit_lint`` above.
+
+    Required for rule families whose emit shape depends on cross-file
+    state (R7 PACKAGE_SAME_*'s all-disagreers-fire semantics need every
+    package file in one invocation so the engine's cross-file
+    accumulator sees every option value).
+
+    **Recursion is REQUIRED**: ``googleapis-import/google/api/*.proto``
+    and ``wkt-conflict/google/protobuf/*.proto`` live two directories
+    deep in the U4a-committed smoke fixtures and produce the buf
+    findings the parity test must match. A non-recursive glob would
+    silently lint only the fixture-root ``a.proto``.
+
+    ``proto_paths`` defaults to ``(fixture_dir,)``. ``-I`` is passed
+    as a path **relative to** ``cwd=fixture_dir`` (typically ``.``)
+    so protokit's emitted ``location`` is fixture-root-relative
+    (e.g., ``"a.proto"``) — aligning with buf's recorded NDJSON
+    ``path`` field after ``_normalize_buf_path``. Absolute
+    ``-I str(fixture_dir)`` would produce absolute ``location``
+    strings that fail ``assert_parity_multi_file`` path comparisons.
+
+    Shadow paths:
+      - NIL: ``fixture_dir`` containing zero ``.proto`` files →
+        ``pytest.fail`` naming the empty path.
+      - ERROR: subprocess exit outside ``(0, 1)`` → ``pytest.fail``
+        matching the single-file pattern.
+      - EMPTY: a zero-byte ``.proto`` routes through exit-code-2
+        surfacing (protoc rejects empty files lacking ``syntax``);
+        no special-case branch needed.
+    """
+    proto_files = sorted(fixture_dir.rglob("*.proto"))
+    if not proto_files:
+        pytest.fail(
+            f"run_protokit_lint_multi_file: no .proto files found under "
+            f"{fixture_dir} (rglob exhausted). Verify the fixture "
+            f"directory is populated."
+        )
+    if proto_paths is None:
+        proto_paths = (fixture_dir,)
+    argv: list[str] = [
+        sys.executable,
+        "-c",
+        "from protokit.cli import main; main()",
+        "lint",
+        "--proto",
+        "--format",
+        "json",
+    ]
+    for include_path in proto_paths:
+        rel = "." if include_path == fixture_dir else str(
+            include_path.relative_to(fixture_dir)
+        )
+        argv.extend(["-I", rel])
+    if rule_pack is not None:
+        argv.extend(["--rule-pack", rule_pack])
+    for proto_file in proto_files:
+        argv.append(str(proto_file.relative_to(fixture_dir)))
+    result = run_buf_subprocess(
+        argv, cwd=fixture_dir, label="protokit lint multi-file"
+    )
+    if result.returncode not in (0, 1):
+        pytest.fail(
+            f"protokit lint exited {result.returncode} "
+            f"(expected 0=clean or 1=findings) on fixture_dir={fixture_dir} "
+            f"with {len(proto_files)} .proto file(s); "
+            f"stderr: {result.stderr!r}; stdout: {result.stdout!r}"
+        )
+    if not result.stdout.strip():
+        return ()
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"protokit lint produced non-JSON stdout for {fixture_dir}: "
+            f"{exc}. stdout: {result.stdout!r}; stderr: {result.stderr!r}"
+        )
+    findings_obj = payload.get("findings", [])
+    if not isinstance(findings_obj, list):
+        pytest.fail(
+            f"protokit lint JSON 'findings' is not a list "
+            f"(type={type(findings_obj).__name__}); payload: {payload!r}"
+        )
+    # File-level findings have no per-line position in lint_json; sort
+    # by (location, rule_id) for deterministic test diagnostics.
+    findings_obj.sort(key=lambda f: (
+        str(f.get("location", "")),
+        str(f.get("rule_id", "")),
+    ))
+    return tuple(findings_obj)
+
+
 # ---- Parity assertion -------------------------------------------------------
 
 
@@ -438,6 +566,72 @@ def _normalize_buf_path(buf_path: str | None) -> str:
         return ""
     from pathlib import PurePosixPath
     return PurePosixPath(buf_path).as_posix()
+
+
+def parse_buf_recorded_snapshot(snapshot_path: Path) -> tuple[BufFinding, ...]:
+    """Parse a buf v1.69.0 recorded NDJSON snapshot into typed ``BufFinding`` tuples.
+
+    Multi-file analog of the live-mode parsing in ``run_buf_lint``
+    above (which parses live buf stdout into raw dicts). U6's
+    recorded-snapshot mode reads pre-captured byte-pinned snapshots
+    rather than re-invoking buf at test time; the typed shape
+    supports byte-stable sort + multiset comparison in
+    ``assert_parity_multi_file``.
+
+    Snapshot fields verified empirically against
+    ``tests/schema/lint/rules/fixtures/package_same/_buf_smoke/recorded/*.json``
+    (D6b U4a, SHA-pinned by
+    ``tests/schema/lint/test_buf_smoke_recorded_checksums.py``):
+    ``path``, ``start_line``, ``start_column``, ``end_line``,
+    ``end_column``, ``type``, ``message``.
+
+    Empty file (zero bytes — e.g., ``all-agree.json``,
+    ``wkt-only.json`` both at SHA ``e3b0c44...``) yields ``()``.
+    Missing or malformed JSON fields fail loudly with the snapshot
+    path so a future buf release that changes the NDJSON shape is
+    surfaced immediately.
+
+    Findings are sorted by ``(path, start_line, start_column, type)``
+    for deterministic comparison.
+    """
+    if not snapshot_path.is_file():
+        pytest.fail(
+            f"recorded snapshot not found: {snapshot_path}. "
+            f"Verify _buf_smoke/recorded/ is populated and "
+            f"CHECKSUMS.sha256 still validates via "
+            f"tests/schema/lint/test_buf_smoke_recorded_checksums.py."
+        )
+    findings: list[BufFinding] = []
+    for raw_line in snapshot_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as exc:
+            pytest.fail(
+                f"recorded snapshot {snapshot_path} has malformed NDJSON "
+                f"line {line!r}: {exc}"
+            )
+        try:
+            findings.append(BufFinding(
+                path=data["path"],
+                start_line=data["start_line"],
+                start_column=data["start_column"],
+                end_line=data["end_line"],
+                end_column=data["end_column"],
+                type=data["type"],
+                message=data["message"],
+            ))
+        except KeyError as exc:
+            pytest.fail(
+                f"recorded snapshot {snapshot_path} line {line!r} missing "
+                f"required field {exc}; buf v1.69.0 NDJSON shape expected: "
+                f"path, start_line, start_column, end_line, end_column, "
+                f"type, message."
+            )
+    findings.sort(key=lambda f: (f.path, f.start_line, f.start_column, f.type))
+    return tuple(findings)
 
 
 def _filter_buf_findings_by_rule(
@@ -576,4 +770,145 @@ def assert_parity(
             f"buf_fired={buf_fired}. "
             f"protokit findings: {protokit_matches!r}; "
             f"buf findings: {buf_matches!r}"
+        )
+
+
+# ---- Multi-file parity assertion (D6b U6) -----------------------------------
+
+
+def assert_parity_multi_file(
+    protokit_findings: Sequence[dict[str, Any]],
+    buf_findings: Sequence[BufFinding],
+    *,
+    protokit_rule_ids: frozenset[str],
+    fixture_scenario: str,
+) -> None:
+    """Assert per-file finding-set parity for the multi-file emit shape.
+
+    Multi-file analog of ``assert_parity`` above. R7 PACKAGE_SAME_*
+    rules emit one finding per file in a package when disagreement
+    exists (all-disagreers-fire). Comparison is scoped per-fixture
+    to the rule_id(s) named in ``protokit_rule_ids`` (typically the
+    single rule that fixture's ``buf.yaml use:[]`` enables — per
+    KD-7 in the D6b U6 plan); other R7 rules + non-R7 rules (D6a
+    families fired by ``BUILTIN_PACKS``) are excluded from the
+    assertion.
+
+    Two-sided rule-id check catches three failure modes:
+
+      (i)  Under-firing — protokit fails to fire when buf fires
+           (or fires fewer findings than buf).
+      (ii) Over-firing — protokit fires for a non-scoped R7 rule_id
+           on this fixture (would happen if a future helper edit
+           made e.g. ``package/same-java-package`` fire on a
+           ``go_package``-only fixture). Catches latent-symmetry
+           regressions per KD-7's rationale.
+      (iii) Message-text drift — protokit's message bytes diverge
+            from buf's for the same (path, rule_id) tuple.
+
+    Comparison uses multiset equality on
+    ``(buf_rule_id, normalized_path, message)`` tuples — protokit's
+    file-level findings have no ``line``/``col`` in ``lint_json``
+    output (verified empirically against R7's ``location: "a.proto"``
+    shape), so ``(path, message)`` is the natural per-finding key.
+    Sort-key uniqueness was empirically verified for all 21 U4a
+    snapshots at U6 implementation time; the pre-assertion below
+    surfaces any future drift.
+
+    Diagnostic on failure names ``fixture_scenario`` + the
+    diverging side(s) + a decision-tree hint so a maintainer can
+    route immediately (fix protokit vs document via
+    ``_PARITY_EXCEPTIONS``).
+    """
+    # ---- Sort-key uniqueness pre-assertion --------------------------
+    buf_keys = [(f.path, f.start_line, f.start_column, f.type) for f in buf_findings]
+    if len(buf_keys) != len(set(buf_keys)):
+        duplicates = sorted({k for k in buf_keys if buf_keys.count(k) > 1})
+        pytest.fail(
+            f"assert_parity_multi_file({fixture_scenario}): buf snapshot has "
+            f"duplicate (path, start_line, start_column, type) sort keys "
+            f"({len(duplicates)} duplicate group(s)) — uniqueness assumption "
+            f"broken. Either the snapshot has truly identical findings "
+            f"(re-verify against buf v1.69.0) or the comparison shape needs "
+            f"to include 'message' as a fourth discriminator. "
+            f"Duplicate keys: {duplicates!r}"
+        )
+
+    # ---- Build protokit_rule_id → buf_rule_id map (KD-1) -----------
+    # Bypasses BUILTIN_PACKS-based RULE_ID_MAP since R7 is dormant
+    # until U7; walks the package_same rule registry directly.
+    from protokit.schema.lint.rules import (  # noqa: PLC0415
+        package_same as _package_same_mod,
+    )
+    _protokit_to_buf: dict[str, str] = {}
+    for fn in _package_same_mod.RULES:
+        spec = get_lint_spec(fn)
+        buf_id = _extract_buf_rule_id(spec.source_spec)
+        if buf_id is not None:
+            _protokit_to_buf[spec.rule_id] = buf_id
+    package_same_rule_ids: frozenset[str] = frozenset(_protokit_to_buf.keys())
+
+    # ---- Partition protokit findings: scoped vs over-firing --------
+    protokit_in_scope: list[tuple[str, str, str]] = []  # (buf_id, path, msg)
+    protokit_overfire: list[tuple[str, str, str]] = []  # (rule_id, path, msg)
+    for f in protokit_findings:
+        rule_id = str(f.get("rule_id", ""))
+        path = _normalize_buf_path(str(f.get("location", "")))
+        message = str(f.get("message", ""))
+        if rule_id in protokit_rule_ids:
+            protokit_in_scope.append((_protokit_to_buf[rule_id], path, message))
+        elif rule_id in package_same_rule_ids:
+            # Over-firing complement: an R7-family rule fired but is
+            # outside the per-fixture scope (KD-7).
+            protokit_overfire.append((rule_id, path, message))
+        # Non-R7 findings (e.g., D6a families that BUILTIN_PACKS loads
+        # on the default profile) are excluded from the assertion —
+        # they are correct + expected for the smoke fixtures.
+
+    if protokit_overfire:
+        pytest.fail(
+            f"assert_parity_multi_file({fixture_scenario}): protokit fired "
+            f"R7-family rule(s) outside the per-fixture scope "
+            f"{sorted(protokit_rule_ids)!r}. "
+            f"Over-firing findings: {sorted(protokit_overfire)!r}. "
+            f"Decision tree:\n"
+            f"  If protokit's emit shape changed for the unexpected rule_id, "
+            f"investigate src/protokit/schema/lint/rules/package_same.py:"
+            f"_check_package_option.\n"
+            f"  If the fixture should now exercise multiple rules, update "
+            f"the fixture's buf.yaml use:[] and the parity test's "
+            f"per-fixture scope derivation (KD-7)."
+        )
+
+    # ---- Build buf comparison set scoped to expected rule_ids ------
+    expected_buf_types: set[str] = {
+        _protokit_to_buf[rid] for rid in protokit_rule_ids
+        if rid in _protokit_to_buf
+    }
+    buf_in_scope: list[tuple[str, str, str]] = sorted(
+        (f.type, _normalize_buf_path(f.path), f.message)
+        for f in buf_findings if f.type in expected_buf_types
+    )
+    protokit_in_scope.sort()
+
+    # ---- Multiset equality with structured diagnostic --------------
+    if protokit_in_scope != buf_in_scope:
+        protokit_set = set(protokit_in_scope)
+        buf_set = set(buf_in_scope)
+        only_protokit = sorted(protokit_set - buf_set)
+        only_buf = sorted(buf_set - protokit_set)
+        pytest.fail(
+            f"assert_parity_multi_file({fixture_scenario}): protokit ↔ buf "
+            f"finding-set divergence within scoped rule_ids "
+            f"{sorted(protokit_rule_ids)!r} "
+            f"(buf-equivalent {sorted(expected_buf_types)!r}).\n"
+            f"  Only-in-protokit ({len(only_protokit)}): {only_protokit!r}\n"
+            f"  Only-in-buf       ({len(only_buf)}): {only_buf!r}\n"
+            f"Decision tree:\n"
+            f"  If protokit is correct, document via _PARITY_EXCEPTIONS + "
+            f"four-site discipline (per buf-parity-divergence-documentation-"
+            f"discipline-2026-05-13).\n"
+            f"  If buf is correct, fix the helper at "
+            f"src/protokit/schema/lint/rules/package_same.py:"
+            f"_check_package_option."
         )

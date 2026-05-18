@@ -198,16 +198,34 @@ _MESSAGE_TEMPLATE: str = (
 
 
 def _escape_inner_quote(value: str) -> str:
-    """Replace each ``"`` in ``value`` with ``\\"`` (literal backslash-quote).
+    """Escape ``\\`` then ``"`` for buf-v1.69.0 message-text byte-parity.
 
-    Required for byte-parity with buf v1.69.0's emit format per
-    :file:`recorded/mixed-value-with-inner-quote.json` — buf renders
-    inner quote characters as literal ``\\"`` in the message text.
-    ``_safe_for_stderr`` does NOT do this escape (it only handles
-    control characters), so the helper applies it explicitly per
-    declared value BEFORE composition.
+    Two-step escape applied per declared value BEFORE composition:
+
+      1. Each literal ``\\`` becomes ``\\\\`` (existing backslashes are doubled).
+      2. Each literal ``"`` becomes ``\\"`` (quotes gain a leading backslash).
+
+    Step ordering matters: backslash-first means the new backslashes
+    inserted by step 2's quote-escape are NOT re-doubled by step 1.
+    The reverse order would produce ``\\\\"`` for an unescaped quote
+    (wrong) instead of ``\\"`` (right).
+
+    Required for byte-parity with buf v1.69.0's emit format:
+
+      - Quote escape: :file:`recorded/mixed-value-with-inner-quote.json`
+        — buf renders inner quotes as literal ``\\"`` in message text.
+      - Backslash escape: :file:`recorded/mixed-{value,presence}-php-namespace.json`
+        — buf renders PHP namespace values like ``Foo\\X`` as literal
+        ``Foo\\\\X`` in message text (D6b U6 empirical parity-gate
+        discovery, 2026-05-18).
+
+    ``_safe_for_stderr`` does NOT do these escapes (it only handles
+    control characters); the helper applies them explicitly here.
+
+    Function name kept for backwards-compatibility with existing
+    callers + tests; behavior extended to cover both escape classes.
     """
-    return value.replace('"', '\\"')
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _truncate_values_payload(payload: str) -> str:
