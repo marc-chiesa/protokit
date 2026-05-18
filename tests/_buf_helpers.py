@@ -131,3 +131,65 @@ def run_buf_subprocess(
             f"{label} subprocess raised {type(exc).__name__}: {exc} "
             f"(cwd={cwd}, argv={argv!r})"
         )
+
+
+# ---- D6b U6 ce:review follow-up: shared smoke-fixture helpers -------------
+#
+# Moved from tests/schema/lint/test_buf_smoke_assumptions.py to break the
+# cross-test-module private-symbol coupling that tests/parity/test_parity_
+# package_same.py introduced (MAINT-5 + T-05 ce:review findings, 0.80
+# confidence). Both the smoke-drift gate and the parity gate now import
+# from this shared module — eliminating the rename-induced ImportError
+# brittleness that affected pytest collection.
+
+#: All 21 D6b U4a buf-smoke fixtures. Each has a fixture directory at
+#: ``tests/schema/lint/rules/fixtures/package_same/_buf_smoke/<name>/``
+#: and a SHA-pinned recorded snapshot at ``_buf_smoke/recorded/<name>.json``.
+#: Order: 7 initial (core architecture) + 7 supplementary (cross-rule,
+#: sort, bool render) + 7 deferred-question-resolution (quote escape +
+#: mixed-presence per non-go rule).
+SMOKE_FIXTURES: tuple[str, ...] = (
+    # Initial 7 (core architecture).
+    "all-agree",
+    "mixed-value",
+    "mixed-presence",
+    "empty-package-mixed",
+    "wkt-only",
+    "googleapis-import",
+    "wkt-conflict",
+    # Supplementary 7 (cross-rule + sort + bool).
+    "mixed-value-java-package",
+    "mixed-value-csharp-namespace",
+    "mixed-value-php-namespace",
+    "mixed-value-ruby-package",
+    "mixed-value-swift-prefix",
+    "mixed-value-java-multiple-files",
+    "reverse-order-go",
+    # Deferred-question-resolution 7 (quote + mixed-presence per non-go).
+    "mixed-value-with-inner-quote",
+    "mixed-presence-java-package",
+    "mixed-presence-csharp-namespace",
+    "mixed-presence-php-namespace",
+    "mixed-presence-ruby-package",
+    "mixed-presence-swift-prefix",
+    "mixed-presence-java-multiple-files",
+)
+
+
+def smoke_root() -> Path:
+    """Return the absolute path to ``_buf_smoke/`` regardless of caller cwd.
+
+    The fixture tree lives under ``tests/schema/lint/rules/fixtures/
+    package_same/_buf_smoke/`` (frozen by D6b U4a). The path is computed
+    once relative to this module's location so callers in
+    ``tests/parity/`` and ``tests/schema/lint/`` share the same root.
+    """
+    return (
+        Path(__file__).resolve().parent
+        / "schema"
+        / "lint"
+        / "rules"
+        / "fixtures"
+        / "package_same"
+        / "_buf_smoke"
+    )

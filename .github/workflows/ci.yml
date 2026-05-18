@@ -37,6 +37,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # D6b U6 ce:review follow-up (REL-003): explicit job-level cap as
+    # secondary safety net beyond the 30s per-subprocess guard in
+    # tests/_buf_helpers.py:run_buf_subprocess. Empirical timing:
+    # full suite ~15s; U6 added 27 cases adding <2s. 30 minutes is
+    # ~120x the empirical wall-time, leaving headroom for cold CI
+    # runners while guarding against future deadlock scenarios.
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false

@@ -42,22 +42,26 @@ import yaml
 from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.rules import package_same as _package_same_mod
 
+# Cross-module SSOT: SMOKE_FIXTURES + smoke_root live in tests/_buf_helpers.py
+# (D6b U6 ce:review follow-up MAINT-5 / T-05 — moved out of the smoke-test
+# module so the parity gate and the smoke-drift gate share the canonical
+# definition without a cross-test-module private-symbol import). Drift is
+# caught by the R25(b)/R25(c) invariants below.
+from tests._buf_helpers import SMOKE_FIXTURES, smoke_root
+
 # Helpers from the multi-file extension (D6b U6) live next to their
 # single-file siblings in tests/parity/conftest.py.
 from tests.parity.conftest import (
+    BufFinding,
     assert_parity_multi_file,
     parse_buf_recorded_snapshot,
     run_protokit_lint_multi_file,
     skip_if_buf_deprecated,
 )
 
-# Cross-module SSOT: KD-3 imports _SMOKE_FIXTURES + _smoke_root from
-# the smoke-assumptions module so U6 and the smoke-drift gate stay in
-# lockstep. Drift is caught by the R25(b)/R25(c) invariants below.
-from tests.schema.lint.test_buf_smoke_assumptions import (
-    _SMOKE_FIXTURES,
-    _smoke_root,
-)
+# Aliased to internal names so the existing in-file references stay readable.
+_SMOKE_FIXTURES = SMOKE_FIXTURES
+_smoke_root = smoke_root
 
 # ---- KD-1: local rule-id maps (bypass BUILTIN_PACKS-based RULE_ID_MAP) -----
 
@@ -76,7 +80,7 @@ def _extract_buf_rule_id(source_spec: str) -> str | None:
     return None
 
 
-def _build_package_same_rule_id_map() -> dict[str, str]:
+def _build_package_same_rule_id_map() -> Mapping[str, str]:
     """Walk the dormant ``package_same.RULES`` tuple and build
     ``{buf_rule_id: protokit_rule_id}``.
 
@@ -137,7 +141,7 @@ def _parse_fixture_buf_yaml(fixture_name: str) -> str:
             f"buf.yaml with a single-element top-level lint.use[]."
         )
     try:
-        config = yaml.safe_load(buf_yaml_path.read_text())
+        config = yaml.safe_load(buf_yaml_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         pytest.fail(
             f"_parse_fixture_buf_yaml({fixture_name}): malformed YAML at "
@@ -262,7 +266,7 @@ def test_parity_byte_matches_recorded_snapshot(
 # ---- R25 collection-time invariants (a-e) ---------------------------------
 
 
-def test_every_package_same_rule_has_at_least_one_firing_fixture() -> None:
+def test_every_r7_rule_has_at_least_one_associated_fixture() -> None:
     """R25(a): every R7 protokit rule_id appears in at least one fixture's
     expected-fires set.
 
@@ -398,3 +402,58 @@ def test_buf_yaml_rule_matches_recorded_findings_rule() -> None:
             f"fixture and update the snapshot (+ CHECKSUMS.sha256), OR "
             f"revert the buf.yaml edit."
         )
+
+
+# ---- assert_parity_multi_file behavior tests (D6b U6 ce:review T-03) ------
+
+
+def test_assert_parity_multi_file_detects_overfire() -> None:
+    """Negative test for `assert_parity_multi_file`'s over-firing complement.
+
+    Synthesize a protokit_findings list containing a finding whose
+    rule_id is in `package_same.RULES` but OUTSIDE the per-fixture
+    scope (`protokit_rule_ids`). Assert the helper triggers
+    `pytest.fail` with the over-firing diagnostic. Without this test,
+    a logic bug in the partition (e.g., `in` flipped to `not in`)
+    would let over-firing silently pass on the 21 empirical fixtures
+    (which all produce zero over-firing today).
+    """
+    synthesized_protokit_findings: list[dict[str, object]] = [
+        {
+            "rule_id": "package/same-go-package",
+            "location": "a.proto",
+            "message": "test in-scope finding",
+        },
+        {
+            # OVER-FIRE: java_package rule firing on a go-package-only scope.
+            "rule_id": "package/same-java-package",
+            "location": "b.proto",
+            "message": "test over-firing finding",
+        },
+    ]
+    synthesized_buf_findings = (
+        BufFinding(
+            path="a.proto", start_line=1, start_column=1,
+            end_line=1, end_column=1,
+            type="PACKAGE_SAME_GO_PACKAGE",
+            message="test in-scope finding",
+        ),
+    )
+
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        assert_parity_multi_file(
+            synthesized_protokit_findings,
+            synthesized_buf_findings,
+            protokit_rule_ids=frozenset({"package/same-go-package"}),
+            fixture_scenario="synthesized-overfire-test",
+        )
+
+    # Diagnostic must name the fixture + the over-firing rule_id so a
+    # maintainer can route immediately.
+    msg = str(excinfo.value)
+    assert "synthesized-overfire-test" in msg, (
+        f"diagnostic missing fixture_scenario: {msg!r}"
+    )
+    assert "package/same-java-package" in msg, (
+        f"diagnostic missing over-firing rule_id: {msg!r}"
+    )

@@ -29,7 +29,19 @@ from pathlib import Path
 
 import pytest
 
-from tests._buf_helpers import discover_buf_binary, run_buf_subprocess
+from tests._buf_helpers import (
+    SMOKE_FIXTURES,
+    discover_buf_binary,
+    run_buf_subprocess,
+    smoke_root,
+)
+
+# D6b U6 ce:review follow-up (MAINT-5 / T-05): SMOKE_FIXTURES and
+# smoke_root moved to the shared tests/_buf_helpers.py so the parity
+# gate (tests/parity/test_parity_package_same.py) can consume them
+# without a cross-test-module private-symbol import. Local re-exports
+# preserve backward compatibility for any other consumer.
+_SMOKE_FIXTURES: tuple[str, ...] = SMOKE_FIXTURES
 
 # ce:review follow-up (Finding #12 / subprocess-exit-code-validation-
 # test-harness-2026-05-13): module-level constant rather than inline
@@ -42,44 +54,12 @@ from tests._buf_helpers import discover_buf_binary, run_buf_subprocess
 # stdout fall-through.
 _BUF_OK_EXIT_CODES: frozenset[int] = frozenset({0, 100})
 
-# All 21 smoke fixtures under _buf_smoke/. Each has a corresponding
-# recorded/<name>.json snapshot.
-_SMOKE_FIXTURES: tuple[str, ...] = (
-    # Initial 7 (core architecture).
-    "all-agree",
-    "mixed-value",
-    "mixed-presence",
-    "empty-package-mixed",
-    "wkt-only",
-    "googleapis-import",
-    "wkt-conflict",
-    # Supplementary 7 (cross-rule + sort + bool).
-    "mixed-value-java-package",
-    "mixed-value-csharp-namespace",
-    "mixed-value-php-namespace",
-    "mixed-value-ruby-package",
-    "mixed-value-swift-prefix",
-    "mixed-value-java-multiple-files",
-    "reverse-order-go",
-    # Deferred-question-resolution 7 (quote-character + mixed-presence per non-go).
-    "mixed-value-with-inner-quote",
-    "mixed-presence-java-package",
-    "mixed-presence-csharp-namespace",
-    "mixed-presence-php-namespace",
-    "mixed-presence-ruby-package",
-    "mixed-presence-swift-prefix",
-    "mixed-presence-java-multiple-files",
-)
+# _SMOKE_FIXTURES re-exported above from tests._buf_helpers.SMOKE_FIXTURES.
 
 
 def _smoke_root() -> Path:
-    return (
-        Path(__file__).resolve().parent
-        / "rules"
-        / "fixtures"
-        / "package_same"
-        / "_buf_smoke"
-    )
+    """Backward-compatible alias for ``tests._buf_helpers.smoke_root``."""
+    return smoke_root()
 
 
 def _normalize_buf_output(text: str) -> Iterator[str]:

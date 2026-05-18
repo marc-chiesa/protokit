@@ -852,7 +852,7 @@ class TestAdversarialSanitization:
 
         Adversarial/correctness convergence (D6b U4b ce:review): with a
         long string value that contains an inner quote, the per-value
-        ``_escape_inner_quote`` step expands the quote to ``\\"`` (2
+        ``_escape_message_value`` step expands the quote to ``\\"`` (2
         chars) before composition. A naive ``[:500]`` truncation can
         land precisely between the ``\\`` and its ``"`` partner,
         leaving a stranded backslash at position 499 with no semantic
@@ -892,6 +892,72 @@ class TestAdversarialSanitization:
             assert not payload.endswith("\\"), (
                 f"payload ends with stranded backslash from split escape "
                 f"pair: ...{payload[-20:]!r}"
+            )
+
+    def test_truncation_preserves_complete_doubled_backslash_pair(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: 500-char cap must not split a complete ``\\\\`` pair.
+
+        D6b U6 ce:review correctness/adversarial convergence (ADV-1).
+        The U6 backslash-doubling step added to
+        :func:`_escape_message_value` introduces a second escape class
+        the original single-backslash-trailing guard mis-handles:
+        when the ``[:500]`` boundary lands at the END of a complete
+        ``\\\\`` pair (e.g., a value with a literal trailing backslash
+        whose doubled form lands inside the window), the old guard
+        stripped one backslash and produced an orphan — exactly the
+        condition the guard exists to prevent.
+
+        The fixed guard uses an odd-count check: strip one only when
+        the trailing-backslash count is odd (true orphan); leave even
+        counts intact (complete doubled pairs).
+
+        Fixture engineering: php_namespace value of 485 ``A`` chars +
+        a literal trailing backslash. The U6 escape doubles the
+        trailing ``\\`` to ``\\\\``, producing a 487-char escaped
+        value. The 'both values' arm composes
+        ``'both values "' + escaped + '" and no value'`` = 514 chars;
+        the 500-char cap captures exactly prefix(13) + escaped(487),
+        ending with the complete ``\\\\`` pair. The odd-count guard
+        leaves it intact.
+        """
+        # 485 'A' chars + literal trailing backslash. Proto-source
+        # escape ``\\\\`` embeds a single literal backslash in the
+        # option string. PHP namespace is the natural backslash-bearing
+        # rule_id (used in real-world php_namespace values).
+        proto_with_trailing_backslash = (
+            'syntax = "proto3";\n'
+            "package smoke.boundary_php;\n"
+            'option php_namespace = "' + ("A" * 485) + '\\\\' + '";\n'
+        )
+        proto_without_option = (
+            'syntax = "proto3";\n'
+            "package smoke.boundary_php;\n"
+            "// no php_namespace option declared\n"
+        )
+        sources = {
+            "a.proto": proto_with_trailing_backslash,
+            "b.proto": proto_without_option,
+        }
+        report = _run_single(
+            tmp_path, sources, "package/same-php-namespace", package_same,
+        )
+        # Both files fire (mixed-presence: one declares, one omits).
+        assert len(report.findings) == 2
+        for _fname, params in _findings_sorted_by_file(report):
+            payload = params["values_payload"]
+            assert len(payload) <= 500, (
+                f"payload length {len(payload)} exceeds cap"
+            )
+            # Critical assertion: must NOT end with a single orphan
+            # backslash. A complete \\\\ pair OR no trailing backslash
+            # is acceptable; a lone trailing \\ is the regression.
+            trailing_bs = len(payload) - len(payload.rstrip("\\"))
+            assert trailing_bs % 2 == 0, (
+                f"payload ends with odd-count trailing backslashes "
+                f"({trailing_bs}), indicating a split escape pair: "
+                f"...{payload[-20:]!r}"
             )
 
     def test_control_chars_collapsed(self, tmp_path: Path) -> None:
@@ -1154,6 +1220,69 @@ class TestCheckPackageOptionHelper:
         # Inner " escaped to \" before composition.
         assert ctx.emitted[0]["params"]["values_payload"] == (
             'multiple values "X\\"q,Y\\"q"'
+        )
+
+    def test_backslash_doubled_in_escape(self) -> None:
+        """D6b U6: `_escape_message_value` step 1 doubles literal backslashes.
+
+        Pinned at unit level so a future revert of the U6 backslash-
+        doubling step is caught by ``pytest tests/schema/lint/rules/``
+        alone (the e2e parity tests would also catch it but lag by one
+        full subprocess invocation per fixture).
+        """
+        ctx = _FakeCtx(
+            {
+                "smoke.x": {
+                    "php_namespace": {
+                        "a.proto": "Foo\\X",
+                        "b.proto": "Foo\\Y",
+                    },
+                },
+            },
+            "smoke.x",
+        )
+        _check_package_option(
+            ctx, "php_namespace", "package/same-php-namespace"
+        )
+        assert len(ctx.emitted) == 1
+        # Literal backslash in value → doubled in payload (4 backslashes
+        # in Python source = literal \\ in actual string).
+        assert ctx.emitted[0]["params"]["values_payload"] == (
+            'multiple values "Foo\\\\X,Foo\\\\Y"'
+        )
+
+    def test_backslash_and_quote_combined_escape_order(self) -> None:
+        """D6b U6: step ordering invariant for `_escape_message_value`.
+
+        Step 1 (backslash-double) must run BEFORE step 2 (quote-escape)
+        so newly-inserted backslashes from step 2 are NOT re-doubled.
+        Reverse ordering would produce extra ``\\\\`` runs and break
+        buf-parity. This test exercises the combined backslash+quote
+        case that no buf-smoke fixture currently covers — closing the
+        adversarial residual risk from the U6 ce:review.
+        """
+        ctx = _FakeCtx(
+            {
+                "smoke.x": {
+                    "php_namespace": {
+                        # Literal value contains backslash followed by quote.
+                        "a.proto": 'Foo\\"X',
+                        "b.proto": 'Foo\\"Y',
+                    },
+                },
+            },
+            "smoke.x",
+        )
+        _check_package_option(
+            ctx, "php_namespace", "package/same-php-namespace"
+        )
+        assert len(ctx.emitted) == 1
+        # Correct order: step 1 doubles the literal \\ to \\\\, step 2
+        # escapes the literal " to \\". Combined: \\\\\\".
+        # Python source: 8 backslashes + escaped quote = literal
+        # \\\\\\" (4 backslashes + escaped-quote pair).
+        assert ctx.emitted[0]["params"]["values_payload"] == (
+            'multiple values "Foo\\\\\\"X,Foo\\\\\\"Y"'
         )
 
     def test_violation_kind_matches_rule_id(self) -> None:

@@ -197,7 +197,7 @@ _MESSAGE_TEMPLATE: str = (
 # ---------------------------------------------------------------------------
 
 
-def _escape_inner_quote(value: str) -> str:
+def _escape_message_value(value: str) -> str:
     """Escape ``\\`` then ``"`` for buf-v1.69.0 message-text byte-parity.
 
     Two-step escape applied per declared value BEFORE composition:
@@ -231,28 +231,49 @@ def _escape_inner_quote(value: str) -> str:
 def _truncate_values_payload(payload: str) -> str:
     """``_safe_for_stderr`` + 500-char cap with backslash-escape-safe boundary.
 
-    The naive ``payload[:500]`` slice can land between the ``\\`` and
-    the ``"`` of a backslash-quote escape pair inserted by
-    :func:`_escape_inner_quote`, leaving a stranded trailing
-    backslash that has no semantic partner. The dangling ``\\``
-    survives into the rendered message and is byte-divergent from
-    buf's emit format (which never produces an unbalanced escape).
-    The post-truncation guard strips a lone trailing backslash so
-    the cap never splits an escape pair.
+    The naive ``payload[:500]`` slice can land at two boundary-unsafe
+    positions for backslash characters inserted by
+    :func:`_escape_message_value`:
 
-    Concrete repro (D6b U4b adversarial / correctness convergence):
-    two files in the same package with ``go_package = "A"*482 + '"'``
-    and ``"B"*483`` produce a composed payload of ~986 chars. The
-    ``[:500]`` slice lands precisely on the backslash of the
-    first value's trailing ``\\"`` escape. Without this guard,
-    ``params["values_payload"]`` ends with a lone ``\\``.
+      1. **Split ``\\"`` escape pair** (D6b U4b origin case): truncation
+         lands precisely between the ``\\`` and its ``"`` partner,
+         leaving a single backslash with no semantic meaning.
+      2. **Split ``\\\\`` doubled-backslash pair** (D6b U6 ce:review
+         correctness/adversarial convergence): with the U6 backslash-
+         doubling step added to :func:`_escape_message_value`, a value
+         containing a literal backslash near the boundary expands to
+         ``\\\\``; truncation can land at the END of a complete
+         doubled-pair, leaving both backslashes inside the window.
+
+    A naive ``if endswith("\\\\"): strip one`` guard correctly handles
+    case 1 (one orphan stripped) but mis-handles case 2 — stripping
+    one backslash from a COMPLETE pair produces a single trailing
+    backslash, which is exactly the orphan condition the guard exists
+    to prevent. The fix is an odd-count check: count the trailing
+    backslash run length; strip one only when the count is odd
+    (genuine orphan from a split escape pair). Even counts represent
+    complete doubled pairs that must remain untouched.
+
+    Concrete repro for case 1 (U4b origin): two values of
+    ``go_package = "A"*482 + '"'`` and ``"B"*483`` produce a ~986-char
+    payload; ``[:500]`` lands on the ``\\`` of the first value's
+    ``\\"`` escape. Odd trailing-backslash count (1) → strip.
+
+    Concrete repro for case 2 (U6 ce:review): a value of
+    ``php_namespace = "A"*485 + chr(92)`` expanded by
+    :func:`_escape_message_value` to ``"A"*485 + "\\\\"`` (487 chars).
+    Composed ``'both values "..."'`` payload is 514 chars; ``[:500]``
+    captures prefix(13) + escaped(487) = exactly 500 chars, ending
+    with the complete ``\\\\`` pair. Even trailing-backslash count
+    (2) → do NOT strip.
     """
     safe = _safe_for_stderr(payload)[:500]
-    if safe.endswith("\\"):
-        # Strip the orphaned backslash from a split ``\"`` escape pair.
+    # Count trailing backslashes; strip one only on odd count.
+    trailing_backslashes = len(safe) - len(safe.rstrip("\\"))
+    if trailing_backslashes % 2 == 1:
+        # Odd count: strip the orphan from a split escape pair.
         # Worst case: truncation removes one informational character
-        # to preserve the escape-pair invariant. Vs the alternative
-        # (a malformed trailing ``\``), this is byte-clean.
+        # to preserve the escape-pair invariant.
         safe = safe[:-1]
     return safe
 
@@ -325,13 +346,13 @@ def _check_package_option(
         # Alphabetic-by-value sort empirically locked via
         # recorded/reverse-order-go.json — input ``a=Y, b=X, c=Y``
         # produces ``"X,Y"`` not ``"Y,X"``.
-        escaped_values = [_escape_inner_quote(v) for v in sorted(declared_set)]
+        escaped_values = [_escape_message_value(v) for v in sorted(declared_set)]
         values_payload = f'multiple values "{",".join(escaped_values)}"'
     else:
         # Mixed-presence: exactly 1 declared value + at least 1 omitter.
         # next(iter(...)) on a 1-element set is deterministic.
         single = next(iter(declared_set))
-        values_payload = f'both values "{_escape_inner_quote(single)}" and no value'
+        values_payload = f'both values "{_escape_message_value(single)}" and no value'
 
     ctx.emit(
         violation_kind=rule_id,

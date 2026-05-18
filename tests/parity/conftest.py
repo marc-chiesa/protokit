@@ -60,6 +60,7 @@ import pytest
 
 from protokit.schema.lint.decorator import get_lint_spec
 from protokit.schema.lint.rules import BUILTIN_PACKS
+from protokit.schema.lint.rules import package_same as _package_same_mod
 
 # ce:review follow-up (Finding #9): subprocess + buf-discovery helpers
 # live in tests/_buf_helpers.py so the U4 smoke harness and the parity
@@ -165,6 +166,37 @@ def _extract_buf_rule_id(source_spec: str) -> str | None:
     if source_spec.startswith(prefix):
         return source_spec[len(prefix):]
     return None
+
+
+def _build_package_same_proto_to_buf() -> Mapping[str, str]:
+    """Walk ``package_same.RULES`` and return ``{protokit_rule_id: buf_rule_id}``.
+
+    D6b U6 ce:review follow-up (MAINT-2 + MAINT-3 + KP-1): the map is
+    built once at module-import time rather than rebuilt inside
+    ``assert_parity_multi_file`` on every parametrized test
+    invocation. R7 is dormant (not in ``BUILTIN_PACKS``) until U7, so
+    this is NOT covered by ``RULE_ID_MAP`` above — it's a parallel
+    walk over the ``package_same`` module specifically. After U7's
+    ``BUILTIN_PACKS`` flip, ``_PACKAGE_SAME_PROTO_TO_BUF`` becomes a
+    subset of ``RULE_ID_MAP`` and could be derived from it; until
+    then, the dedicated walk keeps U6's invocation path independent
+    of the BUILTIN_PACKS sequencing.
+    """
+    mapping: dict[str, str] = {}
+    for fn in _package_same_mod.RULES:
+        spec = get_lint_spec(fn)
+        buf_id = _extract_buf_rule_id(spec.source_spec)
+        if buf_id is not None:
+            mapping[spec.rule_id] = buf_id
+    return mapping
+
+
+#: ``protokit_rule_id -> buf_rule_id`` for the 7 R7 PACKAGE_SAME_* rules.
+#: Built once at module import; consumed by ``assert_parity_multi_file``.
+_PACKAGE_SAME_PROTO_TO_BUF: Mapping[str, str] = _build_package_same_proto_to_buf()
+
+#: All R7 protokit rule_ids as a frozenset for fast membership checks.
+_PACKAGE_SAME_RULE_IDS: frozenset[str] = frozenset(_PACKAGE_SAME_PROTO_TO_BUF.keys())
 
 
 def _build_rule_id_map() -> Mapping[str, str]:
@@ -602,7 +634,7 @@ def parse_buf_recorded_snapshot(snapshot_path: Path) -> tuple[BufFinding, ...]:
             f"tests/schema/lint/test_buf_smoke_recorded_checksums.py."
         )
     findings: list[BufFinding] = []
-    for raw_line in snapshot_path.read_text().splitlines():
+    for raw_line in snapshot_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line:
             continue
@@ -834,36 +866,50 @@ def assert_parity_multi_file(
             f"Duplicate keys: {duplicates!r}"
         )
 
-    # ---- Build protokit_rule_id → buf_rule_id map (KD-1) -----------
-    # Bypasses BUILTIN_PACKS-based RULE_ID_MAP since R7 is dormant
-    # until U7; walks the package_same rule registry directly.
-    from protokit.schema.lint.rules import (  # noqa: PLC0415
-        package_same as _package_same_mod,
-    )
-    _protokit_to_buf: dict[str, str] = {}
-    for fn in _package_same_mod.RULES:
-        spec = get_lint_spec(fn)
-        buf_id = _extract_buf_rule_id(spec.source_spec)
-        if buf_id is not None:
-            _protokit_to_buf[spec.rule_id] = buf_id
-    package_same_rule_ids: frozenset[str] = frozenset(_protokit_to_buf.keys())
-
-    # ---- Partition protokit findings: scoped vs over-firing --------
+    # ---- Partition protokit findings: scoped / over-firing / unknown -----
+    # Uses module-level _PACKAGE_SAME_PROTO_TO_BUF (built once at import).
+    # Three-way partition catches:
+    #   in-scope     : rule_id in protokit_rule_ids (expected to fire)
+    #   over-firing  : rule_id is a known R7 rule but outside per-fixture scope
+    #   unknown      : rule_id looks like an R7 rule (package/same-*) but is
+    #                  not registered — catches typo'd rule_id strings (ADV-3)
     protokit_in_scope: list[tuple[str, str, str]] = []  # (buf_id, path, msg)
     protokit_overfire: list[tuple[str, str, str]] = []  # (rule_id, path, msg)
+    protokit_unknown: list[tuple[str, str, str]] = []   # (rule_id, path, msg)
     for f in protokit_findings:
         rule_id = str(f.get("rule_id", ""))
         path = _normalize_buf_path(str(f.get("location", "")))
         message = str(f.get("message", ""))
         if rule_id in protokit_rule_ids:
-            protokit_in_scope.append((_protokit_to_buf[rule_id], path, message))
-        elif rule_id in package_same_rule_ids:
+            protokit_in_scope.append(
+                (_PACKAGE_SAME_PROTO_TO_BUF[rule_id], path, message)
+            )
+        elif rule_id in _PACKAGE_SAME_RULE_IDS:
             # Over-firing complement: an R7-family rule fired but is
             # outside the per-fixture scope (KD-7).
             protokit_overfire.append((rule_id, path, message))
+        elif rule_id.startswith("package/same-"):
+            # Looks like an R7 rule_id but not in the registry — most
+            # likely a typo in a future @lint_rule decoration or a
+            # check_same_* wrapper call. Surface as a distinct error
+            # so the diagnostic points at registration, not at
+            # under-firing (per ADV-3 ce:review finding).
+            protokit_unknown.append((rule_id, path, message))
         # Non-R7 findings (e.g., D6a families that BUILTIN_PACKS loads
         # on the default profile) are excluded from the assertion —
         # they are correct + expected for the smoke fixtures.
+
+    if protokit_unknown:
+        pytest.fail(
+            f"assert_parity_multi_file({fixture_scenario}): protokit emitted "
+            f"finding(s) with rule_id matching the package/same-* prefix "
+            f"that are NOT in package_same.RULES — possible typo or "
+            f"unregistered rule. Unknown rule_ids: "
+            f"{sorted({r for r, _, _ in protokit_unknown})!r}. "
+            f"Known R7 rule_ids: {sorted(_PACKAGE_SAME_RULE_IDS)!r}. "
+            f"Fix at the @lint_rule decoration in "
+            f"src/protokit/schema/lint/rules/package_same.py."
+        )
 
     if protokit_overfire:
         pytest.fail(
@@ -882,8 +928,8 @@ def assert_parity_multi_file(
 
     # ---- Build buf comparison set scoped to expected rule_ids ------
     expected_buf_types: set[str] = {
-        _protokit_to_buf[rid] for rid in protokit_rule_ids
-        if rid in _protokit_to_buf
+        _PACKAGE_SAME_PROTO_TO_BUF[rid] for rid in protokit_rule_ids
+        if rid in _PACKAGE_SAME_PROTO_TO_BUF
     }
     buf_in_scope: list[tuple[str, str, str]] = sorted(
         (f.type, _normalize_buf_path(f.path), f.message)
