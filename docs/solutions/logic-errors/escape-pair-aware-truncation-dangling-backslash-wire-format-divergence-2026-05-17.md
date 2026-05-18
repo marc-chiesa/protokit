@@ -114,11 +114,21 @@ Steps 1-4 already existed before the fix; step 5 is the addition that closes the
 
 ## Prevention
 
+> **2026-05-18 update (D6b U6 ce:review):** the original `endswith("\\")` single-char trailing guard prescribed below is **necessary but not sufficient** once the helper supports doubled-escape patterns (`\` → `\\`). When the 500-char cap lands at the END of a complete `\\` pair, the single-char guard incorrectly strips one backslash and produces an orphan — the exact condition the guard exists to prevent. The general-case discipline is an **odd-count trailing-backslash check** (strip one only when count is odd). See [[truncation-guard-odd-count-discipline-for-doubled-escape-pairs-2026-05-18]] for the generalized rule + D6b U6 ce:review repro. The guidance below remains correct for single-escape-pair openers but should be read as a special case of the odd-count rule.
+
 - When composing strings that contain structural multi-character escape sequences (any format where 2+ adjacent characters are semantically atomic), apply the length cap and then run a post-cap structural integrity check.
-- The post-cap check is a constant-cost predicate when the escape characters are predictable: `endswith("\\")` for backslash openers, `endswith("&")` for HTML entity openers, etc. No lookahead or full re-parse needed.
+- For the SINGLE-escape-pair case (one-char escape opener like `\` before `"`), the post-cap check is a constant-cost predicate: `endswith("\\")` for backslash openers, `endswith("&")` for HTML entity openers, etc. No lookahead or full re-parse needed.
+- For the DOUBLED-escape case (same character repeated as escape mechanism — e.g., `\` → `\\` for literal backslash), the single-char predicate is WRONG. Use the odd-count discipline:
+  ```python
+  trailing = len(safe) - len(safe.rstrip("\\"))
+  if trailing % 2 == 1:
+      safe = safe[:-1]
+  ```
+  Odd count = genuine orphan from a split pair; even count = complete doubled pair (leave intact).
 - Alternative architecture: cap BEFORE escape composition (a per-value sub-cap that bounds escaped-value length pre-composition). Rejected here because it breaks buf byte-parity for under-cap values; preferred when wire-format parity is not a constraint.
 - ALWAYS pair a wire-format truncation helper with a regression test that engineers the exact boundary case. Calculate the boundary arithmetic explicitly: in this case 482-char value + inner `"` → 484 escaped chars; 484 + 1 (comma) + first 15 chars of value B + premium = 500 exactly. The test fixture must reproduce that arithmetic; a naive multi-KB value test misses the boundary entirely.
-- During ce:review, treat 3-way independent reviewer convergence on a single concern as a strong signal to elevate severity, even when each reviewer's individual confidence is already above gate — see [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] for the BOOST mechanism.
+- **When adding a NEW escape class to an existing helper, audit every guard that inspects trailing runs of the new escape character.** A guard designed for a split-pair (single stranded char) must be upgraded to an odd-count check before the new escape class ships. The D6b U6 ce:review caught this regression class via cross-reviewer convergence; see [[truncation-guard-odd-count-discipline-for-doubled-escape-pairs-2026-05-18]].
+- During ce:review, treat 3-way independent reviewer convergence on a single concern as a strong signal to elevate severity, even when each reviewer's individual confidence is already above gate — see [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] for the BOOST mechanism. The D6b U6 case is now Case 4 (FIX-INDUCED SECOND-ORDER) in that doc.
 
 ## Related Issues
 
