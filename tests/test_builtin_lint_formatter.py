@@ -671,6 +671,62 @@ class TestLintJson:
         assert fn is bl.lint_json
 
 
+class TestBumpContractDocstring:
+    """Presence ratchet for the bump-contract block above `_LINT_JSON_SCHEMA_VERSION`.
+
+    The block at ``src/protokit/formatters/_builtin_lint.py:227-270``
+    is a ``#:`` Sphinx-style comment, NOT a Python ``__doc__``
+    attribute — so the test reads source via ``inspect.getsource``
+    (Pattern B per [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]]).
+
+    This is NOT a stability contract over wording; this asserts
+    that 4 load-bearing substrings remain present. If a future
+    docstring rewrite changes the wording while preserving the
+    contract, update ``ratchet_substrings`` after confirming
+    semantic equivalence. If the contract itself is dropped
+    (e.g., the closed-vs-open distinction is removed), restore
+    the substring or capture the new contract in a fresh learning
+    + cross-ref per
+    [[closed-literal-discriminator-bump-trigger-2026-05-17]].
+
+    Substring 2 (``"additions DO bump the"``) is deliberately the
+    5-word fragment rather than the full ``"additions DO bump the
+    version"`` clause: the latter spans lines 262-263 via ``#:``
+    continuation prefix in the source comment block, so
+    ``inspect.getsource`` returns it interrupted by
+    ``\\n#:         ``; the 5-word fragment is the longest
+    contiguous on-line substring that preserves the positive
+    directional contract for closed Literals.
+    """
+
+    def test_bump_contract_docstring_preserves_closed_literal_distinction(
+        self,
+    ) -> None:
+        import inspect
+
+        from protokit.formatters import _builtin_lint
+
+        source = inspect.getsource(_builtin_lint)
+        ratchet_substrings = (
+            "Closed Literal discriminators",
+            "additions DO bump the",
+            "Open severity-string ladders",
+            '"severities_unloaded_rule"',
+        )
+        for substring in ratchet_substrings:
+            assert substring in source, (
+                f"Bump-contract substring {substring!r} missing from "
+                f"src/protokit/formatters/_builtin_lint.py (bump-"
+                f"contract block above `_LINT_JSON_SCHEMA_VERSION`). "
+                f"Either restore the substring OR update "
+                f"`ratchet_substrings` in this test after confirming "
+                f"the closed-Literal-discriminator-vs-open-severity-"
+                f"ladder contract is still preserved semantically. "
+                f"See [[closed-literal-discriminator-bump-trigger-"
+                f"2026-05-17]] for the load-bearing contract."
+            )
+
+
 _JUNIT_XSD = Path(__file__).parent / "fixtures" / "junit-xml" / "JUnit.xsd"
 
 

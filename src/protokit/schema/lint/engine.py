@@ -520,10 +520,12 @@ class LintEngine:
         ``protokit.schema.lint.rules.package_same`` is deferred to
         runtime (not module-top) to preserve the cold-import contract
         for ``protokit.schema`` per
-        ``tests/schema/lint/test_cold_import_extended.py``. Once U7
-        registers ``package_same`` in BUILTIN_PACKS, the package_same
-        module loads at engine-init time anyway, so this deferred
-        import becomes a no-op.
+        ``tests/schema/lint/test_cold_import_extended.py``. Since
+        D6b U7 registered ``package_same`` in BUILTIN_PACKS, the
+        package_same module loads at engine-init time anyway, so this
+        deferred import is a no-op at runtime — kept here as a defense
+        against any future BUILTIN_PACKS rearrangement that might
+        defer the load.
         """
         if not compile_result.pool_file_names:
             return None

@@ -11,9 +11,11 @@ change to ``BUILTIN_PACKS`` MUST:
 2. Add a CHANGELOG entry calling out the auto-load expansion +
    the user-facing impact (new findings on previously-green CI
    for users who upgrade across the change).
-3. Coordinate with a major version bump — adding to the
-   auto-load set is a breaking change to the
-   ``protokit lint`` default behavior.
+3. Coordinate a minor version bump pre-1.0 (or major bump post-1.0)
+   — adding to BUILTIN_PACKS is a user-visible behavior change to
+   ``protokit lint`` defaults that the version-bump communication
+   contract requires per
+   [[pre-1.0-version-bump-as-communication-contract-2026-05-14]].
 
 The hard CI gate replaces the soft-norm documentation policy
 documented in ``rules/__init__.py`` with a structural guarantee.
@@ -83,6 +85,7 @@ class TestBuiltinPacks:
             "protokit.schema.lint.rules.package",
             "protokit.schema.lint.rules.file",
             "protokit.schema.lint.rules.options.deprecated_replacement",
+            "protokit.schema.lint.rules.package_same",
         )
         assert actual == expected, (
             f"BUILTIN_PACKS changed: {actual!r} != {expected!r}.\n"
@@ -91,9 +94,12 @@ class TestBuiltinPacks:
             "  2. Add a CHANGELOG entry per KD-9 (see "
             "src/protokit/schema/lint/rules/__init__.py module "
             "docstring)\n"
-            "  3. Coordinate a major version bump — adding to "
-            "BUILTIN_PACKS is a breaking change to the\n"
-            "     `protokit lint` default behavior."
+            "  3. Coordinate a minor version bump pre-1.0 (or "
+            "major bump post-1.0) — adding to BUILTIN_PACKS is a "
+            "user-visible behavior\n"
+            "     change to `protokit lint` defaults that the "
+            "version-bump communication contract requires per "
+            "[[pre-1.0-version-bump-as-communication-contract]]."
         )
 
 

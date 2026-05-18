@@ -73,25 +73,22 @@ from protokit.schema.lint.rules import (
     imports,
     naming,
     package,
-    package_same,  # noqa: F401
+    package_same,
 )
 from protokit.schema.lint.rules.options import deprecated_replacement
 
-# ``package_same`` (D6b U4b R7 PACKAGE_SAME_* family) is imported here
-# so users can opt in via ``--rule-pack=protokit.schema.lint.rules.package_same``
-# without typing the import path themselves AND so the cold-import
-# regression test at ``tests/schema/lint/test_cold_import_extended.py``
-# has a known forbidden-modules target to assert against. It is
-# **DELIBERATELY NOT** in ``BUILTIN_PACKS`` below — registration is
-# deferred to U7 alongside the 0.2.0 -> 0.3.0 version bump per
-# [[pre-1.0-version-bump-as-communication-contract]]. Loading the
-# module is dormant-by-default: dormant code is the explicit opt-in
-# pattern this delivery uses to ship R7 without auto-failing every
-# pull-from-main between U4b and U7. The trailing F401 suppression
-# on the import line keeps ruff quiet about the apparently-unused
-# import without polluting the module namespace with a discard
-# binding — matches the suppression idiom used at
-# ``cli.py:81`` and ``formatters/__init__.py:65-71``.
+# ``package_same`` (D6b U4b R7 PACKAGE_SAME_* family — cross-language
+# namespace consistency rules) is imported here for two reasons that
+# survive the U7 BUILTIN_PACKS flip: (1) keeping the explicit-import
+# call site stable lets users continue to opt in via
+# ``--rule-pack=protokit.schema.lint.rules.package_same`` even though
+# the pack is now auto-loaded (the extra load is a no-op via
+# ``LintEngine.load_rule_pack``'s ``module.__name__`` short-circuit at
+# ``engine.py:241-242``); (2) the cold-import regression test at
+# ``tests/schema/lint/test_cold_import_extended.py`` uses this import
+# as a known forbidden-modules target. Default-on in BUILTIN_PACKS
+# under ``recommended`` + ``default`` profiles as of 0.3.0 per the
+# 0.2.0 -> 0.3.0 version-bump communication contract.
 
 #: Curated set of rule pack modules that ``protokit lint``
 #: auto-loads at subcommand startup. See module docstring for the
@@ -114,6 +111,17 @@ from protokit.schema.lint.rules.options import deprecated_replacement
 #: analogue). Severity ``warning`` bounds the heuristic-regex
 #: blast radius. See the D6b U3 plan for the CHANGELOG-communication
 #: contract that the auto-load expansion brings.
+#:
+#: D6b U7 0.3.0 release adds the ``package_same`` pack — the R7
+#: PACKAGE_SAME_* family (7 rules) covering cross-language namespace
+#: consistency (``go_package``, ``java_package``, ``csharp_namespace``,
+#: ``php_namespace``, ``ruby_package``, ``swift_prefix``,
+#: ``java_multiple_files``). Default-on under ``recommended`` +
+#: ``default`` profiles; ``error`` severity per buf BASIC parity.
+#: Brings ``protokit lint`` to **17 of 18 buf BASIC rules** (the
+#: 18th, ``package/same-directory``, defers to D6c). The 0.3.0
+#: CHANGELOG entry documents the auto-load expansion + the 4-path
+#: pre-upgrade migration recipe per the KD-9 communication contract.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,
@@ -121,6 +129,7 @@ BUILTIN_PACKS: tuple[ModuleType, ...] = (
     package,
     file,
     deprecated_replacement,
+    package_same,
 )
 
 __all__ = ["BUILTIN_PACKS"]

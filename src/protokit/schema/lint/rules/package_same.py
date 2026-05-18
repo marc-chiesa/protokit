@@ -89,12 +89,16 @@ vendor-isolation patterns.
 BUILTIN_PACKS registration
 --------------------------
 
-This module is loadable but **NOT** registered in default
-``BUILTIN_PACKS`` for U4b. Users opt in via
-``--rule-pack=protokit.schema.lint.rules.package_same``.
-``BUILTIN_PACKS`` registration + full migration docs land at U7
-alongside the 0.2.0 -> 0.3.0 version bump per
-[[pre-1.0-version-bump-as-communication-contract]].
+Default-on under ``recommended`` + ``default`` profiles as of
+``protokit 0.3.0`` (D6b U7's BUILTIN_PACKS flip). Bare
+``protokit lint --profile recommended <inputs>`` fires R7 on
+cross-file option disagreement. The
+``--rule-pack=protokit.schema.lint.rules.package_same`` flag
+remains supported as an idempotent explicit load — the engine's
+module-name short-circuit at ``engine.py:241-242`` + the CLI's
+loaded-pack dedup absorb the redundant load. See
+``CHANGELOG.md`` ``### D6b — 0.3.0`` for the 4-path pre-upgrade
+migration recipe per [[pre-1.0-version-bump-as-communication-contract]].
 
 References
 ----------
@@ -534,10 +538,9 @@ def check_same_java_multiple_files(ctx: FileLintContext) -> None:
 
 # ---------------------------------------------------------------------------
 # RULES tuple — exposed to ``LintEngine.load_rule_pack`` via the
-# ``--rule-pack=protokit.schema.lint.rules.package_same`` opt-in. NOT
-# registered in default BUILTIN_PACKS until U7 (deferred per
-# [[pre-1.0-version-bump-as-communication-contract]] alongside the
-# 0.2.0 -> 0.3.0 version bump).
+# ``--rule-pack=protokit.schema.lint.rules.package_same`` opt-in AND
+# auto-loaded via ``BUILTIN_PACKS`` (default-on under ``recommended`` +
+# ``default`` profiles as of ``protokit 0.3.0``).
 # ---------------------------------------------------------------------------
 
 

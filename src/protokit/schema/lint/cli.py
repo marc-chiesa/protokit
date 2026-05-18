@@ -277,10 +277,6 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
         "    protokit lint a.descriptor_set b.descriptor_set\n\n"
         "  Load a user rule pack on top of the built-in canary:\n\n"
         "    protokit lint --rule-pack acme.lint_rules schema.descriptor_set\n\n"
-        "  Opt into the dormant PACKAGE_SAME_* rule family (R7) — "
-        "not in the default profile until 0.3.0:\n\n"
-        "    protokit lint --rule-pack=protokit.schema.lint.rules.package_same "
-        "schema.descriptor_set\n\n"
         "  Use project-specific config from pyproject.toml:\n\n"
         "    protokit lint --config ./pyproject.toml schema.descriptor_set\n\n"
         "  Use a multi-profile composition (pyproject only — single "
@@ -828,7 +824,22 @@ def _main_impl(
             f"named module)",
             err=True,
         )
-        loaded_packs.append(_load_user_rule_pack(module_name, engine))
+        user_pack = _load_user_rule_pack(module_name, engine)
+        # CLI-level dedup parallels ``LintEngine.load_rule_pack``'s
+        # idempotency at ``engine.py:241-242``: when a user passes
+        # ``--rule-pack=<pack>`` for a pack already in BUILTIN_PACKS,
+        # the engine no-ops the second load, but ``loaded_packs``
+        # would still get a duplicate appended. That breaks the R25
+        # provenance line's ``zip(loaded_packs_tuple,
+        # _active_rule_ids_per_pack(...).values(), strict=True)``
+        # below — the helper dict is keyed by ``pack.__name__`` (so
+        # it dedups), but the tuple would not, yielding mismatched
+        # zip arguments. The dedup here keeps both data structures
+        # consistent. Bug surfaced at D6b U7's BUILTIN_PACKS flip
+        # of ``package_same`` per
+        # [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]].
+        if user_pack.__name__ not in {p.__name__ for p in loaded_packs}:
+            loaded_packs.append(user_pack)
 
     loaded_packs_tuple: tuple[ModuleType, ...] = tuple(loaded_packs)
 

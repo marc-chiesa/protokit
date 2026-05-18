@@ -432,6 +432,261 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D6b — option-aware path + cross-language buf BASIC parity (0.3.0)
+
+D6b adds the first option-aware rules (R6 deprecated-replacement
+family) + cross-language buf-BASIC parity (R7 PACKAGE_SAME_* family),
+bringing `protokit lint` to **17 of 18 buf BASIC rules**. The 18th
+(`package/same-directory`) defers to D6c — its cross-file rule kind
+requires new ElementKind + LintLocation discriminant work scoped for
+its own architectural delivery. Multi-language teams whose protos
+have cross-file option disagreement will see NEW error-severity
+findings on the upgrade; the pre-upgrade migration recipe below
+covers the 4 demotion paths.
+
+#### Added
+
+- **R6 deprecated-replacement family** — 5 warning-severity rules in
+  the `default` profile only: `options/deprecated-{enum,enum-value,
+  field,message,method}-must-have-replacement-comment`. First
+  option-aware rules + first leading-comment-introspection consumer.
+  Rules fire when `*Options.deprecated = true` is set without a
+  `[replaced-by: <X>]` leading-comment pointer. The `recommended`
+  profile is untouched (R6 has no buf BASIC analogue); severity
+  bounded to `warning` to contain the heuristic-regex blast radius.
+
+- **R7 PACKAGE_SAME_\* family** — 7 ERROR-severity rules in BOTH
+  `recommended` + `default` profiles, covering cross-language
+  namespace consistency:
+  - `package/same-go-package` → buf `PACKAGE_SAME_GO_PACKAGE`
+  - `package/same-java-package` → buf `PACKAGE_SAME_JAVA_PACKAGE`
+  - `package/same-csharp-namespace` → buf `PACKAGE_SAME_CSHARP_NAMESPACE`
+  - `package/same-php-namespace` → buf `PACKAGE_SAME_PHP_NAMESPACE`
+  - `package/same-ruby-package` → buf `PACKAGE_SAME_RUBY_PACKAGE`
+  - `package/same-swift-prefix` → buf `PACKAGE_SAME_SWIFT_PREFIX`
+  - `package/same-java-multiple-files` → buf `PACKAGE_SAME_JAVA_MULTIPLE_FILES`
+
+  All-disagreers-fire semantics: every file in a package with a
+  divergent value gets one finding per affected option. **Validated
+  by U6's empirical parity gate** against 21 SHA-pinned buf v1.69.0
+  NDJSON snapshots committed at U4a.
+
+- **R9 `severities_unloaded_rule` category** — 5th value on
+  `LintRuntimeWarning.category` Literal. **CLI-synthesized emit
+  site MIGRATED** from `"unloaded_rule"` to
+  `"severities_unloaded_rule"`; engine-synthesized emit site
+  unchanged. Closes the D6a U9 KTD-2 accepted-conflation trip-wire
+  so programmatic consumers can switch on `category` instead of
+  matching the `"[tool.protokit.lint.severities]"` message substring.
+
+- **Multi-file parity harness extension** at
+  `tests/parity/conftest.py` — `BufFinding` NamedTuple +
+  `parse_buf_recorded_snapshot()` + `run_protokit_lint_multi_file()`
+  + `assert_parity_multi_file()`. Reusable by future multi-file
+  rule families (D6c R8 candidate).
+
+- **Empirical parity gate** at `tests/parity/test_parity_package_same.py`
+  — 21 parametrized cases + 5 collection-time invariants R25(a-e);
+  recorded-snapshot mode runs in the required `test` CI job (no
+  BUF_BINARY dependency).
+
+#### Fixed
+
+- **CLI rule-pack idempotency at the BUILTIN_PACKS boundary.** When
+  a user passes `--rule-pack=<pack>` for a pack now in BUILTIN_PACKS
+  (post-U7), the engine's load_rule_pack short-circuits the second
+  load (`engine.py:241-242`) but the CLI's `loaded_packs` list
+  would still append a duplicate. That broke the R25 multi-pack
+  provenance line's `zip(loaded_packs_tuple,
+  _active_rule_ids_per_pack(...).values(), strict=True)` because
+  the helper dict de-dups by `pack.__name__` while the tuple did
+  not. Fix: dedup `loaded_packs` at CLI append time. Bug was
+  unreachable pre-U7 (since `package_same` was not in BUILTIN_PACKS);
+  surfaced by U7's idempotency regression tests at flip time.
+
+#### Wire format
+
+- `lint_json["schema_version"]` + `lint_sarif.runs[0].properties.lint_schema_version`
+  bumped `"0.2"` → `"0.3"` (shipped at D6b U5). The bump is driven
+  ONLY by R9's `LintRuntimeWarning.category` Literal widening per
+  the refined bump-contract at `_builtin_lint.py:227-270` (closed
+  Literal discriminators vs open severity-string ladders). New
+  `rule_id` strings from R6 + R7 do NOT contribute additional
+  bumps — `findings` is an additive list and consumers tolerate
+  unknown rule_ids.
+
+#### Behavior changes (defaults; demotable)
+
+- **R6 family fires as `warning` on `default` profile only.**
+  Teams using `--profile recommended` (the buf-parity default) see
+  ZERO new R6 findings. Teams on `default` (or with custom profile
+  composition that includes the R6 ruleset) will see deprecated-
+  replacement warnings.
+
+- **R7 family fires as `error` on both `recommended` and `default`
+  profiles.** Multi-language teams running `protokit lint --profile
+  recommended <inputs>` in CI will see NEW error-severity findings
+  when cross-file option values disagree within a proto package
+  (e.g., `go_package`, `java_package`, `csharp_namespace` differing
+  across files in the same package). This is buf BASIC parity
+  behavior; surfaces real cross-language config inconsistency.
+
+#### Pre-upgrade migration recipe
+
+Cross-language teams whose CI currently passes on protokit 0.2.0
+with `--profile recommended` and whose protos have cross-file option
+disagreement will see RED CI on first 0.3.0 invocation.
+
+**Worst-case adoption math.** A 5-file package with disagreement
+produces up to 5 × 7 = 35 findings. A 20-file no-package legacy
+corpus where the `""`-namespace aggregation kicks in (proto files
+without explicit `package` declarations get grouped into the
+empty-package bucket and compared as one cross-file scope)
+produces up to **140 findings** (20 × 7) on the upgrade. Plan
+adoption sizing against the combined worst case for your repo.
+
+**4 numbered demotion paths**, ranked by team situation (not by
+"rightness"):
+
+1. **Fix the disagreement** (when the disagreement is unintentional).
+   R7 fires because option values differ across files in the same
+   package — buf v1.69.0 parity behavior treats this as a correctness
+   signal. Decide a canonical value per `option_attr` per package;
+   update outlier files to match.
+
+2. **Demote a specific R7 rule to `warning`** (per-rule severity
+   escape hatch; suitable for "I want findings to remain visible
+   but not fail CI"). Add to `pyproject.toml`:
+   ```toml
+   [tool.protokit.lint.severities]
+   "package/same-go-package" = "warning"
+   ```
+   Multiple keys compose. Demoted rules still report findings but
+   do not fail CI (under default `--min-severity error`). Demote
+   to `info` for fully advisory output.
+
+3. **Disable a specific R7 rule** (legitimate for INTENTIONAL
+   disagreement that expresses team convention):
+   ```toml
+   [tool.protokit.lint.severities]
+   "package/same-go-package" = "off"
+   ```
+   Legitimate when the disagreement is by design — e.g., a polyrepo
+   where each `.proto` file ships in its own Go module has
+   intentionally divergent `go_package` values; demoting
+   `package/same-go-package` to `"off"` for this repo is the
+   correct long-term answer, NOT a workaround. Disabled rules are
+   invisible to downstream consumers of `lint_json`/`lint_sarif`;
+   prefer demotion to `warning` when you want findings to remain
+   visible.
+
+4. **Pin to the prior minor version** (deferral fallback — last
+   resort):
+   ```toml
+   # pyproject.toml or requirements.txt
+   "protokit~=0.2.0"
+   ```
+   Reserves time to address R7 findings on the team's schedule.
+   **Cost**: pinning forgoes future 0.3.x bug fixes for the rule
+   families you already use. Prefer paths 1-3 for teams who plan to
+   remain on protokit beyond one quarter; re-evaluate at each 0.3.x
+   patch release.
+
+**No `pyproject.toml`? Create a minimal one.** Paths 2-3 require a
+`pyproject.toml` for the `[tool.protokit.lint.severities]` overlay.
+Teams using `requirements.txt`-only Python tooling can add a 3-line
+stub at the repo root:
+
+```toml
+[tool.protokit.lint.severities]
+"package/same-go-package" = "warning"
+```
+
+protokit discovers `pyproject.toml` independently of pip/build
+tooling — the file does not need to define a build system. Path 4
+(version pin in `requirements.txt`) is the only `requirements.txt`-
+only escape hatch.
+
+**Accepted-tradeoff scenarios to plan for:**
+
+- **`""`-package aggregation.** Proto files without an explicit
+  `package` declaration get grouped into the empty-package bucket.
+  On a 20-file no-package legacy corpus, all 7 R7 rules cross-
+  compare every file against every other file in that bucket,
+  producing the worst-case 140 findings. Mitigations: declare
+  `package` on all protos (preferred — gives R7's per-package
+  scope a chance to do useful work), OR demote PACKAGE_SAME_* per-
+  rule via `[severities]` for known-no-package globs (combine with
+  `exclude` for vendored paths).
+
+- **Transitive-import supply chain.** R7 fires across the cross-
+  package boundary when a third-party `import` brings in protos
+  with divergent option values from your in-repo protos. The
+  upstream change can trip your CI even though your repo didn't
+  change. Mitigations: pin dependency versions in your build
+  graph; OR demote PACKAGE_SAME_* when third-party imports
+  introduce conflicts.
+
+- **WKT enforcement.** Users with non-standard `google/protobuf/`
+  vendoring (vendored well-known-type stubs with differing option
+  values) may see surprise findings against vendored protos.
+  Mitigations: `exclude` the vendored path, OR confirm vendoring
+  aligns with upstream protobuf option values.
+
+#### Upgrade notes (triage recipe)
+
+1. Run `protokit lint --profile recommended <inputs>` against your
+   protos.
+2. If exit code 0: no migration needed; the bump is clean.
+3. If R7 findings appear: choose one of the 4 demotion paths above
+   per rule. Most teams will land on path 1 (fix) for unintentional
+   disagreement and path 3 (`"off"` overlay) for intentional
+   per-service divergence.
+4. If R6 findings appear (default profile only): add `[replaced-by:
+   <X>]` comments to deprecated fields / methods / enums, OR
+   demote `options/deprecated-*` rules via `[severities]`
+   (warning → info).
+5. Re-run after applying demotion/fix; commit the updated
+   `pyproject.toml` or proto fix.
+
+#### Consumer migration (Python API)
+
+- **`LintRuntimeWarning.category` is a CLOSED Literal DISCRIMINATOR.**
+  The 5 enumerated values (`"rule_exception"`, `"unloaded_rule"`,
+  `"rule_exit"`, `"rule_pack"`, `"severities_unloaded_rule"`) are
+  the complete set; additions trigger a `schema_version` minor
+  bump. Consumer switch statements should be exhaustive — contrast
+  with `LintSeverity` ordering (an open ladder where additions do
+  NOT trigger bumps).
+
+- **`severities_unloaded_rule` is a value MIGRATION, not an
+  ADDITION.** The 5th value is the 5th `LintRuntimeWarning.category`
+  Literal entry, but the CLI-synthesized emit site MIGRATED from
+  the existing `"unloaded_rule"` value; the engine-synthesized
+  emit site is unchanged. Consumers switching on `category ==
+  "unloaded_rule"` should AUDIT their existing branches — not just
+  extend switch tables. The 0.2 → 0.3 `schema_version` bump IS the
+  documented signal that consumer switch tables need re-checking.
+
+- **`CompileResult.source_info_descriptors`** (new at D6b U2, the
+  source-locations index built from `FileDescriptorSet` before
+  `pool.Add()` discards `source_code_info`) is **INTERNAL** — not
+  part of the public surface; consumers integrating with the
+  compile-result object should treat it as implementation detail.
+  R6's leading-comment introspection consumes it via the
+  `leading_comment(source_info_descriptors, file_name, path)`
+  free function at `protokit.schema.lint.rules.options._comments`.
+
+#### Deferred to D6c
+
+- `package/same-directory` (R8 — 18th buf BASIC rule; cross-file
+  rule kind requires new ElementKind + LintLocation discriminant).
+- R6 promotion to `error` severity (pending real-world experience
+  with the leading-comment heuristic accuracy).
+- `strict` profile rule enumeration.
+- Per-rule disable/enable CLI flag (R9b) — `[severities] = "off"`
+  in pyproject is the current de-facto disable mechanism.
+
 ### D6a — `protokit lint` rule library expansion + buf BASIC parity (0.2.0)
 
 D6a grows `protokit lint` from the D2 `naming` canary (1 pack /

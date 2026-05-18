@@ -173,14 +173,15 @@ def _build_package_same_proto_to_buf() -> Mapping[str, str]:
 
     D6b U6 ce:review follow-up (MAINT-2 + MAINT-3 + KP-1): the map is
     built once at module-import time rather than rebuilt inside
-    ``assert_parity_multi_file`` on every parametrized test
-    invocation. R7 is dormant (not in ``BUILTIN_PACKS``) until U7, so
-    this is NOT covered by ``RULE_ID_MAP`` above — it's a parallel
-    walk over the ``package_same`` module specifically. After U7's
-    ``BUILTIN_PACKS`` flip, ``_PACKAGE_SAME_PROTO_TO_BUF`` becomes a
-    subset of ``RULE_ID_MAP`` and could be derived from it; until
-    then, the dedicated walk keeps U6's invocation path independent
-    of the BUILTIN_PACKS sequencing.
+    ``assert_parity_multi_file`` on every parametrized test invocation.
+
+    Until D6b U7, R7 was not in ``BUILTIN_PACKS``, so the BUILTIN_PACKS-
+    derived ``RULE_ID_MAP`` above didn't cover it — the dedicated walk
+    kept U6's invocation path independent of the BUILTIN_PACKS
+    sequencing. Post-U7, ``_PACKAGE_SAME_PROTO_TO_BUF`` is a subset of
+    ``RULE_ID_MAP`` and could be derived from it; retained for
+    assertion-module isolation so the parity gate's R25(a-e) invariants
+    are not coupled to BUILTIN_PACKS-tuple drift.
     """
     mapping: dict[str, str] = {}
     for fn in _package_same_mod.RULES:

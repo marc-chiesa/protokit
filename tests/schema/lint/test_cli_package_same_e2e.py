@@ -1,21 +1,24 @@
-"""End-to-end CLI tests for the R7 PACKAGE_SAME_* family (D6b U4b).
+"""End-to-end CLI tests for the R7 PACKAGE_SAME_* family.
 
-Verifies the dormant-by-default contract: until U7 registers
-``package_same`` in :data:`BUILTIN_PACKS`, the 7 R7 rules are
-loadable **only** via explicit ``--rule-pack`` opt-in. A bare
-``protokit lint --profile recommended <inputs>`` invocation must
-produce **zero** R7 findings.
+D6b U4b shipped the R7 PACKAGE_SAME_* family (7 rules covering
+cross-language namespace consistency). D6b U7 (0.3.0) flipped the
+default by adding ``package_same`` to :data:`BUILTIN_PACKS`, so
+bare ``protokit lint --profile recommended <inputs>`` now fires R7
+on disagreeing fixtures.
 
-Also exercises:
+Exercises:
 
+- ``--rule-pack=protokit.schema.lint.rules.package_same`` is now an
+  idempotent explicit-load path (the engine's module-name short-
+  circuit + ``LintProfile.compose``'s frozenset union both absorb
+  the duplicate registration).
 - ``--proto`` mode + ``--descriptor-set`` mode produce identical R7
-  findings on the same fixture when opted in (input-mode parity per
-  SC 14 of the per-unit plan).
+  findings on the same fixture (input-mode parity per SC 14 of the
+  per-unit plan).
 - ``--profile recommended`` and ``--profile default`` both fire R7
-  when opted in (since R7 ships in both profiles per the
-  ``@lint_rule`` metadata).
-- ``--profile recommended`` WITHOUT ``--rule-pack`` produces ZERO
-  R7 findings (dormancy contract).
+  per the ``@lint_rule`` metadata.
+- Rendered message string byte-matches buf v1.69.0's emit (recorded
+  at ``_buf_smoke/recorded/mixed-value.json``).
 """
 
 from __future__ import annotations
@@ -78,84 +81,35 @@ def _compile_to_descriptor_set(tmp_path: Path, sources: dict[str, str]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Dormancy contract — WITHOUT --rule-pack, R7 produces zero findings
+# Idempotent explicit-load — --rule-pack is now a no-op redundant load
 # ---------------------------------------------------------------------------
 
 
-class TestDormancyContract:
-    """Default invocation must NOT fire R7 (U4b → U7 dormancy window).
+class TestRulePackExplicitLoadIsIdempotent:
+    """Explicit ``--rule-pack=...package_same`` is idempotent post-0.3.0.
 
-    Until U7 registers ``package_same`` in ``BUILTIN_PACKS``, the 7
-    rules ship as dormant code. A new internal user pulling main
-    between U4b and U7 should see the same lint output as before —
-    zero R7 findings — so CI doesn't break on the upgrade. The U7
-    version bump + CHANGELOG entry is the communication contract;
-    this test enforces the dormancy invariant until that bump lands.
+    Since D6b U7 added ``package_same`` to ``BUILTIN_PACKS``, the
+    explicit ``--rule-pack`` flag for a built-in pack becomes a
+    redundant explicit load — exercised here as an idempotency
+    regression. Two independent mechanisms preserve the no-op
+    contract; a future engineer simplifying one without re-checking
+    the other could silently break it:
+
+    1. :meth:`LintEngine.load_rule_pack` short-circuits duplicate
+       loads on ``module.__name__`` at ``engine.py:241-242``:
+       ``if module.__name__ in self._loaded_module_names: return``.
+    2. :meth:`LintProfile.compose` uses ``frozenset().union(*...)``
+       set-union semantics on ``rule_ids`` at ``model.py:717-719``,
+       absorbing duplicate per-pack profiles. The CLI does NOT
+       de-dup ``loaded_packs`` (``cli.py:831`` unconditionally
+       appends): an explicit ``--rule-pack`` for a pack already in
+       BUILTIN_PACKS produces a doubled list entry; the downstream
+       ``compose`` frozenset-union eats the duplicate.
+
+    These four tests verify the idempotency contract holds across
+    descriptor-set / proto / both-profiles / message-byte-format
+    surfaces.
     """
-
-    def test_recommended_profile_no_r7_findings_when_dormant(
-        self, tmp_path: Path,
-    ) -> None:
-        sources = mixed_value(
-            "go_package",
-            values=("github.com/x/X", "github.com/x/Y", "github.com/x/X"),
-            package="smoke.dormant",
-        )
-        descriptor_set = _compile_to_descriptor_set(tmp_path, sources)
-        result = CliRunner().invoke(
-            lint_main,
-            [
-                "--no-config",  # skip pyproject discovery
-                "--profile", "recommended",
-                "--format", "json",
-                str(descriptor_set),
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        payload = json.loads(result.stdout)
-        r7_findings = [
-            f for f in payload.get("findings", [])
-            if f.get("rule_id", "").startswith("package/same-")
-        ]
-        assert r7_findings == [], (
-            f"expected zero R7 findings without --rule-pack opt-in, got "
-            f"{r7_findings}"
-        )
-
-    def test_default_profile_no_r7_findings_when_dormant(
-        self, tmp_path: Path,
-    ) -> None:
-        sources = mixed_value(
-            "go_package",
-            values=("github.com/x/X", "github.com/x/Y", "github.com/x/X"),
-            package="smoke.dormant_default",
-        )
-        descriptor_set = _compile_to_descriptor_set(tmp_path, sources)
-        result = CliRunner().invoke(
-            lint_main,
-            [
-                "--no-config",
-                "--profile", "default",
-                "--format", "json",
-                str(descriptor_set),
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        payload = json.loads(result.stdout)
-        r7_findings = [
-            f for f in payload.get("findings", [])
-            if f.get("rule_id", "").startswith("package/same-")
-        ]
-        assert r7_findings == []
-
-
-# ---------------------------------------------------------------------------
-# Opt-in via --rule-pack — R7 fires on a disagreeing package
-# ---------------------------------------------------------------------------
-
-
-class TestRulePackOptIn:
-    """With ``--rule-pack=protokit.schema.lint.rules.package_same``, R7 fires."""
 
     def test_descriptor_set_mode_recommended_profile(
         self, tmp_path: Path,

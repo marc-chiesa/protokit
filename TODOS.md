@@ -76,7 +76,7 @@ discussion around the stdout-write guard.
 
 ---
 
-## protokit-lint — remaining deliveries (D6b, D7)
+## protokit-lint — remaining deliveries (D6c, D7)
 
 D1 (foundation, 2026-05-02), D2 (engine + canary, 2026-05-03), and
 D3 (`protokit lint` CLI subcommand, 2026-05-09) all landed. D4
@@ -85,16 +85,21 @@ shipped with D3 — `lint_human` / `lint_json` / `lint_junit` /
 `lint_sarif` are all registered. D5 (pyproject `[tool.protokit.lint]`
 config + `--exclude`, 2026-05-11/12) landed. **D6a (rule library
 + buf BASIC parity, 0.2.0 release, 2026-05-13)** landed.
+**D6b (option-aware path + cross-language buf BASIC parity, 0.3.0
+release, 2026-05-18)** landed across U1+U2+U3+U4a+U4b+U5+U6+U7.
 
-`protokit lint <inputs>` is now production-ready: 5 packs / 17
-rules across `naming` / `enum` / `imports` / `package` / `file`
-cover buf BASIC parity for single-language teams, per-rule
-severity overrides + `--no-builtin-rules` provide demotion paths,
-and `lint_json` / `lint_sarif` carry a `schema_version` wire
-field. The remaining sub-deliveries fill in scope deliberately
-deferred from D6a: **D6b** ships the option-aware differentiator
-+ cross-language `PACKAGE_SAME_*` family + `strict` profile, and
-**D7** closes the plugin-API story.
+`protokit lint <inputs>` covers **17 of 18 buf BASIC rules** as of
+0.3.0: 6 packs / 24 rules in the `recommended` profile (`naming` /
+`enum` / `imports` / `package` / `file` / `package_same`), +5 R6
+deprecated-replacement rules in `default`. Per-rule severity
+overrides + `--no-builtin-rules` + the 4-path pre-upgrade migration
+recipe in CHANGELOG provide demotion paths; `lint_json` /
+`lint_sarif` carry a `schema_version` wire field bumped to `"0.3"`.
+The remaining sub-deliveries fill in scope deliberately deferred
+from D6b: **D6c** ships the 18th buf BASIC rule (`package/same-
+directory` — needs cross-file ElementKind + LintLocation
+discriminant work) + the `strict` profile + R9b per-rule
+disable/enable CLI flag, and **D7** closes the plugin-API story.
 
 ### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(SHIPPED 2026-05-11/12)*
 
@@ -123,7 +128,10 @@ Without it, every CLI invocation needs explicit flags.
 
 **Status:** D6a (rule library + buf BASIC parity) shipped
 2026-05-13 as protokit 0.2.0; see CHANGELOG `### D6a` for the
-auto-load expansion + demotion paths. D6b remains open (backlog
+auto-load expansion + demotion paths. **D6b (option-aware path +
+cross-language buf BASIC parity) shipped 2026-05-18 as protokit
+0.3.0**; see CHANGELOG `### D6b` for the auto-load expansion + the
+4-path pre-upgrade migration recipe. D6c remains open (backlog
 below).
 
 **What:** First concrete rules library. The brainstorm references
@@ -160,34 +168,51 @@ delivery. Standalone audit work belongs in the Phase 3
 **Depends on:** D2 + D3 (both landed). **Discovered:**
 brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
 
-**D6b backlog items surfaced during D6a:**
+**D6b backlog (resolved in 0.3.0 release 2026-05-18):**
 
 - **`severities_unloaded_rule` category split**: Shipped in D6b
-  0.3.0 (U5, 2026-05-17). See
-  `docs/brainstorms/2026-05-17-d6b-u5-r9-severities-category-split-requirements.md`
-  + `docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md`.
-  Closed the D6a U9 KTD-2 accepted-conflation trip-wire; consumers
-  now switch on `category` directly. Schema_version bumped 0.2 →
-  0.3 as the consumer-facing wire-format signal.
-- **R9b — per-rule disable/enable** (`disabled_rules` / `enabled_rules`
-  pyproject lists): deferred from D6a per the brainstorm; needs
-  real-demand evidence to design the 4 collision-shape precedence
-  semantics against.
-- **Cross-language `PACKAGE_SAME_*` rule family**: 7 rules
+  0.3.0 (U5, 2026-05-17). Closed the D6a U9 KTD-2 accepted-
+  conflation trip-wire; consumers now switch on `category` directly.
+  Schema_version bumped 0.2 → 0.3 as the consumer-facing wire-format
+  signal.
+- **Cross-language `PACKAGE_SAME_*` rule family**: Shipped in D6b
+  0.3.0 across U4a + U4b + U6 + U7 (2026-05-17/18). 7 rules
   (CSHARP_NAMESPACE, GO_PACKAGE, JAVA_MULTIPLE_FILES, JAVA_PACKAGE,
-  PHP_NAMESPACE, RUBY_PACKAGE, SWIFT_PREFIX) make D6a a
-  single-language-only migration target; D6b adds these for
-  multi-language teams.
-- **`strict` profile**: deferred from D6a until strict-only rules
-  exist (COMMENT_* family, ENUM_ZERO_VALUE_SUFFIX, etc.) — shipping
-  `strict` empty would damage the public surface with a misleading
-  rule count.
-- **Option-aware differentiator path** (R6 + R6a + R6b + four-site
-  parity_note candidate): the option-aware rule
-  `options/deprecated-must-have-replacement-comment` + SourceCodeInfo
-  preservation in both compile backends + `CompileResult.source_locations`
-  index + `_safe_for_findings()` sanitizer were all deferred from D6a
-  to keep D6a a pure-parity story.
+  PHP_NAMESPACE, RUBY_PACKAGE, SWIFT_PREFIX) default-on under
+  `recommended` + `default` profiles; bringing protokit lint to
+  17 of 18 buf BASIC rules. Empirical parity gate against 21 buf
+  v1.69.0 NDJSON snapshots.
+- **Option-aware differentiator path** (R6 family): Shipped in D6b
+  0.3.0 (U3a, 2026-05-15). 5 deprecated-replacement rules in
+  `default` profile at `warning` severity; first leading-comment-
+  introspection consumer via `leading_comment(source_info_descriptors,
+  file_name, path)` free function. `CompileResult.source_info_descriptors`
+  (the renamed-from-`source_locations` index) landed at U2 and is
+  classified INTERNAL in the Public Surface DRAFT.
+
+**D6c backlog items deferred from D6b:**
+
+- **`package/same-directory` (R8 — 18th buf BASIC rule)**: deferred
+  to D6c per the D6b brainstorm — cross-file rule kind requires
+  new `ElementKind` + `LintLocation` discriminant work scoped for
+  its own architectural delivery. Closing 18/18 buf BASIC parity
+  is the D6c headline.
+- **R9b — per-rule disable/enable CLI flag** (`disabled_rules` /
+  `enabled_rules` pyproject lists): deferred from D6a + D6b per
+  the brainstorms; needs real-demand evidence to design the 4
+  collision-shape precedence semantics against. Note that
+  `[tool.protokit.lint.severities] "rule_id" = "off"` is the
+  current de-facto disable mechanism documented in CHANGELOG.
+- **`strict` profile**: deferred from D6a + D6b until strict-only
+  rules exist (COMMENT_* family, ENUM_ZERO_VALUE_SUFFIX, etc.) —
+  shipping `strict` empty would damage the public surface with a
+  misleading rule count. R7's placement in `recommended` (rather
+  than a future `strict`) was a deliberate D6b decision per KD-10;
+  if PyPI download data shows >70% pin-to-0.2.x adoption pattern,
+  revisit R7 placement in 0.4.0.
+- **R6 severity promotion to `error`**: D6b shipped R6 at `warning`
+  to bound the leading-comment-regex heuristic blast radius;
+  promotion to `error` pending real-world experience.
 
 ---
 

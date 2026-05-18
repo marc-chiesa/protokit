@@ -60,8 +60,18 @@ _CASES: tuple[tuple[str, str, str, bool], ...] = (
 class TestParityPackage:
     def test_every_package_rule_has_a_parity_map_entry(self) -> None:
         case_rule_ids = {rule_id for rule_id, _, _, _ in _CASES}
+        # Coverage scope: the original 2-rule `package` family
+        # (`defined`, `directory-match`). The R7 PACKAGE_SAME_* family
+        # (`package/same-*` rules — added to BUILTIN_PACKS in D6b U7)
+        # has its own dedicated parity gate at
+        # `tests/parity/test_parity_package_same.py` using a multi-file
+        # harness against 21 buf v1.69.0 NDJSON snapshots, so we
+        # exclude that family here to avoid duplicate coverage.
         package_parity_rules = {
-            rule_id for rule_id in RULE_ID_MAP if rule_id.startswith("package/")
+            rule_id
+            for rule_id in RULE_ID_MAP
+            if rule_id.startswith("package/")
+            and not rule_id.startswith("package/same-")
         }
         missing = package_parity_rules - case_rule_ids
         assert not missing, (

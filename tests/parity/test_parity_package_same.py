@@ -13,13 +13,14 @@ behind the advisory job (per ``.github/workflows/ci.yml`` and
 ``pyproject.toml:86-87``), which is exactly the visibility gap U6 is
 built to close.
 
-Post-U7 contract (KD-4): when U7 flips ``BUILTIN_PACKS`` to include the
-PACKAGE_SAME_* family, the ``--rule-pack=protokit.schema.lint.rules.package_same``
-flag in ``test_parity_byte_matches_recorded_snapshot`` becomes a deliberate
-no-op — ``LintEngine.load_rule_pack`` is idempotent by module name
-(``src/protokit/schema/lint/engine.py:241-242``), so duplicate loads are
-short-circuited silently. The flag is retained for documentation value
-(naming the scope explicitly even when implicit via BUILTIN_PACKS).
+Since D6b U7 added the PACKAGE_SAME_* family to ``BUILTIN_PACKS``,
+``test_parity_byte_matches_recorded_snapshot`` invokes
+``run_protokit_lint_multi_file`` with no explicit ``rule_pack`` kwarg
+— the rules load via ``BUILTIN_PACKS`` and the parity contract holds
+through the same engine-idempotency + ``LintProfile.compose`` frozenset
+semantics that ``TestRulePackExplicitLoadIsIdempotent`` (at
+``tests/schema/lint/test_cli_package_same_e2e.py``) verifies for the
+explicit-flag callers.
 
 Per-fixture rule scoping (KD-7): each fixture's ``buf.yaml use:[]``
 declaration names exactly one PACKAGE_SAME_* rule. The parametrize
@@ -81,13 +82,16 @@ def _extract_buf_rule_id(source_spec: str) -> str | None:
 
 
 def _build_package_same_rule_id_map() -> Mapping[str, str]:
-    """Walk the dormant ``package_same.RULES`` tuple and build
+    """Walk the ``package_same.RULES`` tuple and build
     ``{buf_rule_id: protokit_rule_id}``.
 
-    R7 is NOT in ``BUILTIN_PACKS`` until U7 (per KD-4), so
-    ``tests/parity/conftest.py:_build_rule_id_map`` does NOT cover R7.
-    This local helper keeps U6's rule-id derivation internal without
-    forcing a BUILTIN_PACKS dependency on U7 to ship first.
+    Retained as an assertion-module-isolated local helper. Until
+    D6b U7, R7 was not in ``BUILTIN_PACKS``, so this helper was
+    structurally necessary (the BUILTIN_PACKS-based
+    ``tests/parity/conftest.py:_build_rule_id_map`` excluded R7).
+    Post-U7, R7 is in BUILTIN_PACKS and ``_build_rule_id_map``
+    covers it, but keeping the local map preserves U6's invariants
+    (R25(a-e)) without coupling them to BUILTIN_PACKS-tuple drift.
     """
     mapping: dict[str, str] = {}
     for fn in _package_same_mod.RULES:
@@ -202,9 +206,6 @@ _FIXTURE_RULE_ID_MAP: Mapping[str, str] = {
 # ---- Main parity test (R20-R23, R26) --------------------------------------
 
 
-_RULE_PACK = "protokit.schema.lint.rules.package_same"
-
-
 def _case_id(fixture_name: str, protokit_rule_id: str) -> str:
     """Render a readable parametrize id like ``mixed-value-java-package-same-java-package``."""
     rid_short = (
@@ -231,9 +232,10 @@ def test_parity_byte_matches_recorded_snapshot(
 
       1. Walk the fixture directory recursively (handles 2-3-file fixtures
          + nested ``google/api/*.proto`` and ``google/protobuf/*.proto``).
-      2. Invoke ``protokit lint --proto --format json --rule-pack ...
-         package_same`` with ``cwd=fixture_dir`` and ``-I .`` so emitted
-         ``location`` paths are fixture-root-relative.
+      2. Invoke ``protokit lint --proto --format json`` with
+         ``cwd=fixture_dir`` and ``-I .`` so emitted ``location`` paths
+         are fixture-root-relative. R7 loads via ``BUILTIN_PACKS`` since
+         D6b U7 — no explicit ``--rule-pack`` flag needed.
       3. Parse the recorded ``recorded/<fixture>.json`` NDJSON snapshot.
       4. Assert per-file finding-set parity scoped to the derived rule_id
          (over-firing complement included — any R7-family finding outside
@@ -251,9 +253,7 @@ def test_parity_byte_matches_recorded_snapshot(
     skip_if_buf_deprecated(buf_rule_id, protokit_rule_id)
     fixture_dir = _smoke_root() / fixture_name
     snapshot_path = _smoke_root() / "recorded" / f"{fixture_name}.json"
-    protokit_findings = run_protokit_lint_multi_file(
-        fixture_dir, rule_pack=_RULE_PACK
-    )
+    protokit_findings = run_protokit_lint_multi_file(fixture_dir)
     buf_findings = parse_buf_recorded_snapshot(snapshot_path)
     assert_parity_multi_file(
         protokit_findings,

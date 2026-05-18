@@ -481,15 +481,21 @@ walk against a ref where the importer has been updated.
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
-The built-in packs cover buf BASIC parity for single-language teams:
-`naming` (AIP-122 + PascalCase/snake_case/UPPER_SNAKE conventions
-for messages, enums, services, RPCs, oneofs, files, and packages),
-`enum` (`no-allow-alias`, `first-value-zero`), `imports`
+As of `protokit 0.3.0`, `protokit lint` covers **17 of 18 buf BASIC
+rules** (the 18th, `package/same-directory`, defers to D6c). The
+built-in packs span single-language style + cross-language namespace
+consistency: `naming` (AIP-122 + PascalCase/snake_case/UPPER_SNAKE
+conventions for messages, enums, services, RPCs, oneofs, files, and
+packages), `enum` (`no-allow-alias`, `first-value-zero`), `imports`
 (`no-public`, `no-weak`, `unused`), `package` (`defined`,
-`directory-match`), and `file` (`syntax-specified`). 17 rules across
-5 packs. Lint is intentionally orthogonal to `protokit compat` —
-compat answers "is this schema change safe for consumers?", lint
-answers "does this schema follow our style conventions?".
+`directory-match`), `file` (`syntax-specified`), and `package_same`
+(`go-package`, `java-package`, `csharp-namespace`, `php-namespace`,
+`ruby-package`, `swift-prefix`, `java-multiple-files`). **24 rules
+across 6 packs** in the `recommended` profile, +5 R6 deprecated-
+replacement rules in `default`. Lint is intentionally orthogonal
+to `protokit compat` — compat answers "is this schema change safe
+for consumers?", lint answers "does this schema follow our style
+conventions?".
 
 ### Quick Start
 
@@ -531,16 +537,43 @@ its target before rule-pack profile-name lookup.
 
 | Profile | Rules | Purpose |
 |---------|-------|---------|
-| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for the post-D6a curation. Empty in the 0.2.0 release; reserved for a curated subset once the rule library has a wider opt-in surface. |
-| `recommended` | 17 | Buf BASIC parity. The full D6a rule library — `naming` (9), `enum` (2), `imports` (3), `package` (2), `file` (1). |
-| `default` | 17 | Forward-placeholder for the D6b option-aware differentiator. Structurally equal to `recommended` in 0.2.0; consumers may target either name today. |
+| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.3.0. |
+| `recommended` | 24 | Buf BASIC parity (17 of 18 buf BASIC rules; `package/same-directory` defers to D6c). `naming` (9), `enum` (2), `imports` (3), `package` (2), `file` (1), `package_same` (7). |
+| `default` | 29 | Buf BASIC parity (`recommended`'s 24 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`). |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
 | `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
 
-The D6a rule library ships at the `error` severity floor (buf
-BASIC parity per KD-9). To soften the floor without dropping
-rules: use `--min-severity=warning` globally, or
-`[tool.protokit.lint.severities]` per-rule (see below).
+The buf-parity rule library ships at the `error` severity floor
+(matching buf's BASIC severity posture per KD-9). The R6
+deprecated-replacement family in `default` ships at `warning` to
+bound the leading-comment-regex heuristic's blast radius. To soften
+the floor without dropping rules: use `--min-severity=warning`
+globally, or `[tool.protokit.lint.severities]` per-rule (see
+below).
+
+### Upgrade notes (0.2.x → 0.3.0)
+
+D6b adds the first option-aware rules (R6 deprecated-replacement
+family) + cross-language buf-BASIC parity (R7 PACKAGE_SAME_*
+family), bringing `protokit lint` to **17 of 18 buf BASIC rules**.
+Multi-language teams will see new error-severity findings on
+cross-file option disagreement.
+
+See `CHANGELOG.md` `### D6b — 0.3.0` section for:
+
+- Full additions enumeration (R6 + R7 + R9 + parity gate + multi-
+  file harness).
+- Wire-format changes (`schema_version` `0.2` → `0.3`).
+- Behavior changes (R7 firing default-on as error severity).
+- **Pre-upgrade migration recipe** with 4 numbered TOML demotion
+  paths + worst-case adoption math (up to 140 findings on a 20-file
+  no-package legacy corpus) + 3 accepted-tradeoff scenarios
+  (`""`-package aggregation, transitive-import supply chain, WKT
+  enforcement).
+- Upgrade-notes triage recipe (5-step adoption walkthrough).
+- Consumer migration (Python API audit for `LintRuntimeWarning.
+  category` switch tables; `CompileResult.source_info_descriptors`
+  INTERNAL classification).
 
 ### Upgrade notes (0.1.x → 0.2.0)
 
@@ -750,7 +783,10 @@ accumulation.
 | Surface | Element | Status |
 |---------|---------|--------|
 | Python dataclass | `LintReport` (fields, ordering, frozen-ness) | IN |
-| Python dataclass | `LintRuntimeWarning` (category Literal, `rule_id: str \| None`, message, exception_type, descriptor_path) | IN |
+| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "rule_exit", "rule_pack", "severities_unloaded_rule"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-270`. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
+| Python module | `BUILTIN_PACKS` (auto-loaded rule packs; includes `package_same` as of 0.3.0 → 7 R7 PACKAGE_SAME_* rules default-on under `recommended` + `default` profiles) | IN |
+| Python function | `leading_comment(source_info_descriptors, file_name, path)` (free function in `protokit.schema.lint.rules.options._comments`; reads `[replaced-by: <X>]` and similar leading-comment annotations from the indexed source-info descriptors) | IN |
+| Python class field | `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] \| None` (D6b U2 R6b — the source-locations index built from `FileDescriptorSet` before `pool.Add()` discards `source_code_info`; consumed by leading-comment introspection) | INTERNAL |
 | Python dataclass | `LintFinding` (rule_id, severity, location, violation_kind, params) | IN |
 | Python dataclass | `LintProfile` (name, rule_ids, min_severity, rule_severity_overrides) | IN |
 | Python dataclass | `LintRuleSpec` (rule_id, severity, profiles, source_spec, element, message_template, fn) | IN |
@@ -762,7 +798,7 @@ accumulation.
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
 | SARIF wire | `runs[].properties.lint_schema_version: "0.3"` (parity with `lint_json["schema_version"]`) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
-| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` is forward-placeholder for D6b differentiator) | IN |
+| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with R6 deprecated-replacement family (5 warning-severity option-aware rules as of 0.3.0)) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
 | CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--version` | IN |
 | Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
