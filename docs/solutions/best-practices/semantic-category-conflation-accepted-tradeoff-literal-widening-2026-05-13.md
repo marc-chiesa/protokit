@@ -1,6 +1,7 @@
 ---
 title: "Accept semantic category conflation when reuse avoids a wire-format Literal widening — document at three sites"
 date: 2026-05-13
+last_updated: 2026-05-17
 category: docs/solutions/best-practices
 module: src/protokit/schema/lint/model.py
 problem_type: best_practice
@@ -25,6 +26,16 @@ tags:
 ---
 
 # Accept semantic category conflation when reuse avoids a wire-format Literal widening — document at three sites
+
+## Resolution (D6b U5 — 2026-05-17)
+
+**The specific D6a U9 KTD-2 deferred split has shipped.** D6b U5 (commit `16b494f`) added `"severities_unloaded_rule"` to the `LintRuntimeWarning.category` Literal and switched the CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` to the new value. Wire-format `_LINT_JSON_SCHEMA_VERSION` bumped 0.2 → 0.3 as the consumer-facing signal. The three-site documentation discipline was applied in reverse: the Literal docstring at `model.py:351-510` enumerates per-category contracts for all 5 values, the CLI emit-site comment was updated to acknowledge the resolution (`cli.py:877-882` post-ce:review-follow-up), and the TODOS.md backlog entry was retired in place.
+
+**The general pattern guidance in this doc is still applicable.** The conflation-vs-widening decision tree (when to reuse, when to widen, the three-site discipline) remains valid for FUTURE Literal-widening decisions on different fields. This Resolution annotation closes only the specific D6a U9 KTD-2 instance; the discipline framework lives on.
+
+**The value-migration semantics surfaced during U5** are captured in [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] — when a reuse-then-split decision eventually resolves, the result is value-MIGRATION (not pure value-addition), which has narrower consumer-side protection from forward-compatibility tolerance.
+
+**The bump-contract refinement triggered by U5** is captured in [[closed-literal-discriminator-bump-trigger-2026-05-17]] — the closed-Literal-discriminator vs open-severity-ladder distinction extends the bump contract documented in [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]].
 
 ## Context
 
@@ -362,3 +373,19 @@ def test_unknown_rule_id_emits_unloaded_rule_warning(
 - 11-reviewer ce:review at ``.context/compound-engineering/
   ce-review/20260513-113000-u9/`` — cli-readiness reviewer F5
   surfaced the documentation-path obligation.
+- [[closed-literal-discriminator-bump-trigger-2026-05-17]] —
+  triggered by the U5 resolution. The bump-contract refinement
+  needed for the U5 split (closed-Literal vs open-ladder
+  distinction) extends [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]].
+- [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] —
+  the consumer-side semantics of the U5 resolution. When a
+  reuse-then-split decision documented here eventually lands as
+  this doc anticipated, the result is value-MIGRATION (one
+  emit site's output changes from old value to new) NOT value-
+  addition. Forward-compatibility tolerance does NOT protect
+  consumers from migration; the schema_version bump is the only
+  programmatic signal.
+- D6b U5 anchor commits: ``16b494f`` (D6b U5 feat — split
+  shipped), ``7cd4095`` (D6b U5 ce:review follow-ups), U5
+  brainstorm + plan at ``docs/brainstorms/2026-05-17-d6b-u5-r9-severities-category-split-requirements.md``
+  + ``docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md``.

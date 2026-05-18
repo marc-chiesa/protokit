@@ -1,7 +1,7 @@
 ---
 title: "Document both the bump contract and the field-absence semantic when introducing a wire-format schema_version"
 date: 2026-05-13
-last_updated: 2026-05-14
+last_updated: 2026-05-17
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -190,11 +190,29 @@ The inverse — when this discipline is NOT applicable:
 #:       (a) addition of new top-level keys
 #:       (b) change in meaning of an existing field
 #:       (c) removal of a previously documented field
-#:   - Adding new severity-level / category strings to an existing
-#:     enum field does NOT bump the version (the field's meaning is
-#:     unchanged; the enum just gains a value).
-_LINT_JSON_SCHEMA_VERSION: str = "0.2"
+#:   - **Bump-trigger refinement (closed Literals vs open ladders):**
+#:     Adding new string values to an existing enum field has two
+#:     consumer-impact regimes — open severity-string ladders
+#:     (consumers tolerate unknown values gracefully) do NOT bump;
+#:     closed Literal discriminators (consumers exhaustively switch
+#:     on the value) DO bump. The discriminating question: can a
+#:     consumer that doesn't know about the new value still produce
+#:     a correct result? See [[closed-literal-discriminator-bump-trigger-2026-05-17]]
+#:     for the consumer-correctness test + the D6b U5 worked example.
+_LINT_JSON_SCHEMA_VERSION: str = "0.3"  # 0.2 → 0.3 in D6b U5 (closed-Literal addition)
 ```
+
+The bump-trigger refinement landed in D6b U5 (commit `16b494f`)
+as the first closed-Literal-discriminator addition under this
+contract. Before U5 the constant docstring had a single blanket
+sentence: "Adding new severity-level / category strings to an
+existing enum field does NOT bump the version." That wording was
+correct for `LintFinding.severity` (open ladder) but WRONG for
+`LintRuntimeWarning.category` (closed discriminator) — the U5
+addition of `"severities_unloaded_rule"` to `category` triggered
+the 0.2 → 0.3 bump, contradicting the blanket sentence and
+forcing the refinement. See [[closed-literal-discriminator-bump-trigger-2026-05-17]]
+for the full distinction + when each regime applies.
 
 ### Cross-format parity — same value, different key paths
 
@@ -324,3 +342,25 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   is where the wire-format version's user-facing communication
   lands; the feature-unit commit ships the field, the boundary
   commit communicates it.
+- [[closed-literal-discriminator-bump-trigger-2026-05-17]] —
+  EXTENDS this learning's bump contract. Replaces the original
+  blanket "enum-value additions don't bump" sentence with the
+  closed-vs-open distinction grounded in the consumer-correctness
+  test. D6b U5 is the first worked example: adding
+  `"severities_unloaded_rule"` to `LintRuntimeWarning.category`
+  triggered the 0.2 → 0.3 bump because consumers exhaustively
+  switch on `category` (closed discriminator). Adding a value to
+  `LintFinding.severity` would NOT bump because consumers render
+  / order it (open ladder).
+- [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] —
+  CONSUMER-SIDE companion. When the bump fires, this learning
+  tells the producer when to bump; the value-migrated learning
+  tells the producer how to FRAME the bump in the CHANGELOG so
+  consumers know whether they need to extend their switch tables
+  (value-added) or AUDIT them (value-migrated). The two learnings
+  together cover the full producer→consumer communication chain
+  for wire-format `Literal` changes.
+- D6b U5 anchor commits: `16b494f` (feat — `category` Literal
+  widening + `_LINT_JSON_SCHEMA_VERSION` 0.2 → 0.3 + bump-contract
+  docstring refinement), `7cd4095` (ce:review follow-ups — 6
+  safe_auto stale-narrative fixes).
