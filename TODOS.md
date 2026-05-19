@@ -87,19 +87,29 @@ config + `--exclude`, 2026-05-11/12) landed. **D6a (rule library
 + buf BASIC parity, 0.2.0 release, 2026-05-13)** landed.
 **D6b (option-aware path + cross-language buf BASIC parity, 0.3.0
 release, 2026-05-18)** landed across U1+U2+U3+U4a+U4b+U5+U6+U7.
+**D6c (cross-file lint dispatch + 25/26 buf BASIC parity, 0.4.0
+release, 2026-05-19)** landed across U1+U2+U3+U4+U5.
 
-`protokit lint <inputs>` covers **17 of 18 buf BASIC rules** as of
-0.3.0: 6 packs / 24 rules in the `recommended` profile (`naming` /
-`enum` / `imports` / `package` / `file` / `package_same`), +5 R6
-deprecated-replacement rules in `default`. Per-rule severity
-overrides + `--no-builtin-rules` + the 4-path pre-upgrade migration
-recipe in CHANGELOG provide demotion paths; `lint_json` /
-`lint_sarif` carry a `schema_version` wire field bumped to `"0.3"`.
-The remaining sub-deliveries fill in scope deliberately deferred
-from D6b: **D6c** ships the 18th buf BASIC rule (`package/same-
-directory` — needs cross-file ElementKind + LintLocation
-discriminant work) + the `strict` profile + R9b per-rule
-disable/enable CLI flag, and **D7** closes the plugin-API story.
+`protokit lint <inputs>` covers **25 of 26 buf BASIC rules** as of
+0.4.0: 6 packs / 26 rules in the `recommended` profile (`naming` /
+`enum` / `imports` / `package` (4 rules incl. R8 + R8b) / `file` /
+`package_same`), +5 R6 deprecated-replacement rules in `default`.
+The "17 of 18" framing inherited from D6a/D6b was empirically
+corrected at D6c against a verified buf BASIC total of 26 rules;
+see the D6c CHANGELOG `#### Corrected` subsection for the audit
+trail. Per-rule severity overrides + `--no-builtin-rules` + the
+5-path pre-upgrade migration recipe in CHANGELOG provide demotion
+paths (path 5 covers Python API consumers via
+`LintProfile.rule_severity_overrides`); `lint_json` / `lint_sarif`
+carry a `schema_version` wire field at `"0.3"` (unchanged by D6c
+since R8 + R8b are pure rule_id additions). The remaining
+sub-deliveries fill in scope deliberately deferred from D6c:
+**D6d** ships `PACKAGE_NO_IMPORT_CYCLE` (the 26th buf BASIC rule —
+needs cross-file cycle-detection algorithm; not amenable to the
+Arch-D accumulator pattern) + `FIELD_NOT_REQUIRED` (proto2-only,
+not counted in the 26-rule baseline) + the `strict` profile + R9b
+per-rule disable/enable CLI flag + option-aware pack expansion,
+and **D7** closes the plugin-API story.
 
 ### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(SHIPPED 2026-05-11/12)*
 
@@ -179,9 +189,19 @@ brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
   0.3.0 across U4a + U4b + U6 + U7 (2026-05-17/18). 7 rules
   (CSHARP_NAMESPACE, GO_PACKAGE, JAVA_MULTIPLE_FILES, JAVA_PACKAGE,
   PHP_NAMESPACE, RUBY_PACKAGE, SWIFT_PREFIX) default-on under
-  `recommended` + `default` profiles; bringing protokit lint to
-  17 of 18 buf BASIC rules. Empirical parity gate against 21 buf
-  v1.69.0 NDJSON snapshots.
+  `recommended` + `default` profiles. Empirical parity gate against
+  21 buf v1.69.0 NDJSON snapshots. (D6b shipped 23 of 26 buf BASIC
+  rules; the inherited "17 of 18" framing was corrected at D6c.)
+- **Cross-file lint dispatch (R8 + R8b)**: Shipped in D6c 0.4.0
+  across U1-U5 (2026-05-19). Arch-D pre-walk accumulator
+  (`LintEngine._build_directory_package_accumulator` + dual-view
+  `FileLintContext.directory_packages` / `directory_packages_by_dir`)
+  + R8 `package/same-directory` + R8b
+  `package/directory-same-package` (with 3 message-template arms
+  discriminating standard / empty-mixed-single / empty-mixed-multi
+  per buf v1.69.0 byte-parity). 10-fixture empirical parity gate at
+  `tests/parity/test_parity_package_directory.py`. Brings protokit
+  lint to 25 of 26 buf BASIC rules.
 - **Option-aware differentiator path** (R6 family): Shipped in D6b
   0.3.0 (U3a, 2026-05-15). 5 deprecated-replacement rules in
   `default` profile at `warning` severity; first leading-comment-
@@ -190,13 +210,17 @@ brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
   (the renamed-from-`source_locations` index) landed at U2 and is
   classified INTERNAL in the Public Surface DRAFT.
 
-**D6c backlog items deferred from D6b:**
+**D6d backlog items deferred from D6c:**
 
-- **`package/same-directory` (R8 — 18th buf BASIC rule)**: deferred
-  to D6c per the D6b brainstorm — cross-file rule kind requires
-  new `ElementKind` + `LintLocation` discriminant work scoped for
-  its own architectural delivery. Closing 18/18 buf BASIC parity
-  is the D6c headline.
+- **`PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule)**: deferred to
+  D6d — cross-file cycle-detection algorithm (DAG construction +
+  cycle detection); not amenable to the Arch-D accumulator pattern
+  established in D6c. Brainstorm Verification Step 5 records the
+  empirical investigation that unblocks D6d planning.
+- **`FIELD_NOT_REQUIRED` (proto2-only BASIC rule, not counted in
+  the 26-rule baseline)**: deferred to D6d alongside — trivial
+  single-unit add via existing `ElementKind.FIELD` check
+  (`field.label == LABEL_REQUIRED`).
 - **R9b — per-rule disable/enable CLI flag** (`disabled_rules` /
   `enabled_rules` pyproject lists): deferred from D6a + D6b per
   the brainstorms; needs real-demand evidence to design the 4

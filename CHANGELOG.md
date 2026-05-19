@@ -442,7 +442,8 @@ below, this brings `protokit lint` to **25 of 26 buf BASIC rules**.
 The remaining 26th, `PACKAGE_NO_IMPORT_CYCLE`, defers to D6d (its
 cross-file cycle-detection algorithm — DAG construction + cycle
 detection — is not amenable to the Arch-D accumulator pattern).
-FIELD_NOT_REQUIRED (proto2-only) also defers to D6d alongside.
+`FIELD_NOT_REQUIRED` (a proto2-only buf BASIC rule, not counted in
+protokit's 26-rule baseline) also defers to D6d alongside.
 
 Teams whose protos have inconsistent package/directory layout (the
 same package declared in multiple directories, or multiple packages
@@ -464,10 +465,25 @@ demotion paths.
   rule in both `recommended` + `default` profiles. Fires when a single
   directory contains files declaring two or more distinct packages
   (or, per buf's empirical behavior, a mix of declared-package + no-
-  package files). Two distinct message templates discriminate the
-  two cases:
-  - Standard: `Multiple packages "<pkg-list>" detected within directory "<dir>".`
-  - Empty-package mixed: `Package "<declared-pkg>" and file with no package detected within directory "<dir>".`
+  package files). **Three** distinct message templates discriminate
+  the directory's package mix, surfaced through three `violation_kind`
+  closed-set discriminator values:
+  - Standard (`package/directory-same-package`) — 2+ declared packages,
+    no packageless files:
+    `Multiple packages "<pkg-list>" detected within directory "<dir>".`
+  - Empty-mixed-single (`package/directory-same-package/empty-mixed-single`)
+    — exactly 1 declared package + ≥1 packageless file:
+    `Package "<declared-pkg>" and file with no package detected within directory "<dir>".`
+  - Empty-mixed-multi (`package/directory-same-package/empty-mixed-multi`)
+    — 2+ declared packages + ≥1 packageless file:
+    `Multiple packages "<pkg-list>" and file with no package detected within directory "<dir>".`
+
+  The third arm was added at U3 ce:work after the parity gate's first
+  run surfaced a real divergence from buf v1.69.0 on the multi-declared
+  + packageless case — the brainstorm-inherited claim that buf produces
+  a single declared-package value in this template was empirically
+  wrong. See [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]]
+  Case 4 for the latent-helper-bug pattern.
 
 - **Arch-D pre-walk accumulator** — `LintEngine._build_directory_package_accumulator`
   returns a dual-view `(by_package, by_directory)` tuple from one
@@ -479,13 +495,15 @@ demotion paths.
   `run()`, threaded into every `FileLintContext`, reset to `None` in
   the `finally` block.
 
-- **9-fixture empirical buf-parity gate** at
+- **10-fixture empirical buf-parity gate** at
   `tests/parity/test_parity_package_directory.py` — SHA-pinned buf
   v1.69.0 NDJSON snapshots covering all R8 + R8b boundary cases:
-  multi-dir-same-pkg, multi-pkg-same-dir, N=3 directory split, N=3
-  packages in same dir, empty-package mixed, co-fire (R8 + R8b on
-  same file), proto-root canonicalization, single-file silence,
-  WKT-only silence.
+  matched-dir, mismatched-dir, split-package-multi-dir, single-file-dir,
+  proto-root-mixed (5 base); no-package-mixed (multi-declared +
+  packageless, the OQ-4 sub-question); n3-directories-split,
+  n3-packages-same-dir, cofire-r8-r8b (3 edge-case discriminators);
+  single-declared-no-package (ce:review Finding #3 follow-up exercising
+  the empty-mixed-single arm separately from the multi case).
 
 - **`assert_parity_multi_file` three-arm partition** at
   `tests/parity/conftest.py` — extended to dispatch on
@@ -554,12 +572,14 @@ Teams whose CI currently passes on protokit 0.3.0 with
 package scattering OR multiple packages in a single directory will
 see RED CI on first 0.4.0 invocation.
 
-**Worst-case adoption math.** A package scattered across N
-directories produces up to N R8 findings (one per file in the
-package). A directory containing K distinct packages produces up
-to K × files-in-dir R8b findings. The combined upper bound on a
-mixed-layout legacy corpus is N × M (cross-directory) + sum
-across directories of K_d × files_d (within-directory).
+**Worst-case adoption math.** A package with M files scattered
+across N > 1 directories produces M R8 findings (one per file —
+all-disagreers-fire matching buf v1.69.0). A directory containing
+K distinct packages produces files_in_dir R8b findings (one per
+file in the directory). The combined upper bound on a mixed-
+layout legacy corpus is the sum of M_p findings across each
+cross-directory package p, plus the sum of files_d findings
+across each multi-package directory d.
 Mitigations below scale per-rule.
 
 **5 numbered demotion paths**, ranked by team situation (not by
@@ -608,11 +628,32 @@ Mitigations below scale per-rule.
    who plan to remain on protokit beyond one quarter.
 
 5. **Python API consumers** — for programs invoking `LintEngine`
-   directly (not through the `protokit lint` CLI), the
-   `LintProfile.rule_severity_overrides` field accepts the same
-   per-rule severity overlay as the pyproject `[severities]`
-   table. Compose via `LintProfile.compose(profile, overrides)` or
-   set the overlay manually on the resolved profile dataclass.
+   directly (not through the `protokit lint` CLI), apply the
+   overlay via `dataclasses.replace` on the resolved profile:
+   ```python
+   from dataclasses import replace
+   from protokit.schema.lint.model import LintProfile, LintSeverity
+   from protokit.schema.lint.rules import package
+
+   base = LintProfile.from_pack(package, "default")
+   overrides = {
+       "package/same-directory": LintSeverity.WARNING,
+       "package/directory-same-package": LintSeverity.WARNING,
+   }
+   profile = replace(
+       base,
+       rule_severity_overrides={
+           **base.rule_severity_overrides, **overrides,
+       },
+   )
+   ```
+   Notes: `LintProfile` is a frozen dataclass — mutate via
+   `dataclasses.replace`, not attribute assignment.
+   `rule_severity_overrides` keys are `rule_id` strings; values are
+   `LintSeverity` enum members (`ERROR`/`WARNING`/`INFO`), not raw
+   strings. `LintProfile.compose(*profiles)` composes multiple
+   `LintProfile` instances (most-strict-wins for severity); it does
+   NOT accept a profile + dict.
 
 **No `pyproject.toml`? Create a minimal one.** Paths 2-3 require a
 `pyproject.toml` for the `[tool.protokit.lint.severities]` overlay.
@@ -682,11 +723,12 @@ tooling — the file does not need to define a build system.
 
 #### Deferred to D6d
 
-- `PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule; cross-file
+- `PACKAGE_NO_IMPORT_CYCLE` (the 26th buf BASIC rule; cross-file
   cycle-detection algorithm — DAG construction + cycle detection
   — not amenable to Arch-D accumulator pattern).
-- `FIELD_NOT_REQUIRED` (26th buf BASIC rule, proto2-only —
-  trivial single-unit add via existing `ElementKind.FIELD` check).
+- `FIELD_NOT_REQUIRED` (proto2-only BASIC rule, not counted in
+  protokit's 26-rule baseline; trivial single-unit add via existing
+  `ElementKind.FIELD` check).
 - R6 promotion to `error` severity (pending real-world experience
   with the leading-comment heuristic accuracy).
 - R9b per-rule disable/enable CLI flag (`[severities] = "off"`
@@ -697,6 +739,13 @@ tooling — the file does not need to define a build system.
 - `LintLocation` exhaustiveness contract decision.
 
 ### D6b — option-aware path + cross-language buf BASIC parity (0.3.0)
+
+> **Audit-trail note:** The "17 of 18 buf BASIC rules" claim below
+> was empirically corrected at D6c — buf BASIC totals 26 rules; D6b
+> shipped 23 of 26 by literal `buf:` source_spec attribution (24
+> effective with `naming/snake-case-fields` semantic-equivalence).
+> See the D6c `#### Corrected` subsection above for the full audit
+> trail.
 
 D6b adds the first option-aware rules (R6 deprecated-replacement
 family) + cross-language buf-BASIC parity (R7 PACKAGE_SAME_* family),

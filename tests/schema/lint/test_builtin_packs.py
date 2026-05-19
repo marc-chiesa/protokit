@@ -115,3 +115,56 @@ class TestCanaryPack:
         # provenance line (Unit 3): the first pack listed in
         # composition output should be the canary at D3.
         assert BUILTIN_PACKS[0] is naming
+
+
+class TestBuiltinPacksDocstringRatchet:
+    """Presence ratchet for the buf BASIC parity numerator in the
+    ``BUILTIN_PACKS`` module docstring.
+
+    The module docstring at
+    ``src/protokit/schema/lint/rules/__init__.py:106-135`` uses
+    ``#:`` Sphinx-style continuation prefixes (NOT a Python
+    ``__doc__`` attribute), so the test reads source via
+    ``inspect.getsource`` (Pattern B per
+    [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]]).
+
+    The ``"25 of 26 buf BASIC rules"`` substring is a load-bearing
+    audit-trail claim landed at D6c U5 that resolves the
+    inherited-stale-numerator drift from D6a + D6b CHANGELOG
+    sections (see the D6c CHANGELOG ``#### Corrected`` subsection).
+    Without this ratchet a future stale-text edit could silently
+    revert the numerator to "17 of 18" or otherwise drift the
+    public audit-trail claim.
+
+    Per the 5th discipline rule of the presence-ratchet pattern,
+    each substring fits on a single source line — no Sphinx
+    ``#:`` continuation interrupts the assertion.
+    """
+
+    def test_builtin_packs_docstring_pins_buf_basic_numerator(
+        self,
+    ) -> None:
+        import inspect
+
+        from protokit.schema.lint import rules
+
+        source = inspect.getsource(rules)
+        ratchet_substrings = (
+            "25 of 26 buf BASIC rules",
+            "``PACKAGE_NO_IMPORT_CYCLE``",
+            "``FIELD_NOT_REQUIRED``",
+        )
+        for substring in ratchet_substrings:
+            assert substring in source, (
+                f"BUILTIN_PACKS docstring substring {substring!r} "
+                f"missing from src/protokit/schema/lint/rules/"
+                f"__init__.py. Either restore the substring OR "
+                f"update `ratchet_substrings` in this test after "
+                f"confirming the buf BASIC parity numerator + the "
+                f"D6d deferral claim are still preserved "
+                f"semantically. See the D6c CHANGELOG "
+                f"`#### Corrected` subsection + "
+                f"[[stale-forward-looking-text-cli-help-agent-"
+                f"discoverability-2026-05-12]] for the discipline "
+                f"this ratchet protects."
+            )

@@ -51,7 +51,7 @@ references will have empty ``source_code_info.location[]`` arrays. The
 :func:`leading_comment` helper returns ``None`` for every lookup,
 :func:`_check_replacement_comment` returns ``False`` for ``None`` input,
 and the rules emit findings for every deprecated element in the schema.
-This over-reporting is documented in U7's CHANGELOG; the workarounds
+This over-reporting is documented in the 0.3.0 CHANGELOG entry; the workarounds
 are (a) regenerate the descriptor set with ``--include_source_info``,
 (b) lint via ``--proto`` mode instead, or (c) demote the R6 rules via
 ``[tool.protokit.lint.severities]``. A runtime ``LintCompileDiagnostic``

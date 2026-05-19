@@ -753,10 +753,24 @@ class TestCofireScenario:
 
         ``package/directory-same-package`` < ``package/same-directory``
         lexicographically, so on ``pkg/a.proto`` (the only file where
-        BOTH rules fire) R8b's finding must precede R8's. The engine's
-        ``sorted(profile.rule_ids - loaded_ids)`` at ``engine.py:383``
-        produces this without special-case logic; this test pins the
-        contract so a future engine refactor can't silently invert it.
+        BOTH rules fire) R8b's finding must precede R8's. The
+        enforcement is layered:
+
+        1. ``RULES`` tuple at ``rules/package.py:494-499`` registers
+           ``check_directory_same_package`` BEFORE
+           ``check_package_same_directory``.
+        2. ``LintEngine.load_rule_pack`` walks ``module.RULES`` in
+           order and populates ``self._loaded_specs`` (a dict)
+           preserving insertion order per Python 3.7+ semantics.
+        3. The dispatch loop at ``engine.py:467-475`` iterates
+           ``self._loaded_specs.items()`` in insertion order, so
+           emit order on a co-fire file mirrors RULES-tuple order.
+
+        This test ratifies the resulting emit sequence end-to-end.
+        A future contributor reordering the RULES tuple (e.g., to
+        group ``package/same-*`` together) will fail this assertion
+        loudly — preserving the documented buf v1.69.0 parity
+        contract without engine-level special-case sort logic.
         """
         report = _run_full_pack(
             tmp_path,

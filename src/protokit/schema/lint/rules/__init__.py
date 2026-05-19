@@ -109,8 +109,9 @@ from protokit.schema.lint.rules.options import deprecated_replacement
 #: MESSAGE, ENUM). The pack ships in ``default`` profile only; the
 #: ``recommended`` profile stays at buf BASIC parity (R6 has no buf
 #: analogue). Severity ``warning`` bounds the heuristic-regex
-#: blast radius. See the D6b U3 plan for the CHANGELOG-communication
-#: contract that the auto-load expansion brings.
+#: blast radius. See the 0.3.0 CHANGELOG entry (D6b) for the
+#: CHANGELOG-communication contract that the auto-load expansion
+#: brings.
 #:
 #: D6b U7 0.3.0 release adds the ``package_same`` pack — the R7
 #: PACKAGE_SAME_* family (7 rules) covering cross-language namespace
@@ -125,8 +126,10 @@ from protokit.schema.lint.rules.options import deprecated_replacement
 #: ``naming/snake-case-fields`` ``source_spec`` to
 #: ``buf:FIELD_LOWER_SNAKE_CASE`` (KTD-11). Combined coverage:
 #: ``protokit lint`` now matches **25 of 26 buf BASIC rules** (the
-#: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6d alongside
-#: ``FIELD_NOT_REQUIRED``). The 0.4.0 CHANGELOG entry (D6c) documents
+#: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6d; the proto2-only
+#: ``FIELD_NOT_REQUIRED`` is not counted in protokit's 26-rule
+#: baseline and also defers to D6d alongside). The 0.4.0 CHANGELOG
+#: entry (D6c) documents
 #: the rule additions + the 5-path pre-upgrade migration recipe per
 #: the KD-9 communication contract.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
