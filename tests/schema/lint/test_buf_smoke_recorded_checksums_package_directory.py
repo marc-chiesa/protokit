@@ -102,3 +102,65 @@ def test_every_recorded_file_is_pinned() -> None:
         f"CHECKSUMS.sha256 entries without a corresponding recorded "
         f"snapshot: {sorted(extraneous)!r}. Remove the orphan entries."
     )
+
+
+# Per the D6c U3 ce:review (adversarial Finding #10, P3/0.97): the two
+# empty snapshots ``matched-dir.json`` and ``single-file-dir.json`` share
+# the empty-bytes SHA ``e3b0c44...`` by design. A filename swap between
+# them (e.g., a contributor renames the directory but forgets to rename
+# the snapshot) is invisible to both the checksum gate above AND the
+# parity test (both expect zero findings on these fixtures). The
+# structural anchor below pins WHICH specific fixtures are SUPPOSED to
+# produce empty snapshots so a swap fails loudly here rather than
+# silently passing the rest of the harness.
+_EXPECTED_EMPTY_FIXTURES: frozenset[str] = frozenset({
+    "matched-dir",
+    "single-file-dir",
+})
+
+_EMPTY_BYTES_SHA256 = (
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+)
+
+
+def test_empty_snapshots_anchor_intended_fixtures() -> None:
+    """Pin which fixtures are SUPPOSED to produce empty snapshots.
+
+    Both ``matched-dir.json`` (R8 happy path — 2 files in same dir,
+    same package) and ``single-file-dir.json`` (single file — both
+    rules silent) are empty by design. They share the SHA-256 of zero
+    bytes (``e3b0c44...``).
+
+    Without this anchor:
+      - The checksum gate above accepts both fixtures' empty SHAs
+        independently (they're listed in CHECKSUMS.sha256 with the
+        same hash).
+      - A filename swap (e.g., contributor accidentally moves
+        ``matched-dir/`` content into ``single-file-dir/`` and
+        vice-versa) preserves "buf emits 0 findings" for both
+        fixtures, so the parity test passes vacuously.
+      - The two recorded files would still pass the SHA check (both
+        empty).
+
+    This anchor pins the **set of fixtures expected to be empty**.
+    A future change that legitimately adds an empty-snapshot fixture
+    requires editing this set; a swap that accidentally adds a new
+    fixture to the empty set (or removes one) fails here.
+    """
+    actual_empty: set[str] = set()
+    for basename, digest in _CHECKSUMS_PINNED.items():
+        if digest == _EMPTY_BYTES_SHA256:
+            actual_empty.add(basename.removesuffix(".json"))
+    assert actual_empty == _EXPECTED_EMPTY_FIXTURES, (
+        f"Empty-snapshot fixture set drifted from the documented anchor.\n"
+        f"  Pinned to be empty: {sorted(_EXPECTED_EMPTY_FIXTURES)!r}\n"
+        f"  Actually empty:     {sorted(actual_empty)!r}\n"
+        f"  Newly empty (not in anchor): "
+        f"{sorted(actual_empty - _EXPECTED_EMPTY_FIXTURES)!r}\n"
+        f"  No longer empty (in anchor): "
+        f"{sorted(_EXPECTED_EMPTY_FIXTURES - actual_empty)!r}\n"
+        f"\n"
+        f"If a fixture intentionally became empty (e.g., a buf-version "
+        f"change made it clean), update _EXPECTED_EMPTY_FIXTURES. If a "
+        f"fixture accidentally became empty, regenerate the snapshot."
+    )

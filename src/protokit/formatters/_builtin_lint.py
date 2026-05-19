@@ -268,6 +268,26 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     ``"severities_unloaded_rule"`` to the ``category`` Literal is
 #:     the first closed-Literal addition under this contract; it
 #:     bumps schema_version from ``"0.2"`` to ``"0.3"``.
+#:   - **Pre-release carve-out**: closed-discriminator value renames
+#:     within the SAME unreleased version cycle (i.e., between two
+#:     internal units U_N and U_N+1 of the same delivery, both of
+#:     which precede the version bump to a user-visible release) do
+#:     NOT bump ``_LINT_JSON_SCHEMA_VERSION``. Rationale: the
+#:     pre-release surface is internal-only by the version-bump
+#:     communication contract (see [[pre-1.0-version-bump-as-
+#:     communication-contract-2026-05-14]]); no consumer has stored
+#:     state against the intermediate U_N value. The next public
+#:     release's CHANGELOG documents the final user-visible
+#:     ``violation_kind`` (and any other closed-discriminator) set.
+#:     First case under this clause: D6c U2 shipped R8b with
+#:     ``violation_kind="package/directory-same-package/empty-mixed"``;
+#:     D6c U3 corrected the helper-bug fix to split that arm into
+#:     ``/empty-mixed-single`` + ``/empty-mixed-multi`` empirically
+#:     against buf v1.69.0. Both U2 and U3 land before the 0.4.0
+#:     release (U5 boundary); ``schema_version`` stays ``"0.3"``.
+#:     Post-1.0, the same rename WOULD bump per the
+#:     value-migrated-vs-value-added distinction in
+#:     [[closed-literal-discriminator-bump-trigger-2026-05-17]].
 _LINT_JSON_SCHEMA_VERSION: str = "0.3"
 
 
@@ -280,7 +300,7 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       Consumers MUST treat unknown values as forward-compatible.
       See :data:`_LINT_JSON_SCHEMA_VERSION` for the bump contract.
     - ``findings``: list of finding dicts (rule_id, severity,
-      location, violation_kind, message).
+      location, violation_kind, message, params).
     - ``filtered_count``: int (count of findings dropped by
       ``--min-severity`` filtering).
     - ``runtime_warnings``: list of warning dicts (category,
@@ -299,6 +319,50 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       what the human-format ``--statistics`` footer would have
       shown, so machine-format consumers don't need ``--statistics``
       and the flag is silently ignored when ``--format=json``.
+
+    Per-finding ``params`` dict contract:
+
+      The ``params`` field carries the rule-specific semantic fields
+      used to interpolate the rendered ``message`` text. For
+      single-arm rules (the vast majority), ``params`` carries one
+      stable key set per rule_id. For **multi-arm rules** (rules with
+      dict-shaped ``message_template`` keyed by ``violation_kind``),
+      ``params`` carries a per-arm key set discriminated by
+      ``violation_kind``. Agent consumers that branch on rule
+      behavior should switch on ``violation_kind`` to determine which
+      keys are present.
+
+      Current multi-arm rule (one as of D6c U3):
+
+      - ``package/directory-same-package`` (R8b, three arms):
+
+        - ``violation_kind="package/directory-same-package"`` (standard arm,
+          2+ declared packages, no packageless files):
+          params = ``{file, directory, packages, packageless_present}``.
+          ``packages`` is a comma-no-space alphabetic-sorted string
+          (e.g., ``"acme.bar,acme.foo"``).
+        - ``violation_kind="package/directory-same-package/empty-mixed-single"``
+          (1 declared + ≥1 packageless): params = ``{file, directory,
+          package, packageless_present}``. ``package`` (singular) is
+          the single declared-package value.
+        - ``violation_kind="package/directory-same-package/empty-mixed-multi"``
+          (2+ declared + ≥1 packageless): params = ``{file, directory,
+          packages, packageless_present}``. ``packages`` (plural CSV)
+          matches the standard arm's shape.
+
+      Note the ``package`` (singular) vs ``packages`` (plural)
+      asymmetry between R8b's empty-mixed-single arm and its other
+      two arms — branching on ``violation_kind`` is the
+      discriminator. ``packageless_present`` is a symmetric
+      ``bool`` field present in all three arms for callers that
+      prefer a direct boolean over string-prefix-matching the
+      ``violation_kind``.
+
+      ``params`` values are sanitized via ``_safe_for_stderr`` and
+      capped at 500 chars per value before serialization. Non-JSON-
+      serializable param values (rare; ``str`` and ``bool`` cover
+      the current rule set) degrade to ``repr`` via
+      ``json.dumps(default=str)`` rather than failing the document.
     """
     del _ctx
     findings_payload: list[dict[str, Any]] = [

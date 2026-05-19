@@ -170,6 +170,64 @@ class TestR8bRuleSpec:
             ),
         }
 
+    def test_violation_kinds_are_consistent_across_severity_and_template(
+        self,
+    ) -> None:
+        """Severity and message_template dicts MUST share the same key set.
+
+        Closes the silent-vacuous-pass safety hole described at U3
+        ce:review Finding #6 (adversarial, P2/0.88): if a future
+        refactor changed ``_R8B_EMPTY_MIXED_*_KIND`` constants
+        independently across severity vs message_template, the rule
+        would emit findings whose ``violation_kind`` is in one dict
+        but not the other. The dispatch logic would emit successfully
+        (the constant exists at the emit site) but the formatter
+        would fall back to ``finding.rule_id`` for the message
+        (per ``_render_message`` line 79 fallback) AND the parity
+        gate's family-aware partition at
+        ``assert_parity_multi_file`` would silently exclude the
+        finding from the comparison (the unknown-bucket prefix check
+        catches only typo'd rule_ids, not value-divergent
+        violation_kinds within a known rule_id).
+
+        This presence-ratchet test asserts both dicts have the same
+        keys; ``LintRuleSpec.__post_init__`` enforces type-shape
+        pairing (both dict or both single-kind) but does NOT cross-
+        check the key sets. Adding the cross-check at the test layer
+        catches the divergence before it can surface as a vacuous
+        parity pass.
+        """
+        spec = check_directory_same_package._lint_spec  # type: ignore[attr-defined]
+        assert isinstance(spec.severity, dict)
+        assert isinstance(spec.message_template, dict)
+        severity_keys = set(spec.severity.keys())
+        template_keys = set(spec.message_template.keys())
+        assert severity_keys == template_keys, (
+            f"R8b severity and message_template keys diverge.\n"
+            f"  severity keys:         {sorted(severity_keys)!r}\n"
+            f"  message_template keys: {sorted(template_keys)!r}\n"
+            f"  only in severity:      "
+            f"{sorted(severity_keys - template_keys)!r}\n"
+            f"  only in template:      "
+            f"{sorted(template_keys - severity_keys)!r}\n"
+            f"Both dicts must be updated atomically when adding a new "
+            f"R8b arm. Update ``_R8B_*_KIND`` constants + the two "
+            f"module-level dicts in src/protokit/schema/lint/rules/"
+            f"package.py together."
+        )
+        # Hard-pin the expected 3-arm set so a future drop of a single
+        # kind also fails loudly (not just a key-divergence between
+        # the two dicts).
+        expected_kinds = {
+            "package/directory-same-package",
+            "package/directory-same-package/empty-mixed-single",
+            "package/directory-same-package/empty-mixed-multi",
+        }
+        assert severity_keys == expected_kinds, (
+            f"R8b's three documented violation_kinds drifted: "
+            f"{sorted(severity_keys)!r} != {sorted(expected_kinds)!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # R8 — package/same-directory
