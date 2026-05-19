@@ -432,6 +432,270 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D6c — cross-file lint dispatch (Arch-D pre-walk accumulator) + 25/26 buf BASIC parity (0.4.0)
+
+D6c adds the first cross-file lint dispatch infrastructure (Arch-D
+pre-walk accumulator + `FileLintContext.directory_packages` field) and
+the first two rules to consume it: R8 `package/same-directory` and R8b
+`package/directory-same-package`. Combined with the [Corrected] entry
+below, this brings `protokit lint` to **25 of 26 buf BASIC rules**.
+The remaining 26th, `PACKAGE_NO_IMPORT_CYCLE`, defers to D6d (its
+cross-file cycle-detection algorithm — DAG construction + cycle
+detection — is not amenable to the Arch-D accumulator pattern).
+FIELD_NOT_REQUIRED (proto2-only) also defers to D6d alongside.
+
+Teams whose protos have inconsistent package/directory layout (the
+same package declared in multiple directories, or multiple packages
+declared in the same directory) will see NEW error-severity findings
+on upgrade; the pre-upgrade migration recipe below covers the 5
+demotion paths.
+
+#### Added
+
+- **R8 `package/same-directory`** — ERROR-severity cross-file rule in
+  both `recommended` + `default` profiles. Fires when files declaring
+  the same proto `package` live in two or more distinct directories.
+  Message template:
+  `Multiple directories "<dir-list>" contain files with package "<pkg>".`
+  Directory list is alphabetic, comma-no-space (`d1,d2,d3`); proto-root
+  files canonicalize to `"."` (matching buf v1.69.0 byte-for-byte).
+
+- **R8b `package/directory-same-package`** — ERROR-severity cross-file
+  rule in both `recommended` + `default` profiles. Fires when a single
+  directory contains files declaring two or more distinct packages
+  (or, per buf's empirical behavior, a mix of declared-package + no-
+  package files). Two distinct message templates discriminate the
+  two cases:
+  - Standard: `Multiple packages "<pkg-list>" detected within directory "<dir>".`
+  - Empty-package mixed: `Package "<declared-pkg>" and file with no package detected within directory "<dir>".`
+
+- **Arch-D pre-walk accumulator** — `LintEngine._build_directory_package_accumulator`
+  returns a dual-view `(by_package, by_directory)` tuple from one
+  pass over `compile_result.root_files`. Cross-file rule families
+  consume the views via `FileLintContext.directory_packages` (per-
+  package inner view) and `FileLintContext.directory_packages_by_dir`
+  (per-directory inverted index — O(1) lookup for R8b). Lifecycle
+  mirrors R7's `_build_package_options_accumulator`: built once per
+  `run()`, threaded into every `FileLintContext`, reset to `None` in
+  the `finally` block.
+
+- **9-fixture empirical buf-parity gate** at
+  `tests/parity/test_parity_package_directory.py` — SHA-pinned buf
+  v1.69.0 NDJSON snapshots covering all R8 + R8b boundary cases:
+  multi-dir-same-pkg, multi-pkg-same-dir, N=3 directory split, N=3
+  packages in same dir, empty-package mixed, co-fire (R8 + R8b on
+  same file), proto-root canonicalization, single-file silence,
+  WKT-only silence.
+
+- **`assert_parity_multi_file` three-arm partition** at
+  `tests/parity/conftest.py` — extended to dispatch on
+  R7-family + R8/R8b family + remaining-rules via three frozensets
+  derived from `RULE_ID_MAP` (per KTD-3 + KTD-12: no sibling-isolated
+  rule_id maps; consume the SSOT directly).
+
+#### Corrected
+
+- **buf BASIC parity numerator: `17 of 18` → `25 of 26`.** The inherited
+  "18 buf BASIC rules" claim from D6a / D6b CHANGELOG sections was
+  empirically wrong — D6c Phase 0 verification against buf v1.69.0
+  documentation enumerated **26 BASIC rules**. Of those, protokit
+  shipped 23 by literal `buf:` source_spec attribution through D6b
+  (24 effective, with `naming/snake-case-fields` semantic-equivalence
+  to `FIELD_LOWER_SNAKE_CASE`). D6c addresses both the count and the
+  audit trail:
+  - R8 + R8b add 2 rules → 25 of 26.
+  - `naming/snake-case-fields` source_spec corrected from
+    `"https://google.aip.dev/122"` to `"buf:FIELD_LOWER_SNAKE_CASE"`
+    so the 25-of-26 numerator is grep-visible in
+    `--list-rules --format=json` output rather than depending on
+    semantic-equivalence reasoning. AIP-122 attribution moved to the
+    rule module docstring.
+
+  Historical D6a + D6b CHANGELOG sections retain their original
+  numerator framing as the audit trail of past deliberation — the
+  correction lives here, not as a rewrite of past sections. See
+  [[plan-review-verify-prior-art-citations-2026-05-15]] for the
+  brainstorm-time discipline that should have caught this earlier
+  in the delivery chain.
+
+#### Fixed
+
+- **U7 KD-7 hygiene consolidation** — `_build_package_same_rule_id_map`
+  at `tests/parity/test_parity_package_same.py:84-117` deleted in
+  favor of consuming `RULE_ID_MAP` from
+  `tests/parity/conftest.py` directly. The R7 parametrize source
+  now derives the proto-id → buf-id map by filtering `RULE_ID_MAP`
+  on the `"buf:PACKAGE_SAME_"` prefix.
+- **Compound-backslash+quote escape parity** — new BUF_BINARY snapshot
+  at `tests/schema/lint/rules/fixtures/package_same/_buf_smoke/recorded/`
+  covers the case where an option value contains both `\` and `"` in
+  the same string. Validates `_escape_message_value`'s two-step
+  backslash-then-quote order against buf v1.69.0 byte-for-byte.
+
+#### Behavior changes (defaults; demotable)
+
+- **R8 + R8b fire as `error` on both `recommended` and `default`
+  profiles.** Teams whose protos have cross-directory package
+  scattering OR multiple packages in a single directory will see
+  NEW error-severity findings on first 0.4.0 invocation. This is
+  buf BASIC parity behavior; both rules surface real cross-file
+  consistency issues that buf v1.69.0 also flags.
+
+- **Wire format unchanged** — `lint_json["schema_version"]` stays
+  `"0.3"`; `lint_sarif.runs[0].properties.lint_schema_version` stays
+  `"0.3"`. R8 + R8b add new `rule_id` strings but `findings` is an
+  additive list and `LintRuntimeWarning.category` Literal is
+  unchanged.
+
+#### Pre-upgrade migration recipe
+
+Teams whose CI currently passes on protokit 0.3.0 with
+`--profile recommended` and whose protos have cross-directory
+package scattering OR multiple packages in a single directory will
+see RED CI on first 0.4.0 invocation.
+
+**Worst-case adoption math.** A package scattered across N
+directories produces up to N R8 findings (one per file in the
+package). A directory containing K distinct packages produces up
+to K × files-in-dir R8b findings. The combined upper bound on a
+mixed-layout legacy corpus is N × M (cross-directory) + sum
+across directories of K_d × files_d (within-directory).
+Mitigations below scale per-rule.
+
+**5 numbered demotion paths**, ranked by team situation (not by
+"rightness"):
+
+1. **Fix the layout — preferred** (when the layout drift is
+   unintentional). Reorganize files so each package lives in a
+   single directory (R8 path) and each directory contains files
+   from a single package (R8b path). When co-fire occurs on the
+   same file (KTD-9): **resolve R8b first** (split the directory
+   into single-package subdirectories), then R8 typically dissolves
+   as a side-effect.
+
+2. **Demote a specific R8/R8b rule to `warning`** (per-rule severity
+   escape hatch; findings stay visible but don't fail CI). Add to
+   `pyproject.toml`:
+   ```toml
+   [tool.protokit.lint.severities]
+   "package/same-directory" = "warning"
+   "package/directory-same-package" = "warning"
+   ```
+   Multiple keys compose. Demoted rules still report findings but
+   do not fail CI (under default `--min-severity error`). Demote
+   to `info` for fully advisory output.
+
+3. **Disable a specific rule** (legitimate for INTENTIONAL layout
+   drift — e.g., a polyrepo monorepo where each subdirectory is
+   independently owned and intentionally lives in its own package):
+   ```toml
+   [tool.protokit.lint.severities]
+   "package/same-directory" = "off"
+   ```
+   Disabled rules are invisible to downstream consumers of
+   `lint_json`/`lint_sarif`; prefer demotion to `warning` when you
+   want findings to remain visible.
+
+4. **Pin to the prior minor version** (deferral fallback — last
+   resort):
+   ```toml
+   # pyproject.toml or requirements.txt
+   "protokit~=0.3.0"
+   ```
+   Reserves time to address R8 + R8b findings on the team's
+   schedule. **Cost**: pinning forgoes future 0.4.x bug fixes for
+   the rule families you already use. Prefer paths 1-3 for teams
+   who plan to remain on protokit beyond one quarter.
+
+5. **Python API consumers** — for programs invoking `LintEngine`
+   directly (not through the `protokit lint` CLI), the
+   `LintProfile.rule_severity_overrides` field accepts the same
+   per-rule severity overlay as the pyproject `[severities]`
+   table. Compose via `LintProfile.compose(profile, overrides)` or
+   set the overlay manually on the resolved profile dataclass.
+
+**No `pyproject.toml`? Create a minimal one.** Paths 2-3 require a
+`pyproject.toml` for the `[tool.protokit.lint.severities]` overlay.
+Teams using `requirements.txt`-only Python tooling can add a 3-line
+stub at the repo root:
+
+```toml
+[tool.protokit.lint.severities]
+"package/same-directory" = "warning"
+```
+
+protokit discovers `pyproject.toml` independently of pip/build
+tooling — the file does not need to define a build system.
+
+**Accepted-tradeoff scenarios to plan for:**
+
+- **Empty-package mixed-directory.** Files without an explicit
+  `package` declaration that share a directory with declared-package
+  files will trigger R8b's empty-package message template. Common
+  on legacy corpora that gradually added `package` declarations
+  per-file rather than per-directory. Mitigations: declare
+  `package` on all files in the directory (preferred), OR demote
+  `package/directory-same-package` and address gradually.
+
+- **Vendored / generated protos.** Vendored well-known-types,
+  generated stubs, or imported third-party protos may have layout
+  patterns out of your team's control. Mitigations: `exclude`
+  vendored paths via the `exclude` key in `pyproject.toml`
+  (gitignore-style globs), OR demote R8/R8b per-rule for repos
+  that intentionally vendor cross-layout protos.
+
+- **Co-fire scenarios (KTD-9).** When R8 and R8b both fire on the
+  same file, treat R8b as the primary signal: a directory with
+  multiple packages is the structural cause; the cross-directory
+  package spread is often a secondary consequence. Fix R8b first;
+  R8 frequently dissolves once each directory has a single package.
+
+#### Upgrade notes (triage recipe)
+
+1. Run `protokit lint --profile recommended <inputs>` against your
+   protos.
+2. If exit code 0: no migration needed; the bump is clean.
+3. If R8 / R8b findings appear: choose one of the 5 demotion paths
+   above per rule. Most teams will land on path 1 (fix the layout)
+   for unintentional drift and path 3 (`"off"` overlay) for
+   intentional per-subsystem divergence.
+4. For co-fire situations, fix R8b first (split directories into
+   single-package), then re-run — R8 commonly dissolves.
+5. Re-run after applying demotion/fix; commit the updated
+   `pyproject.toml` or proto layout fix.
+
+#### Consumer migration (Python API)
+
+- **`FileLintContext.directory_packages`** (new at D6c U1) and
+  **`FileLintContext.directory_packages_by_dir`** (new at D6c U1)
+  are **INTERNAL** — not part of the public surface; consumers
+  integrating with the file-context object should treat them as
+  implementation detail. Cross-file rule callables consume them via
+  the standard `@lint_rule`-decorated signature; the field shapes
+  may change pre-1.0.
+
+- **`LintEngine._build_directory_package_accumulator`** is
+  similarly INTERNAL — the dual-view shape `(by_package,
+  by_directory)` is the current accumulator contract for D6c's
+  cross-file rule family; future rule families may extend the
+  return shape.
+
+#### Deferred to D6d
+
+- `PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule; cross-file
+  cycle-detection algorithm — DAG construction + cycle detection
+  — not amenable to Arch-D accumulator pattern).
+- `FIELD_NOT_REQUIRED` (26th buf BASIC rule, proto2-only —
+  trivial single-unit add via existing `ElementKind.FIELD` check).
+- R6 promotion to `error` severity (pending real-world experience
+  with the leading-comment heuristic accuracy).
+- R9b per-rule disable/enable CLI flag (`[severities] = "off"`
+  is the current de-facto disable mechanism).
+- `strict` profile rule enumeration.
+- Option-aware pack expansion (R6 family successors) — the
+  strategic differentiator path, gets its own delivery.
+- `LintLocation` exhaustiveness contract decision.
+
 ### D6b — option-aware path + cross-language buf BASIC parity (0.3.0)
 
 D6b adds the first option-aware rules (R6 deprecated-replacement

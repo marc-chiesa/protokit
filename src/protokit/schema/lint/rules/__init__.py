@@ -126,9 +126,9 @@ from protokit.schema.lint.rules.options import deprecated_replacement
 #: ``buf:FIELD_LOWER_SNAKE_CASE`` (KTD-11). Combined coverage:
 #: ``protokit lint`` now matches **25 of 26 buf BASIC rules** (the
 #: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6d alongside
-#: ``FIELD_NOT_REQUIRED``). The 0.4.0 CHANGELOG entry (U5) will
-#: document the auto-load expansion + the 5-path pre-upgrade
-#: migration recipe per the KD-9 communication contract.
+#: ``FIELD_NOT_REQUIRED``). The 0.4.0 CHANGELOG entry (D6c) documents
+#: the rule additions + the 5-path pre-upgrade migration recipe per
+#: the KD-9 communication contract.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,

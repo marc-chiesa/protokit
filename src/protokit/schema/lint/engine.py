@@ -481,7 +481,7 @@ class LintEngine:
             # value computation matches buf's full-module walk; findings
             # still emit only on root_files via Step 4's dispatch gate.
             # Built unconditionally when pool_file_names is non-empty (no
-            # lazy-gating; deferred to D6c if SC E7 benchmark exceeds 50ms).
+            # lazy-gating; deferred until SC E7 benchmark exceeds 50ms).
             # No WKT filter (empirically dropped per
             # tests/schema/lint/rules/fixtures/package_same/_buf_smoke/
             # recorded/wkt-conflict.json — buf fires on disagreeing

@@ -55,8 +55,8 @@ This over-reporting is documented in U7's CHANGELOG; the workarounds
 are (a) regenerate the descriptor set with ``--include_source_info``,
 (b) lint via ``--proto`` mode instead, or (c) demote the R6 rules via
 ``[tool.protokit.lint.severities]``. A runtime ``LintCompileDiagnostic``
-for the absent-source-info case is deferred to D6c per the per-unit
-plan's K-9 decision.
+for the absent-source-info case is deferred to a future delivery per
+the D6b U3 plan's K-9 decision.
 
 References:
 
