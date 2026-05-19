@@ -24,20 +24,27 @@ Module shape mirrors :mod:`protokit.schema.lint.rules.naming` /
 :mod:`protokit.schema.lint.rules.enum` / :mod:`protokit.schema.lint.rules.imports`:
 a top-level ``RULES`` tuple of ``@lint_rule``-decorated callables.
 
-The first two rules use ``ctx.file.name`` and ``ctx.file.package``
-from the runtime descriptor — no CopyToProto round-trip needed
-for these particular fields. Cross-file behavior follows the
-established ``fd.name`` POSIX-separator convention (see
+The first two rules (``package/defined`` + ``package/directory-match``)
+use ``ctx.file.name`` and ``ctx.file.package`` from the runtime
+descriptor — no CopyToProto round-trip needed for these particular
+fields. Cross-file behavior follows the established ``fd.name``
+POSIX-separator convention (see
 ``docs/solutions/logic-errors/matcher-backend-path-resolution-skew-silently-empties-output-2026-05-02.md``);
-the rules use ``pathlib.PurePosixPath`` to split the directory
-portion, matching the convention.
+``check_package_directory_match`` uses ``pathlib.PurePosixPath`` to
+split the directory portion, matching the convention.
 
 The two cross-file rules (R8 + R8b) consume the dual-view
 accumulator landed in D6c U1 via
 ``FileLintContext.directory_packages`` (per-package view, R8) +
 ``FileLintContext.directory_packages_by_dir`` (per-directory
 inverted index, R8b). Both iterate over a single shared pre-walk
-pass; neither rule re-walks the descriptor pool.
+pass; neither rule re-walks the descriptor pool. R8b uses
+``posixpath.dirname`` (NOT ``PurePosixPath``) at the per-file call
+site so its current-dir key format byte-matches the accumulator
+keys built by ``LintEngine._build_directory_package_accumulator``
+(also ``posixpath``-based) — the two path APIs coexist in this
+module because each rule's lookup path requires the matching key
+format, not because the file mixes conventions casually.
 
 References:
 - buf BASIC rule catalog (parity targets named per-rule via
@@ -218,10 +225,11 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
 
     Directory list rendering is empirically locked against buf
     v1.69.0: comma-no-space, alphabetic-sorted, single message
-    template at all N values (verified at
-    ``/tmp/d6c_phase0/n3_dirs/``). Example output:
-    ``Multiple directories "d1,d2,d3" contain files with package
-    "acme.x".``.
+    template at all N values (per the D6c plan's KTD-4 (e)
+    empirical verification — see ``docs/plans/2026-05-18-003-
+    feat-d6c-r8-r8b-cross-file-package-rules-plan.md``). Example
+    output: ``Multiple directories "d1,d2,d3" contain files with
+    package "acme.x".``.
 
     **Silent on**:
 
@@ -241,8 +249,8 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
     Engine's per-file walk fires this rule once per root file, so a
     3-file package with a 2-directory split produces 3 findings
     (one per root file in the package) — buf v1.69.0 all-disagreers-
-    fire semantics. Empirically verified at
-    ``/tmp/d6c_phase0/cofire/``.
+    fire semantics. Empirically verified per the D6c plan's KTD-9
+    co-fire fixture.
     """
     if ctx.directory_packages is None:
         return
@@ -294,16 +302,19 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
 
     - **Standard** (all packages in the directory are declared):
       ``Multiple packages "X,Y[,Z]" detected within directory "Z".``
-      Package list is comma-no-space, alphabetic-sorted (verified at
-      ``/tmp/d6c_phase0/n3_pkgs/``).
+      Package list is comma-no-space, alphabetic-sorted (per the D6c
+      plan's KTD-4 (e) empirical verification — see
+      ``docs/plans/2026-05-18-003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md``).
     - **Empty-mixed** (directory contains at least one declared
       package AND at least one packageless file): ``Package "X" and
       file with no package detected within directory "Y".`` Buf
       empirically renders exactly one declared-package value in this
-      arm even if multiple declared packages co-occur with the
-      packageless file (verified at ``/tmp/d6c_phase0/empty_pkg/``);
-      protokit picks the alphabetically-first declared package for
-      determinism.
+      arm when one declared package co-occurs with packageless files
+      (per the D6c plan's KTD-4 (b) verification, 1-declared + 2-
+      packageless fixture); protokit picks the alphabetically-first
+      declared package for determinism. **The 2+ declared +
+      packageless case is not covered by the Phase 0 fixture and
+      defers to U3's parity gate for empirical lock.**
 
     Directory rendering: proto-root files canonicalize to ``"."``
     via ``posixpath.dirname(name) or "."`` (KTD-4 (c)). Buf renders
@@ -321,17 +332,29 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
 
     Engine's per-file walk fires this rule once per root file, so a
     2-package directory with 3 files produces 3 findings (one per
-    root file in the directory). Empirically verified at
-    ``/tmp/d6c_phase0/cofire/``.
+    root file in the directory). Empirically verified per the D6c
+    plan's KTD-9 co-fire fixture.
     """
     if ctx.directory_packages_by_dir is None:
         return
+    # ``posixpath.dirname`` (NOT ``PurePosixPath.parent``) so the
+    # current-dir key BYTE-matches the accumulator's key format —
+    # ``_build_directory_package_accumulator`` in ``engine.py`` also
+    # uses ``posixpath.dirname(fname) or "."``. PurePosixPath would
+    # canonicalize ``"a//b.proto"`` differently and miss the bucket.
     current_dir = posixpath.dirname(ctx.file.name) or "."
     pkg_map = ctx.directory_packages_by_dir.get(current_dir)
     if pkg_map is None or len(pkg_map) <= 1:
         return
     declared_pkgs = sorted(p for p in pkg_map if p)
     packageless_present = "" in pkg_map
+    # Annotated to lock the heterogeneous value type at one place.
+    # Both arms share `file`/`directory`/`payload`/`packageless_present`
+    # but differ on `package` (singular, empty-mixed arm) vs `packages`
+    # (plural CSV, standard arm) — the divergent key is documented in
+    # the rule's module-level header so structured-output consumers
+    # know which key to read per arm.
+    params: dict[str, str | bool]
     if packageless_present and declared_pkgs:
         # Empty-mixed arm: declared + packageless files co-occur.
         # Buf renders a single declared-package value in this arm;
@@ -369,9 +392,23 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
 
 
 # Module-level RULES tuple read by ``LintEngine.load_rule_pack``.
+#
+# **R8b before R8 ordering is LOAD-BEARING for buf v1.69.0 parity.** The
+# engine dispatches rules in pack-registration order within each
+# ``ElementKind`` bucket (``LintEngine._loaded_specs`` is an
+# insertion-ordered dict consumed by ``_dispatch_file`` without an
+# intermediate sort). Buf v1.69.0 emits ``DIRECTORY_SAME_PACKAGE`` (R8b)
+# BEFORE ``PACKAGE_SAME_DIRECTORY`` (R8) when both fire on the same file
+# — alphabetical by buf's rule_id. To match buf byte-for-byte on co-fire
+# scenarios, R8b must appear before R8 in this tuple. The cofire-
+# ordering presence-ratchet in
+# :class:`tests.schema.lint.rules.test_package_same_directory.TestCofireScenario`
+# pins this contract. A future engine refactor that adds per-file
+# alphabetic sorting would make this ordering incidental rather than
+# load-bearing; until that refactor lands, do not reorder this tuple.
 RULES: tuple[Callable[..., None], ...] = (
     check_package_defined,
     check_package_directory_match,
-    check_package_same_directory,
     check_directory_same_package,
+    check_package_same_directory,
 )

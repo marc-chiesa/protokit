@@ -45,24 +45,24 @@ def _run_single(
 
 
 class TestPackagePackShape:
-    """The package pack exposes RULES with the D6a + D6c rules registered.
+    """The package pack exposes RULES with all D6a + D6c rules registered.
 
     D6a Unit 6 shipped 2 rules (``package/defined``,
     ``package/directory-match``). D6c U2 added 2 cross-file rules
     (``package/same-directory``, ``package/directory-same-package``).
     The detailed spec metadata + behavior for the D6c rules lives in
     :mod:`tests.schema.lint.rules.test_package_same_directory`; this
-    module pins the D6a-original-2-rules contract and verifies the
-    pack continues to expose them at the canonical names.
+    class is the single source of truth for the pack-shape contract
+    across both deliveries.
     """
 
-    def test_rules_tuple_contains_four_callables_post_d6c(self) -> None:
+    def test_rules_tuple_contains_four_callables(self) -> None:
         assert isinstance(RULES, tuple)
         assert len(RULES) == 4
         for fn in RULES:
             assert hasattr(fn, "_lint_spec")
 
-    def test_pack_includes_both_rules(self) -> None:
+    def test_pack_includes_d6a_original_rules(self) -> None:
         assert check_package_defined in RULES
         assert check_package_directory_match in RULES
 
@@ -413,8 +413,15 @@ class TestPackagePackIntegration:
         # exercise the D6a-original 2-rule contract only.
         assert len(report.findings) == 2
         fired_rule_ids = {f.rule_id for f in report.findings}
-        d6a_package_rule_ids = frozenset({
-            "package/defined",
-            "package/directory-match",
-        })
+        # Derive the D6a-original rule_ids from RULES so a future
+        # rename of either D6a rule's rule_id propagates here without
+        # an invisible update obligation (per
+        # rule-pack-extension-ssot-rule-ids-and-test-class-naming-
+        # 2026-05-12). The set is explicitly subsetted by callable
+        # identity so future deliveries adding more rules to the
+        # pack don't silently widen the expected rule_ids.
+        d6a_package_rule_ids = frozenset(
+            fn._lint_spec.rule_id  # type: ignore[attr-defined]
+            for fn in (check_package_defined, check_package_directory_match)
+        )
         assert fired_rule_ids == d6a_package_rule_ids

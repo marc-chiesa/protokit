@@ -118,10 +118,17 @@ from protokit.schema.lint.rules.options import deprecated_replacement
 #: ``php_namespace``, ``ruby_package``, ``swift_prefix``,
 #: ``java_multiple_files``). Default-on under ``recommended`` +
 #: ``default`` profiles; ``error`` severity per buf BASIC parity.
-#: Brings ``protokit lint`` to **17 of 18 buf BASIC rules** (the
-#: 18th, ``package/same-directory``, defers to D6c). The 0.3.0
-#: CHANGELOG entry documents the auto-load expansion + the 4-path
-#: pre-upgrade migration recipe per the KD-9 communication contract.
+#:
+#: D6c U2 extends the ``package`` pack (already in this tuple) with
+#: R8 (``package/same-directory``) + R8b
+#: (``package/directory-same-package``) cross-file rules and corrects
+#: ``naming/snake-case-fields`` ``source_spec`` to
+#: ``buf:FIELD_LOWER_SNAKE_CASE`` (KTD-11). Combined coverage:
+#: ``protokit lint`` now matches **25 of 26 buf BASIC rules** (the
+#: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6d alongside
+#: ``FIELD_NOT_REQUIRED``). The 0.4.0 CHANGELOG entry (U5) will
+#: document the auto-load expansion + the 5-path pre-upgrade
+#: migration recipe per the KD-9 communication contract.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,

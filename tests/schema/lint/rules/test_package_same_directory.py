@@ -34,13 +34,16 @@ this module pins the rule callables' semantics directly.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from protokit.schema.lint.engine import LintEngine
-from protokit.schema.lint.model import ElementKind, LintProfile, LintSeverity
+from protokit.schema.lint.model import (
+    ElementKind,
+    LintProfile,
+    LintReport,
+    LintSeverity,
+)
 from protokit.schema.lint.rules import package as package_pack
 from protokit.schema.lint.rules.package import (
-    RULES,
     check_directory_same_package,
     check_package_same_directory,
 )
@@ -53,7 +56,7 @@ def _run_single(
     tmp_path: Path,
     sources: dict[str, str],
     rule_id: str,
-) -> Any:
+) -> LintReport:
     """Thin wrapper that fixes the pack to ``package`` for this file's tests."""
     return _run_single_with_pack(tmp_path, sources, rule_id, package_pack)
 
@@ -63,7 +66,7 @@ def _run_full_pack(
     sources: dict[str, str],
     rule_ids: frozenset[str],
     min_severity: LintSeverity = LintSeverity.INFO,
-) -> Any:
+) -> LintReport:
     """Run the engine with multiple rule_ids enabled from the package pack."""
     result = _compile(tmp_path, sources)
     engine = LintEngine()
@@ -77,22 +80,19 @@ def _run_full_pack(
 
 
 # ---------------------------------------------------------------------------
-# Module shape — RULES tuple + spec metadata
+# Rule spec metadata
+#
+# The pack-shape contract (``RULES`` tuple length + membership) is the
+# responsibility of :mod:`tests.schema.lint.rules.test_package` —
+# co-locating an additional ``TestPackagePackShape`` here would
+# duplicate the contract across two test files (one of the patterns
+# called out in
+# ``rule-pack-extension-ssot-rule-ids-and-test-class-naming-2026-05-12``).
+# The spec-metadata assertions below depend on ``check_package_same_
+# directory`` and ``check_directory_same_package`` being importable
+# at the canonical name, which is itself a stronger contract than
+# pack-tuple membership.
 # ---------------------------------------------------------------------------
-
-
-class TestPackagePackShape:
-    """The package pack exposes RULES with the 4 D6a + D6c rules registered."""
-
-    def test_rules_tuple_contains_four_callables(self) -> None:
-        assert isinstance(RULES, tuple)
-        assert len(RULES) == 4
-        for fn in RULES:
-            assert hasattr(fn, "_lint_spec")
-
-    def test_pack_includes_d6c_rules(self) -> None:
-        assert check_package_same_directory in RULES
-        assert check_directory_same_package in RULES
 
 
 class TestR8RuleSpec:
@@ -292,6 +292,17 @@ class TestR8bHappyPath:
             assert f.violation_kind == "package/directory-same-package"
             assert f.params["directory"] == "dir1"
             assert f.params["packages"] == "acme.bar,acme.foo"
+            # Standard arm carries the packageless_present=False
+            # discriminator so structured-output consumers can
+            # distinguish from the empty-mixed arm without parsing
+            # the rendered payload string.
+            assert f.params["packageless_present"] is False
+            # Rendered payload string is the entire message text
+            # (the rule uses `message_template="{payload}"`).
+            assert f.params["payload"] == (
+                'Multiple packages "acme.bar,acme.foo" '
+                'detected within directory "dir1".'
+            )
 
     def test_three_packages_in_same_dir_alphabetic_comma_no_space(
         self, tmp_path: Path,
@@ -362,6 +373,14 @@ class TestR8bEmptyMixedTemplate:
             # the packageless arm was selected.
             assert f.params.get("packageless_present") is True
             assert f.params["package"] == "acme.foo"
+            # Rendered payload byte-locks the empty-mixed template
+            # against any future drift away from buf v1.69.0's wire
+            # format. U3's parity gate provides the cross-tool lock;
+            # this assertion provides the in-suite lock.
+            assert f.params["payload"] == (
+                'Package "acme.foo" and file with no package '
+                'detected within directory "dir1".'
+            )
 
     def test_empty_mixed_template_at_proto_root(
         self, tmp_path: Path,
@@ -497,6 +516,44 @@ class TestCofireScenario:
         # Total findings.
         assert len(report.findings) == 4
 
+    def test_cofire_per_file_rule_id_alphabetic_ordering(
+        self, tmp_path: Path,
+    ) -> None:
+        """KTD-9: per-file co-fire order is rule_id-alphabetic.
+
+        ``package/directory-same-package`` < ``package/same-directory``
+        lexicographically, so on ``pkg/a.proto`` (the only file where
+        BOTH rules fire) R8b's finding must precede R8's. The engine's
+        ``sorted(profile.rule_ids - loaded_ids)`` at ``engine.py:383``
+        produces this without special-case logic; this test pins the
+        contract so a future engine refactor can't silently invert it.
+        """
+        report = _run_full_pack(
+            tmp_path,
+            {
+                "pkg/a.proto": _PROTO_PKG_FOO,
+                "pkg/b.proto": _PROTO_PKG_BAR,
+                "other_dir/c.proto": _PROTO_PKG_FOO,
+            },
+            frozenset({
+                "package/same-directory",
+                "package/directory-same-package",
+            }),
+        )
+        # Filter to the shared file (pkg/a.proto fires both rules).
+        on_shared_file = [
+            f for f in report.findings
+            if f.params["file"] == "pkg/a.proto"
+        ]
+        rule_ids_on_shared_file = [f.rule_id for f in on_shared_file]
+        assert rule_ids_on_shared_file == [
+            "package/directory-same-package",
+            "package/same-directory",
+        ], (
+            f"per-file co-fire order must be rule_id-alphabetic; "
+            f"got {rule_ids_on_shared_file}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Severity demotion + per-rule disable
@@ -538,12 +595,21 @@ class TestSeverityOverride:
         unloads the rule from the composed profile so it is not iterated
         in the engine's per-file walk. Here we exclude R8b directly from
         ``rule_ids`` to exercise the same observable contract.
+
+        Fixture choice: a cofire layout where R8b would otherwise fire
+        on every root file (``dir1`` contains 2 packages). The control
+        is the existing :class:`TestCofireScenario` test, which runs the
+        same fixture with BOTH rules enabled and observes R8b emitting
+        4 findings. If R8b were not actually disabled here (e.g., a
+        regression that ignores the profile's ``rule_ids`` filter), the
+        assertion below would catch it.
         """
         result = _compile(
             tmp_path,
             {
-                "dir1/a.proto": _PROTO_PKG_FOO,
-                "dir1/b.proto": _PROTO_PKG_BAR,
+                "pkg/a.proto": _PROTO_PKG_FOO,
+                "pkg/b.proto": _PROTO_PKG_BAR,
+                "other_dir/c.proto": _PROTO_PKG_FOO,
             },
         )
         engine = LintEngine()
@@ -554,9 +620,15 @@ class TestSeverityOverride:
             min_severity=LintSeverity.INFO,
         )
         report = engine.run(result, profile=profile)
-        # R8 doesn't fire on a single-dir fixture; R8b is the only rule
-        # that would fire on this fixture but we've excluded it.
-        assert report.findings == ()
+        # R8 fires (pkg/a.proto + other_dir/c.proto share acme.foo across
+        # 2 directories). R8b would fire on pkg/a.proto + pkg/b.proto
+        # (the dir1 multi-package layout) if it were enabled — but the
+        # profile excludes its rule_id, so it does NOT fire.
+        rule_ids_emitted = {f.rule_id for f in report.findings}
+        assert rule_ids_emitted == {"package/same-directory"}, (
+            f"R8b should be excluded by profile.rule_ids filter; got "
+            f"{rule_ids_emitted}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +638,7 @@ class TestSeverityOverride:
 
 _ALL_PACKAGE_RULE_IDS = frozenset(
     fn._lint_spec.rule_id  # type: ignore[attr-defined]
-    for fn in RULES
+    for fn in package_pack.RULES
 )
 
 

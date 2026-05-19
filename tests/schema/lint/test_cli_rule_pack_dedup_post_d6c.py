@@ -42,6 +42,11 @@ _PROTO_PKG_FOO = (
     "package acme.foo;\n"
 )
 
+_PROTO_PKG_BAR = (
+    'syntax = "proto3";\n'
+    "package acme.bar;\n"
+)
+
 
 def _compile_to_descriptor_set(
     tmp_path: Path, sources: dict[str, str],
@@ -86,15 +91,19 @@ class TestPackagePackExplicitLoadIsIdempotent:
     def test_descriptor_set_mode_recommended_profile(
         self, tmp_path: Path,
     ) -> None:
-        """Idempotent load + R8 fires + no ValueError at zip(strict=True).
+        """Idempotent load + R8 + R8b fire + no ValueError at zip(strict=True).
 
-        ``acme.foo`` declared in ``dir1/a.proto`` + ``dir2/b.proto`` →
-        R8 emits one finding per root file. The exit code is 1
-        (severity ERROR per buf BASIC parity).
+        Cofire fixture: ``pkg/a.proto`` (acme.foo) + ``pkg/b.proto``
+        (acme.bar) + ``other_dir/c.proto`` (acme.foo) — triggers BOTH
+        R8 (acme.foo split across 2 dirs) and R8b (``pkg`` contains 2
+        packages). Each rule fires one finding per root file, so a
+        duplicate-pack-load regression would inflate the count visibly
+        on either rule independently. Exit code is 1 (ERROR severity).
         """
         sources = {
-            "dir1/a.proto": _PROTO_PKG_FOO,
-            "dir2/b.proto": _PROTO_PKG_FOO,
+            "pkg/a.proto": _PROTO_PKG_FOO,
+            "pkg/b.proto": _PROTO_PKG_BAR,
+            "other_dir/c.proto": _PROTO_PKG_FOO,
         }
         descriptor_set = _compile_to_descriptor_set(tmp_path, sources)
         result = CliRunner().invoke(
@@ -107,17 +116,27 @@ class TestPackagePackExplicitLoadIsIdempotent:
                 str(descriptor_set),
             ],
         )
-        # Exit 1 because R8 severity is ERROR (R20 ladder). Critically:
-        # no ValueError from zip(strict=True) at cli.py:998-999.
+        # Exit 1 because R8 + R8b severities are ERROR (R20 ladder).
+        # Critically: no ValueError from zip(strict=True) at cli.py:998-999.
         assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
         r8_findings = [
             f for f in payload["findings"]
             if f["rule_id"] == "package/same-directory"
         ]
+        r8b_findings = [
+            f for f in payload["findings"]
+            if f["rule_id"] == "package/directory-same-package"
+        ]
+        # R8: acme.foo split between pkg/ + other_dir/ → 2 findings.
         assert len(r8_findings) == 2, (
-            f"expected 2 R8 findings (one per root file), "
+            f"expected 2 R8 findings (one per acme.foo root file), "
             f"got {len(r8_findings)} — duplicate-load would inflate"
+        )
+        # R8b: pkg/ has 2 packages → 2 findings (one per file in pkg/).
+        assert len(r8b_findings) == 2, (
+            f"expected 2 R8b findings (one per pkg/ root file), "
+            f"got {len(r8b_findings)} — duplicate-load would inflate"
         )
 
     def test_descriptor_set_mode_default_profile(
@@ -125,8 +144,9 @@ class TestPackagePackExplicitLoadIsIdempotent:
     ) -> None:
         """Idempotent load also under the ``default`` profile."""
         sources = {
-            "dir1/a.proto": _PROTO_PKG_FOO,
-            "dir2/b.proto": _PROTO_PKG_FOO,
+            "pkg/a.proto": _PROTO_PKG_FOO,
+            "pkg/b.proto": _PROTO_PKG_BAR,
+            "other_dir/c.proto": _PROTO_PKG_FOO,
         }
         descriptor_set = _compile_to_descriptor_set(tmp_path, sources)
         result = CliRunner().invoke(
@@ -145,7 +165,12 @@ class TestPackagePackExplicitLoadIsIdempotent:
             f for f in payload["findings"]
             if f["rule_id"] == "package/same-directory"
         ]
+        r8b_findings = [
+            f for f in payload["findings"]
+            if f["rule_id"] == "package/directory-same-package"
+        ]
         assert len(r8_findings) == 2
+        assert len(r8b_findings) == 2
 
     def test_no_value_error_on_clean_fixture(
         self, tmp_path: Path,
