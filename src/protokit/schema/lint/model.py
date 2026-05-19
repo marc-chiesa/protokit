@@ -1010,6 +1010,20 @@ class FileLintContext(_LintContextEmitMixin):
             R7 rules early-return on ``None``. INTERNAL field; consumers
             are R7 rules (U4b), not external callers — subject to
             change pre-1.0.
+        directory_packages: Engine-injected accumulator built by Step 3.5b
+            cross-file pre-walk (D6c U1 / R8 + R8b). Shape:
+            ``Mapping[package, Mapping[filename, dirname]]``. Both
+            nesting levels wrapped in ``MappingProxyType``. Defaults
+            to ``None`` so test helpers can construct ``FileLintContext``
+            without threading the accumulator; R8 / R8b rules
+            early-return on ``None``. **Diverges from
+            ``package_options`` in iteration scope**: the cross-file
+            accumulator iterates ``root_files`` (NOT ``pool_file_names``)
+            per KTD-4 (d) — buf v1.69.0 does not cross-fire
+            ``PACKAGE_SAME_DIRECTORY`` / ``DIRECTORY_SAME_PACKAGE``
+            across module boundaries. INTERNAL field; consumers are
+            R8 + R8b (D6c U2), not external callers — subject to
+            change pre-1.0.
     """
 
     file: proto_descriptor.FileDescriptor
@@ -1031,6 +1045,11 @@ class FileLintContext(_LintContextEmitMixin):
     package_options: Mapping[
         str, Mapping[str, Mapping[str, str | None]]
     ] | None = None
+    # D6c U1 / R8 + R8b cross-file accumulator. Same sibling-pattern
+    # rationale as `package_options` (default `= None` so test helpers
+    # construct without threading the kwarg); engine threads explicitly
+    # via `_build_file_ctx`. Iteration scope = root_files (per KTD-4 (d)).
+    directory_packages: Mapping[str, Mapping[str, str]] | None = None
 
     def location(self) -> LintLocation:
         """Return ``FileLocation(file=self.file.name)``."""

@@ -154,6 +154,18 @@ class LintEngine:
         self._current_package_options: (
             Mapping[str, Mapping[str, Mapping[str, str | None]]] | None
         ) = None
+        # Per-run snapshot of the Step 3.5 cross-file directory pre-walk's
+        # directory_packages accumulator (D6c U1 / R8 + R8b). Shape:
+        # Mapping[package, Mapping[fname, dirname]] with 2-level
+        # MappingProxyType wraps. None when the pre-walk early-returned
+        # (root_files was empty). Set in ``run()`` after Step 3 + cleared
+        # in the ``finally`` block. Diverges from R7's accumulator in
+        # iteration scope: R8/R8b's per-module-isolation semantic (buf
+        # does not cross-fire across module boundaries) scopes to
+        # ``root_files``, NOT ``pool_file_names``.
+        self._current_directory_packages: (
+            Mapping[str, Mapping[str, str]] | None
+        ) = None
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -429,6 +441,16 @@ class LintEngine:
             self._current_package_options = self._build_package_options_accumulator(
                 compile_result,
             )
+            # Step 3.5b (D6c U1 / R8 + R8b): cross-file directory pre-walk.
+            # Scoped to ``root_files`` (NOT ``pool_file_names``) per the
+            # KTD-4 (d) empirical correction — buf v1.69.0 does not
+            # cross-fire PACKAGE_SAME_DIRECTORY / DIRECTORY_SAME_PACKAGE
+            # across module boundaries (verified at /tmp/d6c_phase0/
+            # transitive/). Diverges from R7's accumulator's pool-scope
+            # iteration; both are correct for their respective rule families.
+            self._current_directory_packages = (
+                self._build_directory_package_accumulator(compile_result)
+            )
 
             # Step 4: walk root_files (sorted by basename for cross-platform
             # stability; tie-break by full path for absolute determinism).
@@ -473,6 +495,10 @@ class LintEngine:
             # Clear the per-run package_options accumulator for the same
             # reason — prevent leak across run() invocations.
             self._current_package_options = None
+            # Clear the per-run directory_packages accumulator (D6c U1)
+            # for the same reason — prevent stale cross-file state from
+            # bleeding into a subsequent run() invocation.
+            self._current_directory_packages = None
 
     # ------------------------------------------------------------------
     # Pre-walk accumulator (R7 PACKAGE_SAME_* infrastructure)
@@ -579,6 +605,90 @@ class LintEngine:
             for attr, per_attr_dict in per_pkg_dict.items():
                 wrapped_per_pkg[attr] = MappingProxyType(per_attr_dict)
             wrapped[pkg] = MappingProxyType(wrapped_per_pkg)
+        return MappingProxyType(wrapped)
+
+    # ------------------------------------------------------------------
+    # Pre-walk accumulator (R8 + R8b cross-file directory infrastructure)
+    # ------------------------------------------------------------------
+
+    def _build_directory_package_accumulator(
+        self, compile_result: CompileResult,
+    ) -> Mapping[str, Mapping[str, str]] | None:
+        """Construct the 2-level ``directory_packages`` accumulator for R8/R8b.
+
+        Iterates ``compile_result.root_files`` (NOT ``pool_file_names``;
+        this DIVERGES from R7's pre-walk per the KTD-4 (d) empirical
+        correction) and captures each file's ``(fd.package, fname,
+        dirname)`` triple. Output shape:
+        ``Mapping[package, Mapping[fname, dirname]]`` with 2-level
+        ``MappingProxyType`` wraps. Returns ``None`` when ``root_files``
+        is empty.
+
+        **Iteration scope rationale** (the divergence from R7): buf
+        v1.69.0 does NOT cross-fire ``PACKAGE_SAME_DIRECTORY`` /
+        ``DIRECTORY_SAME_PACKAGE`` across module boundaries
+        (empirically verified at brainstorm-time /tmp/d6c_phase0/
+        transitive/ — two-module buf.yaml with same-package conflicts
+        exits 0). protokit's analog to buf's "module" is the set of
+        files protokit was invoked on = ``root_files``. R7's per-option
+        cross-language-namespace conflicts INTENTIONALLY span the
+        import boundary (a vendored java_package conflict matters to
+        downstream consumers regardless of where the file lives); R8 /
+        R8b's per-directory file-organization rule is INTENTIONALLY
+        local to the user-owned files.
+
+        **Empty-package files are INCLUDED** (NOT skipped) per
+        KTD-4 (b). buf v1.69.0 fires R8b on packageless files mixed
+        with declared-package files in the same directory, using a
+        distinct message template
+        (``"Package \"X\" and file with no package detected within
+        directory \"Y\"."``). The accumulator therefore tracks
+        packageless files under an empty-string key; the R8b rule
+        callable (U2) discriminates the mixed case.
+
+        **Proto-root canonicalization** per KTD-4 (c): files at the
+        proto-root render their parent as ``"."``. Empirically
+        verified — buf renders ``"directory \".\""``. Implementation:
+        ``posixpath.dirname(fname) or "."``.
+
+        **No WKT filter** at ``google/protobuf/`` — mirror R7's posture
+        per KTD-4 (a). Single-file Phase 0 fixture was inconclusive;
+        U3 parity gate establishes empirical lock against a multi-dir
+        ``google.protobuf`` fixture.
+
+        Defensive ``try/except (KeyError, AttributeError, ValueError):
+        continue`` mirrors R7's pattern at ``engine.py:543-569`` —
+        partial-pool-state tolerance for compile-failure paths.
+
+        Iteration uses ``posixpath.basename`` (NOT ``os.path.basename``)
+        for cross-platform determinism per the canonical convention.
+
+        Returns ``None`` when ``root_files`` is empty so test-helper
+        paths + compile-failure paths skip the accumulator build; rule
+        callables early-return on ``None``.
+        """
+        if not compile_result.root_files:
+            return None
+
+        directory_packages: dict[str, dict[str, str]] = {}
+        for fname in sorted(
+            compile_result.root_files,
+            key=lambda f: (posixpath.basename(f), f),
+        ):
+            try:
+                fd = compile_result.pool.FindFileByName(fname)
+                pkg = fd.package
+                dirname = posixpath.dirname(fname) or "."
+                per_pkg = directory_packages.setdefault(pkg, {})
+                per_pkg[fname] = dirname
+            except (KeyError, AttributeError, ValueError):
+                continue
+
+        # 2-level MappingProxyType wrap (defense-in-depth against
+        # accidental mutation by co-authored rule code).
+        wrapped: dict[str, Mapping[str, str]] = {}
+        for pkg, per_pkg_dict in directory_packages.items():
+            wrapped[pkg] = MappingProxyType(per_pkg_dict)
         return MappingProxyType(wrapped)
 
     # ------------------------------------------------------------------
@@ -789,6 +899,11 @@ class LintEngine:
             # consume via ctx.package_options. None when the pre-walk
             # early-returned (pool_file_names was empty).
             package_options=self._current_package_options,
+            # D6c U1's cross-file pre-walk populates
+            # _current_directory_packages; R8 (package/same-directory) and
+            # R8b (package/directory-same-package) consume the snapshot
+            # via ctx.directory_packages. None when root_files was empty.
+            directory_packages=self._current_directory_packages,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),
