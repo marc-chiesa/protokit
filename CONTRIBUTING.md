@@ -24,7 +24,7 @@ A small subset of tests verify parity with `buf v1.69.0`:
   `@pytest.mark.parity`; opt in with `pytest -m parity`).
 - `tests/schema/lint/test_buf_smoke_assumptions.py` — the D6b U4 buf
   smoke regression gate: re-invokes `buf lint --error-format=json`
-  against the 21 fixtures under
+  against the 22 fixtures under
   `tests/schema/lint/rules/fixtures/package_same/_buf_smoke/` and
   asserts byte-equality with the committed `recorded/*.json`
   snapshots. Skipped when `BUF_BINARY` is unset and `buf` is not on

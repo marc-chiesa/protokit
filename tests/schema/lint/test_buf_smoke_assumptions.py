@@ -1,7 +1,7 @@
 """Live-mode buf-smoke regression gate — D6b U4a.
 
 When ``$BUF_BINARY`` is set, re-invokes ``buf lint --error-format=json``
-against each of the 21 smoke fixtures under
+against each of the 22 smoke fixtures under
 ``tests/schema/lint/rules/fixtures/package_same/_buf_smoke/`` and asserts
 the live output byte-matches the corresponding ``recorded/*.json``
 snapshot. Detects buf-version drift on every CI parity-job run; gates

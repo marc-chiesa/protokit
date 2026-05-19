@@ -175,15 +175,19 @@ SMOKE_FIXTURES: tuple[str, ...] = (
     "mixed-presence-swift-prefix",
     "mixed-presence-java-multiple-files",
     # D6c U4: compound-backslash+quote BUF_BINARY closure on R7 escape
-    # path. Each value mixes ``\`` and ``"`` so the two-step escape order
-    # in :func:`protokit.schema.lint.rules.package_same._escape_message_value`
-    # (backslash FIRST then quote) is byte-pinned against buf v1.69.0
-    # via a recorded NDJSON snapshot. The U6 inner-quote fixture
+    # path. ``a.proto``'s value ``com.foo\"bar`` (one backslash + one
+    # quote in the decoded proto string) is the genuine compound case;
+    # ``b.proto``'s value ``com.zaz\\qux`` (two decoded backslashes)
+    # exercises the doubled-backslash-only path. Together they byte-pin
+    # the two-step escape order in
+    # :func:`protokit.schema.lint.rules.package_same._escape_message_value`
+    # (backslash FIRST then quote) against buf v1.69.0 via a recorded
+    # NDJSON snapshot. The U6 inner-quote fixture
     # (``mixed-value-with-inner-quote``) covers the quote-only path;
-    # the U4b PHP-namespace fixtures cover the backslash-only path; this
-    # entry closes the compound case left open in [[escape-pair-aware-
-    # truncation-dangling-backslash-wire-format-divergence-2026-05-17]]
-    # by exercising both escape classes in the same value.
+    # the U4b PHP-namespace fixtures cover the backslash-only path;
+    # this entry's ``a.proto`` closes the compound case left open in
+    # the escape-pair-aware-truncation 2026-05-17 learning (see
+    # ``docs/solutions/logic-errors/`` for the captured post-mortem).
     "compound-backslash-quote",
 )
 

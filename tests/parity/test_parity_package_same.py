@@ -50,12 +50,16 @@ from tests._buf_helpers import SMOKE_FIXTURES, smoke_root
 # Helpers from the multi-file extension (D6b U6) live next to their
 # single-file siblings in tests/parity/conftest.py.
 from tests.parity.conftest import (
+    _D6C_PACKAGE_DIRECTORY_RULE_IDS,
     RULE_ID_MAP,
     BufFinding,
     assert_parity_multi_file,
     parse_buf_recorded_snapshot,
     run_protokit_lint_multi_file,
     skip_if_buf_deprecated,
+)
+from tests.parity.conftest import (
+    _PACKAGE_SAME_RULE_IDS as _CONFTEST_R7_RULE_IDS,
 )
 
 # Aliased to internal names so the existing in-file references stay readable.
@@ -64,34 +68,45 @@ _smoke_root = smoke_root
 
 # ---- KTD-3: per-fixture rule_id derivation consumes ``RULE_ID_MAP`` -------
 #
-# Post-D6b U7, the R7 PACKAGE_SAME_* family is registered in
-# ``BUILTIN_PACKS`` so ``conftest.RULE_ID_MAP`` covers it; the previous
-# local ``_build_package_same_rule_id_map`` walk of ``package_same.RULES``
-# was redundant after that delivery and is retired here per D6c U4 KTD-3.
-# The R7 maps below derive from ``RULE_ID_MAP`` directly.
+# The R7 maps below derive from the BUILTIN_PACKS-backed ``RULE_ID_MAP``
+# (the post-D6b-U7 SSOT). The exclusion set is sourced from conftest's
+# ``_D6C_PACKAGE_DIRECTORY_RULE_IDS`` frozenset rather than a hardcoded
+# literal — R8 (``package/same-directory``) shares R7's ``package/same-``
+# protokit prefix and ``PACKAGE_SAME_`` buf prefix, so the prefix filter
+# would over-include it without the carve-out. R8b
+# (``package/directory-same-package``) doesn't match the prefix but is
+# included in the exclusion set for symmetry.
 #
-# Carve-out: ``RULE_ID_MAP`` also covers D6c R8 (``package/same-directory``),
-# which shares R7's ``package/same-`` protokit prefix AND R7's
-# ``PACKAGE_SAME_`` buf prefix. The explicit exclusion below mirrors the
-# carve-out in ``conftest.assert_parity_multi_file`` (KTD-12). The R8/R8b
-# family has its own parity gate at
+# The R8/R8b family has its own parity gate at
 # ``tests/parity/test_parity_package_directory.py``.
 
 #: Forward map: ``buf_rule_id -> protokit_rule_id`` for the R7 PACKAGE_SAME_*
-#: family. Derived from ``RULE_ID_MAP`` (the BUILTIN_PACKS-derived SSOT)
-#: by filtering on ``package/same-*`` protokit prefix with the
-#: ``package/same-directory`` (R8) carve-out.
+#: family. Derived from ``RULE_ID_MAP`` filtered to ``package/same-*`` minus
+#: the R8/R8b family exclusion set.
 _PACKAGE_SAME_RULE_ID_MAP: Mapping[str, str] = {
     buf_id: protokit_id
     for protokit_id, buf_id in RULE_ID_MAP.items()
     if protokit_id.startswith("package/same-")
-    and protokit_id != "package/same-directory"
+    and protokit_id not in _D6C_PACKAGE_DIRECTORY_RULE_IDS
 }
 
-#: Inverse map: ``protokit_rule_id -> buf_rule_id``. Forward feeds the
-#: per-fixture YAML-based rule scoping; inverse feeds the test body's
-#: ``skip_if_buf_deprecated`` call.
-_BUF_RULE_ID_MAP: Mapping[str, str] = {
+# Drift guard: this RULE_ID_MAP-derived view must agree with conftest's
+# ``package_same.RULES``-derived view. A divergence means a rule landed
+# in one source-of-truth but not the other (e.g., added to
+# ``package_same.RULES`` without BUILTIN_PACKS registration, or vice
+# versa). Fails loudly at collection time so the parity gate cannot
+# silently drop a rule from R25(a)'s coverage check.
+assert set(_PACKAGE_SAME_RULE_ID_MAP.values()) == _CONFTEST_R7_RULE_IDS, (
+    f"R7 derivation drift: RULE_ID_MAP filter yielded "
+    f"{sorted(_PACKAGE_SAME_RULE_ID_MAP.values())!r}, "
+    f"package_same.RULES walk yielded "
+    f"{sorted(_CONFTEST_R7_RULE_IDS)!r}."
+)
+
+#: ``protokit_rule_id -> buf_rule_id``. Direction matches the conftest
+#: sibling ``_PACKAGE_SAME_PROTO_TO_BUF`` (protokit key, buf value).
+#: Feeds the test body's ``skip_if_buf_deprecated`` call.
+_PROTOKIT_TO_BUF_RULE_ID_MAP: Mapping[str, str] = {
     v: k for k, v in _PACKAGE_SAME_RULE_ID_MAP.items()
 }
 
@@ -217,7 +232,7 @@ def test_parity_byte_matches_recorded_snapshot(
     both SHA ``e3b0c44...`` by design) assert protokit produces zero
     R7 findings.
     """
-    buf_rule_id = _BUF_RULE_ID_MAP[protokit_rule_id]
+    buf_rule_id = _PROTOKIT_TO_BUF_RULE_ID_MAP[protokit_rule_id]
     # Future-proofing per [[upstream-rule-deprecation-skip-ordering-parity-harness-2026-05-13]]
     # — no PACKAGE_SAME_* is currently in _BUF_DEPRECATED_RULES, but
     # call the helper unconditionally so a future buf deprecation
@@ -243,13 +258,16 @@ def test_every_r7_rule_has_at_least_one_associated_fixture() -> None:
     expected-fires set.
 
     Catches "added an R7 rule but forgot to back it with a fixture".
-    This is a fixture-coverage smoke check — over-firing is caught at
-    test time by ``assert_parity_multi_file``'s two-sided check. Post-D6c
-    U4 the expected-rule-id set derives from the ``RULE_ID_MAP``-filtered
-    ``_PACKAGE_SAME_RULE_ID_MAP`` rather than a separate
-    ``package_same.RULES`` walk so the assertion tracks the parity
-    contract's R7 membership (with the ``package/same-directory`` R8
-    carve-out applied) rather than the module's RULES tuple directly.
+    Over-firing is caught at test time by ``assert_parity_multi_file``'s
+    two-sided check.
+
+    The expected-rule-id set derives from ``RULE_ID_MAP`` (BUILTIN_PACKS
+    SSOT) filtered to R7 minus the R8/R8b exclusion. A module-import
+    drift guard above (asserting agreement with conftest's
+    ``_PACKAGE_SAME_RULE_IDS`` package_same.RULES-derived view) ensures
+    this view stays in lockstep with the RULES tuple — a rule present
+    in one source-of-truth but absent from the other surfaces at
+    collection time, not silently here.
     """
     expected_rule_ids: set[str] = set(_PACKAGE_SAME_RULE_ID_MAP.values())
     covered_rule_ids: set[str] = set(_FIXTURE_RULE_ID_MAP.values())
@@ -331,7 +349,7 @@ def test_every_fixture_buf_yaml_pins_one_r7_rule() -> None:
     """
     for fixture_name in _SMOKE_FIXTURES:
         protokit_rule_id = _parse_fixture_buf_yaml(fixture_name)
-        assert protokit_rule_id in _BUF_RULE_ID_MAP, (
+        assert protokit_rule_id in _PROTOKIT_TO_BUF_RULE_ID_MAP, (
             f"Fixture {fixture_name!r} maps to protokit rule "
             f"{protokit_rule_id!r} which is not in the R7 family."
         )
@@ -366,7 +384,7 @@ def test_buf_yaml_rule_matches_recorded_findings_rule() -> None:
         )
         snapshot_buf_id = unique_types.pop()
         protokit_rule_id = _FIXTURE_RULE_ID_MAP[fixture_name]
-        expected_buf_id = _BUF_RULE_ID_MAP[protokit_rule_id]
+        expected_buf_id = _PROTOKIT_TO_BUF_RULE_ID_MAP[protokit_rule_id]
         assert snapshot_buf_id == expected_buf_id, (
             f"Fixture {fixture_name!r}: buf.yaml pins "
             f"{expected_buf_id!r} but recorded snapshot has findings "
