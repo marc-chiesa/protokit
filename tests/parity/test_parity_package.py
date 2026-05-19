@@ -65,13 +65,22 @@ class TestParityPackage:
         # (`package/same-*` rules — added to BUILTIN_PACKS in D6b U7)
         # has its own dedicated parity gate at
         # `tests/parity/test_parity_package_same.py` using a multi-file
-        # harness against 21 buf v1.69.0 NDJSON snapshots, so we
-        # exclude that family here to avoid duplicate coverage.
+        # harness against 21 buf v1.69.0 NDJSON snapshots. The D6c R8 +
+        # R8b cross-file family (`package/same-directory` +
+        # `package/directory-same-package`) gets its own multi-file
+        # parity gate at `tests/parity/test_parity_package_directory.py`
+        # (D6c U3); both families are excluded from this single-file
+        # parity audit to avoid duplicate coverage.
+        d6c_cross_file_rules = frozenset({
+            "package/same-directory",
+            "package/directory-same-package",
+        })
         package_parity_rules = {
             rule_id
             for rule_id in RULE_ID_MAP
             if rule_id.startswith("package/")
             and not rule_id.startswith("package/same-")
+            and rule_id not in d6c_cross_file_rules
         }
         missing = package_parity_rules - case_rule_ids
         assert not missing, (

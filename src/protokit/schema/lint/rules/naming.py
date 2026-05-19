@@ -6,14 +6,21 @@ needed for buf BASIC parity: PascalCase for messages/enums/services/RPCs;
 UPPER_SNAKE_CASE for enum values; lower_snake for oneofs/files/packages.
 
 References:
-- AIP-122 § "Field names":
-  https://google.aip.dev/122
 - buf BASIC rule catalog (parity targets named per-rule via
   ``source_spec="buf:<RULE_ID>"``).
+- AIP-122 § "Field names" (the original spec the
+  ``naming/snake-case-fields`` rule traces to; the rule's
+  ``source_spec`` carries the buf alias post-D6c for audit-trail
+  consistency, but the regex semantics are AIP-122):
+  https://google.aip.dev/122
 - protokit-lint D2 plan:
   ``docs/plans/2026-05-02-001-feat-protokit-lint-d2-engine-plan.md``
 - protokit-lint D6a plan:
   ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
+- protokit-lint D6c plan (KTD-11 source_spec correction folding the
+  D6b ``naming/snake-case-fields`` AIP-122 attribution into the
+  buf-source-primary audit trail):
+  ``docs/plans/2026-05-18-003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md``
 
 Module shape adopts the ``RULES`` attribute name from compat
 (``schema/checker.py:217-220``) but its wire format differs: this
@@ -77,7 +84,7 @@ _UPPER_SNAKE_CASE_RE = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$")
     profiles=("recommended", "default"),
     element=ElementKind.FIELD,
     message_template="Field {name!r} is not snake_case (AIP-122)",
-    source_spec="https://google.aip.dev/122",
+    source_spec="buf:FIELD_LOWER_SNAKE_CASE",
 )
 def check_snake_case_fields(ctx: FieldLintContext) -> None:
     """Fire on field names that don't match AIP-122 snake_case.

@@ -1,10 +1,13 @@
 """Parity tests for the ``naming`` rule pack — 9 rules.
 
-Eight rules carry ``source_spec="buf:<RULE_ID>"`` and map directly
-to a buf rule. The ninth — the D2 canary ``naming/snake-case-fields``
-— maps via ``_CANARY_PARITY_OVERRIDE`` to buf's
-``FIELD_LOWER_SNAKE_CASE`` (functional, not nominal, parity per
-KTD-3 of the U8 plan).
+All 9 rules carry ``source_spec="buf:<RULE_ID>"`` and map directly
+to a buf rule via ``RULE_ID_MAP``. Pre-D6c U2 the canary
+``naming/snake-case-fields`` carried the AIP-122 URL as its
+``source_spec`` and was mapped via ``_CANARY_PARITY_OVERRIDE``;
+KTD-11 corrected the source_spec to ``"buf:FIELD_LOWER_SNAKE_CASE"``
+so the rule participates in the parity numerator like every other
+buf-sourced rule. The override is retained in ``conftest.py`` as
+historical context but is no longer load-bearing.
 """
 
 from __future__ import annotations

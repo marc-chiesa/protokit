@@ -18,11 +18,15 @@ Resolved decisions (see ``docs/plans/2026-05-13-001-feat-d6a-u8-parity-test-infr
 - **Rule-id mapping is derived from ``LintRuleSpec.source_spec``.**
   Walking ``BUILTIN_PACKS`` at collection time stays in lockstep
   with rule additions in future deliveries.
-- **Canary parity is functional, not nominal.** The D2 canary's
-  ``source_spec="https://google.aip.dev/122"`` is the correct
-  provenance (aip.dev defines the original spec). The
-  ``_CANARY_PARITY_OVERRIDE`` map below adds a behavior-only
-  equivalence to buf's ``FIELD_LOWER_SNAKE_CASE``. **Any future
+- **Canary parity is direct (D6c U2 KTD-11).** The D2 canary's
+  ``source_spec`` was corrected from ``"https://google.aip.dev/122"``
+  to ``"buf:FIELD_LOWER_SNAKE_CASE"`` at D6c U2 so the rule
+  participates in the buf-BASIC parity numerator via the same
+  ``_extract_buf_rule_id`` path as every other R*: rule.
+  ``_CANARY_PARITY_OVERRIDE`` below is retained as historical
+  context (and as a fail-loud assertion site if anyone reverts the
+  source_spec) but is no longer load-bearing: ``_build_rule_id_map``
+  picks the rule up directly from the ``buf:`` prefix. **Any future
   change to the canary's ``_SNAKE_CASE_RE`` regex requires
   re-validating buf parity against the pinned buf version.**
 - **Documented buf-parity divergences live in ``_PARITY_EXCEPTIONS``.**
@@ -100,13 +104,19 @@ class BufFinding(NamedTuple):
     type: str
     message: str
 
-#: Functional buf-parity override for the D2 canary
-#: ``naming/snake-case-fields``. The canary's ``source_spec`` is
-#: AIP-122 (the original spec), not ``buf:FIELD_LOWER_SNAKE_CASE``.
-#: Behavior is functionally equivalent (lower_snake_case
-#: enforcement with synthetic map-entry fields excluded), so the
-#: parity test maps the canary to buf's rule via this override
-#: rather than rewriting the canary's provenance metadata.
+#: Historical buf-parity override for the D2 canary
+#: ``naming/snake-case-fields``. Pre-D6c the canary's ``source_spec``
+#: was ``"https://google.aip.dev/122"`` (the AIP-122 URL), so the
+#: rule was invisible to ``_extract_buf_rule_id`` and the override
+#: re-mapped it onto buf's ``FIELD_LOWER_SNAKE_CASE`` via the
+#: ``elif protokit_id in _CANARY_PARITY_OVERRIDE`` arm of
+#: ``_build_rule_id_map``. **Post-D6c U2 KTD-11 the canary's
+#: ``source_spec`` was corrected to ``"buf:FIELD_LOWER_SNAKE_CASE"``**,
+#: so the override is now dead code — ``_extract_buf_rule_id`` picks
+#: the rule up directly. The dict is retained as fail-loud safety:
+#: ``_build_rule_id_map`` asserts the override entry collides with the
+#: directly-picked-up rule, which catches an accidental revert of the
+#: canary's source_spec back to the AIP-122 URL.
 #:
 #: If the canary's regex (``_SNAKE_CASE_RE`` in
 #: ``src/protokit/schema/lint/rules/naming.py``) changes,

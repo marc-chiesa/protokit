@@ -70,7 +70,13 @@ class TestCanaryPackShape:
         assert spec.profiles == ("recommended", "default")
         assert spec.element is ElementKind.FIELD
         assert "snake_case" in spec.message_template
-        assert spec.source_spec == "https://google.aip.dev/122"
+        # D6c U2 KTD-11: source_spec corrected from AIP-122 URL to the
+        # buf alias so an external auditor running
+        # ``grep 'buf:' src/protokit/schema/lint/rules/`` counts the
+        # rule in the buf-BASIC parity numerator (25/26 audit-trail-
+        # true post-D6c). AIP-122 attribution migrated to the
+        # ``naming.py`` module docstring + this rule's own docstring.
+        assert spec.source_spec == "buf:FIELD_LOWER_SNAKE_CASE"
 
 
 # ---------------------------------------------------------------------------

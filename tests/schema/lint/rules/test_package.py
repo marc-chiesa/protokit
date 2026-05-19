@@ -45,11 +45,20 @@ def _run_single(
 
 
 class TestPackagePackShape:
-    """The package pack exposes RULES with both D6a Unit 6 rules registered."""
+    """The package pack exposes RULES with the D6a + D6c rules registered.
 
-    def test_rules_tuple_contains_two_callables(self) -> None:
+    D6a Unit 6 shipped 2 rules (``package/defined``,
+    ``package/directory-match``). D6c U2 added 2 cross-file rules
+    (``package/same-directory``, ``package/directory-same-package``).
+    The detailed spec metadata + behavior for the D6c rules lives in
+    :mod:`tests.schema.lint.rules.test_package_same_directory`; this
+    module pins the D6a-original-2-rules contract and verifies the
+    pack continues to expose them at the canonical names.
+    """
+
+    def test_rules_tuple_contains_four_callables_post_d6c(self) -> None:
         assert isinstance(RULES, tuple)
-        assert len(RULES) == 2
+        assert len(RULES) == 4
         for fn in RULES:
             assert hasattr(fn, "_lint_spec")
 
@@ -397,6 +406,15 @@ class TestPackagePackIntegration:
         # (mismatch.proto has a package, so package/defined doesn't
         # fire on it; nopkg.proto has no package, so package/
         # directory-match skips it.)
+        #
+        # D6c U2 added R8 + R8b to the pack; this 2-file fixture has
+        # neither a split-package nor a multi-package-dir layout, so
+        # R8 + R8b stay silent — the integration test continues to
+        # exercise the D6a-original 2-rule contract only.
         assert len(report.findings) == 2
         fired_rule_ids = {f.rule_id for f in report.findings}
-        assert fired_rule_ids == _ALL_PACKAGE_RULE_IDS
+        d6a_package_rule_ids = frozenset({
+            "package/defined",
+            "package/directory-match",
+        })
+        assert fired_rule_ids == d6a_package_rule_ids
