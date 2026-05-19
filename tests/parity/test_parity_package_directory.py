@@ -47,9 +47,6 @@ from collections.abc import Mapping
 import pytest
 import yaml
 
-from protokit.schema.lint.decorator import get_lint_spec
-from protokit.schema.lint.rules import package as _package_mod
-
 # Cross-module SSOT: PACKAGE_DIRECTORY_SMOKE_FIXTURES +
 # package_directory_smoke_root live in tests/_buf_helpers.py. R25(b)/R25(c)
 # invariants below pin drift.
@@ -59,8 +56,13 @@ from tests._buf_helpers import (
 )
 
 # Helpers from the multi-file extension live next to their single-file
-# siblings in tests/parity/conftest.py.
+# siblings in tests/parity/conftest.py. The R8/R8b inclusion set + the
+# rule_id → buf_id mapping are also conftest SSOTs (consumed by
+# ``assert_parity_multi_file``'s family-aware partition) — imported here
+# so this module has exactly one source of truth across the parity test
+# surface (per the D6c U3 ce:review safe_auto consolidation).
 from tests.parity.conftest import (
+    _PACKAGE_DIRECTORY_PROTO_TO_BUF,
     assert_parity_multi_file,
     parse_buf_recorded_snapshot,
     run_protokit_lint_multi_file,
@@ -71,60 +73,37 @@ _SMOKE_FIXTURES = PACKAGE_DIRECTORY_SMOKE_FIXTURES
 _smoke_root = package_directory_smoke_root
 
 
-# ---- Local rule-id maps (parallel to test_parity_package_same.py) ---------
-
-
-def _extract_buf_rule_id(source_spec: str) -> str | None:
-    """Return the buf rule id from a ``buf:RULE_ID`` source_spec.
-
-    Reimplemented locally (rather than imported from
-    ``tests/parity/conftest.py:_extract_buf_rule_id``) to avoid a
-    cross-module private-symbol dependency.
-    """
-    prefix = "buf:"
-    if source_spec.startswith(prefix):
-        return source_spec[len(prefix):]
-    return None
-
-
-# Inclusion set for R8 + R8b — the D6a ``package/defined`` +
-# ``package/directory-match`` rules also live in ``package.RULES`` but
-# have their own parity coverage at ``tests/parity/test_parity_package.py``
-# (single-file harness).
-_D6C_RULE_IDS: frozenset[str] = frozenset({
-    "package/same-directory",
-    "package/directory-same-package",
-})
+# ---- Rule-id maps (consumed by the parametrize source + invariants) ------
 
 
 def _build_package_directory_rule_id_map() -> Mapping[str, str]:
     """Walk ``package.RULES`` filtered to R8 + R8b and return
     ``{buf_rule_id: protokit_rule_id}``.
 
-    Local helper for parity-test-module isolation, parallel to R7's
-    ``_build_package_same_rule_id_map``. The walk filters by inclusion
-    set so D6a's single-file rules don't leak into the multi-file
-    harness.
+    Parity-module-local helper that inverts the conftest's
+    ``_PACKAGE_DIRECTORY_PROTO_TO_BUF`` so the test body can look up
+    protokit rule_ids by their buf alias (e.g.,
+    ``_RULE_ID_MAP["PACKAGE_SAME_DIRECTORY"]`` → ``"package/same-
+    directory"``). The conftest stores the forward direction (consumed
+    by ``assert_parity_multi_file``); this module needs the reverse to
+    map ``buf.yaml lint.use[]`` entries (which carry buf rule IDs) to
+    protokit rule_ids.
+
+    Duplicate-buf-id detection guards against the failure mode where
+    two protokit rules accidentally claim the same ``buf:`` source_spec
+    — the test-collection-time fail-loud (per
+    [[module-import-time-fixture-mapping-fail-loud-blast-radius-2026-05-18]])
+    surfaces this before any parametrized test runs.
     """
     mapping: dict[str, str] = {}
-    for fn in _package_mod.RULES:
-        spec = get_lint_spec(fn)
-        if spec.rule_id not in _D6C_RULE_IDS:
-            continue
-        buf_id = _extract_buf_rule_id(spec.source_spec)
-        if buf_id is None:
-            pytest.fail(
-                f"_build_package_directory_rule_id_map: rule "
-                f"{spec.rule_id!r} has non-buf source_spec "
-                f"{spec.source_spec!r}; D6c family invariant violated."
-            )
+    for protokit_id, buf_id in _PACKAGE_DIRECTORY_PROTO_TO_BUF.items():
         if buf_id in mapping:
             pytest.fail(
                 f"_build_package_directory_rule_id_map: duplicate "
                 f"buf_id {buf_id!r} maps to both {mapping[buf_id]!r} "
-                f"and {spec.rule_id!r}; check for accidental copy."
+                f"and {protokit_id!r}; check for accidental copy."
             )
-        mapping[buf_id] = spec.rule_id
+        mapping[buf_id] = protokit_id
     return mapping
 
 
@@ -368,7 +347,15 @@ def test_buf_yaml_rule_matches_recorded_findings_rule() -> None:
     Catches the drift mode where a contributor edits a fixture's
     ``buf.yaml`` without re-capturing the snapshot (or vice versa).
     Empty snapshots (``matched-dir``, ``single-file-dir`` — both SHA
-    ``e3b0c44...`` by design) are exempt.
+    ``e3b0c44...`` by design) are exempt: there are no ``type`` values
+    to cross-check, and the empty-bytes contract is verified by the
+    SHA-256 pin in
+    :mod:`tests.schema.lint.test_buf_smoke_recorded_checksums_package_directory`.
+    If buf v1.70 started emitting findings on a previously-clean
+    fixture, the live-mode drift gate
+    (:mod:`tests.schema.lint.test_buf_smoke_assumptions_package_directory`,
+    gated on ``BUF_BINARY``) would catch the divergence; the SHA gate
+    catches any local snapshot regeneration without checksum update.
 
     For the cofire fixture (use:[2 rules]), the snapshot's ``type``
     values must be a subset of {DIRECTORY_SAME_PACKAGE,

@@ -1,24 +1,30 @@
-"""Tests for the D6c U2 R8 + R8b cross-file package-directory rules.
+"""Tests for the D6c U2 + U3 R8 + R8b cross-file package-directory rules.
 
 Covers the 2 rules added to :mod:`protokit.schema.lint.rules.package`
-in D6c U2:
+in D6c U2 and refined in D6c U3:
 
 - ``package/same-directory`` (R8, buf:PACKAGE_SAME_DIRECTORY) — fires
   when a single package's files live in more than one directory.
 - ``package/directory-same-package`` (R8b, buf:DIRECTORY_SAME_PACKAGE)
   — fires when a single directory contains files declaring more than
-  one package. Has TWO message-template arms per buf empirical lock:
+  one package. Has **THREE** message-template arms per buf empirical
+  lock (the third arm was added at D6c U3 after the parity gate
+  surfaced buf's distinct multi-declared+packageless template — see
+  [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]]):
 
-    - **Standard**: ``Multiple packages "X,Y[,Z]" detected within
-      directory "<dir>".`` when all packages in the directory are
-      declared (no packageless files mixed in).
-    - **Empty-mixed**: ``Package "X" and file with no package
-      detected within directory "<dir>".`` when the directory
-      contains at least one declared-package file AND at least one
-      packageless file. The single declared-package value rendered is
-      alphabetically-first per protokit's deterministic-ordering
-      convention; buf-empirical confirmed against the
-      ``/tmp/d6c_phase0/empty_pkg/`` fixture.
+    - **Standard** (2+ declared packages, no packageless):
+      ``Multiple packages "X,Y[,Z]" detected within directory "<dir>".``
+    - **Empty-mixed-single** (exactly 1 declared + ≥1 packageless):
+      ``Package "X" and file with no package detected within
+      directory "<dir>".``
+    - **Empty-mixed-multi** (2+ declared + ≥1 packageless):
+      ``Multiple packages "X,Y[,Z]" and file with no package detected
+      within directory "<dir>".``
+
+Empirical lock for all three arms now lives in the committed parity
+snapshots at
+``tests/schema/lint/rules/fixtures/package_directory/_buf_smoke/recorded/``
+(D6c U3, SHA-pinned).
 
 Both rules consume the dual-view accumulator landed in D6c U1
 (``LintEngine._build_directory_package_accumulator`` →
@@ -189,8 +195,14 @@ _PROTO_PKG_BAR = _proto_pkg("acme.bar")
 _PROTO_NO_PKG = _proto_pkg("")
 
 
-class TestR8HappyPath:
-    """R8 fires on multi-directory single-package scenarios."""
+class TestR8SadPath:
+    """R8 fires on multi-directory single-package scenarios.
+
+    Renamed from ``TestR8HappyPath`` at U3 ce:review safe_auto — these
+    tests exercise the rule's **firing** branch (a user's sad path:
+    the rule found a violation), not the silent/clean branch. The
+    silent branch is covered by :class:`TestR8SilentCases` below.
+    """
 
     def test_split_package_across_two_dirs_fires_on_each(
         self, tmp_path: Path,
@@ -312,8 +324,17 @@ class TestR8SilentCases:
 # ---------------------------------------------------------------------------
 
 
-class TestR8bHappyPath:
-    """R8b fires on multi-package single-directory scenarios."""
+class TestR8bSadPath:
+    """R8b fires on multi-package single-directory scenarios.
+
+    Renamed from ``TestR8bHappyPath`` at U3 ce:review safe_auto for
+    symmetry with :class:`TestR8SadPath` — these tests exercise R8b's
+    **firing** branch on the standard arm (2+ declared packages, no
+    packageless files). Empty-mixed arms live in
+    :class:`TestR8bEmptyMixedSingleTemplate` and
+    :class:`TestR8bEmptyMixedMultiTemplate`; the silent branch lives in
+    :class:`TestR8bSilentCases`.
+    """
 
     def test_two_packages_in_same_dir_fires_on_each(
         self, tmp_path: Path,
@@ -336,7 +357,8 @@ class TestR8bHappyPath:
         for f in report.findings:
             assert f.rule_id == "package/directory-same-package"
             # Standard arm: violation_kind matches rule_id; empty-
-            # mixed arm uses the ``/empty-mixed`` suffix.
+            # mixed-single and empty-mixed-multi arms use distinct
+            # ``/empty-mixed-single`` and ``/empty-mixed-multi`` suffixes.
             assert f.violation_kind == "package/directory-same-package"
             assert f.params["directory"] == "dir1"
             assert f.params["packages"] == "acme.bar,acme.foo"
@@ -519,6 +541,36 @@ class TestR8bEmptyMixedMultiTemplate:
                 "package/directory-same-package/empty-mixed-multi"
             )
             assert f.params["packages"] == "acme.bar,acme.baz,acme.foo"
+
+    def test_empty_mixed_multi_template_at_proto_root(
+        self, tmp_path: Path,
+    ) -> None:
+        """2 declared + 1 packageless at proto-root → directory canonicalized
+        to ``"."`` for the empty-mixed-multi arm.
+
+        Parallel to ``TestR8bEmptyMixedSingleTemplate.
+        test_empty_mixed_single_template_at_proto_root`` for the
+        multi-arm canonicalization. ce:review safe_auto follow-up
+        (Finding #13) — empty-mixed-multi at proto-root was the only
+        arm-x-canonicalization combination not yet pinned at U3.
+        """
+        report = _run_single(
+            tmp_path,
+            {
+                "a.proto": _PROTO_PKG_FOO,
+                "b.proto": _PROTO_PKG_BAR,
+                "c.proto": _PROTO_NO_PKG,
+            },
+            "package/directory-same-package",
+        )
+        assert len(report.findings) == 3
+        for f in report.findings:
+            assert f.violation_kind == (
+                "package/directory-same-package/empty-mixed-multi"
+            )
+            assert f.params["directory"] == "."
+            assert f.params["packages"] == "acme.bar,acme.foo"
+            assert f.params.get("packageless_present") is True
 
 
 class TestR8bSilentCases:
