@@ -73,7 +73,12 @@ def _write_proto(dest: Path, name: str, contents: str) -> Path:
 def _make_capture_pack(
     profile_name: str, rule_id: str, captured: list[Any],
 ) -> Any:
-    """Synthetic rule pack capturing ``ctx.directory_packages`` per call."""
+    """Synthetic rule pack capturing both accumulator views per call.
+
+    Each captured entry is a 2-tuple ``(directory_packages,
+    directory_packages_by_dir)`` so tests can assert both R8's
+    per-package view and R8b's per-directory inverted index.
+    """
 
     @lint_rule(
         rule_id=rule_id,
@@ -84,7 +89,7 @@ def _make_capture_pack(
         source_spec="",
     )
     def _capture(ctx: FileLintContext) -> None:
-        captured.append(ctx.directory_packages)
+        captured.append((ctx.directory_packages, ctx.directory_packages_by_dir))
 
     module = types.SimpleNamespace()
     module.__name__ = f"_test_capture_dpkg_{rule_id.replace('/', '_')}"
@@ -107,9 +112,19 @@ def _materialize_fixture(
 def _run_and_capture(
     proto_root: Path,
     root_protos: list[Path],
-) -> list[Mapping[str, Mapping[str, str]] | None]:
+) -> list[
+    tuple[
+        Mapping[str, Mapping[str, str]] | None,
+        Mapping[str, Mapping[str, frozenset[str]]] | None,
+    ]
+]:
     """Run engine over ``root_protos``; return captured accumulator snapshots."""
-    captured: list[Mapping[str, Mapping[str, str]] | None] = []
+    captured: list[
+        tuple[
+            Mapping[str, Mapping[str, str]] | None,
+            Mapping[str, Mapping[str, frozenset[str]]] | None,
+        ]
+    ] = []
     rule_id = "u1-capture/directory-packages"
     pack = _make_capture_pack("u1-capture-dpkg", rule_id, captured)
     engine = LintEngine()
@@ -178,7 +193,7 @@ class TestAccumulatorIteratesRootFiles:
         captured = _run_and_capture(proto_root, [proto_root / "a.proto"])
 
         assert len(captured) == 1
-        snapshot = captured[0]
+        snapshot, _by_dir = captured[0]
         assert snapshot is not None, "non-empty root_files must produce accumulator"
         assert "acme.transitive" in snapshot
         per_pkg = snapshot["acme.transitive"]
@@ -223,7 +238,7 @@ class TestEmptyPackageIncluded:
         )
 
         assert len(captured) == 2
-        snapshot = captured[0]
+        snapshot, _by_dir = captured[0]
         assert snapshot is not None
         # Two distinct keys: "acme.foo" + "" (the packageless entry).
         assert set(snapshot.keys()) == {"acme.foo", ""}, (
@@ -255,7 +270,7 @@ class TestProtoRootCanonicalization:
         captured = _run_and_capture(proto_root, [proto_root / "a.proto"])
 
         assert len(captured) == 1
-        snapshot = captured[0]
+        snapshot, _by_dir = captured[0]
         assert snapshot is not None
         assert snapshot == {"acme.foo": {"a.proto": "."}}, (
             f"proto-root dirname must canonicalize to '.'; got {snapshot}"
@@ -300,7 +315,7 @@ class TestNestedDirectoriesByImmediateParent:
         )
 
         assert len(captured) == 3
-        snapshot = captured[0]
+        snapshot, _by_dir = captured[0]
         assert snapshot is not None
         per_pkg = snapshot["acme.shared"]
         assert per_pkg == {
@@ -331,8 +346,9 @@ class TestAccumulatorEmptyOnEmptyRootFiles:
             pool_file_names=(),
             diagnostics=(),
         )
-        result = engine._build_directory_package_accumulator(empty_result)
-        assert result is None
+        by_pkg, by_dir = engine._build_directory_package_accumulator(empty_result)
+        assert by_pkg is None
+        assert by_dir is None
 
 
 class TestImmutability:
@@ -353,7 +369,7 @@ class TestImmutability:
         )
 
         captured = _run_and_capture(proto_root, [proto_root / "a.proto"])
-        snapshot = captured[0]
+        snapshot, _by_dir = captured[0]
         assert snapshot is not None
         assert isinstance(snapshot, MappingProxyType)
         with pytest.raises(TypeError):
@@ -374,7 +390,7 @@ class TestImmutability:
         )
 
         captured = _run_and_capture(proto_root, [proto_root / "a.proto"])
-        snapshot = captured[0]
+        snapshot, _by_dir = captured[0]
         assert snapshot is not None
         per_pkg = snapshot["acme.foo"]
         assert isinstance(per_pkg, MappingProxyType)
@@ -399,10 +415,12 @@ class TestStateLifecycle:
     """
 
     def test_init_declares_attribute_with_none_default(self) -> None:
-        """Mechanic 1: ``LintEngine().__init__`` sets attr to ``None``."""
+        """Mechanic 1: ``LintEngine().__init__`` sets both attrs to ``None``."""
         engine = LintEngine()
         assert hasattr(engine, "_current_directory_packages")
         assert engine._current_directory_packages is None
+        assert hasattr(engine, "_current_directory_packages_by_dir")
+        assert engine._current_directory_packages_by_dir is None
 
     def test_run_clears_attribute_in_finally(
         self, tmp_path: Path,
@@ -441,10 +459,14 @@ class TestStateLifecycle:
                 min_severity=LintSeverity.INFO,
             ),
         )
-        # Mechanic 2 verification (populate during run): ctx received non-None.
-        assert captured[0] is not None
-        # Mechanic 3 verification (reset in finally).
+        # Mechanic 2 verification (populate during run): ctx received non-None
+        # for both views.
+        snapshot, by_dir = captured[0]
+        assert snapshot is not None
+        assert by_dir is not None
+        # Mechanic 3 verification (reset in finally — both views).
         assert engine._current_directory_packages is None
+        assert engine._current_directory_packages_by_dir is None
 
 
 # ---- FileLintContext field contract -----------------------------------------
@@ -470,7 +492,8 @@ class TestFileLintContextField:
             _effective_severity=lambda vk: LintSeverity.INFO,
         )
         assert ctx.directory_packages is None
-        # Sibling field also stays None — confirms our new field doesn't
+        assert ctx.directory_packages_by_dir is None
+        # Sibling field also stays None — confirms our new fields don't
         # accidentally override the R7 pattern.
         assert ctx.package_options is None
 
@@ -512,8 +535,165 @@ class TestLifecycleMechanicsPresenceRatchet:
             "_current_directory_packages to None"
         )
 
-        # Mechanic 4: _build_file_ctx threads into FileLintContext.
+        # Mechanic 4: _build_file_ctx threads BOTH views into FileLintContext.
         assert "directory_packages=self._current_directory_packages" in src, (
-            "engine._build_file_ctx must thread the accumulator into "
-            "FileLintContext via directory_packages kwarg"
+            "engine._build_file_ctx must thread the per-package view "
+            "into FileLintContext via directory_packages kwarg"
         )
+        assert (
+            "directory_packages_by_dir=self._current_directory_packages_by_dir"
+            in src
+        ), (
+            "engine._build_file_ctx must thread the per-directory inverted "
+            "view into FileLintContext via directory_packages_by_dir kwarg"
+        )
+
+
+# ---- Inverted-index view (R8b primary access pattern, ADV-1 fix) ------------
+
+
+class TestInvertedIndexView:
+    """Per-directory inverted index ``directory_packages_by_dir`` (R8b view).
+
+    Resolves ce:review ADV-1: the per-package view alone would force R8b
+    into O(N) per-file scan over all packages to find files in the
+    current dir = O(N^2) total across N root files. The inverted index
+    gives R8b O(1) directory-keyed lookup.
+    """
+
+    def test_inverted_index_keyed_by_directory(self, tmp_path: Path) -> None:
+        """3 files across 2 dirs with mixed packages — verify both views."""
+        proto_root = _materialize_fixture(
+            tmp_path,
+            {
+                "pkg/a.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.foo;\n"
+                    "message A {}\n"
+                ),
+                "pkg/b.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.bar;\n"
+                    "message B {}\n"
+                ),
+                "other_dir/c.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.foo;\n"
+                    "message C {}\n"
+                ),
+            },
+        )
+
+        captured = _run_and_capture(
+            proto_root,
+            [
+                proto_root / "pkg/a.proto",
+                proto_root / "pkg/b.proto",
+                proto_root / "other_dir/c.proto",
+            ],
+        )
+
+        assert len(captured) == 3
+        _by_pkg, by_dir = captured[0]
+        assert by_dir is not None
+
+        # `pkg` directory contains 2 packages (acme.foo via a.proto, acme.bar
+        # via b.proto). R8b uses this directly for the "mixed packages in
+        # same dir" detection.
+        assert set(by_dir["pkg"].keys()) == {"acme.foo", "acme.bar"}
+        assert by_dir["pkg"]["acme.foo"] == frozenset({"pkg/a.proto"})
+        assert by_dir["pkg"]["acme.bar"] == frozenset({"pkg/b.proto"})
+
+        # `other_dir` contains 1 package (acme.foo via c.proto).
+        assert set(by_dir["other_dir"].keys()) == {"acme.foo"}
+        assert by_dir["other_dir"]["acme.foo"] == frozenset({"other_dir/c.proto"})
+
+    def test_inverted_index_empty_package_under_empty_string_key(
+        self, tmp_path: Path,
+    ) -> None:
+        """Packageless files appear under empty-string package key per KTD-4 (b)."""
+        proto_root = _materialize_fixture(
+            tmp_path,
+            {
+                "a.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.foo;\n"
+                    "message A {}\n"
+                ),
+                "b.proto": (
+                    'syntax = "proto3";\n'
+                    "message B {}\n"
+                ),
+            },
+        )
+
+        captured = _run_and_capture(
+            proto_root, [proto_root / "a.proto", proto_root / "b.proto"],
+        )
+        _by_pkg, by_dir = captured[0]
+        assert by_dir is not None
+        # Proto-root canonicalizes to ".". Both packages (acme.foo and "")
+        # appear under that directory.
+        assert set(by_dir["."].keys()) == {"acme.foo", ""}
+        assert by_dir["."]["acme.foo"] == frozenset({"a.proto"})
+        assert by_dir["."][""] == frozenset({"b.proto"})
+
+    def test_inverted_index_consistent_with_per_package_view(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both views reflect the same triples — cross-validation."""
+        proto_root = _materialize_fixture(
+            tmp_path,
+            {
+                "x/foo.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.x;\n"
+                    "message Foo {}\n"
+                ),
+                "y/bar.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.x;\n"
+                    "message Bar {}\n"
+                ),
+            },
+        )
+        captured = _run_and_capture(
+            proto_root,
+            [proto_root / "x/foo.proto", proto_root / "y/bar.proto"],
+        )
+        by_pkg, by_dir = captured[0]
+        assert by_pkg is not None and by_dir is not None
+
+        # Reconstruct triples from both views; assert equality.
+        from_pkg = {
+            (pkg, fname, dirname)
+            for pkg, files in by_pkg.items()
+            for fname, dirname in files.items()
+        }
+        from_dir = {
+            (pkg, fname, dirname)
+            for dirname, packages in by_dir.items()
+            for pkg, fnames in packages.items()
+            for fname in fnames
+        }
+        assert from_pkg == from_dir
+
+    def test_inverted_index_inner_value_is_frozenset(
+        self, tmp_path: Path,
+    ) -> None:
+        """Inner fname collection is frozenset (immutable by construction)."""
+        proto_root = _materialize_fixture(
+            tmp_path,
+            {
+                "a.proto": (
+                    'syntax = "proto3";\n'
+                    "package acme.foo;\n"
+                    "message A {}\n"
+                ),
+            },
+        )
+        captured = _run_and_capture(proto_root, [proto_root / "a.proto"])
+        _by_pkg, by_dir = captured[0]
+        assert by_dir is not None
+        fnames = by_dir["."]["acme.foo"]
+        assert isinstance(fnames, frozenset)

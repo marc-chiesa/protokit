@@ -27,11 +27,13 @@ the rules use ``pathlib.PurePosixPath`` to split the directory
 portion, matching the convention.
 
 The ``package/same-directory`` rule (buf:PACKAGE_SAME_DIRECTORY)
-is deferred to D6b alongside the rest of the cross-language
-``PACKAGE_SAME_*`` family — it is a cross-file rule that requires
-comparing multiple files' package declarations, and the current
-engine dispatches FILE-level rules one file at a time with no
-cross-call state.
+and its sibling ``package/directory-same-package``
+(buf:DIRECTORY_SAME_PACKAGE) are cross-file rules implemented in
+D6c. They consume the ``_build_directory_package_accumulator``
+pre-walk infrastructure (D6c U1) via
+``FileLintContext.directory_packages``. The implementation lives in
+this module (sibling to ``package/defined`` + ``package/directory-match``
+above) once D6c U2 lands the rule callables.
 
 References:
 - buf BASIC rule catalog (parity targets named per-rule via

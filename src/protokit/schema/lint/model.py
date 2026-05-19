@@ -1010,20 +1010,35 @@ class FileLintContext(_LintContextEmitMixin):
             R7 rules early-return on ``None``. INTERNAL field; consumers
             are R7 rules (U4b), not external callers — subject to
             change pre-1.0.
-        directory_packages: Engine-injected accumulator built by Step 3.5b
-            cross-file pre-walk (D6c U1 / R8 + R8b). Shape:
-            ``Mapping[package, Mapping[filename, dirname]]``. Both
-            nesting levels wrapped in ``MappingProxyType``. Defaults
-            to ``None`` so test helpers can construct ``FileLintContext``
-            without threading the accumulator; R8 / R8b rules
-            early-return on ``None``. **Diverges from
-            ``package_options`` in iteration scope**: the cross-file
-            accumulator iterates ``root_files`` (NOT ``pool_file_names``)
-            per KTD-4 (d) — buf v1.69.0 does not cross-fire
-            ``PACKAGE_SAME_DIRECTORY`` / ``DIRECTORY_SAME_PACKAGE``
-            across module boundaries. INTERNAL field; consumers are
-            R8 + R8b (D6c U2), not external callers — subject to
-            change pre-1.0.
+        directory_packages: Engine-injected per-package view of the
+            Step 3.5b cross-file pre-walk accumulator (D6c U1 / R8).
+            Shape: ``Mapping[package, Mapping[filename, dirname]]``.
+            Both nesting levels wrapped in ``MappingProxyType``.
+            Defaults to ``None`` so test helpers can construct
+            ``FileLintContext`` without threading the accumulator;
+            R8 rules early-return on ``None``. R8 (``package/same-
+            directory``) consumes this view via package-name lookup.
+            **Diverges from ``package_options`` in iteration scope**:
+            iterates ``root_files`` (NOT ``pool_file_names``) per
+            KTD-4 (d) — buf v1.69.0 does not cross-fire across
+            module boundaries. INTERNAL field; consumers are R8 +
+            R8b (D6c U2), not external callers — subject to change
+            pre-1.0.
+        directory_packages_by_dir: Engine-injected per-directory
+            inverted-index view of the Step 3.5b accumulator (D6c U1
+            / R8b). Shape:
+            ``Mapping[directory, Mapping[package, frozenset[filename]]]``.
+            Both nesting levels wrapped in ``MappingProxyType``;
+            innermost fname collections wrapped in ``frozenset``. R8b
+            (``package/directory-same-package``) consumes this view
+            via directory-name lookup, achieving O(1) per-file access
+            instead of O(N) scan over ``directory_packages`` (the
+            per-package view would produce O(N²) total across N
+            files; the inverted index resolves the ce:review ADV-1
+            finding). Defaults to ``None`` mirroring
+            ``directory_packages``; populated together with the
+            per-package view in the same pre-walk pass. INTERNAL
+            field.
     """
 
     file: proto_descriptor.FileDescriptor
@@ -1049,7 +1064,14 @@ class FileLintContext(_LintContextEmitMixin):
     # rationale as `package_options` (default `= None` so test helpers
     # construct without threading the kwarg); engine threads explicitly
     # via `_build_file_ctx`. Iteration scope = root_files (per KTD-4 (d)).
+    # Two views populated together by `_build_directory_package_accumulator`:
+    # per-package (R8) + per-directory inverted index (R8b). The inverted
+    # index is essential to avoid O(N²) per-file scan that the per-package
+    # view alone would produce (ce:review ADV-1 resolution).
     directory_packages: Mapping[str, Mapping[str, str]] | None = None
+    directory_packages_by_dir: (
+        Mapping[str, Mapping[str, frozenset[str]]] | None
+    ) = None
 
     def location(self) -> LintLocation:
         """Return ``FileLocation(file=self.file.name)``."""
