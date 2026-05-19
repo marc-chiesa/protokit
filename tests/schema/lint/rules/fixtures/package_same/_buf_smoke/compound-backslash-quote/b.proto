@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.compound_backslash_quote;
+
+option java_package = "com.zaz\\\\qux";
+
+message StubB {}

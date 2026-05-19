@@ -40,9 +40,6 @@ from collections.abc import Mapping
 import pytest
 import yaml
 
-from protokit.schema.lint.decorator import get_lint_spec
-from protokit.schema.lint.rules import package_same as _package_same_mod
-
 # Cross-module SSOT: SMOKE_FIXTURES + smoke_root live in tests/_buf_helpers.py
 # (D6b U6 ce:review follow-up MAINT-5 / T-05 — moved out of the smoke-test
 # module so the parity gate and the smoke-drift gate share the canonical
@@ -53,6 +50,7 @@ from tests._buf_helpers import SMOKE_FIXTURES, smoke_root
 # Helpers from the multi-file extension (D6b U6) live next to their
 # single-file siblings in tests/parity/conftest.py.
 from tests.parity.conftest import (
+    RULE_ID_MAP,
     BufFinding,
     assert_parity_multi_file,
     parse_buf_recorded_snapshot,
@@ -64,61 +62,35 @@ from tests.parity.conftest import (
 _SMOKE_FIXTURES = SMOKE_FIXTURES
 _smoke_root = smoke_root
 
-# ---- KD-1: local rule-id maps (bypass BUILTIN_PACKS-based RULE_ID_MAP) -----
+# ---- KTD-3: per-fixture rule_id derivation consumes ``RULE_ID_MAP`` -------
+#
+# Post-D6b U7, the R7 PACKAGE_SAME_* family is registered in
+# ``BUILTIN_PACKS`` so ``conftest.RULE_ID_MAP`` covers it; the previous
+# local ``_build_package_same_rule_id_map`` walk of ``package_same.RULES``
+# was redundant after that delivery and is retired here per D6c U4 KTD-3.
+# The R7 maps below derive from ``RULE_ID_MAP`` directly.
+#
+# Carve-out: ``RULE_ID_MAP`` also covers D6c R8 (``package/same-directory``),
+# which shares R7's ``package/same-`` protokit prefix AND R7's
+# ``PACKAGE_SAME_`` buf prefix. The explicit exclusion below mirrors the
+# carve-out in ``conftest.assert_parity_multi_file`` (KTD-12). The R8/R8b
+# family has its own parity gate at
+# ``tests/parity/test_parity_package_directory.py``.
 
+#: Forward map: ``buf_rule_id -> protokit_rule_id`` for the R7 PACKAGE_SAME_*
+#: family. Derived from ``RULE_ID_MAP`` (the BUILTIN_PACKS-derived SSOT)
+#: by filtering on ``package/same-*`` protokit prefix with the
+#: ``package/same-directory`` (R8) carve-out.
+_PACKAGE_SAME_RULE_ID_MAP: Mapping[str, str] = {
+    buf_id: protokit_id
+    for protokit_id, buf_id in RULE_ID_MAP.items()
+    if protokit_id.startswith("package/same-")
+    and protokit_id != "package/same-directory"
+}
 
-def _extract_buf_rule_id(source_spec: str) -> str | None:
-    """Return the buf rule id from a ``buf:RULE_ID`` source_spec.
-
-    Reimplemented locally (rather than imported from
-    ``tests/parity/conftest.py:_extract_buf_rule_id``) to avoid a
-    cross-module private-symbol dependency; the 5-line function is
-    cheaper to duplicate than to expose.
-    """
-    prefix = "buf:"
-    if source_spec.startswith(prefix):
-        return source_spec[len(prefix):]
-    return None
-
-
-def _build_package_same_rule_id_map() -> Mapping[str, str]:
-    """Walk the ``package_same.RULES`` tuple and build
-    ``{buf_rule_id: protokit_rule_id}``.
-
-    Retained as an assertion-module-isolated local helper. Until
-    D6b U7, R7 was not in ``BUILTIN_PACKS``, so this helper was
-    structurally necessary (the BUILTIN_PACKS-based
-    ``tests/parity/conftest.py:_build_rule_id_map`` excluded R7).
-    Post-U7, R7 is in BUILTIN_PACKS and ``_build_rule_id_map``
-    covers it, but keeping the local map preserves U6's invariants
-    (R25(a-e)) without coupling them to BUILTIN_PACKS-tuple drift.
-    """
-    mapping: dict[str, str] = {}
-    for fn in _package_same_mod.RULES:
-        spec = get_lint_spec(fn)
-        buf_id = _extract_buf_rule_id(spec.source_spec)
-        if buf_id is None:
-            pytest.fail(
-                f"_build_package_same_rule_id_map: rule {spec.rule_id!r} "
-                f"has non-buf source_spec {spec.source_spec!r}; "
-                f"R7 family invariant violated."
-            )
-        if buf_id in mapping:
-            pytest.fail(
-                f"_build_package_same_rule_id_map: duplicate buf_id "
-                f"{buf_id!r} maps to both {mapping[buf_id]!r} and "
-                f"{spec.rule_id!r}; check for accidental copy."
-            )
-        mapping[buf_id] = spec.rule_id
-    return mapping
-
-
-#: Forward map: ``buf_rule_id -> protokit_rule_id``. Built once at import.
-_PACKAGE_SAME_RULE_ID_MAP: Mapping[str, str] = _build_package_same_rule_id_map()
-
-#: Inverse map: ``protokit_rule_id -> buf_rule_id``. Derived once at import.
-#: Both directions documented in KD-1; forward feeds KD-8's fixture mapping,
-#: inverse feeds the test body's ``skip_if_buf_deprecated`` call.
+#: Inverse map: ``protokit_rule_id -> buf_rule_id``. Forward feeds the
+#: per-fixture YAML-based rule scoping; inverse feeds the test body's
+#: ``skip_if_buf_deprecated`` call.
 _BUF_RULE_ID_MAP: Mapping[str, str] = {
     v: k for k, v in _PACKAGE_SAME_RULE_ID_MAP.items()
 }
@@ -272,11 +244,14 @@ def test_every_r7_rule_has_at_least_one_associated_fixture() -> None:
 
     Catches "added an R7 rule but forgot to back it with a fixture".
     This is a fixture-coverage smoke check — over-firing is caught at
-    test time by ``assert_parity_multi_file``'s two-sided check.
+    test time by ``assert_parity_multi_file``'s two-sided check. Post-D6c
+    U4 the expected-rule-id set derives from the ``RULE_ID_MAP``-filtered
+    ``_PACKAGE_SAME_RULE_ID_MAP`` rather than a separate
+    ``package_same.RULES`` walk so the assertion tracks the parity
+    contract's R7 membership (with the ``package/same-directory`` R8
+    carve-out applied) rather than the module's RULES tuple directly.
     """
-    expected_rule_ids: set[str] = {
-        get_lint_spec(fn).rule_id for fn in _package_same_mod.RULES
-    }
+    expected_rule_ids: set[str] = set(_PACKAGE_SAME_RULE_ID_MAP.values())
     covered_rule_ids: set[str] = set(_FIXTURE_RULE_ID_MAP.values())
     missing = expected_rule_ids - covered_rule_ids
     assert not missing, (

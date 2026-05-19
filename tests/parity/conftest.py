@@ -166,13 +166,34 @@ def _build_package_same_proto_to_buf() -> Mapping[str, str]:
     built once at module-import time rather than rebuilt inside
     ``assert_parity_multi_file`` on every parametrized test invocation.
 
-    Until D6b U7, R7 was not in ``BUILTIN_PACKS``, so the BUILTIN_PACKS-
-    derived ``RULE_ID_MAP`` above didn't cover it — the dedicated walk
-    kept U6's invocation path independent of the BUILTIN_PACKS
-    sequencing. Post-U7, ``_PACKAGE_SAME_PROTO_TO_BUF`` is a subset of
-    ``RULE_ID_MAP`` and could be derived from it; retained for
-    assertion-module isolation so the parity gate's R25(a-e) invariants
-    are not coupled to BUILTIN_PACKS-tuple drift.
+    The function deliberately walks ``package_same.RULES`` rather than
+    deriving from the BUILTIN_PACKS-based :data:`RULE_ID_MAP`. This
+    mirrors the sibling :func:`_build_package_directory_proto_to_buf`
+    pattern introduced at D6c U3 for R8/R8b: each rule-family parity
+    gate sources its mapping from the rule pack's own ``RULES`` tuple
+    rather than the union ``RULE_ID_MAP``. The convention has two
+    motivations beyond historical BUILTIN_PACKS-sequencing (which was
+    only load-bearing pre-D6b U7):
+
+    (i) Family scope is precise. ``RULE_ID_MAP`` includes the D6c R8
+        ``package/same-directory`` rule whose buf source_spec
+        ``buf:PACKAGE_SAME_DIRECTORY`` shares the R7 ``PACKAGE_SAME_``
+        buf prefix. A naive prefix filter on the union map would
+        over-include R8 in the R7 family; the explicit module-scoped
+        walk avoids the carve-out entirely.
+    (ii) Family invariants stay decoupled. R7's R25(a-e) collection-
+        time invariants at ``tests/parity/test_parity_package_same.py``
+        + R8/R8b's parallel invariants at
+        ``tests/parity/test_parity_package_directory.py`` each pin
+        their own family's RULES tuple. Routing both through the union
+        ``RULE_ID_MAP`` would couple a regression in either family to
+        the other's diagnostic surface.
+
+    The R7-side test-module consumer
+    (``tests/parity/test_parity_package_same.py``) derives its local
+    ``_PACKAGE_SAME_RULE_ID_MAP`` from ``RULE_ID_MAP`` with the explicit
+    R8 carve-out — that's the test-side analog of this conftest-side
+    walk, both established at D6c U4 KTD-3.
     """
     mapping: dict[str, str] = {}
     for fn in _package_same_mod.RULES:

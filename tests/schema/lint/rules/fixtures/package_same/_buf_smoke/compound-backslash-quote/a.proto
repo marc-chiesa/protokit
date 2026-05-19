@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package smoke.compound_backslash_quote;
+
+option java_package = "com.foo\\\"bar";
+
+message StubA {}

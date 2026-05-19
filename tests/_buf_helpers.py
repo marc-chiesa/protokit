@@ -142,12 +142,13 @@ def run_buf_subprocess(
 # from this shared module — eliminating the rename-induced ImportError
 # brittleness that affected pytest collection.
 
-#: All 21 D6b U4a buf-smoke fixtures. Each has a fixture directory at
+#: All 22 D6b U4a + D6c U4 buf-smoke fixtures. Each has a fixture
+#: directory at
 #: ``tests/schema/lint/rules/fixtures/package_same/_buf_smoke/<name>/``
 #: and a SHA-pinned recorded snapshot at ``_buf_smoke/recorded/<name>.json``.
 #: Order: 7 initial (core architecture) + 7 supplementary (cross-rule,
 #: sort, bool render) + 7 deferred-question-resolution (quote escape +
-#: mixed-presence per non-go rule).
+#: mixed-presence per non-go rule) + 1 D6c U4 compound-escape closure.
 SMOKE_FIXTURES: tuple[str, ...] = (
     # Initial 7 (core architecture).
     "all-agree",
@@ -173,6 +174,17 @@ SMOKE_FIXTURES: tuple[str, ...] = (
     "mixed-presence-ruby-package",
     "mixed-presence-swift-prefix",
     "mixed-presence-java-multiple-files",
+    # D6c U4: compound-backslash+quote BUF_BINARY closure on R7 escape
+    # path. Each value mixes ``\`` and ``"`` so the two-step escape order
+    # in :func:`protokit.schema.lint.rules.package_same._escape_message_value`
+    # (backslash FIRST then quote) is byte-pinned against buf v1.69.0
+    # via a recorded NDJSON snapshot. The U6 inner-quote fixture
+    # (``mixed-value-with-inner-quote``) covers the quote-only path;
+    # the U4b PHP-namespace fixtures cover the backslash-only path; this
+    # entry closes the compound case left open in [[escape-pair-aware-
+    # truncation-dangling-backslash-wire-format-divergence-2026-05-17]]
+    # by exercising both escape classes in the same value.
+    "compound-backslash-quote",
 )
 
 
