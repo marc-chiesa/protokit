@@ -22,13 +22,16 @@ Resolved decisions (see ``docs/plans/2026-05-13-001-feat-d6a-u8-parity-test-infr
   ``source_spec`` was corrected from ``"https://google.aip.dev/122"``
   to ``"buf:FIELD_LOWER_SNAKE_CASE"`` at D6c U2 so the rule
   participates in the buf-BASIC parity numerator via the same
-  ``_extract_buf_rule_id`` path as every other R*: rule.
-  ``_CANARY_PARITY_OVERRIDE`` below is retained as historical
-  context (and as a fail-loud assertion site if anyone reverts the
-  source_spec) but is no longer load-bearing: ``_build_rule_id_map``
-  picks the rule up directly from the ``buf:`` prefix. **Any future
-  change to the canary's ``_SNAKE_CASE_RE`` regex requires
-  re-validating buf parity against the pinned buf version.**
+  ``_extract_buf_rule_id`` path as every other R*: rule. The
+  earlier ``_CANARY_PARITY_OVERRIDE`` indirection has been deleted
+  (its "fail-loud" claim was inverted — a revert of the
+  source_spec to the AIP-122 URL would silently re-enter the
+  override path). Replaced with a post-walk ``assert
+  "naming/snake-case-fields" in mapping`` in
+  :func:`_build_rule_id_map` that fires loudly if the canary ever
+  drops out of the parity numerator. **Any future change to the
+  canary's ``_SNAKE_CASE_RE`` regex requires re-validating buf
+  parity against the pinned buf version.**
 - **Documented buf-parity divergences live in ``_PARITY_EXCEPTIONS``.**
   Each entry references the rule's four-site documentation
   (module docstring + rule docstring + ``message_template`` + paired
@@ -103,28 +106,6 @@ class BufFinding(NamedTuple):
     end_column: int
     type: str
     message: str
-
-#: Historical buf-parity override for the D2 canary
-#: ``naming/snake-case-fields``. Pre-D6c the canary's ``source_spec``
-#: was ``"https://google.aip.dev/122"`` (the AIP-122 URL), so the
-#: rule was invisible to ``_extract_buf_rule_id`` and the override
-#: re-mapped it onto buf's ``FIELD_LOWER_SNAKE_CASE`` via the
-#: ``elif protokit_id in _CANARY_PARITY_OVERRIDE`` arm of
-#: ``_build_rule_id_map``. **Post-D6c U2 KTD-11 the canary's
-#: ``source_spec`` was corrected to ``"buf:FIELD_LOWER_SNAKE_CASE"``**,
-#: so the override is now dead code — ``_extract_buf_rule_id`` picks
-#: the rule up directly. The dict is retained as fail-loud safety:
-#: ``_build_rule_id_map`` asserts the override entry collides with the
-#: directly-picked-up rule, which catches an accidental revert of the
-#: canary's source_spec back to the AIP-122 URL.
-#:
-#: If the canary's regex (``_SNAKE_CASE_RE`` in
-#: ``src/protokit/schema/lint/rules/naming.py``) changes,
-#: re-validate buf parity against the pinned buf version before
-#: shipping the change.
-_CANARY_PARITY_OVERRIDE: Mapping[str, str] = {
-    "naming/snake-case-fields": "FIELD_LOWER_SNAKE_CASE",
-}
 
 #: Documented buf-parity divergences. Keyed by
 #: ``(protokit_rule_id, fixture_stem)``; value names the divergence
@@ -213,13 +194,24 @@ _PACKAGE_SAME_RULE_IDS: frozenset[str] = frozenset(_PACKAGE_SAME_PROTO_TO_BUF.ke
 def _build_rule_id_map() -> Mapping[str, str]:
     """Walk ``BUILTIN_PACKS`` and derive ``protokit_id -> buf_id``.
 
-    Drops rules whose ``source_spec`` is neither ``buf:*`` nor
-    listed in ``_CANARY_PARITY_OVERRIDE`` — those rules are
-    protokit-only and not part of the parity contract.
+    Drops rules whose ``source_spec`` is not ``buf:*`` — those rules
+    are protokit-only and not part of the parity contract.
 
     Uses ``get_lint_spec()`` (the documented external-caller
     accessor) so a malformed RULES tuple raises a clear
     ``TypeError`` rather than an opaque ``AttributeError``.
+
+    **Canary inclusion** (post-D6c U2 KTD-11): the
+    ``naming/snake-case-fields`` rule ships with
+    ``source_spec="buf:FIELD_LOWER_SNAKE_CASE"`` and lands in the
+    mapping via the standard ``buf:`` prefix path — no override
+    layer needed. The post-walk assertion below guards the canary
+    against an accidental revert of its source_spec back to the
+    AIP-122 URL (which would silently drop it from the parity
+    numerator). The direct-value assertion in
+    :mod:`tests.schema.lint.test_canary_naming` is the primary
+    source_spec contract; this fail-loud is the integration-layer
+    backstop.
     """
     mapping: dict[str, str] = {}
     pack: ModuleType
@@ -243,17 +235,21 @@ def _build_rule_id_map() -> Mapping[str, str]:
                         f"@lint_rule decoration across rule packs."
                     )
                 mapping[protokit_id] = buf_id
-            elif protokit_id in _CANARY_PARITY_OVERRIDE:
-                if protokit_id in mapping:
-                    raise AssertionError(
-                        f"_CANARY_PARITY_OVERRIDE entry {protokit_id!r} "
-                        f"collides with a buf:-sourced rule already in "
-                        f"BUILTIN_PACKS. The override is dead code; "
-                        f"either remove it or change the rule's "
-                        f"source_spec away from a buf: prefix."
-                    )
-                mapping[protokit_id] = _CANARY_PARITY_OVERRIDE[protokit_id]
             # else: rule is protokit-only — excluded from parity.
+    # Post-walk assertion: the canary must land in the mapping via the
+    # ``buf:`` source_spec path. If this fails, the canary's source_spec
+    # was reverted to a non-``buf:`` value (e.g., the AIP-122 URL it
+    # carried pre-D6c U2) and the rule has silently dropped from the
+    # parity numerator. See test_canary_naming.py:73 for the direct
+    # source_spec value assertion.
+    assert "naming/snake-case-fields" in mapping, (
+        "canary rule 'naming/snake-case-fields' dropped from "
+        "RULE_ID_MAP — source_spec may have reverted away from "
+        "'buf:FIELD_LOWER_SNAKE_CASE'. See test_canary_naming.py for "
+        "the direct value contract; KTD-11 in docs/plans/2026-05-18-"
+        "003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md for the "
+        "audit-trail rationale."
+    )
     return mapping
 
 

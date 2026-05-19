@@ -553,6 +553,37 @@ class TestLintJson:
             assert payload["findings"][0]["location_kind"] == expected_kind
             assert payload["findings"][0]["location_file"] == "a.proto"
 
+    def test_per_finding_params_serialized(self) -> None:
+        """``params`` dict surfaces verbatim in each finding payload.
+
+        D6c U2 ce:review #8 + agent-native: structured-output consumers
+        (agents, IDEs, CI tools) read ``params`` directly to discriminate
+        rule arms or extract semantic fields without parsing rendered
+        message prose. Verifies the key is emitted, contains the source
+        values (post-format), and tolerates heterogeneous value types
+        like bool (for R8b's ``packageless_present`` discriminator).
+        """
+        spec = _make_spec(rule_id="x/multi", template="msg")
+        finding = LintFinding(
+            rule_id="x/multi",
+            severity=LintSeverity.ERROR,
+            location=FileLocation(file="a.proto"),
+            violation_kind="x/multi",
+            params={
+                "directory": "pkg",
+                "packages": "acme.bar,acme.foo",
+                "packageless_present": False,
+            },
+        )
+        report = LintReport(findings=(finding,), specs={"x/multi": spec})
+        payload = json.loads(lint_json(report, self._ctx()))
+        entry = payload["findings"][0]
+        assert entry["params"] == {
+            "directory": "pkg",
+            "packages": "acme.bar,acme.foo",
+            "packageless_present": False,
+        }
+
     def test_non_json_serializable_param_does_not_suppress_output(
         self,
     ) -> None:
@@ -882,6 +913,39 @@ class TestLintSarif:
         assert results[0]["ruleId"] == "naming/snake-case-fields"
         assert results[0]["level"] == "warning"
         assert "BadField" in results[0]["message"]["text"]
+
+    def test_result_properties_carries_params(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """SARIF ``result.properties.params`` exposes semantic fields.
+
+        D6c U2 ce:review #8 + agent-native: SARIF consumers reading the
+        vendor-extension ``properties`` bag can discriminate rule arms
+        (e.g., R8b's ``packageless_present``) without scraping the
+        rendered ``message.text``.
+        """
+        spec = _make_spec(rule_id="x/multi", template="msg")
+        finding = LintFinding(
+            rule_id="x/multi",
+            severity=LintSeverity.ERROR,
+            location=FileLocation(file="a.proto"),
+            violation_kind="x/multi",
+            params={
+                "directory": "pkg",
+                "packages": "acme.bar,acme.foo",
+                "packageless_present": False,
+            },
+        )
+        report = LintReport(findings=(finding,), specs={"x/multi": spec})
+        out = lint_sarif(report, self._ctx())
+        doc = json.loads(out)
+        sarif_validator.validate(doc)
+        result = doc["runs"][0]["results"][0]
+        assert result["properties"]["params"] == {
+            "directory": "pkg",
+            "packages": "acme.bar,acme.foo",
+            "packageless_present": False,
+        }
 
     def test_severity_levels_map_correctly(
         self, sarif_validator: jsonschema.Draft7Validator,

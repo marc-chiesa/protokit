@@ -108,15 +108,44 @@ class TestR8RuleSpec:
 
 
 class TestR8bRuleSpec:
-    """``package/directory-same-package`` (R8b) spec metadata."""
+    """``package/directory-same-package`` (R8b) spec metadata.
+
+    Post-Finding-#6 fix: R8b is a multi-kind rule that emits TWO
+    distinct ``violation_kind`` values — the standard kind (matching
+    ``rule_id``) and the empty-mixed kind. Severity + message_template
+    are both dict-shaped per kind so the SARIF rules catalog renders a
+    human-readable shortDescription per kind instead of the literal
+    ``"{payload}"`` identity-template R8b shipped with at U2's
+    initial drop.
+    """
 
     def test_spec_metadata(self) -> None:
         spec = check_directory_same_package._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "package/directory-same-package"
-        assert spec.severity is LintSeverity.ERROR
+        # Multi-kind: severity is a dict keyed by violation_kind.
+        assert spec.severity == {
+            "package/directory-same-package": LintSeverity.ERROR,
+            "package/directory-same-package/empty-mixed": LintSeverity.ERROR,
+        }
         assert spec.profiles == ("recommended", "default")
         assert spec.element is ElementKind.FILE
         assert spec.source_spec == "buf:DIRECTORY_SAME_PACKAGE"
+
+    def test_message_templates_per_kind(self) -> None:
+        """Each violation_kind has its own human-readable template."""
+        spec = check_directory_same_package._lint_spec  # type: ignore[attr-defined]
+        # Multi-kind: message_template is a dict keyed by violation_kind.
+        assert isinstance(spec.message_template, dict)
+        assert spec.message_template == {
+            "package/directory-same-package": (
+                'Multiple packages "{packages}" '
+                'detected within directory "{directory}".'
+            ),
+            "package/directory-same-package/empty-mixed": (
+                'Package "{package}" and file with no package '
+                'detected within directory "{directory}".'
+            ),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -289,20 +318,22 @@ class TestR8bHappyPath:
         assert len(report.findings) == 2
         for f in report.findings:
             assert f.rule_id == "package/directory-same-package"
+            # Standard arm: violation_kind matches rule_id; empty-
+            # mixed arm uses the ``/empty-mixed`` suffix.
             assert f.violation_kind == "package/directory-same-package"
             assert f.params["directory"] == "dir1"
             assert f.params["packages"] == "acme.bar,acme.foo"
             # Standard arm carries the packageless_present=False
             # discriminator so structured-output consumers can
             # distinguish from the empty-mixed arm without parsing
-            # the rendered payload string.
+            # the rendered message string.
             assert f.params["packageless_present"] is False
-            # Rendered payload string is the entire message text
-            # (the rule uses `message_template="{payload}"`).
-            assert f.params["payload"] == (
-                'Multiple packages "acme.bar,acme.foo" '
-                'detected within directory "dir1".'
-            )
+            # ``payload`` is no longer in params post-Finding-#6 fix
+            # — the formatter renders from the dict-shaped template
+            # keyed on violation_kind. Confirm the key is absent so
+            # any future regression that re-adds the identity-payload
+            # hack would surface here.
+            assert "payload" not in f.params
 
     def test_three_packages_in_same_dir_alphabetic_comma_no_space(
         self, tmp_path: Path,
@@ -368,19 +399,18 @@ class TestR8bEmptyMixedTemplate:
         assert len(report.findings) == 3
         for f in report.findings:
             assert f.rule_id == "package/directory-same-package"
+            # Empty-mixed arm: violation_kind carries the ``/empty-
+            # mixed`` suffix so the formatter looks up the empty-mixed
+            # template from the dict-shaped message_template.
+            assert f.violation_kind == (
+                "package/directory-same-package/empty-mixed"
+            )
             assert f.params["directory"] == "dir1"
-            # Empty-mixed shape: single declared-pkg + flag indicating
-            # the packageless arm was selected.
             assert f.params.get("packageless_present") is True
             assert f.params["package"] == "acme.foo"
-            # Rendered payload byte-locks the empty-mixed template
-            # against any future drift away from buf v1.69.0's wire
-            # format. U3's parity gate provides the cross-tool lock;
-            # this assertion provides the in-suite lock.
-            assert f.params["payload"] == (
-                'Package "acme.foo" and file with no package '
-                'detected within directory "dir1".'
-            )
+            # ``payload`` is not a params key post-Finding-#6 fix —
+            # the formatter renders from the empty-mixed template.
+            assert "payload" not in f.params
 
     def test_empty_mixed_template_at_proto_root(
         self, tmp_path: Path,

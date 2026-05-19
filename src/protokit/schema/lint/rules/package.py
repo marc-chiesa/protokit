@@ -63,11 +63,25 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint.decorator import lint_rule
 from protokit.schema.lint.model import ElementKind, LintSeverity
 
 if TYPE_CHECKING:
     from protokit.schema.lint.model import FileLintContext
+
+# 500-char cap applied to every string param emitted by R8/R8b (and
+# to the composed payload string for R8b). Mirrors R7's
+# ``_check_package_option`` discipline in package_same.py — adversarial
+# values containing U+2028/U+2029 line terminators (which buf v1.69.0
+# may emit verbatim into NDJSON, injecting record boundaries) flow
+# through ``_safe_for_stderr`` to collapse the control characters, and
+# the cap bounds the DoS surface when N is extreme (e.g., a package
+# split across 500 directories). The cap is applied to each param
+# independently after composition; the composed payload also receives
+# its own cap so the rendered message never exceeds 500 chars + the
+# template wrapper.
+_PARAM_CAP = 500
 
 
 # Each directory segment that maps to a package segment must be a
@@ -263,29 +277,55 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
     distinct_dirs = sorted(set(per_pkg.values()))
     if len(distinct_dirs) <= 1:
         return
+    # Sanitize + cap per R7's discipline (package_same.py:_check_
+    # package_option). U+2028/U+2029 in any single directory name
+    # would otherwise inject NDJSON record boundaries; the per-param
+    # cap bounds the DoS surface on extreme split counts.
     ctx.emit(
         violation_kind="package/same-directory",
         params={
-            "file": ctx.file.name,
-            "package": pkg,
-            "directories": ",".join(distinct_dirs),
+            "file": _safe_for_stderr(ctx.file.name)[:_PARAM_CAP],
+            "package": _safe_for_stderr(pkg)[:_PARAM_CAP],
+            "directories": _safe_for_stderr(
+                ",".join(distinct_dirs),
+            )[:_PARAM_CAP],
         },
     )
 
 
+#: R8b's two empirically-locked message templates, keyed by
+#: ``violation_kind``. Buf v1.69.0 uses ``Multiple packages "X,Y" ...``
+#: when all packages in the directory are declared, and ``Package "X"
+#: and file with no package ...`` when declared and packageless files
+#: co-occur. Encoded as a dict-shaped ``message_template`` so each arm
+#: is a separately introspectable per-kind template (SARIF rules
+#: catalog reads the per-kind shortDescription rather than the literal
+#: ``"{payload}"`` identity-template the rule shipped with at U2's
+#: initial drop).
+_R8B_STANDARD_KIND = "package/directory-same-package"
+_R8B_EMPTY_MIXED_KIND = "package/directory-same-package/empty-mixed"
+_R8B_MESSAGE_TEMPLATES: dict[str, str] = {
+    _R8B_STANDARD_KIND: (
+        'Multiple packages "{packages}" '
+        'detected within directory "{directory}".'
+    ),
+    _R8B_EMPTY_MIXED_KIND: (
+        'Package "{package}" and file with no package '
+        'detected within directory "{directory}".'
+    ),
+}
+_R8B_SEVERITIES: dict[str, LintSeverity] = {
+    _R8B_STANDARD_KIND: LintSeverity.ERROR,
+    _R8B_EMPTY_MIXED_KIND: LintSeverity.ERROR,
+}
+
+
 @lint_rule(
     rule_id="package/directory-same-package",
-    severity=LintSeverity.ERROR,
+    severity=_R8B_SEVERITIES,
     profiles=("recommended", "default"),
     element=ElementKind.FILE,
-    # Single composed payload — R8b has TWO distinct message-template
-    # arms (standard vs empty-mixed) per buf v1.69.0 empirical lock.
-    # Each arm composes the entire message text inline; the template
-    # is the identity placeholder so str.format renders verbatim.
-    # Semantic introspection fields (``directory``, ``package`` /
-    # ``packages``, ``packageless_present``) are also present in
-    # ``params`` for structured output (lint_json / lint_sarif).
-    message_template="{payload}",
+    message_template=_R8B_MESSAGE_TEMPLATES,
     source_spec="buf:DIRECTORY_SAME_PACKAGE",
 )
 def check_directory_same_package(ctx: FileLintContext) -> None:
@@ -354,41 +394,40 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
     # (plural CSV, standard arm) — the divergent key is documented in
     # the rule's module-level header so structured-output consumers
     # know which key to read per arm.
-    params: dict[str, str | bool]
+    # Sanitize the directory key BEFORE composing params so the
+    # template-rendered string also benefits from the U+2028/U+2029
+    # collapse.
+    safe_dir = _safe_for_stderr(current_dir)[:_PARAM_CAP]
+    safe_file = _safe_for_stderr(ctx.file.name)[:_PARAM_CAP]
     if packageless_present and declared_pkgs:
         # Empty-mixed arm: declared + packageless files co-occur.
         # Buf renders a single declared-package value in this arm;
-        # protokit picks alphabetically-first for determinism.
-        declared = declared_pkgs[0]
-        payload = (
-            f'Package "{declared}" and file with no package '
-            f'detected within directory "{current_dir}".'
+        # protokit picks alphabetically-first for determinism. Emit
+        # with the empty-mixed violation_kind so the formatter looks
+        # up the empty-mixed template from the dict-shaped
+        # message_template.
+        declared = _safe_for_stderr(declared_pkgs[0])[:_PARAM_CAP]
+        ctx.emit(
+            violation_kind=_R8B_EMPTY_MIXED_KIND,
+            params={
+                "file": safe_file,
+                "directory": safe_dir,
+                "package": declared,
+                "packageless_present": True,
+            },
         )
-        params = {
-            "file": ctx.file.name,
-            "directory": current_dir,
-            "package": declared,
-            "packageless_present": True,
-            "payload": payload,
-        }
     else:
         # Standard arm: 2+ declared packages, no packageless files.
-        pkg_list = ",".join(declared_pkgs)
-        payload = (
-            f'Multiple packages "{pkg_list}" '
-            f'detected within directory "{current_dir}".'
+        pkg_list = _safe_for_stderr(",".join(declared_pkgs))[:_PARAM_CAP]
+        ctx.emit(
+            violation_kind=_R8B_STANDARD_KIND,
+            params={
+                "file": safe_file,
+                "directory": safe_dir,
+                "packages": pkg_list,
+                "packageless_present": False,
+            },
         )
-        params = {
-            "file": ctx.file.name,
-            "directory": current_dir,
-            "packages": pkg_list,
-            "packageless_present": False,
-            "payload": payload,
-        }
-    ctx.emit(
-        violation_kind="package/directory-same-package",
-        params=params,
-    )
 
 
 # Module-level RULES tuple read by ``LintEngine.load_rule_pack``.

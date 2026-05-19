@@ -316,6 +316,20 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
             "message": _render_message(
                 finding, report.specs.get(finding.rule_id),
             ),
+            # Per-finding ``params`` dict (D6c U2 ce:review #8 +
+            # agent-native finding). Exposes the rule's semantic
+            # introspection fields so agent callers don't have to
+            # string-parse the rendered ``message``. For multi-kind
+            # rules like R8b, the ``packageless_present``
+            # discriminator (a bool) lives here; for any rule whose
+            # template renders ``{name}`` style placeholders, the raw
+            # source values flow through unchanged so consumers can
+            # correlate findings across runs by stable IDs rather
+            # than rendered prose. Forward-compatible: consumers may
+            # ignore unknown keys; this is a per-finding extension,
+            # NOT a top-level schema-version-bumping change per
+            # ``_LINT_JSON_SCHEMA_VERSION``'s open-vs-closed contract.
+            "params": dict(finding.params),
         }
         for finding in report.findings
     ]
@@ -500,6 +514,17 @@ def _lint_result_for_finding(
     Lint findings have no proto-file / partial-fingerprints
     context (the location string is the canonical address), so
     this is a narrower shape than compat's ``_result_for_finding``.
+
+    Per-result ``properties.params`` (D6c U2 ce:review #8) carries the
+    rule's semantic introspection fields (e.g., R8b's
+    ``packageless_present`` discriminator + ``directory`` / ``packages``
+    / ``package``) so SARIF consumers can programmatically distinguish
+    rule-arm sub-types without parsing the rendered ``message.text``.
+    The SARIF spec reserves ``properties`` for vendor-extension fields
+    of this kind. Renders ``finding.params`` as-is; for any rule that
+    stores non-JSON-serializable values, the outer ``json.dumps`` call
+    in :func:`lint_sarif` uses ``default=str`` so they degrade to
+    repr rather than failing the whole document.
     """
     return {
         "ruleId": finding.rule_id,
@@ -510,6 +535,9 @@ def _lint_result_for_finding(
                 "fullyQualifiedName": str(finding.location),
             }],
         }],
+        "properties": {
+            "params": dict(finding.params),
+        },
     }
 
 
