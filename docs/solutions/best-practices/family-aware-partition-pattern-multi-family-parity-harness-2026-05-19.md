@@ -256,6 +256,45 @@ def assert_parity_multi_file(...) -> None:
 
 The walk + filter + merge runs once at module import, not 31 times across parametrized invocations.
 
+### Test-module-side carve-out consumption (D6c U4 sub-pattern)
+
+The core pattern above covers "carve-out is data, not logic" at the partition-helper level (`assert_parity_multi_file` in conftest consumes inclusion frozensets, not inline conditionals). The D6c U4 ce:review (KP-2, P2/0.88) surfaced the discipline one layer further down: **filter expressions inside individual test modules should also consume the SSOT frozensets rather than duplicating the literal rule-id strings.**
+
+The gap before the fix at `tests/parity/test_parity_package_same.py:84-91`:
+
+```python
+# Before — hardcoded literal duplicates conftest's frozenset.
+_PACKAGE_SAME_RULE_ID_MAP = {
+    buf_id: protokit_id
+    for protokit_id, buf_id in RULE_ID_MAP.items()
+    if protokit_id.startswith("package/same-")
+    and protokit_id != "package/same-directory"   # literal carve-out
+}
+```
+
+Conftest already exposed the canonical R8/R8b boundary as `_D6C_PACKAGE_DIRECTORY_RULE_IDS` at line 229 — the authoritative inclusion set the pattern above relies on. The test module had reached past it and re-encoded the carve-out with a single-member literal.
+
+The fix imported the frozenset and replaced the literal:
+
+```python
+from tests.parity.conftest import _D6C_PACKAGE_DIRECTORY_RULE_IDS
+
+_PACKAGE_SAME_RULE_ID_MAP = {
+    buf_id: protokit_id
+    for protokit_id, buf_id in RULE_ID_MAP.items()
+    if protokit_id.startswith("package/same-")
+    and protokit_id not in _D6C_PACKAGE_DIRECTORY_RULE_IDS
+}
+```
+
+**Why this matters at the test-module level.** The literal `!= "package/same-directory"` is a single-member exclusion that silently becomes wrong the moment a future R8c (or any new `package/same-*` rule belonging to the D6c family) is added. With the literal, two synchronized edits would be required: conftest's frozenset AND every test module that filters by that boundary. With the frozenset import, only conftest's frozenset needs updating — every consumer picks up the new member automatically.
+
+**Discipline rule (added to the pattern).** When a test module contains a comprehension or filter that excludes rule-ids belonging to a sibling family, the exclusion predicate must reference the conftest-owned SSOT frozenset, not an inline literal. A literal exclusion predicate (`!= "some/rule-id"` or `not in {"some/rule-id"}`) is a sign that the SSOT boundary has leaked downward into a consumer without being imported.
+
+**Signal for when to apply.** If grep finds `!= "package/` or `not in {"package/` in any test module, the literal should be replaced with an import of the corresponding conftest frozenset. The conversion is mechanical and the diff is small.
+
+**Connection to the drift-guard sub-pattern.** The drift-guard `assert` documented in [[dual-ssot-derivation-import-time-drift-guard-2026-05-19]] is the complementary discipline: once the test module imports the conftest frozenset, the drift guard can assert that the test module's full rule-id view agrees with conftest's RULES-derived view. The two patterns form a pair — (1) consume the SSOT frozenset for the carve-out predicate, (2) assert the resulting derivation agrees with the independently-derived conftest view.
+
 ## Related
 
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — the single-family parity gate this pattern scales. Multi-family extension preserves the same Case 1/4 detection semantics while broadening the rule coverage.
@@ -264,3 +303,4 @@ The walk + filter + merge runs once at module import, not 31 times across parame
 - [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]] — fixture-creation discipline. The family-aware partition complements the fixture builder: fixtures are the inputs; the inclusion-set constants are the routing logic for the outputs.
 - [[buf-parity-divergence-documentation-discipline-2026-05-13]] — what to do once the family-aware partition surfaces a divergence (four-site documentation per family).
 - [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]] — sibling pattern at the CLI layer (multiple structures that need consistent dedup semantics). Same architectural principle: when two data structures track the same domain, factor them into one source so consistency is mechanical, not maintained-by-hand.
+- [[dual-ssot-derivation-import-time-drift-guard-2026-05-19]] — D6c U4 companion. When the test-module-side consumption is in place (the sub-pattern above), the drift-guard `assert` validates that the test module's full rule-id view agrees with the conftest RULES-derived view at module-import time. The two patterns form a pair: consume the SSOT frozenset for carve-out predicates, then assert agreement of the two derivation paths.
