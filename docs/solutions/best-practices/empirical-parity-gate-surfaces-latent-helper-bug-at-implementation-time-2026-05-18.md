@@ -1,6 +1,7 @@
 ---
 title: Empirical parity gate surfaces latent emission-layer bugs that unit tests cannot catch
 date: 2026-05-18
+last_updated: 2026-05-19
 category: docs/solutions/best-practices
 module: protokit.schema.lint.rules.package_same
 problem_type: best_practice
@@ -11,6 +12,7 @@ applies_when:
   - The rule emits a composed string by calling an escape helper (`_escape_message_value`, `_truncate_values_payload`, etc.)
   - An empirical parity gate compares protokit NDJSON output against committed reference snapshots for the same proto inputs
   - The reference snapshots were generated from real proto files that exercise non-ASCII or escape-bearing values (e.g., PHP namespace with backslash)
+  - A plan claim about engine ordering, grouping, or dispatch semantics is unpinned by any test — an inline invariant-pin test can surface latent bugs at the unit-test layer before the parity gate would have caught the same bug via byte-divergence
 related_components:
   - tooling
 tags:
@@ -22,6 +24,9 @@ tags:
   - escape-sequences
   - latent-bug
   - package-same
+  - cofire-ordering
+  - insertion-order
+  - invariant-pin
 ---
 
 # Empirical parity gate surfaces latent emission-layer bugs that unit tests cannot catch
@@ -70,6 +75,7 @@ U6 hit the second outcome. Both outcomes justify the gate; the latter is the fai
 - When extending a shared helper that affects message formatting across a rule family (all 7 PACKAGE_SAME_* rules share `_escape_message_value` and `_truncate_values_payload`).
 - When adding a new escape class to an existing helper: the parity gate must be run before and after, treating the before-run as baseline validation and the after-run as regression confirmation.
 - When committing recorded snapshots: verify they cover the escape classes present in real-world proto files. PHP namespace values routinely contain backslash namespace separators (`Vendor\Package\X`); SQL-like values may contain quotes; Java enum values may contain unicode escapes.
+- **Plan claims of the form "X happens automatically without special-case logic" (added at D6c U2 — see Case 3 below)**: when a plan elides the specific code path responsible for a behavior, an inline invariant-pin test added during /ce:review safe_auto is the cheapest way to validate the claim before the parity gate's downstream feedback loop. Authoring a unit test that asserts co-fire ordering or dispatch sequence exercises the engine's per-file dispatch path by its structural shape — the test is a load-bearing detection surface for engine-ordering / dispatch-semantic bugs, even if its stated purpose is "verify buf-parity ordering."
 
 **Generalized boundary-flip clause (added at D6b U7 — see Case 2 below):**
 
@@ -160,20 +166,59 @@ if user_pack.__name__ not in {p.__name__ for p in loaded_packs}:
 2. **Engine-level idempotent load at engine.py:241-242** — `if module.__name__ in self._loaded_module_names: return` — guard against `DuplicateRuleError`.
 3. **Profile-level frozenset union at model.py:717-719** — defense-in-depth backstop that absorbs duplicate rule_ids at composition time.
 
-### Shared pattern across Cases 1 and 2
+### Case 3 — Cofire-ordering unit invariant pin surfaces engine pack-load-order bug at U2 (D6c U2, 2026-05-19)
 
-Both cases share four structural properties:
+**Setup**: The D6c plan's KTD-9 stated R8 + R8b co-fire ordering on a shared file would be rule_id-alphabetic "without special-case logic" because the engine uses `sorted(profile.rule_ids - loaded_ids)`. No test pinned the invariant. ce:review's testing reviewer added `TestCofireScenario::test_cofire_per_file_rule_id_alphabetic_ordering` during the safe_auto pass to encode the plan-time claim.
 
-| Property | Case 1 (U6 — emission layer) | Case 2 (U7 — accumulator layer) |
-|----------|------------------------------|----------------------------------|
-| Test type | Integration / parity gate | Integration / idempotency test |
-| First exercises | Parity-verified state (REGISTERED + SNAPSHOT) | Registered+explicit state (BUILTIN + --rule-pack) |
-| Bug latency | Present since U4b; latent until parity gate ran | Present since R25 provenance line; latent until BUILTIN_PACKS flip |
-| Detection occasion | First parity-gate invocation after the gate was built | First test invocation after the BUILTIN_PACKS flip |
-| Detected by | A test renamed/created at the flip to document the post-flip purpose | Same pattern — `TestRulePackOptIn` → `TestRulePackExplicitLoadIsIdempotent` rename at U7 |
-| Fix shape | Helper-layer correction + presence-ratchet against the contract | CLI-layer dedup guard + three-mechanism docstring against contract drift |
+**Bug surfaced**: KTD-9's cited `sorted(...)` was at `engine.py:445` — the **unloaded-rule warning loop**, not the per-file dispatch loop. The actual per-file dispatch iterates `group_by_kind[ElementKind.FILE]` in `_loaded_specs` insertion order (i.e., pack-RULES-tuple order). The initial U2 drop listed R8 before R8b in `RULES`, so co-fire output had R8 first — opposite of buf v1.69.0's alphabetic ordering. The new test failed on its **first run**, before any U3 parity gate existed:
 
-The generalization: **the integration test that surfaces these bugs has a STRUCTURAL SHAPE (exercises the new boundary state for the first time) that is independent of its STATED PURPOSE (parity verification, idempotency regression, etc.).** When authoring a delivery-boundary commit, identify which tests will exercise the new state for the first time — they are the load-bearing detection mechanism even if they were written for other reasons.
+```
+AssertionError: per-file co-fire order must be rule_id-alphabetic;
+got ['package/same-directory', 'package/directory-same-package']
+```
+
+**Detection pattern**: A ce:review-added test pinning a plan-time invariant. The test's structural shape was simply "assert the order of findings on the shared file." That trivial shape was sufficient to exercise the engine's per-file dispatch order — the one property KTD-9's claim was wrong about. The test was authored as a presence-ratchet (its **stated purpose**), but its structural shape made it the right surface to catch the latent bug.
+
+**Fix** (`src/protokit/schema/lint/rules/package.py`):
+
+```python
+# **R8b before R8 ordering is LOAD-BEARING for buf v1.69.0 parity.**
+# Engine dispatches in pack-registration order (insertion-ordered dict);
+# buf emits DIRECTORY_SAME_PACKAGE before PACKAGE_SAME_DIRECTORY.
+RULES: tuple[Callable[..., None], ...] = (
+    check_package_defined,
+    check_package_directory_match,
+    check_directory_same_package,    # R8b BEFORE R8 — load-bearing
+    check_package_same_directory,
+)
+```
+
+Plus an inline comment on the `RULES` tuple documenting that the ordering is load-bearing for buf-parity, and a docstring on the ratchet test explaining what it pins.
+
+**Why this is a distinct case from Cases 1 + 2**: the detection surface is a **unit-level invariant-pin test** added by ce:review, not an integration test or snapshot parity gate. The bug was latent from the initial RULES-tuple definition; the test made the ordering contract explicit AT U2 time, before U3's parity gate would have surfaced the same bug via byte-divergence with buf. The cofire-ordering test is the earliest of the three detection surfaces in D6c — it fires at the unit-test layer in the same CI job as the feature code, with no snapshot or BUF_BINARY dependencies.
+
+### Shared pattern across Cases 1, 2, and 3
+
+All three cases share four structural properties:
+
+| Property | Case 1 (U6 — emission layer) | Case 2 (U7 — accumulator layer) | Case 3 (U2 — dispatch layer) |
+|----------|------------------------------|----------------------------------|------------------------------|
+| Test type | Integration / parity gate (REGISTERED+SNAPSHOT) | Integration / idempotency test (REGISTERED+EXPLICIT) | Unit / invariant-pin test (rule_id-ordering) |
+| First exercises | Parity-verified state for non-ASCII proto values | Registered+explicit state (BUILTIN + --rule-pack) | Engine dispatch order across two co-firing rules |
+| Bug latency | Present since U4b; latent until parity gate ran | Present since R25 provenance line; latent until BUILTIN_PACKS flip | Present since initial RULES tuple definition; latent until cofire test asserted the ordering |
+| Detection occasion | First parity-gate invocation after the gate was built | First test invocation after the BUILTIN_PACKS flip | First run of the ce:review-added cofire test |
+| Detected by | A test renamed/created at the flip to document the post-flip purpose | Same pattern — `TestRulePackOptIn` → `TestRulePackExplicitLoadIsIdempotent` rename at U7 | A new ce:review-added presence-ratchet test in the safe_auto pass |
+| Fix shape | Helper-layer correction + presence-ratchet against the contract | CLI-layer dedup guard + three-mechanism docstring against contract drift | Tuple reorder + load-bearing-ordering inline comment |
+
+The generalization extends from Cases 1+2: **the test that surfaces these bugs has a STRUCTURAL SHAPE (exercises the new boundary state for the first time, or pins a previously-untested invariant) that is independent of its STATED PURPOSE (parity verification, idempotency regression, ordering pin).** When authoring delivery-boundary commits OR reviewing a plan claim of the form "X happens automatically without special-case logic," identify which tests will exercise the boundary or claim for the first time — they are the load-bearing detection mechanism even if they were written for other reasons.
+
+**Three complementary detection surfaces** in this family:
+
+1. **Parity gate (external oracle)** — Case 1. Snapshot comparison against the reference tool's recorded output. Catches byte-level emission divergences.
+2. **Integration idempotency test (REGISTERED+EXPLICIT boundary state)** — Case 2. Exercises the new boundary condition that didn't exist before a default flip. Catches accumulator dedup gaps.
+3. **Unit invariant-pin test (inline-asserted claim)** — Case 3. Encodes a plan-time claim as a runtime assertion. Catches engine-ordering / dispatch-semantic bugs at the earliest layer.
+
+The invariant pin (Case 3) is the **earliest** of the three — it fires at U2 time with no snapshot dependencies, no BUF_BINARY, no integration setup. Authoring invariant pins during ce:review safe_auto passes is the lowest-friction way to convert plan-text claims into executable contracts.
 
 ## Related
 
@@ -185,3 +230,5 @@ The generalization: **the integration test that surfaces these bugs has a STRUCT
 - [[truncation-guard-odd-count-discipline-for-doubled-escape-pairs-2026-05-18]] — the second-order bug the U6 escape-fix introduced (orphan backslash from the truncation guard).
 - [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]] — Case 2's bug fix. The REGISTERED+EXPLICIT state exercises both the engine-level idempotency guard AND the CLI-layer accumulator independently; both must have consistent dedup semantics. A `zip(strict=True)` between two data structures built by different code paths is the load-bearing invariant that makes the mismatch observable rather than silently truncating.
 - [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]] — the documentation discipline that prevents future-engineer removal of the load-bearing Case 2 CLI dedup guard.
+- [[rules-tuple-insertion-order-load-bearing-engine-dispatch-2026-05-19]] — Case 3's bug from the implementation-error angle. Documents the engine pack-load-order dispatch contract + the RULES-tuple reorder fix.
+- [[plan-review-verify-prior-art-citations-2026-05-15]] — planning-time discipline that complements Case 3. The "inherited assumption" sub-pattern is the planning-phase analog: claims inherited from a parent brainstorm should be empirically re-verified. KTD-9's "automatic via sorted(...)" claim was an inherited assumption that survived planning unchecked.
