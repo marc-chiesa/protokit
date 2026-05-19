@@ -133,7 +133,7 @@ class TestArtifactRatchet:
         )
 ```
 
-### The four discipline rules
+### The five discipline rules
 
 1. **The substring IS the ratchet, NOT the shape.** Pick the
    shortest substring that uniquely identifies the contract.
@@ -164,6 +164,59 @@ class TestArtifactRatchet:
    stack multiple ratchets in one test method — when one fails,
    pytest stops on the first assertion and the contributor sees
    only that signal. Separate tests separate failure narratives.
+
+5. **The ratchet substring MUST fit on a single source line** in
+   the target artifact. When the target is Python source code
+   read via `inspect.getsource(module)`, multi-line substrings
+   silently fail `in` checks because `inspect.getsource()` faithfully
+   reproduces the literal bytes including newlines and any
+   continuation tokens (`#:`, `#`, `\`). A substring that spans a
+   line boundary is unfindable regardless of length — the test
+   fails unconditionally, not on regression. Verify each planned
+   substring contiguously appears in a single source line BEFORE
+   committing the test.
+
+   **Worked example (D6b U7 FEAS-1 catch)**: the R35 bump-contract
+   ratchet at `tests/test_builtin_lint_formatter.py::TestBumpContractDocstring`
+   originally planned substring 2 as `"additions DO bump the version"`
+   (6 words, the full directional clause for closed Literals).
+   /ce:plan-time empirical verification revealed the phrase spans
+   lines 262-263 of `src/protokit/formatters/_builtin_lint.py`:
+
+   ```
+   Line 262: ...additions DO bump the
+   Line 263: #:         version. Every consumer must extend their switch...
+   ```
+
+   The `#:` continuation prefix + leading whitespace + newline
+   interrupt the substring. `inspect.getsource()` returns:
+   `"...additions DO bump the\n#:         version..."`. The substring
+   `"additions DO bump the version"` is NOT a contiguous byte run.
+   Fix: trim to `"additions DO bump the"` (5 words, entirely within
+   line 262). The directional contract is still asserted; only the
+   wrapped word is dropped.
+
+   **Verification procedure**:
+
+   ```python
+   # Before committing the ratchet test, run this verification:
+   import inspect
+   import <target_module> as m
+   source = inspect.getsource(m)
+   for line in source.splitlines():
+       if RATCHET_SUBSTRING in line:
+           break  # OK — contiguous within a single line
+   else:
+       raise ValueError(
+           f"Substring {RATCHET_SUBSTRING!r} crosses a line boundary "
+           f"in {m.__name__} — trim it to fit on a single source line."
+       )
+   ```
+
+   If the contract requires a two-sentence clause that exceeds one
+   line, pin TWO separate ratchet substrings (one per line) rather
+   than a single multi-line substring. This also helps with rule 4:
+   one substring per test method.
 
 ### When to add a presence-ratchet vs other ratchet types
 

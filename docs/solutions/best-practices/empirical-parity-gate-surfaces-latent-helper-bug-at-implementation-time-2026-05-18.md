@@ -71,7 +71,15 @@ U6 hit the second outcome. Both outcomes justify the gate; the latter is the fai
 - When adding a new escape class to an existing helper: the parity gate must be run before and after, treating the before-run as baseline validation and the after-run as regression confirmation.
 - When committing recorded snapshots: verify they cover the escape classes present in real-world proto files. PHP namespace values routinely contain backslash namespace separators (`Vendor\Package\X`); SQL-like values may contain quotes; Java enum values may contain unicode escapes.
 
+**Generalized boundary-flip clause (added at D6b U7 — see Case 2 below):**
+
+The pattern extends beyond "parity gate" (the specific U6 form) to **any integration test that exercises a new boundary state for the first time at a delivery flip**. At any BUILTIN_PACKS flip (or analogous default-state transition), identify every accumulator (list, tuple, dict, set) that tracks pack/rule metadata, and verify its dedup semantics against every downstream consumer — especially `zip(strict=True)` and length-based assertions. The engine-level idempotency guard protects the rule registry, but any parallel accumulator that tracks pack metadata independently of the registry must be audited for its own dedup logic.
+
+The integration test that catches this class of bug has a specific structural shape: **it exercises the new feature in BOTH the BUILTIN/DEFAULT path AND the EXPLICIT user-supplied path in a single invocation**. This is the REGISTERED+EXPLICIT pattern. The test's stated purpose may be different (idempotency regression, rename verification, coverage completeness) — but the structural shape is what catches the latent bug.
+
 ## Examples
+
+### Case 1 — `_escape_inner_quote` backslash omission (D6b U6, 2026-05-18)
 
 **The failure pattern the gate caught (D6b U6 first parity run, 2026-05-18):**
 
@@ -130,11 +138,50 @@ def test_parity_byte_matches_recorded_snapshot(
     # ... invoke protokit lint, parse buf snapshot, assert_parity_multi_file ...
 ```
 
+### Case 2 — `zip(strict=True)` length mismatch at BUILTIN_PACKS flip (D6b U7, 2026-05-18)
+
+**Setup**: D6b U7's BUILTIN_PACKS flip registered `package_same` as a built-in default-loaded pack. `TestRulePackExplicitLoadIsIdempotent` (formerly `TestRulePackOptIn`, renamed at U7 per KD-9 to document the post-flip purpose) exercises `--rule-pack=protokit.schema.lint.rules.package_same` on a CLI invocation where `package_same` is ALREADY pre-loaded by BUILTIN_PACKS — the REGISTERED+EXPLICIT state for the first time.
+
+**Bug surfaced**: `cli.py:831` unconditionally appended `user_pack` to `loaded_packs` without checking whether BUILTIN_PACKS had already inserted it. The downstream `zip(strict=True)` at `cli.py:987` received a `loaded_packs_tuple` of length N+1 but a `_active_rule_ids_per_pack` dict of length N (dict keys deduplicate naturally by `pack.__name__`), raising `ValueError: zip() argument 2 is shorter than argument 1`.
+
+**Detection pattern**: The test was authored for a different stated purpose (idempotency regression after the U7 KD-9 rename) but happened to be the right STRUCTURAL SHAPE to exercise the REGISTERED+EXPLICIT state simultaneously — the exact boundary condition the pre-flip code had never encountered.
+
+**Fix** (`src/protokit/schema/lint/cli.py:841-846`):
+
+```python
+user_pack = _load_user_rule_pack(module_name, engine)
+if user_pack.__name__ not in {p.__name__ for p in loaded_packs}:
+    loaded_packs.append(user_pack)
+```
+
+**Three-mechanism contract documented post-fix** (per [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]]):
+
+1. **CLI-level dedup at cli.py:841-846** — load-bearing guard against the `zip(strict=True)` ValueError.
+2. **Engine-level idempotent load at engine.py:241-242** — `if module.__name__ in self._loaded_module_names: return` — guard against `DuplicateRuleError`.
+3. **Profile-level frozenset union at model.py:717-719** — defense-in-depth backstop that absorbs duplicate rule_ids at composition time.
+
+### Shared pattern across Cases 1 and 2
+
+Both cases share four structural properties:
+
+| Property | Case 1 (U6 — emission layer) | Case 2 (U7 — accumulator layer) |
+|----------|------------------------------|----------------------------------|
+| Test type | Integration / parity gate | Integration / idempotency test |
+| First exercises | Parity-verified state (REGISTERED + SNAPSHOT) | Registered+explicit state (BUILTIN + --rule-pack) |
+| Bug latency | Present since U4b; latent until parity gate ran | Present since R25 provenance line; latent until BUILTIN_PACKS flip |
+| Detection occasion | First parity-gate invocation after the gate was built | First test invocation after the BUILTIN_PACKS flip |
+| Detected by | A test renamed/created at the flip to document the post-flip purpose | Same pattern — `TestRulePackOptIn` → `TestRulePackExplicitLoadIsIdempotent` rename at U7 |
+| Fix shape | Helper-layer correction + presence-ratchet against the contract | CLI-layer dedup guard + three-mechanism docstring against contract drift |
+
+The generalization: **the integration test that surfaces these bugs has a STRUCTURAL SHAPE (exercises the new boundary state for the first time) that is independent of its STATED PURPOSE (parity verification, idempotency regression, etc.).** When authoring a delivery-boundary commit, identify which tests will exercise the new state for the first time — they are the load-bearing detection mechanism even if they were written for other reasons.
+
 ## Related
 
 - [[audit-wire-format-before-claiming-sibling-parity-2026-05-03]] — planning-time complement: this doc catches at implementation time what that doc catches at plan time.
 - [[buf-parity-divergence-documentation-discipline-2026-05-13]] — what to do once the snapshot gate fires and divergence is confirmed (four-site documentation discipline + `_PARITY_EXCEPTIONS` entry).
 - [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]] — contrast: programmatic fixtures (unit-test) vs committed NDJSON snapshots (parity gate). Different fixture strategies for different verification goals.
 - [[fixture-precondition-assertion-surfaces-silent-test-2026-05-17]] — sibling pattern at a different abstraction layer (fixture precondition vs emission-layer parity).
-- [[cross-reviewer-convergence-catches-fix-induced-second-order-bug-2026-05-18]] — when the FIX for a parity-gate-surfaced bug introduces a second-order bug, cross-reviewer convergence in ce:review catches it.
+- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — Case 4 documents the FIX-INDUCED SECOND-ORDER bug pattern (the U6 escape-fix introduced an orphan-backslash bug caught by cross-reviewer convergence in ce:review). The 5-reviewer convergence on the U7 docstring drift is a documentation-layer analog.
 - [[truncation-guard-odd-count-discipline-for-doubled-escape-pairs-2026-05-18]] — the second-order bug the U6 escape-fix introduced (orphan backslash from the truncation guard).
+- [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]] — Case 2's bug fix. The REGISTERED+EXPLICIT state exercises both the engine-level idempotency guard AND the CLI-layer accumulator independently; both must have consistent dedup semantics. A `zip(strict=True)` between two data structures built by different code paths is the load-bearing invariant that makes the mismatch observable rather than silently truncating.
+- [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]] — the documentation discipline that prevents future-engineer removal of the load-bearing Case 2 CLI dedup guard.
