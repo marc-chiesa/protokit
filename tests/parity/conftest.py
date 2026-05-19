@@ -190,6 +190,62 @@ _PACKAGE_SAME_PROTO_TO_BUF: Mapping[str, str] = _build_package_same_proto_to_buf
 #: All R7 protokit rule_ids as a frozenset for fast membership checks.
 _PACKAGE_SAME_RULE_IDS: frozenset[str] = frozenset(_PACKAGE_SAME_PROTO_TO_BUF.keys())
 
+#: ``protokit_rule_id -> buf_rule_id`` for the 2 D6c R8 + R8b cross-file
+#: rules (``package/same-directory`` + ``package/directory-same-package``).
+#: Built once at module import; consumed by ``assert_parity_multi_file``'s
+#: package_directory arm.
+#:
+#: **KTD-12 design choice**: derive the mapping from the same source as
+#: R7 (walk ``package.RULES``, filter by buf-source-spec membership) but
+#: filter by an inclusion frozenset rather than the broad "every rule in
+#: package.RULES" R7 uses — ``package.RULES`` also contains the D6a
+#: ``package/defined`` + ``package/directory-match`` rules whose snapshots
+#: live in ``tests/parity/fixtures/`` (single-file harness) rather than
+#: ``tests/schema/lint/rules/fixtures/package_directory/_buf_smoke/``
+#: (multi-file harness). Keeping the explicit inclusion set documents
+#: the load-bearing membership contract that U2's ce:review Finding #7
+#: pointed at.
+_D6C_PACKAGE_DIRECTORY_RULE_IDS: frozenset[str] = frozenset({
+    "package/same-directory",
+    "package/directory-same-package",
+})
+
+
+def _build_package_directory_proto_to_buf() -> Mapping[str, str]:
+    """Walk ``package.RULES`` filtered to R8 + R8b and return ``{protokit_id: buf_id}``.
+
+    Sibling of :func:`_build_package_same_proto_to_buf` for the D6c
+    R8 + R8b family. Filters to the
+    :data:`_D6C_PACKAGE_DIRECTORY_RULE_IDS` inclusion set so that
+    ``package/defined`` and ``package/directory-match`` (D6a rules
+    living in the single-file ``tests/parity/fixtures/`` harness) are
+    excluded — those rules have their own parity coverage at
+    :mod:`tests.parity.test_parity_package`.
+    """
+    from protokit.schema.lint.rules import package as _package_mod
+    mapping: dict[str, str] = {}
+    for fn in _package_mod.RULES:
+        spec = get_lint_spec(fn)
+        if spec.rule_id not in _D6C_PACKAGE_DIRECTORY_RULE_IDS:
+            continue
+        buf_id = _extract_buf_rule_id(spec.source_spec)
+        if buf_id is not None:
+            mapping[spec.rule_id] = buf_id
+    return mapping
+
+
+#: ``protokit_rule_id -> buf_rule_id`` for R8 + R8b. Built once at module
+#: import; consumed by :func:`assert_parity_multi_file`'s package_directory
+#: partition arm (KTD-12).
+_PACKAGE_DIRECTORY_PROTO_TO_BUF: Mapping[str, str] = (
+    _build_package_directory_proto_to_buf()
+)
+
+#: All R8/R8b protokit rule_ids as a frozenset for fast membership checks.
+_PACKAGE_DIRECTORY_RULE_IDS_FROZEN: frozenset[str] = frozenset(
+    _PACKAGE_DIRECTORY_PROTO_TO_BUF.keys()
+)
+
 
 def _build_rule_id_map() -> Mapping[str, str]:
     """Walk ``BUILTIN_PACKS`` and derive ``protokit_id -> buf_id``.
@@ -874,12 +930,33 @@ def assert_parity_multi_file(
         )
 
     # ---- Partition protokit findings: scoped / over-firing / unknown -----
-    # Uses module-level _PACKAGE_SAME_PROTO_TO_BUF (built once at import).
-    # Three-way partition catches:
-    #   in-scope     : rule_id in protokit_rule_ids (expected to fire)
-    #   over-firing  : rule_id is a known R7 rule but outside per-fixture scope
-    #   unknown      : rule_id looks like an R7 rule (package/same-*) but is
-    #                  not registered — catches typo'd rule_id strings (ADV-3)
+    # Per D6c U3 KTD-12: the partition logic now supports TWO rule
+    # families with their own ``_PROTO_TO_BUF`` mappings:
+    #
+    #   - R7 PACKAGE_SAME_* family (``_PACKAGE_SAME_PROTO_TO_BUF``)
+    #   - R8 + R8b cross-file family (``_PACKAGE_DIRECTORY_PROTO_TO_BUF``)
+    #
+    # The union dictionary is computed once per call from
+    # ``protokit_rule_ids``'s family membership — both families share the
+    # same partition shape (in-scope / over-firing / unknown) but read
+    # from family-specific mappings. The over-firing and unknown buckets
+    # combine across families so a future cross-family typo (e.g., a
+    # rule_id mis-prefixed as ``package/same-directory-same-package``)
+    # surfaces in the unknown diagnostic rather than silently leaking.
+    family_proto_to_buf: dict[str, str] = {
+        **_PACKAGE_SAME_PROTO_TO_BUF,
+        **_PACKAGE_DIRECTORY_PROTO_TO_BUF,
+    }
+    family_rule_ids: frozenset[str] = (
+        _PACKAGE_SAME_RULE_IDS | _PACKAGE_DIRECTORY_RULE_IDS_FROZEN
+    )
+    # Family-aware unknown-prefix discriminator. R7 rules start with
+    # ``package/same-`` (specifically ``package/same-<lang>``); R8/R8b
+    # start with ``package/same-directory`` or ``package/directory-``.
+    # Any rule_id starting with ``package/`` but NOT in the known
+    # registry is potentially typo'd; the diagnostic shapes the message
+    # so the offender can be routed to the right rule pack.
+
     protokit_in_scope: list[tuple[str, str, str]] = []  # (buf_id, path, msg)
     protokit_overfire: list[tuple[str, str, str]] = []  # (rule_id, path, msg)
     protokit_unknown: list[tuple[str, str, str]] = []   # (rule_id, path, msg)
@@ -889,54 +966,73 @@ def assert_parity_multi_file(
         message = str(f.get("message", ""))
         if rule_id in protokit_rule_ids:
             protokit_in_scope.append(
-                (_PACKAGE_SAME_PROTO_TO_BUF[rule_id], path, message)
+                (family_proto_to_buf[rule_id], path, message)
             )
-        elif rule_id in _PACKAGE_SAME_RULE_IDS:
-            # Over-firing complement: an R7-family rule fired but is
-            # outside the per-fixture scope (KD-7).
+        elif rule_id in family_rule_ids:
+            # Over-firing complement: a known family rule fired but is
+            # outside the per-fixture scope (KD-7 for R7, KTD-12 for
+            # R8/R8b).
             protokit_overfire.append((rule_id, path, message))
-        elif rule_id.startswith("package/same-"):
-            # Looks like an R7 rule_id but not in the registry — most
-            # likely a typo in a future @lint_rule decoration or a
-            # check_same_* wrapper call. Surface as a distinct error
-            # so the diagnostic points at registration, not at
-            # under-firing (per ADV-3 ce:review finding).
+        elif (
+            rule_id.startswith("package/same-")
+            and rule_id != "package/same-directory"
+        ):
+            # Looks like an R7 family prefix but not in the registry —
+            # most likely a typo in a future @lint_rule decoration.
+            # Surface as a distinct error so the diagnostic points at
+            # registration, not at under-firing (per ADV-3 ce:review
+            # finding). The carve-out for ``package/same-directory``
+            # (R8) handles the cross-family ambiguity: that exact
+            # rule_id starts with ``package/same-`` (R7's prefix) but
+            # belongs to the R8 family; the ``in family_rule_ids``
+            # check above already accepts it.
             protokit_unknown.append((rule_id, path, message))
-        # Non-R7 findings (e.g., D6a families that BUILTIN_PACKS loads
-        # on the default profile) are excluded from the assertion —
-        # they are correct + expected for the smoke fixtures.
+        # Non-family findings (e.g., D6a's ``package/defined`` and
+        # ``package/directory-match`` from the same ``package`` pack,
+        # or other rule packs loaded by BUILTIN_PACKS) are excluded
+        # from the assertion — they are correct + expected for the
+        # smoke fixtures. R8/R8b have only two specific rule_ids
+        # (``package/same-directory`` + ``package/directory-same-package``)
+        # so prefix-based typo detection is unnecessary for that family:
+        # a typo'd R8/R8b rule_id would fall into the "non-family"
+        # excluded bucket, not the unknown bucket. The R7 family's
+        # broader 7-rule footprint motivates the prefix check.
 
     if protokit_unknown:
         pytest.fail(
             f"assert_parity_multi_file({fixture_scenario}): protokit emitted "
-            f"finding(s) with rule_id matching the package/same-* prefix "
-            f"that are NOT in package_same.RULES — possible typo or "
-            f"unregistered rule. Unknown rule_ids: "
+            f"finding(s) with rule_id matching a known-family prefix "
+            f"(``package/same-*`` or ``package/directory-*``) that are "
+            f"NOT in the family registries — possible typo or unregistered "
+            f"rule. Unknown rule_ids: "
             f"{sorted({r for r, _, _ in protokit_unknown})!r}. "
             f"Known R7 rule_ids: {sorted(_PACKAGE_SAME_RULE_IDS)!r}. "
+            f"Known R8/R8b rule_ids: "
+            f"{sorted(_PACKAGE_DIRECTORY_RULE_IDS_FROZEN)!r}. "
             f"Fix at the @lint_rule decoration in "
-            f"src/protokit/schema/lint/rules/package_same.py."
+            f"src/protokit/schema/lint/rules/package_same.py (R7) or "
+            f"src/protokit/schema/lint/rules/package.py (R8/R8b)."
         )
 
     if protokit_overfire:
         pytest.fail(
             f"assert_parity_multi_file({fixture_scenario}): protokit fired "
-            f"R7-family rule(s) outside the per-fixture scope "
+            f"known-family rule(s) outside the per-fixture scope "
             f"{sorted(protokit_rule_ids)!r}. "
             f"Over-firing findings: {sorted(protokit_overfire)!r}. "
             f"Decision tree:\n"
             f"  If protokit's emit shape changed for the unexpected rule_id, "
-            f"investigate src/protokit/schema/lint/rules/package_same.py:"
-            f"_check_package_option.\n"
+            f"investigate src/protokit/schema/lint/rules/package_same.py "
+            f"(R7) or src/protokit/schema/lint/rules/package.py (R8/R8b).\n"
             f"  If the fixture should now exercise multiple rules, update "
             f"the fixture's buf.yaml use:[] and the parity test's "
-            f"per-fixture scope derivation (KD-7)."
+            f"per-fixture scope derivation (KD-7 / KTD-12)."
         )
 
     # ---- Build buf comparison set scoped to expected rule_ids ------
     expected_buf_types: set[str] = {
-        _PACKAGE_SAME_PROTO_TO_BUF[rid] for rid in protokit_rule_ids
-        if rid in _PACKAGE_SAME_PROTO_TO_BUF
+        family_proto_to_buf[rid] for rid in protokit_rule_ids
+        if rid in family_proto_to_buf
     }
     buf_in_scope: list[tuple[str, str, str]] = sorted(
         (f.type, _normalize_buf_path(f.path), f.message)

@@ -193,3 +193,64 @@ def smoke_root() -> Path:
         / "package_same"
         / "_buf_smoke"
     )
+
+
+# ---- D6c U3 — package_directory parity fixtures ---------------------------
+#
+# Parallel ``PACKAGE_DIRECTORY_SMOKE_FIXTURES`` tuple + ``package_directory_
+# smoke_root()`` helper (rather than extending ``SMOKE_FIXTURES``) so the
+# R7 family's fixture list stays an independent SSOT — R7's R25 invariants
+# at ``tests/parity/test_parity_package_same.py`` are byte-comparison-pinned
+# to the existing 21-entry tuple, and conflating the two families would
+# create cross-family drift risk. Each family has its own ``_buf_smoke/``
+# subtree, its own ``recorded/`` snapshots, and its own assumption-pinning
+# test module. The shared helper ``run_buf_subprocess`` covers both.
+
+#: All 10 D6c U3 buf-smoke fixtures for the R8 + R8b parity family. Each
+#: has a fixture directory at ``tests/schema/lint/rules/fixtures/
+#: package_directory/_buf_smoke/<name>/`` and a SHA-pinned recorded
+#: snapshot at ``_buf_smoke/recorded/<name>.json``.
+#:
+#: Composition (per KTD-10 + Finding #3 addition):
+#:   - 5 base: matched-dir, mismatched-dir, split-package-multi-dir,
+#:     single-file-dir, proto-root-mixed
+#:   - 1 OQ-4: no-package-mixed (multi-declared + packageless — empty-
+#:     mixed-multi arm; resolves U2 ce:review Finding #3)
+#:   - 3 edge-case discriminators: n3-directories-split,
+#:     n3-packages-same-dir, cofire-r8-r8b
+#:   - 1 Finding #3 follow-up: single-declared-no-package (empty-mixed-
+#:     single arm — 1 declared + N packageless coverage from Phase 0)
+PACKAGE_DIRECTORY_SMOKE_FIXTURES: tuple[str, ...] = (
+    # 5 base.
+    "matched-dir",
+    "mismatched-dir",
+    "split-package-multi-dir",
+    "single-file-dir",
+    "proto-root-mixed",
+    # 1 OQ-4 sub-question (multi-declared + packageless).
+    "no-package-mixed",
+    # 3 edge-case discriminators.
+    "n3-directories-split",
+    "n3-packages-same-dir",
+    "cofire-r8-r8b",
+    # 1 ce:review Finding #3 follow-up (1-declared + packageless).
+    "single-declared-no-package",
+)
+
+
+def package_directory_smoke_root() -> Path:
+    """Return the absolute path to the D6c R8/R8b ``_buf_smoke/`` root.
+
+    Parallel to :func:`smoke_root` for the R7 family. The path is
+    computed once relative to this module so all callers in
+    ``tests/parity/`` and ``tests/schema/lint/`` share the same root.
+    """
+    return (
+        Path(__file__).resolve().parent
+        / "schema"
+        / "lint"
+        / "rules"
+        / "fixtures"
+        / "package_directory"
+        / "_buf_smoke"
+    )

@@ -1,0 +1,2 @@
+{"path":"a.proto","start_line":3,"start_column":1,"end_line":3,"end_column":18,"type":"DIRECTORY_SAME_PACKAGE","message":"Multiple packages \"acme.bar,acme.foo\" detected within directory \".\"."}
+{"path":"b.proto","start_line":3,"start_column":1,"end_line":3,"end_column":18,"type":"DIRECTORY_SAME_PACKAGE","message":"Multiple packages \"acme.bar,acme.foo\" detected within directory \".\"."}

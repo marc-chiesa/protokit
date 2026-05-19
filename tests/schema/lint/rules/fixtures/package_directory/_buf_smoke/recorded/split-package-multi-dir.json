@@ -1,0 +1,2 @@
+{"path":"dir1/a.proto","start_line":3,"start_column":1,"end_line":3,"end_column":18,"type":"PACKAGE_SAME_DIRECTORY","message":"Multiple directories \"dir1,dir2\" contain files with package \"acme.foo\"."}
+{"path":"dir2/b.proto","start_line":3,"start_column":1,"end_line":3,"end_column":18,"type":"PACKAGE_SAME_DIRECTORY","message":"Multiple directories \"dir1,dir2\" contain files with package \"acme.foo\"."}

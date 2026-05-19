@@ -293,30 +293,59 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
     )
 
 
-#: R8b's two empirically-locked message templates, keyed by
-#: ``violation_kind``. Buf v1.69.0 uses ``Multiple packages "X,Y" ...``
-#: when all packages in the directory are declared, and ``Package "X"
-#: and file with no package ...`` when declared and packageless files
-#: co-occur. Encoded as a dict-shaped ``message_template`` so each arm
-#: is a separately introspectable per-kind template (SARIF rules
+#: R8b's three empirically-locked message templates, keyed by
+#: ``violation_kind``. Buf v1.69.0 uses three distinct sentence shapes
+#: depending on the directory's package mix:
+#:
+#: - **Standard** (2+ declared, no packageless):
+#:   ``Multiple packages "X,Y[,Z]" detected within directory "D".``
+#: - **Empty-mixed-single** (exactly 1 declared + ≥1 packageless):
+#:   ``Package "X" and file with no package detected within directory "D".``
+#: - **Empty-mixed-multi** (2+ declared + ≥1 packageless):
+#:   ``Multiple packages "X,Y[,Z]" and file with no package detected within
+#:   directory "D".``
+#:
+#: The third arm was added at U3 ce:work (2026-05-19) after the parity
+#: gate's first run surfaced a real divergence from buf v1.69.0 on the
+#: multi-declared+packageless ``no-package-mixed`` fixture — the U2 plan's
+#: KTD-4 (b) claim that buf "produces exactly one declared-package value
+#: in this template even if multiple declared packages exist" was based
+#: on a Phase 0 fixture that had only 1 declared + 2 packageless. Buf
+#: actually renders ALL declared packages in this case with the
+#: ``Multiple packages "..."`` prefix instead of ``Package "..."``.
+#: See [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]]
+#: Case 4 for the latent-helper-bug pattern.
+#:
+#: Dict-shaped ``message_template`` keyed by ``violation_kind`` so each
+#: arm is a separately introspectable per-kind template (SARIF rules
 #: catalog reads the per-kind shortDescription rather than the literal
 #: ``"{payload}"`` identity-template the rule shipped with at U2's
 #: initial drop).
 _R8B_STANDARD_KIND = "package/directory-same-package"
-_R8B_EMPTY_MIXED_KIND = "package/directory-same-package/empty-mixed"
+_R8B_EMPTY_MIXED_SINGLE_KIND = (
+    "package/directory-same-package/empty-mixed-single"
+)
+_R8B_EMPTY_MIXED_MULTI_KIND = (
+    "package/directory-same-package/empty-mixed-multi"
+)
 _R8B_MESSAGE_TEMPLATES: dict[str, str] = {
     _R8B_STANDARD_KIND: (
         'Multiple packages "{packages}" '
         'detected within directory "{directory}".'
     ),
-    _R8B_EMPTY_MIXED_KIND: (
+    _R8B_EMPTY_MIXED_SINGLE_KIND: (
         'Package "{package}" and file with no package '
+        'detected within directory "{directory}".'
+    ),
+    _R8B_EMPTY_MIXED_MULTI_KIND: (
+        'Multiple packages "{packages}" and file with no package '
         'detected within directory "{directory}".'
     ),
 }
 _R8B_SEVERITIES: dict[str, LintSeverity] = {
     _R8B_STANDARD_KIND: LintSeverity.ERROR,
-    _R8B_EMPTY_MIXED_KIND: LintSeverity.ERROR,
+    _R8B_EMPTY_MIXED_SINGLE_KIND: LintSeverity.ERROR,
+    _R8B_EMPTY_MIXED_MULTI_KIND: LintSeverity.ERROR,
 }
 
 
@@ -337,24 +366,28 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
     inner ``{pkg: frozenset[fname]}`` mapping, emit a per-file
     finding.
 
-    **Two message-template arms**, both empirically locked against
+    **Three message-template arms**, all empirically locked against
     buf v1.69.0:
 
-    - **Standard** (all packages in the directory are declared):
+    - **Standard** (2+ declared packages, no packageless):
       ``Multiple packages "X,Y[,Z]" detected within directory "Z".``
       Package list is comma-no-space, alphabetic-sorted (per the D6c
       plan's KTD-4 (e) empirical verification — see
       ``docs/plans/2026-05-18-003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md``).
-    - **Empty-mixed** (directory contains at least one declared
-      package AND at least one packageless file): ``Package "X" and
-      file with no package detected within directory "Y".`` Buf
-      empirically renders exactly one declared-package value in this
-      arm when one declared package co-occurs with packageless files
-      (per the D6c plan's KTD-4 (b) verification, 1-declared + 2-
-      packageless fixture); protokit picks the alphabetically-first
-      declared package for determinism. **The 2+ declared +
-      packageless case is not covered by the Phase 0 fixture and
-      defers to U3's parity gate for empirical lock.**
+    - **Empty-mixed-single** (exactly 1 declared + ≥1 packageless):
+      ``Package "X" and file with no package detected within directory "Y".``
+      Buf renders the single declared-package value verbatim. Phase 0
+      verified this arm.
+    - **Empty-mixed-multi** (2+ declared + ≥1 packageless): ``Multiple
+      packages "X,Y[,Z]" and file with no package detected within
+      directory "Y".`` Buf renders ALL declared packages in
+      comma-separated alphabetic order — distinct from the
+      single-declared arm. **Discovered at U3 ce:work (2026-05-19)**:
+      U2's R8b implementation only handled the single-declared case
+      because the plan's KTD-4 (b) verification used a 1-declared + 2-
+      packageless Phase 0 fixture. U3's ``no-package-mixed`` parity
+      fixture (2-declared + 1-packageless) surfaced the missing arm per
+      [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]].
 
     Directory rendering: proto-root files canonicalize to ``"."``
     via ``posixpath.dirname(name) or "."`` (KTD-4 (c)). Buf renders
@@ -388,27 +421,24 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
         return
     declared_pkgs = sorted(p for p in pkg_map if p)
     packageless_present = "" in pkg_map
-    # Annotated to lock the heterogeneous value type at one place.
-    # Both arms share `file`/`directory`/`payload`/`packageless_present`
-    # but differ on `package` (singular, empty-mixed arm) vs `packages`
-    # (plural CSV, standard arm) — the divergent key is documented in
-    # the rule's module-level header so structured-output consumers
-    # know which key to read per arm.
     # Sanitize the directory key BEFORE composing params so the
     # template-rendered string also benefits from the U+2028/U+2029
-    # collapse.
+    # collapse + 500-char cap per R7's discipline.
     safe_dir = _safe_for_stderr(current_dir)[:_PARAM_CAP]
     safe_file = _safe_for_stderr(ctx.file.name)[:_PARAM_CAP]
-    if packageless_present and declared_pkgs:
-        # Empty-mixed arm: declared + packageless files co-occur.
-        # Buf renders a single declared-package value in this arm;
-        # protokit picks alphabetically-first for determinism. Emit
-        # with the empty-mixed violation_kind so the formatter looks
-        # up the empty-mixed template from the dict-shaped
-        # message_template.
+    # Three-arm dispatch (empty-mixed-single, empty-mixed-multi,
+    # standard) keyed by ``violation_kind`` so the formatter picks the
+    # right per-arm template from the dict-shaped ``message_template``.
+    # Each arm's ``params`` keys mirror the placeholders in its
+    # template — ``package`` (singular) for empty-mixed-single,
+    # ``packages`` (plural CSV) for both empty-mixed-multi and standard.
+    if packageless_present and len(declared_pkgs) == 1:
+        # Empty-mixed-single arm: exactly one declared package
+        # co-occurs with packageless files. Verified at Phase 0
+        # (1-declared + 2-packageless fixture).
         declared = _safe_for_stderr(declared_pkgs[0])[:_PARAM_CAP]
         ctx.emit(
-            violation_kind=_R8B_EMPTY_MIXED_KIND,
+            violation_kind=_R8B_EMPTY_MIXED_SINGLE_KIND,
             params={
                 "file": safe_file,
                 "directory": safe_dir,
@@ -416,8 +446,24 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
                 "packageless_present": True,
             },
         )
+    elif packageless_present and len(declared_pkgs) >= 2:
+        # Empty-mixed-multi arm: 2+ declared packages + packageless
+        # files co-occur. Buf empirically renders ALL declared packages
+        # in this case (verified at U3's ``no-package-mixed`` fixture,
+        # 2026-05-19). U2 shipped this arm as a single-declared
+        # passthrough; U3's parity gate surfaced the divergence.
+        pkg_list = _safe_for_stderr(",".join(declared_pkgs))[:_PARAM_CAP]
+        ctx.emit(
+            violation_kind=_R8B_EMPTY_MIXED_MULTI_KIND,
+            params={
+                "file": safe_file,
+                "directory": safe_dir,
+                "packages": pkg_list,
+                "packageless_present": True,
+            },
+        )
     else:
-        # Standard arm: 2+ declared packages, no packageless files.
+        # Standard arm: 2+ declared packages, NO packageless files.
         pkg_list = _safe_for_stderr(",".join(declared_pkgs))[:_PARAM_CAP]
         ctx.emit(
             violation_kind=_R8B_STANDARD_KIND,

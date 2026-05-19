@@ -110,22 +110,35 @@ class TestR8RuleSpec:
 class TestR8bRuleSpec:
     """``package/directory-same-package`` (R8b) spec metadata.
 
-    Post-Finding-#6 fix: R8b is a multi-kind rule that emits TWO
-    distinct ``violation_kind`` values — the standard kind (matching
-    ``rule_id``) and the empty-mixed kind. Severity + message_template
-    are both dict-shaped per kind so the SARIF rules catalog renders a
-    human-readable shortDescription per kind instead of the literal
-    ``"{payload}"`` identity-template R8b shipped with at U2's
-    initial drop.
+    R8b is a multi-kind rule that emits THREE distinct
+    ``violation_kind`` values:
+
+    - ``package/directory-same-package`` — standard arm (2+ declared,
+      no packageless).
+    - ``package/directory-same-package/empty-mixed-single`` — 1 declared
+      + ≥1 packageless.
+    - ``package/directory-same-package/empty-mixed-multi`` — 2+ declared
+      + ≥1 packageless (added at U3, 2026-05-19, after parity gate
+      surfaced buf's distinct ``Multiple packages "X,Y" and file with
+      no package`` template for this case).
+
+    Severity + message_template are both dict-shaped per kind so the
+    SARIF rules catalog renders a human-readable shortDescription per
+    kind instead of the literal ``"{payload}"`` identity-template R8b
+    shipped with at U2's initial drop.
     """
 
     def test_spec_metadata(self) -> None:
         spec = check_directory_same_package._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "package/directory-same-package"
-        # Multi-kind: severity is a dict keyed by violation_kind.
+        # Multi-kind: severity is a dict keyed by violation_kind. Three
+        # arms post-U3: standard + empty-mixed-single + empty-mixed-multi.
         assert spec.severity == {
             "package/directory-same-package": LintSeverity.ERROR,
-            "package/directory-same-package/empty-mixed": LintSeverity.ERROR,
+            "package/directory-same-package/empty-mixed-single":
+                LintSeverity.ERROR,
+            "package/directory-same-package/empty-mixed-multi":
+                LintSeverity.ERROR,
         }
         assert spec.profiles == ("recommended", "default")
         assert spec.element is ElementKind.FILE
@@ -141,8 +154,12 @@ class TestR8bRuleSpec:
                 'Multiple packages "{packages}" '
                 'detected within directory "{directory}".'
             ),
-            "package/directory-same-package/empty-mixed": (
+            "package/directory-same-package/empty-mixed-single": (
                 'Package "{package}" and file with no package '
+                'detected within directory "{directory}".'
+            ),
+            "package/directory-same-package/empty-mixed-multi": (
+                'Multiple packages "{packages}" and file with no package '
                 'detected within directory "{directory}".'
             ),
         }
@@ -373,20 +390,19 @@ class TestR8bHappyPath:
             assert f.params["directory"] == "."
 
 
-class TestR8bEmptyMixedTemplate:
-    """R8b empty-mixed arm — declared + packageless files in same dir.
+class TestR8bEmptyMixedSingleTemplate:
+    """R8b empty-mixed-single arm — exactly 1 declared + packageless files.
 
-    Per KTD-4 (b) empirical lock at ``/tmp/d6c_phase0/empty_pkg/``:
-    buf fires R8b on packageless files mixed with declared-package files
-    using a DISTINCT message template:
+    Per KTD-4 (b) empirical lock at Phase 0's 1-declared + 2-packageless
+    fixture: buf fires R8b with the singular ``Package "X"`` prefix:
     ``Package "X" and file with no package detected within directory "Y".``
     """
 
-    def test_empty_mixed_template_fires_on_all_files(
+    def test_empty_mixed_single_template_fires_on_all_files(
         self, tmp_path: Path,
     ) -> None:
         """1 declared + 2 packageless files in same dir → 3 findings each
-        using the empty-mixed template."""
+        using the empty-mixed-single template."""
         report = _run_single(
             tmp_path,
             {
@@ -399,23 +415,23 @@ class TestR8bEmptyMixedTemplate:
         assert len(report.findings) == 3
         for f in report.findings:
             assert f.rule_id == "package/directory-same-package"
-            # Empty-mixed arm: violation_kind carries the ``/empty-
-            # mixed`` suffix so the formatter looks up the empty-mixed
-            # template from the dict-shaped message_template.
+            # Empty-mixed-single arm: violation_kind carries the
+            # ``/empty-mixed-single`` suffix so the formatter looks up
+            # the singular ``Package "X"`` template.
             assert f.violation_kind == (
-                "package/directory-same-package/empty-mixed"
+                "package/directory-same-package/empty-mixed-single"
             )
             assert f.params["directory"] == "dir1"
             assert f.params.get("packageless_present") is True
             assert f.params["package"] == "acme.foo"
-            # ``payload`` is not a params key post-Finding-#6 fix —
-            # the formatter renders from the empty-mixed template.
+            # ``payload`` is not a params key — the formatter renders
+            # from the dict-shaped template.
             assert "payload" not in f.params
 
-    def test_empty_mixed_template_at_proto_root(
+    def test_empty_mixed_single_template_at_proto_root(
         self, tmp_path: Path,
     ) -> None:
-        """1 declared + 1 packageless at proto-root → both fire empty-mixed."""
+        """1 declared + 1 packageless at proto-root → both fire single arm."""
         report = _run_single(
             tmp_path,
             {
@@ -426,9 +442,83 @@ class TestR8bEmptyMixedTemplate:
         )
         assert len(report.findings) == 2
         for f in report.findings:
+            assert f.violation_kind == (
+                "package/directory-same-package/empty-mixed-single"
+            )
             assert f.params["directory"] == "."
             assert f.params["package"] == "acme.foo"
             assert f.params.get("packageless_present") is True
+
+
+class TestR8bEmptyMixedMultiTemplate:
+    """R8b empty-mixed-multi arm — 2+ declared + packageless files.
+
+    Discovered at D6c U3 (2026-05-19) when the parity gate's first run
+    surfaced buf's distinct ``Multiple packages "X,Y" and file with no
+    package detected within directory "D".`` template for the
+    multi-declared case. U2's R8b implementation handled only the
+    single-declared case because Phase 0's ``empty_pkg/`` fixture had
+    1 declared + 2 packageless; the plan's KTD-4 (b) "exactly one
+    declared-package value" claim was based on that fixture and was
+    wrong for the multi-declared scenario.
+    """
+
+    def test_empty_mixed_multi_template_fires_on_all_files(
+        self, tmp_path: Path,
+    ) -> None:
+        """2 declared + 1 packageless files in same dir → 3 findings each
+        using the empty-mixed-multi template."""
+        report = _run_single(
+            tmp_path,
+            {
+                "dir1/a.proto": _PROTO_PKG_FOO,
+                "dir1/b.proto": _PROTO_PKG_BAR,
+                "dir1/c.proto": _PROTO_NO_PKG,
+            },
+            "package/directory-same-package",
+        )
+        assert len(report.findings) == 3
+        for f in report.findings:
+            assert f.rule_id == "package/directory-same-package"
+            # Empty-mixed-multi arm: violation_kind carries the
+            # ``/empty-mixed-multi`` suffix so the formatter looks up
+            # the plural ``Multiple packages "X,Y"`` template.
+            assert f.violation_kind == (
+                "package/directory-same-package/empty-mixed-multi"
+            )
+            assert f.params["directory"] == "dir1"
+            assert f.params.get("packageless_present") is True
+            # Multi-declared arm carries the FULL alphabetic list,
+            # NOT just the first declared package (which was U2's
+            # incorrect behavior surfaced by U3's parity gate).
+            assert f.params["packages"] == "acme.bar,acme.foo"
+            assert "package" not in f.params
+            assert "payload" not in f.params
+
+    def test_empty_mixed_multi_three_declared(self, tmp_path: Path) -> None:
+        """3 declared + 1 packageless → all 4 files fire multi arm with
+        the full 3-package alphabetic list."""
+        proto_baz = (
+            'syntax = "proto3";\n'
+            "package acme.baz;\n"
+            "message StubBaz {}\n"
+        )
+        report = _run_single(
+            tmp_path,
+            {
+                "dir1/a.proto": _PROTO_PKG_FOO,
+                "dir1/b.proto": _PROTO_PKG_BAR,
+                "dir1/c.proto": proto_baz,
+                "dir1/d.proto": _PROTO_NO_PKG,
+            },
+            "package/directory-same-package",
+        )
+        assert len(report.findings) == 4
+        for f in report.findings:
+            assert f.violation_kind == (
+                "package/directory-same-package/empty-mixed-multi"
+            )
+            assert f.params["packages"] == "acme.bar,acme.baz,acme.foo"
 
 
 class TestR8bSilentCases:

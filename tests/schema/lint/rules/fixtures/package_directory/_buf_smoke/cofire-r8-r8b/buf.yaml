@@ -1,0 +1,7 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - PACKAGE_SAME_DIRECTORY
+    - DIRECTORY_SAME_PACKAGE
