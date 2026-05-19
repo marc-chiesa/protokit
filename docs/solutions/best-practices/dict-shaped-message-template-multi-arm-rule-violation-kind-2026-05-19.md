@@ -1,6 +1,7 @@
 ---
 title: Use dict-shaped message_template keyed by violation_kind when a rule has multiple textually-distinct emit arms
 date: 2026-05-19
+last_updated: 2026-05-19-u3
 category: docs/solutions/best-practices
 module: protokit.schema.lint.rules.package + protokit.schema.lint.decorator + protokit.formatters._builtin_lint
 problem_type: best_practice
@@ -151,15 +152,82 @@ The dict-shaped form drops into existing formatter machinery without modificatio
 
 ### Heterogeneous params across arms
 
-When arms carry different param keys (R8b's standard arm has `packages` plural; empty-mixed has `package` singular), annotate the `params` dict with a union type at the assignment site to document the contract:
+When arms carry different param keys (R8b's standard arm has `packages` plural; empty-mixed-single arm has `package` singular; empty-mixed-multi arm has `packages` plural — see post-U3 update below), annotate the `params` dict with a union type at the assignment site to document the contract:
 
 ```python
 params: dict[str, str | bool] = {...}  # annotated at first assignment
 ```
 
-Document the divergent keys at the rule's module header so structured-output consumers know which key to read per arm. R8b's module header lists:
+Document the divergent keys at the rule's module header so structured-output consumers know which key to read per arm.
 
-> "Both arms share `file`/`directory`/`packageless_present`/`payload` but differ on `package` (singular, empty-mixed arm) vs `packages` (plural CSV, standard arm)"
+### Formatter docstring per-arm contract (added 2026-05-19 at D6c U3)
+
+The rule's module header is the **rule-author site** for the contract; the **formatter wire-format docstring** (the `lint_json` docstring at `_builtin_lint.py`) is the **consumer site**. Both sites are required when the rule has heterogeneous param keys across arms — agents reading the wire-format contract should not have to source-read the rule callable to determine which keys are present per arm.
+
+D6c U3's ce:review (Finding #1, P2/1.00, 3-way convergence: agent-native + api-contract + kieran-python) found that R8b's heterogeneous keys (`package` singular vs `packages` plural) were undocumented in `lint_json`'s docstring. Agents using `--format=json` had to source-read `package.py` to know which key was present per arm. The safe_auto fix added a "Per-finding ``params`` dict contract" section to `lint_json`'s docstring immediately after the top-level keys table.
+
+Required documentation per multi-kind rule (at the formatter docstring, not the rule callable):
+
+```
+Per-finding ``params`` dict contract for ``<rule_id>``:
+
+  Discriminator: ``violation_kind`` string (or equivalently <boolean field>).
+
+  ``violation_kind = "<kind-a>"`` (<short condition>):
+    - ``"file"``               str  — <description>
+    - ``"directory"``          str  — <description>
+    - ``"<arm-specific-key>"`` str  — <description>
+    - ``"<symmetric-bool>"``   bool — always ``<value>`` in this arm
+
+  ``violation_kind = "<kind-b>"`` (<short condition>):
+    - ``"file"``               str
+    - ``"directory"``          str
+    - ``"<different-key>"``    str  — note key name differs from kind-a
+    - ``"<symmetric-bool>"``   bool
+
+  [...]
+```
+
+**Prefer the boolean discriminator for branching code.** Provide a symmetric `bool` field (R8b's `packageless_present`) present in every arm with a stable semantic meaning. Branching code can split on the boolean in one comparison; exhaustive switches use the `violation_kind` string. The boolean is the lightweight idiom; the string is the canonical contract for documentation and exhaustive-match consumers.
+
+**The singular-vs-plural key asymmetry is the highest-priority documentation target.** A consumer using `params["packages"]` without checking `violation_kind` first will silently get a `KeyError` on the singular-key arm. The per-arm table makes the asymmetry visible at the wire-format contract layer rather than at consumer runtime.
+
+### Hard-pinning the expected kind set (added 2026-05-19 at D6c U3)
+
+`LintRuleSpec.__post_init__` enforces dict-shape pairing (both `severity` and `message_template` must be dict-shaped or both single-kind) but does NOT enforce **key-set alignment** between the two dicts. A future refactor that adds a new violation_kind arm to `message_template` but forgets to update `severity` (or vice versa) passes `__post_init__` and would emit findings whose `violation_kind` is in one dict but missing from the other — runtime `KeyError` or silent default-severity fall-back.
+
+D6c U3's ce:review (Finding #6, P2/0.88, adversarial) identified this silent-vacuous-pass safety hole and proposed an invariant pin. The gated_auto fix added a `test_violation_kinds_are_consistent_across_severity_and_template` method in `TestR8bRuleSpec` (canonical form below):
+
+```python
+def test_violation_kinds_are_consistent_across_severity_and_template(self) -> None:
+    """Assert severity and message_template share the same violation_kind keys.
+
+    LintRuleSpec.__post_init__ verifies both are dict-shaped but does
+    NOT verify key-set alignment. A refactor that adds a key to one
+    dict without the other would pass __post_init__ and pass most
+    tests — but would cause a KeyError at finding-emission time for
+    the mismatched arm.
+    """
+    spec = check_directory_same_package._lint_spec
+    assert isinstance(spec.severity, dict)
+    assert isinstance(spec.message_template, dict)
+    # Part 1: key-set equality across both dicts.
+    assert set(spec.severity.keys()) == set(spec.message_template.keys())
+    # Part 2: hard-pin the EXPECTED kind set so a future drop also
+    # fails loudly (not just key-divergence).
+    assert set(spec.severity.keys()) == {
+        "package/directory-same-package",
+        "package/directory-same-package/empty-mixed-single",
+        "package/directory-same-package/empty-mixed-multi",
+    }
+```
+
+**Both parts are required:**
+
+1. **Key-set equality** — catches future edits that update one dict but not the other (e.g., a contributor adds a 4th arm to `message_template` but forgets `severity`).
+2. **Hard-pin the expected set** — catches future drops where both dicts are reduced in lockstep (e.g., a refactor "for simplicity" that removes the multi arm). Without the hard pin, the equality check passes since both dicts still match — but the contract has silently regressed.
+
+This is an ADDITIONAL layer beyond `LintRuleSpec.__post_init__`'s structural check; it does not replace the validator. The pattern parallels [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]]: enumerate each component's contribution and assert each is present. Apply to any multi-kind rule the day it ships — pre-shipping discipline, not a post-hoc audit.
 
 ## Why This Matters
 

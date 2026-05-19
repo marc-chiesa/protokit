@@ -1,6 +1,7 @@
 ---
 title: "Closed Literal discriminator additions bump schema_version; open severity ladders don't — apply the consumer-correctness test"
 date: 2026-05-17
+last_updated: 2026-05-19-u3
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -60,6 +61,19 @@ Sub-rules:
 5. **Forward-compatibility tolerance is NOT a substitute for the bump.** Consumers that "treat unknown values as forward-compatible" via a `default:` branch still need the bump as the signal to AUDIT their switch statements. The bump tells them: "your `default:` branch will now fire for a known case — re-check whether you need a specific handler."
 
 6. **The classification can flip during a field's lifetime.** A field that started as an open ladder may become a closed discriminator if consumers add routing logic. Once classified closed, additions bump. The reverse migration (closed → open) is impossible without a major version change.
+
+7. **Pre-release intra-cycle renames don't bump** (added 2026-05-19 at D6c U3). Closed-discriminator value **renames** that occur within the same un-released delivery cycle — between the unit that introduced the value and the delivery-boundary unit that folds the CHANGELOG + bumps the package version — do NOT bump `_LINT_JSON_SCHEMA_VERSION`. Rationale: the pre-release surface is internal-only by [[pre-1.0-version-bump-as-communication-contract-2026-05-14]]; no external consumer has observed the old value. The carve-out applies ONLY to renames, NOT to additions or removals (those still bump per sub-rules 1 + 5).
+
+   **Carve-out applicability test — all four must hold:**
+
+   1. **Rename only.** The old value disappears and a new value appears in its place. No net change in the Literal arity from the consumer's perspective.
+   2. **Same un-released delivery cycle.** The rename lands BEFORE the delivery-boundary commit that folds CHANGELOG and bumps the package version. After the boundary commit, the carve-out no longer applies.
+   3. **No external consumer has observed the old value.** Verify empirically (search PyPI download history, GitHub issues, pre-release announcements). If any external acknowledgment of the old value exists, treat as post-release.
+   4. **The carve-out clause is present at the bump-contract docstring site.** The clause cites the specific first case; without the citation, a future contributor has no precedent anchor.
+
+   **First case under this carve-out:** D6c U2 shipped R8b's `package/directory-same-package/empty-mixed` violation_kind. D6c U3's parity gate surfaced the multi-declared+packageless template gap (see [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] Case 4); the fix renamed `/empty-mixed` to `/empty-mixed-single` AND added `/empty-mixed-multi`. The rename portion takes the carve-out (un-released, internal); the addition portion takes the standard sub-rule 1 bump treatment — but the bump is deferred to U5's CHANGELOG-fold commit since BOTH the rename and the addition land in the same un-released cycle. `_LINT_JSON_SCHEMA_VERSION` stays at `"0.3"` through U3; U5 will bump to `"0.4"` carrying the final user-visible violation_kind set.
+
+   **Post-1.0**: the carve-out collapses to zero window. Once the project reaches 1.0.0 and semver is binding, every closed-discriminator rename bumps regardless of release phase — even pre-release RCs carry consumer expectation at 1.0.x.
 
 ## Why This Matters
 

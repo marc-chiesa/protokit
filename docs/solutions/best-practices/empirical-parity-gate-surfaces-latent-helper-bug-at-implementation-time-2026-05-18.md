@@ -1,7 +1,7 @@
 ---
 title: Empirical parity gate surfaces latent emission-layer bugs that unit tests cannot catch
 date: 2026-05-18
-last_updated: 2026-05-19
+last_updated: 2026-05-19-u3
 category: docs/solutions/best-practices
 module: protokit.schema.lint.rules.package_same
 problem_type: best_practice
@@ -197,28 +197,56 @@ Plus an inline comment on the `RULES` tuple documenting that the ordering is loa
 
 **Why this is a distinct case from Cases 1 + 2**: the detection surface is a **unit-level invariant-pin test** added by ce:review, not an integration test or snapshot parity gate. The bug was latent from the initial RULES-tuple definition; the test made the ordering contract explicit AT U2 time, before U3's parity gate would have surfaced the same bug via byte-divergence with buf. The cofire-ordering test is the earliest of the three detection surfaces in D6c — it fires at the unit-test layer in the same CI job as the feature code, with no snapshot or BUF_BINARY dependencies.
 
-### Shared pattern across Cases 1, 2, and 3
+### Case 4 — Phase-0 fixture under-coverage causes multi-declared+packageless template gap at U3 (D6c U3, 2026-05-19)
 
-All three cases share four structural properties:
+**Setup**: D6c U2 shipped R8b (``package/directory-same-package``) with 2 ``violation_kind`` arms: ``standard`` and ``empty-mixed``. The plan's KTD-4 (b) claim — "buf produces exactly one declared-package value in the empty-mixed template even if multiple declared packages exist" — was based on Phase 0's verification fixture at ``/tmp/d6c_phase0/empty_pkg/``, which contained 1 declared-package file + 2 packageless files. That fixture's 1-declared case produces ``Package "acme.foo" and file with no package detected within directory "."`` — the template U2 implemented.
 
-| Property | Case 1 (U6 — emission layer) | Case 2 (U7 — accumulator layer) | Case 3 (U2 — dispatch layer) |
-|----------|------------------------------|----------------------------------|------------------------------|
-| Test type | Integration / parity gate (REGISTERED+SNAPSHOT) | Integration / idempotency test (REGISTERED+EXPLICIT) | Unit / invariant-pin test (rule_id-ordering) |
-| First exercises | Parity-verified state for non-ASCII proto values | Registered+explicit state (BUILTIN + --rule-pack) | Engine dispatch order across two co-firing rules |
-| Bug latency | Present since U4b; latent until parity gate ran | Present since R25 provenance line; latent until BUILTIN_PACKS flip | Present since initial RULES tuple definition; latent until cofire test asserted the ordering |
-| Detection occasion | First parity-gate invocation after the gate was built | First test invocation after the BUILTIN_PACKS flip | First run of the ce:review-added cofire test |
-| Detected by | A test renamed/created at the flip to document the post-flip purpose | Same pattern — `TestRulePackOptIn` → `TestRulePackExplicitLoadIsIdempotent` rename at U7 | A new ce:review-added presence-ratchet test in the safe_auto pass |
-| Fix shape | Helper-layer correction + presence-ratchet against the contract | CLI-layer dedup guard + three-mechanism docstring against contract drift | Tuple reorder + load-bearing-ordering inline comment |
+**Bug latency**: U2's ``check_directory_same_package`` picked the alphabetically-first declared package name and composed the single-template message. For the multi-declared+packageless case (2 declared packages + 1 packageless file in the same directory), protokit emitted ``Package "acme.bar" and file with no package detected within directory "pkg"`` — but buf v1.69.0 actually emits a DISTINCT template: ``Multiple packages "acme.bar,acme.foo" and file with no package detected within directory "pkg"``.
+
+**Detection**: U3 committed the ``no-package-mixed`` fixture (2 declared + 1 packageless). The parity gate failed on the first run:
+
+```
+assert_parity_multi_file(no-package-mixed): protokit ↔ buf
+finding-set divergence within scoped rule_ids ['package/directory-same-package'].
+  Only-in-protokit (2): [...'Package "acme.bar" and file with no package...'...]
+  Only-in-buf       (2): [...'Multiple packages "acme.bar,acme.foo" and file with no package...'...]
+```
+
+**Fix**: Split R8b's 2-arm classifier into 3 arms:
+
+- ``standard`` — 2+ declared, no packageless.
+- ``empty-mixed-single`` (renamed from ``empty-mixed``) — exactly 1 declared + ≥1 packageless. Phase 0's verified template.
+- ``empty-mixed-multi`` (NEW) — 2+ declared + ≥1 packageless. Uses ``Multiple packages "X,Y" and file with no package detected within directory "Z".``
+
+The pre-1.0 carve-out at [[closed-literal-discriminator-bump-trigger-2026-05-17]] permits the rename without bumping ``_LINT_JSON_SCHEMA_VERSION``.
+
+**Detection pattern**: parity gate's first run against a **newly committed fixture** that covers a sub-case absent from Phase 0's verification scope. Distinct from Case 3 (which a unit-level invariant-pin test caught at U2 time, before any parity gate ran). The bug was invisible at the unit-test layer because both ``empty-mixed`` and the correct ``empty-mixed-multi`` produced non-zero findings — only byte-divergence against buf's recorded snapshot made the misclassification observable. The structural shape that mattered: a fixture exercising a specific input-space corner (multi-declared + packageless) that buf treats as semantically distinct.
+
+### Shared pattern across Cases 1, 2, 3, and 4
+
+All four cases share these structural properties (the table covers Cases 1–4):
+
+| Property | Case 1 (U6 — emission layer) | Case 2 (U7 — accumulator layer) | Case 3 (U2 — dispatch layer) | Case 4 (U3 — template discrimination) |
+|----------|------------------------------|----------------------------------|------------------------------|---------------------------------------|
+| Test type | Integration / parity gate (REGISTERED+SNAPSHOT) | Integration / idempotency test (REGISTERED+EXPLICIT) | Unit / invariant-pin test (rule_id-ordering) | Integration / parity gate (first run against new fixture) |
+| First exercises | Parity-verified state for non-ASCII proto values | Registered+explicit state (BUILTIN + --rule-pack) | Engine dispatch order across two co-firing rules | Multi-declared+packageless message template |
+| Bug latency | Present since U4b; latent until parity gate ran | Present since R25 provenance line; latent until BUILTIN_PACKS flip | Present since initial RULES tuple definition; latent until cofire test asserted the ordering | Present since U2's 2-arm definition; latent until the U3 ``no-package-mixed`` fixture was committed |
+| Detection occasion | First parity-gate invocation after the gate was built | First test invocation after the BUILTIN_PACKS flip | First run of the ce:review-added cofire test | First parity-gate run against the newly committed fixture |
+| Phase-0 root | Non-ASCII values absent from programmatic fixtures | Pre-flip API shape never covered by integration tests | "Automatic via sorted(...)" claim left as text, not test | Phase-0 verification fixture had 1-declared + 2-packageless only — missing the 2+-declared sub-case |
+| Detected by | A test renamed/created at the flip to document the post-flip purpose | Same pattern — `TestRulePackOptIn` → `TestRulePackExplicitLoadIsIdempotent` rename at U7 | A new ce:review-added presence-ratchet test in the safe_auto pass | The U3-committed parity fixture itself; no parallel invariant pin existed |
+| Fix shape | Helper-layer correction + presence-ratchet against the contract | CLI-layer dedup guard + three-mechanism docstring against contract drift | Tuple reorder + load-bearing-ordering inline comment | 3-arm classifier split + new violation_kind + new fixture |
 
 The generalization extends from Cases 1+2: **the test that surfaces these bugs has a STRUCTURAL SHAPE (exercises the new boundary state for the first time, or pins a previously-untested invariant) that is independent of its STATED PURPOSE (parity verification, idempotency regression, ordering pin).** When authoring delivery-boundary commits OR reviewing a plan claim of the form "X happens automatically without special-case logic," identify which tests will exercise the boundary or claim for the first time — they are the load-bearing detection mechanism even if they were written for other reasons.
 
+**Phase-0 fixture under-coverage sub-pattern (Cases 1 and 4)**: Both cases share a further refinement of the structural shape — the bug surfaced because the Phase 0 verification fixture, while locally valid, did NOT cover the boundary sub-case that triggered the divergence. Case 1's PHP namespace value was absent from programmatic ASCII-only fixtures. Case 4's 2+ declared + packageless combination was absent from Phase 0's 1-declared + N-packageless fixture. **Phase 0 verification proved the claim true on the tested input, but a different input class triggered a different code path in the reference tool.** When a plan KTD asserts "buf produces X in situation Y," enumerate Y's sub-cases and verify each has a fixture in the parity gate's committed corpus before relying on the claim — missing sub-cases are the most likely site of template / encoding bugs that survive all unit tests.
+
 **Three complementary detection surfaces** in this family:
 
-1. **Parity gate (external oracle)** — Case 1. Snapshot comparison against the reference tool's recorded output. Catches byte-level emission divergences.
+1. **Parity gate (external oracle)** — Cases 1 + 4. Snapshot comparison against the reference tool's recorded output. Catches byte-level emission divergences including Phase-0-incomplete sub-cases.
 2. **Integration idempotency test (REGISTERED+EXPLICIT boundary state)** — Case 2. Exercises the new boundary condition that didn't exist before a default flip. Catches accumulator dedup gaps.
 3. **Unit invariant-pin test (inline-asserted claim)** — Case 3. Encodes a plan-time claim as a runtime assertion. Catches engine-ordering / dispatch-semantic bugs at the earliest layer.
 
-The invariant pin (Case 3) is the **earliest** of the three — it fires at U2 time with no snapshot dependencies, no BUF_BINARY, no integration setup. Authoring invariant pins during ce:review safe_auto passes is the lowest-friction way to convert plan-text claims into executable contracts.
+The invariant pin (Case 3) is the **earliest** of the three — it fires at U2 time with no snapshot dependencies, no BUF_BINARY, no integration setup. The parity gate (Cases 1 + 4) is the **only surface with organic expansion into unexplored input regions** — as new fixtures are committed, the gate automatically validates new corners without requiring a priori knowledge of where bugs hide. Authoring invariant pins during ce:review safe_auto passes is the lowest-friction way to convert plan-text claims into executable contracts; committing parity fixtures for each enumerated sub-case is the lowest-friction way to expand the gate's coverage into Phase-0 blind spots.
 
 ## Related
 
@@ -232,3 +260,7 @@ The invariant pin (Case 3) is the **earliest** of the three — it fires at U2 t
 - [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]] — the documentation discipline that prevents future-engineer removal of the load-bearing Case 2 CLI dedup guard.
 - [[rules-tuple-insertion-order-load-bearing-engine-dispatch-2026-05-19]] — Case 3's bug from the implementation-error angle. Documents the engine pack-load-order dispatch contract + the RULES-tuple reorder fix.
 - [[plan-review-verify-prior-art-citations-2026-05-15]] — planning-time discipline that complements Case 3. The "inherited assumption" sub-pattern is the planning-phase analog: claims inherited from a parent brainstorm should be empirically re-verified. KTD-9's "automatic via sorted(...)" claim was an inherited assumption that survived planning unchecked.
+- [[dict-shaped-message-template-multi-arm-rule-violation-kind-2026-05-19]] — the rule-design pattern Case 4's fix landed on. R8b's 3-arm split (`standard` + `empty-mixed-single` + `empty-mixed-multi`) is the canonical multi-kind-rule structure; the doc's "Per-arm params contract" and "Hard-pinning the expected kind set" subsections both grew out of Case 4's parity-gate discovery.
+- [[closed-literal-discriminator-bump-trigger-2026-05-17]] — Case 4's `/empty-mixed` → `/empty-mixed-single` rename did not bump `_LINT_JSON_SCHEMA_VERSION` per the pre-release carve-out clause added to that doc as part of the U3 ce:review follow-ups.
+- [[family-aware-partition-pattern-multi-family-parity-harness-2026-05-19]] — the partition-logic discipline that the parity gate (Cases 1 + 4) requires once the framework supports multiple rule families. The R8/R8b parity gate at U3 needed family-aware union constants to keep R7 + R8/R8b in the same `assert_parity_multi_file` helper without prefix-based carve-out drift.
+- [[structural-anchor-test-sha-collision-prone-empty-fixtures-2026-05-19]] — the structural integrity discipline that protects the parity gate from invisible fixture swaps. Case 4 added two empty-snapshot fixtures (matched-dir, single-file-dir); without the anchor, a rename-without-snapshot-rename would silently pass the gate.
