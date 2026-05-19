@@ -653,11 +653,11 @@ only escape hatch.
 
 - **`LintRuntimeWarning.category` is a CLOSED Literal DISCRIMINATOR.**
   The 5 enumerated values (`"rule_exception"`, `"unloaded_rule"`,
-  `"rule_exit"`, `"rule_pack"`, `"severities_unloaded_rule"`) are
-  the complete set; additions trigger a `schema_version` minor
-  bump. Consumer switch statements should be exhaustive — contrast
-  with `LintSeverity` ordering (an open ladder where additions do
-  NOT trigger bumps).
+  `"severities_unloaded_rule"`, `"min_severity_relaxed"`,
+  `"all_files_excluded"`) are the complete set; additions trigger a
+  `schema_version` minor bump. Consumer switch statements should be
+  exhaustive — contrast with `LintSeverity` ordering (an open ladder
+  where additions do NOT trigger bumps).
 
 - **`severities_unloaded_rule` is a value MIGRATION, not an
   ADDITION.** The 5th value is the 5th `LintRuntimeWarning.category`

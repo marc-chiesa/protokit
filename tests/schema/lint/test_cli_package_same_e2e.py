@@ -91,22 +91,35 @@ class TestRulePackExplicitLoadIsIdempotent:
     Since D6b U7 added ``package_same`` to ``BUILTIN_PACKS``, the
     explicit ``--rule-pack`` flag for a built-in pack becomes a
     redundant explicit load — exercised here as an idempotency
-    regression. Two independent mechanisms preserve the no-op
-    contract; a future engineer simplifying one without re-checking
-    the other could silently break it:
+    regression. THREE coupled mechanisms preserve the no-op contract;
+    removing any one re-introduces a different failure mode, so a
+    future engineer simplifying one without re-checking the others
+    can silently break the contract:
 
-    1. :meth:`LintEngine.load_rule_pack` short-circuits duplicate
-       loads on ``module.__name__`` at ``engine.py:241-242``:
+    1. **CLI-level dedup at** ``cli.py:841-846`` (the load-bearing
+       guard added at D6b U7): ``if user_pack.__name__ not in
+       {p.__name__ for p in loaded_packs}: loaded_packs.append(user_pack)``.
+       This is what keeps the ``loaded_packs_tuple`` length aligned
+       with ``_active_rule_ids_per_pack(...)``'s dict size (the dict
+       is keyed by ``pack.__name__`` and would silently de-dup).
+       Without this guard, the R25 multi-pack provenance line at
+       ``cli.py:987`` fails ``zip(loaded_packs_tuple,
+       active_per_pack.values(), strict=True)`` with
+       ``ValueError('zip() argument 2 is shorter than argument 1')``
+       — the original D6b U7-flip-surfaced bug.
+    2. **Engine-level idempotent load** at ``engine.py:241-242``:
        ``if module.__name__ in self._loaded_module_names: return``.
-    2. :meth:`LintProfile.compose` uses ``frozenset().union(*...)``
-       set-union semantics on ``rule_ids`` at ``model.py:717-719``,
-       absorbing duplicate per-pack profiles. The CLI does NOT
-       de-dup ``loaded_packs`` (``cli.py:831`` unconditionally
-       appends): an explicit ``--rule-pack`` for a pack already in
-       BUILTIN_PACKS produces a doubled list entry; the downstream
-       ``compose`` frozenset-union eats the duplicate.
+       Prevents the engine from registering the same pack's rules
+       twice (which would raise ``DuplicateRuleError``). Independent
+       of the CLI guard above — applies to any caller, not just CLI.
+    3. **Profile-level frozenset union** at ``model.py:717-719``:
+       :meth:`LintProfile.compose` uses ``frozenset().union(*(p.rule_ids
+       for p in profiles))``. Backstop that absorbs duplicate
+       per-pack profiles even if the upper-layer dedup were
+       removed. Defense-in-depth, not the primary mechanism.
 
-    These four tests verify the idempotency contract holds across
+    These four tests verify the observable contract (correct
+    finding count, correct exit code) holds across
     descriptor-set / proto / both-profiles / message-byte-format
     surfaces.
     """
