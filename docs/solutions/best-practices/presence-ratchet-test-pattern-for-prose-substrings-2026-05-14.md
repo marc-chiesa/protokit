@@ -1,6 +1,7 @@
 ---
 title: "Presence-ratchet test pattern: pin prose substrings in docs/source against silent reversion when static analysis can't read them"
 date: 2026-05-14
+last_updated: 2026-05-19
 category: docs/solutions/best-practices
 module: testing_framework
 problem_type: best_practice
@@ -217,6 +218,75 @@ class TestArtifactRatchet:
    line, pin TWO separate ratchet substrings (one per line) rather
    than a single multi-line substring. This also helps with rule 4:
    one substring per test method.
+
+6. **For per-section presence ratchets, use a line-anchored heading
+   regex — not a plain substring.** Added 2026-05-19 after D6c U5
+   ce:review F#12 (P3/0.72, testing).
+
+   When the ratchet's purpose is "verify the `### D6c` section
+   exists in the CHANGELOG" (not "verify a specific prose claim
+   *within* D6c), the substring form is vulnerable to **token-leak**.
+   The literal token `"D6c"` satisfies on:
+   - Historical sibling-section mentions: `(deferred to D6c)` in
+     the preserved D6b section per [[stale-forward-looking-text-cli-help-agent-discoverability-2026-05-12]]
+     KTD-8 (b) historical-preservation discipline.
+   - Audit-trail breadcrumbs: a `> **Audit-trail note:**`
+     blockquote in the D6b section pointing forward to the D6c
+     `#### Corrected` subsection per
+     [[audit-trail-correction-as-changelog-subsection-2026-05-19]].
+   - New-section body cross-references: the D6d migration framing
+     in the current release describing what D6c shipped.
+
+   Any of these occurrences satisfies a substring ratchet even if
+   the dedicated `### D6c` section heading itself has been deleted
+   — the exact regression the ratchet exists to catch.
+
+   **Fix**: anchor the heading match line-by-line with
+   `re.MULTILINE`:
+
+   ```python
+   import re
+
+   _HEADING_PATTERN = re.compile(r"^### D6c\b", flags=re.MULTILINE)
+
+   def test_changelog_has_d6c_section_heading(self) -> None:
+       body = CHANGELOG_PATH.read_text(encoding="utf-8")
+       assert _HEADING_PATTERN.search(body), (
+           "CHANGELOG.md has no `### D6c` heading line. ..."
+       )
+   ```
+
+   The `^### D6c\b` regex matches **only** a real markdown heading
+   line — not incidental prose mentions, not blockquote
+   cross-references, not body text. The `\b` word boundary
+   prevents `### D6c1` from satisfying (defensive against future
+   sub-delivery naming like `D6c.1`).
+
+   **Empirical case (D6c U5 ce:review F#12)**: U5 initially shipped
+   `assert "D6c" in body`. After landing the audit-trail-note
+   blockquote in the D6b section (Finding F#9) and the
+   `defers to D6d alongside FIELD_NOT_REQUIRED (a proto2-only
+   buf BASIC rule...)` framing in the D6c section's intro
+   paragraph, the substring would satisfy even with the dedicated
+   `### D6c` heading deleted — losing the structural ratchet the
+   test exists for.
+
+   **Cross-delivery generalization**: at N≥3 per-delivery
+   ratchets, retire the individual per-delivery files in favor
+   of a parametrized test consuming a `DELIVERY_RATCHETS` tuple
+   (see D6c U5 ce:review F#5 strategic consolidation:
+   `tests/test_changelog_delivery_presence_ratchet.py`).
+   Each tuple entry inherits the line-anchored heading regex
+   automatically, so future per-delivery additions (D6d, D6e,
+   ...) are 3-line tuple extensions with the strengthened
+   anchor for free.
+
+   Rule 5 (single source line) and rule 6 (section-anchored
+   regex) are complementary, not redundant — rule 5 protects
+   against `inspect.getsource` line-continuation interruption
+   (Python source as the pinned artifact); rule 6 protects
+   against token-leak in surrounding prose (markdown as the
+   pinned artifact). Apply both where each is the right tool.
 
 ### When to add a presence-ratchet vs other ratchet types
 
