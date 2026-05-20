@@ -2,19 +2,23 @@
 
 Covers:
 
-- **Literal extension** from 2 → 4 → 5 categories: ``rule_exception``,
-  ``unloaded_rule`` (engine-emitted), plus ``min_severity_relaxed``
-  and ``all_files_excluded`` (D5 U3/U4, CLI-emitted), plus
-  ``severities_unloaded_rule`` (D6b U5, CLI-emitted with rule_id
-  populated — closes D6a U9 KTD-2 accepted tradeoff).
+- **Literal extension** from 2 → 4 → 5 → 6 categories:
+  ``rule_exception``, ``unloaded_rule`` (engine-emitted), plus
+  ``min_severity_relaxed`` and ``all_files_excluded`` (D5 U3/U4,
+  CLI-emitted), plus ``severities_unloaded_rule`` (D6b U5,
+  CLI-emitted with rule_id populated — closes D6a U9 KTD-2
+  accepted tradeoff), plus ``custom_annotation_extension_unresolved``
+  (D6d U1, engine-emitted with rule_id populated).
 - ``rule_id: str`` → ``rule_id: str | None`` widening (BREAKING per
-  R18/R18a). The three rule-scoped categories
+  R18/R18a). The four rule-scoped categories
   (``rule_exception``, ``unloaded_rule``,
-  ``severities_unloaded_rule``) continue to populate ``rule_id`` with
-  a non-None string at every emit site; only the two non-rule-scoped
-  CLI-emitted categories construct with ``rule_id=None``.
+  ``severities_unloaded_rule``,
+  ``custom_annotation_extension_unresolved``) continue to populate
+  ``rule_id`` with a non-None string at every emit site; only the
+  two non-rule-scoped CLI-emitted categories construct with
+  ``rule_id=None``.
 - Frozen-dataclass mutation discipline still enforced for every
-  field across all five categories.
+  field across all six categories.
 - Field-population invariants per the docstring table (rule_id is
   None ↔ category is one of the two non-rule-scoped CLI-emitted
   categories).
@@ -39,10 +43,16 @@ from protokit.schema.lint.model import LintRuntimeWarning
 
 
 class TestCategoryLiteral:
-    def test_literal_lists_all_five_categories(self) -> None:
-        """The Literal annotation must enumerate exactly 5 category
-        names. A drift to 4 or 6 indicates an accidental break in the
+    def test_literal_lists_all_six_categories(self) -> None:
+        """The Literal annotation must enumerate exactly 6 category
+        names. A drift to 5 or 7 indicates an accidental break in the
         category contract that this test catches at import time.
+
+        D6d U1 added the sixth category
+        ``custom_annotation_extension_unresolved`` (engine-emitted
+        when a synthetic ``custom/<suffix>`` rule's configured
+        ``option`` is not a registered extension in the compile pool).
+        Bumps ``_LINT_JSON_SCHEMA_VERSION`` ``"0.3"`` → ``"0.4"``.
         """
         type_hints = typing.get_type_hints(LintRuntimeWarning)
         category_type = type_hints["category"]
@@ -53,10 +63,11 @@ class TestCategoryLiteral:
             "severities_unloaded_rule",
             "min_severity_relaxed",
             "all_files_excluded",
+            "custom_annotation_extension_unresolved",
         }
-        # And exactly 5 — not "a superset" — so adding a sixth without
+        # And exactly 6 — not "a superset" — so adding a seventh without
         # a corresponding test update will fail this assertion.
-        assert len(literal_args) == 5
+        assert len(literal_args) == 6
 
     def test_test_helper_mirror_stays_in_sync_with_model(self) -> None:
         """``LINT_RUNTIME_WARNING_CATEGORIES`` in ``tests/schema/lint/cli/_helpers.py``

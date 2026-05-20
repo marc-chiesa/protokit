@@ -18,7 +18,7 @@ from click.testing import CliRunner
 
 from protokit.schema.lint.cli import main as lint_main
 
-_SCHEMA_VERSION = "0.3"
+_SCHEMA_VERSION = "0.4"
 
 
 class TestR9dLintJsonSchemaVersion:

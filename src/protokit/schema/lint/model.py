@@ -353,7 +353,7 @@ class LintFinding:
 class LintRuntimeWarning:
     """Engine- or CLI-stage warning recorded during a lint run.
 
-    Five structurally distinct events share this type via the
+    Six structurally distinct events share this type via the
     ``category`` discriminator (mirrors ``LintCompileDiagnostic``'s
     ``category: Literal[...]`` pattern in
     ``protokit.schema.compile``):
@@ -408,6 +408,17 @@ class LintRuntimeWarning:
        CLI-side, NOT by the engine; engine is short-circuited.
        ``rule_id`` is ``None`` because the warning is not scoped to
        a single rule.
+    6. ``"custom_annotation_extension_unresolved"`` (D6d, engine-
+       emitted) — a synthetic ``custom/<suffix>`` rule's configured
+       ``option`` is not a registered extension in the compile pool
+       (``pool.FindExtensionByName(option)`` raises ``KeyError``). The
+       rule cannot evaluate presence or value, so it skips without
+       firing findings and records this warning. Carries ``rule_id``
+       populated (the synthetic ``custom/<suffix>``); the message
+       names the unresolved option path. The warning is emitted at
+       most once per (rule_id, file) pair to avoid log floods on
+       multi-element walks. ``exception_type`` / ``descriptor_path``
+       ``None``.
 
     **BREAKING (D5 U3)**: ``rule_id`` was widened from ``str`` to
     ``str | None``. The three rule-scoped categories
@@ -458,6 +469,15 @@ class LintRuntimeWarning:
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
+    ``"custom_annotation_extension_unresolved"`` (engine-emitted, D6d):
+        - ``rule_id``: populated (``str``) — the synthetic
+          ``custom/<suffix>`` rule whose configured ``option`` could
+          not be resolved
+        - ``message``: human-readable "synthetic rule <rid> skipped:
+          extension <option> is not registered in the compile pool"
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
     For ``category="rule_exception"``, ``descriptor_path`` mirrors
     D1's ``LintLocation.__str__`` shapes per ``ElementKind``:
 
@@ -491,15 +511,18 @@ class LintRuntimeWarning:
     ``severities_unloaded_rule`` to the rule-scoped set.
 
     Attributes:
-        category: Discriminator for the five event shapes. Two
-            engine-emitted (``rule_exception``, ``unloaded_rule``)
-            and three CLI-emitted (``severities_unloaded_rule``,
+        category: Discriminator for the six event shapes. Three
+            engine-emitted (``rule_exception``, ``unloaded_rule``,
+            ``custom_annotation_extension_unresolved``) and three
+            CLI-emitted (``severities_unloaded_rule``,
             ``min_severity_relaxed``, ``all_files_excluded``).
         rule_id: The id of the rule the warning is about. For
             ``"rule_exception"`` this is the rule that raised; for
             ``"unloaded_rule"`` this is the missing id named in the
             profile; for ``"severities_unloaded_rule"`` this is the
             bad key from ``[tool.protokit.lint.severities]``; for
+            ``"custom_annotation_extension_unresolved"`` this is the
+            synthetic ``custom/<suffix>`` rule that was skipped; for
             the two non-rule-scoped CLI-emitted categories this is
             ``None``.
         message: Human-readable description. For
@@ -521,6 +544,7 @@ class LintRuntimeWarning:
         "severities_unloaded_rule",
         "min_severity_relaxed",
         "all_files_excluded",
+        "custom_annotation_extension_unresolved",
     ]
     rule_id: str | None
     message: str
@@ -560,9 +584,10 @@ class LintReport:
             invoked because no element of its ``ElementKind`` was
             present in any walked file. Defaults to ``()``.
         runtime_warnings: Tuple of engine- AND CLI-stage warnings
-            raised during the run. Five categories share the type:
-            ``rule_exception`` and ``unloaded_rule`` (engine-emitted)
-            plus ``severities_unloaded_rule`` (D6b U5),
+            raised during the run. Six categories share the type:
+            ``rule_exception``, ``unloaded_rule``, and
+            ``custom_annotation_extension_unresolved`` (D6d, engine-
+            emitted) plus ``severities_unloaded_rule`` (D6b U5),
             ``min_severity_relaxed`` (D5 U4), and
             ``all_files_excluded`` (D5 U3) (all CLI-emitted). See
             :class:`LintRuntimeWarning` for the full per-category

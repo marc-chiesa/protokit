@@ -288,7 +288,16 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     Post-1.0, the same rename WOULD bump per the
 #:     value-migrated-vs-value-added distinction in
 #:     [[closed-literal-discriminator-bump-trigger-2026-05-17]].
-_LINT_JSON_SCHEMA_VERSION: str = "0.3"
+#:   - **D6d 0.5.0 bump**: ``_LINT_JSON_SCHEMA_VERSION`` advances
+#:     ``"0.3"`` → ``"0.4"`` because D6d adds a sixth value to the
+#:     ``LintRuntimeWarning.category`` closed Literal:
+#:     ``"custom_annotation_extension_unresolved"`` (synthetic
+#:     ``custom/<suffix>`` rule skipped because its configured
+#:     ``option`` is not registered in the compile pool). Consumers
+#:     that exhaustively switch on ``category`` (per the mypy-strict
+#:     narrowing pattern documented on :class:`LintRuntimeWarning`)
+#:     must extend their match construct to handle the new case.
+_LINT_JSON_SCHEMA_VERSION: str = "0.4"
 
 
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:

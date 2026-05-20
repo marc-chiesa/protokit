@@ -1,0 +1,520 @@
+"""D6d U1 — synthetic ``custom/<suffix>`` rule loader.
+
+Materializes user-declared ``[[tool.protokit.lint.custom_annotation_rules]]``
+entries into a synthetic ``ModuleType`` exposing a ``RULES`` tuple of
+closures (per-entry, per-``ElementKind`` — KD-19). The synthetic module
+is fed to :meth:`protokit.schema.lint.engine.LintEngine.load_rule_pack`
+to register the closures into the engine's ``_loaded_specs`` dict
+through the same code path BUILTIN_PACKS modules travel.
+
+The user-facing contract is the synthetic ``rule_id`` ``custom/<suffix>``
+that surfaces in finding output exactly like a built-in rule_id — no
+machine-readable distinction beyond the ``custom/`` namespace prefix
+(KD-8 invariant: ``BUILTIN_PACKS`` MUST NEVER ship a ``custom/*``
+rule_id).
+
+**Extension-resolution model (per D6d U1 Phase 0 verification 2026-05-19).**
+The naive ``protokit.options.get_option_value`` helper does NOT surface
+custom-extension values when the extension is registered through a
+``protoxy``-built ``DescriptorPool`` (rather than via a generated
+``_pb2`` module). The data is stored in the options message's
+serialized bytes, but ``GetOptions()`` returns a bootstrap-pool-bound
+options instance whose ``Extensions[]`` accessor raises ``KeyError``
+("Extension doesn't match") for the dynamic-pool extension descriptor.
+
+The workaround used here:
+
+1. Look up the extension descriptor via ``pool.FindExtensionByName(option)``.
+   If ``KeyError`` is raised, emit a runtime warning
+   (category ``custom_annotation_extension_unresolved``) and skip.
+2. Look up the options descriptor for the element kind
+   (``MethodOptions`` / ``FieldOptions`` / ``FileOptions`` / ...) in
+   the SAME pool.
+3. Build a pool-bound options message class via
+   ``google.protobuf.message_factory.GetMessageClass(options_desc)``
+   (protobuf 5.26+; fall back to
+   ``MessageFactory(pool=pool).GetPrototype(options_desc)`` for
+   4.21–5.25 compatibility).
+4. Re-parse the serialized bytes from
+   ``descriptor.GetOptions().SerializeToString()`` into the pool-
+   bound class. ``parsed.HasExtension(ext_desc)`` and
+   ``parsed.Extensions[ext_desc]`` now work correctly with proto2
+   presence semantics on the options message.
+
+For enum-typed extensions, the runtime value is the enum number
+(int). The closure translates to the identifier string via
+``ext_desc.enum_type.values_by_number[value].name`` so it can be
+compared against ``allowed_values`` written as identifier strings
+(per the R2 contract).
+
+**Closure capture discipline (KD-20).** Closures bind per-entry state
+via factory functions to avoid the loop-variable
+capture-by-reference footgun. Each synthetic rule has its own state
+(option name, allowed_values, severity, dedup set) bound by the
+factory's argument frame, not by the enclosing loop.
+
+**Dedup of unresolved-extension warnings.** Each synthetic rule has a
+private ``set[(rule_id, file_name)]`` carried in the closure's
+captured state. ``custom_annotation_extension_unresolved`` is emitted
+at most once per (rule_id, file) tuple even though the closure runs
+per descriptor of the configured ElementKind. For the CLI's single-
+shot lifecycle this is sufficient; long-lived engines (D6e+ MCP /
+IDE integrations) MUST rebuild the synthetic module on each
+configuration change to reset the dedup set.
+
+**Synthetic module name.** ``_SYNTHETIC_MODULE_NAME`` is a stable
+identifier; the ``LintEngine.load_rule_pack`` idempotency guard at
+``engine.py:303`` short-circuits a second load on the same engine
+instance. The CLI creates a fresh engine per invocation so this is
+correct. Long-lived engines would observe stale rule registration on
+config changes — a known D6e+ concern documented in the parent
+plan's KD-21.
+
+References:
+
+- D6d U1 plan: ``docs/plans/2026-05-19-001-feat-d6d-option-aware-pack-expansion-plan.md``
+- Phase 0 Open Question resolution (re-parse pattern): see this
+  module's docstring above.
+- KD-8 invariant (``custom/`` namespace reserved): enforced by
+  ``tests/schema/lint/test_no_builtin_rule_uses_custom_prefix.py``.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from types import ModuleType
+from typing import TYPE_CHECKING, Any
+
+from google.protobuf import descriptor_pb2, message_factory
+
+from protokit.schema.lint._cli_utils import _safe_for_stderr
+from protokit.schema.lint.model import (
+    ElementKind,
+    LintRuleSpec,
+    LintRuntimeWarning,
+    LintSeverity,
+)
+
+if TYPE_CHECKING:
+    from protokit.schema.lint._config import CustomAnnotationRuleSpec
+    from protokit.schema.lint.engine import LintEngine
+
+
+#: Synthetic module name. See module docstring for the
+#: idempotency / single-shot rationale.
+_SYNTHETIC_MODULE_NAME: str = "protokit_lint_synthetic_custom_annotations"
+
+
+#: Per-ElementKind metadata for the synthetic closure body.
+#:
+#: Maps the kind to a ``(ctx_attr, options_full_name)`` pair where
+#: ``ctx_attr`` is the name of the descriptor attribute on the lint
+#: context (e.g., ``"field"`` for FieldLintContext) and
+#: ``options_full_name`` is the fully-qualified options message name
+#: used to resolve a pool-bound options class. The lookup is centralized
+#: so the closure body stays kind-uniform per the U1 Phase 0 finding.
+_KIND_DESCRIPTOR_TABLE: dict[ElementKind, tuple[str, str]] = {
+    ElementKind.FILE: ("file", "google.protobuf.FileOptions"),
+    ElementKind.SERVICE: ("service", "google.protobuf.ServiceOptions"),
+    ElementKind.METHOD: ("method", "google.protobuf.MethodOptions"),
+    ElementKind.ENUM: ("enum", "google.protobuf.EnumOptions"),
+    ElementKind.ENUM_VALUE: ("value", "google.protobuf.EnumValueOptions"),
+    ElementKind.MESSAGE: ("message", "google.protobuf.MessageOptions"),
+    ElementKind.FIELD: ("field", "google.protobuf.FieldOptions"),
+    ElementKind.ONEOF: ("oneof", "google.protobuf.OneofOptions"),
+}
+
+
+#: Protobuf ``FieldDescriptorProto.Type.TYPE_ENUM`` constant.
+#: Inlined to avoid importing ``descriptor_pb2`` just for the enum
+#: value (the value is wire-format-stable per the protobuf
+#: backwards-compat contract).
+_TYPE_ENUM: int = descriptor_pb2.FieldDescriptorProto.TYPE_ENUM
+
+
+def _get_pool_bound_options_class(
+    pool: Any, options_full_name: str,
+) -> type | None:
+    """Return a pool-bound options message class, or ``None`` on failure.
+
+    The dynamic-pool options class is the hinge of the D6d
+    extension-resolution model — see the module docstring. Returns
+    ``None`` if the options message descriptor is not in the pool
+    (e.g., extremely minimal compile sets that exclude
+    ``descriptor.proto``); callers treat that as a soft no-op and
+    skip rather than raising.
+
+    Uses ``message_factory.GetMessageClass`` (protobuf 5.26+) when
+    available; falls back to ``MessageFactory(pool=pool).GetPrototype()``
+    for older protobuf releases. The fallback raises a deprecation
+    warning on newer protobuf but still functions.
+    """
+    try:
+        options_desc = pool.FindMessageTypeByName(options_full_name)
+    except KeyError:
+        return None
+    # Newer protobuf (5.26+) exposes ``GetMessageClass`` at module
+    # scope; older releases use ``MessageFactory(pool).GetPrototype``.
+    get_message_class = getattr(message_factory, "GetMessageClass", None)
+    if get_message_class is not None:
+        cls: type = get_message_class(options_desc)
+        return cls
+    # Fallback for protobuf 4.21–5.25.
+    factory = message_factory.MessageFactory(pool=pool)
+    fallback_cls: type = factory.GetPrototype(options_desc)
+    return fallback_cls
+
+
+def _resolve_value_for_comparison(
+    ext_desc: Any, value: Any,
+) -> Any:
+    """Normalize a raw extension value for ``allowed_values`` comparison.
+
+    For enum-typed extensions, translates the runtime integer to its
+    identifier name via ``ext_desc.enum_type.values_by_number[value].name``.
+    For unknown enum numbers (e.g., a buf-time enum that was removed
+    from a later proto revision and now appears as a stale integer),
+    returns the raw integer cast to ``str`` so the comparison fails
+    cleanly rather than raising.
+
+    Other scalar types pass through unchanged.
+    """
+    if ext_desc.type != _TYPE_ENUM:
+        return value
+    enum_type = ext_desc.enum_type
+    if enum_type is None:
+        return value
+    enum_value = enum_type.values_by_number.get(value)
+    if enum_value is None:
+        # Unknown enum number — keep raw int for diagnostic value.
+        return value
+    return enum_value.name
+
+
+def _make_synthetic_closure(
+    spec: CustomAnnotationRuleSpec,
+    kind: ElementKind,
+    engine: LintEngine,
+    unresolved_seen: set[tuple[str, str]],
+) -> Any:
+    """Factory: build one synthetic-rule closure for ``(spec, kind)``.
+
+    Per D6d KD-20, the per-entry state (``spec``, ``kind``, dedup set)
+    binds via the factory's argument frame — NOT via the enclosing
+    loop's variable. This avoids the classic Python loop-variable
+    capture-by-reference footgun where two distinct entries would
+    otherwise share the last entry's bindings.
+
+    The closure body:
+
+    1. Resolves the extension descriptor via
+       ``ctx.pool.FindExtensionByName(spec.option)``. On ``KeyError``,
+       emits a deduplicated
+       ``custom_annotation_extension_unresolved`` runtime warning and
+       returns.
+    2. Resolves the pool-bound options class. On a missing
+       ``descriptor.proto`` pool entry (rare; minimal compile sets),
+       silently returns (no warning — this is a non-actionable env
+       condition, not a user config error).
+    3. Re-parses the serialized options bytes through the pool-bound
+       class so ``HasExtension`` and ``Extensions[]`` work for the
+       dynamic-pool extension descriptor.
+    4. Presence check: fires when ``HasExtension(ext_desc)`` is
+       ``False`` (extension absent from this descriptor).
+    5. Value check (only when ``allowed_values`` is configured):
+       fires when the resolved value (with enum-int→identifier
+       translation) is not in the allowed set.
+
+    Args:
+        spec: The validated pyproject entry.
+        kind: The ElementKind this closure targets (one of
+            ``spec.element_kinds``).
+        engine: The active ``LintEngine`` — used to append runtime
+            warnings to ``engine._runtime_warnings``. The reference
+            is captured per-closure; long-lived engines must rebuild
+            the synthetic module per config change.
+        unresolved_seen: Shared per-rule dedup set. Closures for the
+            same ``rule_id`` across multiple ElementKinds share this
+            set so the warning fires at most once per (rule_id, file).
+
+    Returns:
+        A function ``closure(ctx) -> None`` with an attached
+        ``_lint_spec: LintRuleSpec`` matching the synthetic
+        ``custom/<suffix>`` rule_id + the targeted ElementKind.
+    """
+    ctx_attr, options_full_name = _KIND_DESCRIPTOR_TABLE[kind]
+    rule_id = spec.rule_id
+    option = spec.option
+    allowed_values = spec.allowed_values
+
+    def closure(ctx: Any) -> None:
+        pool = ctx.pool
+        try:
+            ext_desc = pool.FindExtensionByName(option)
+        except KeyError:
+            file_name = ctx.file.name
+            dedup_key = (rule_id, file_name)
+            if dedup_key not in unresolved_seen:
+                unresolved_seen.add(dedup_key)
+                safe_rule_id = _safe_for_stderr(rule_id)
+                safe_option = _safe_for_stderr(option)
+                safe_file = _safe_for_stderr(file_name)
+                engine._runtime_warnings.append(
+                    LintRuntimeWarning(
+                        category="custom_annotation_extension_unresolved",
+                        rule_id=safe_rule_id,
+                        message=(
+                            f"synthetic rule {safe_rule_id!r} skipped on "
+                            f"file {safe_file!r}: extension {safe_option!r} "
+                            f"is not registered in the compile pool"
+                        ),
+                    ),
+                )
+            return
+
+        options_cls = _get_pool_bound_options_class(pool, options_full_name)
+        if options_cls is None:
+            # Pool missing ``descriptor.proto``-derived options class.
+            # Skip silently — non-actionable env condition.
+            return
+
+        descriptor = getattr(ctx, ctx_attr)
+        raw_options = descriptor.GetOptions()
+        parsed = options_cls()
+        parsed.MergeFromString(raw_options.SerializeToString())
+
+        if not parsed.HasExtension(ext_desc):
+            # Presence violation. Compose a violation_kind that lets
+            # agent-native consumers discriminate "absent" from
+            # "value-mismatch" without parsing the message_template.
+            ctx.emit(
+                violation_kind="custom-annotation-absent",
+                params={
+                    "rule_id": rule_id,
+                    "option": option,
+                },
+            )
+            return
+
+        if allowed_values is None:
+            # Presence-only rule; nothing more to check.
+            return
+
+        raw_value = parsed.Extensions[ext_desc]
+        compared = _resolve_value_for_comparison(ext_desc, raw_value)
+        if compared in allowed_values:
+            return
+        # Value-mismatch violation. Stringify ``compared`` for the
+        # ``actual_value`` param so the message_template's
+        # ``{actual_value}`` slot interpolates cleanly across str /
+        # int / bool / enum-identifier values.
+        ctx.emit(
+            violation_kind="custom-annotation-value-mismatch",
+            params={
+                "rule_id": rule_id,
+                "option": option,
+                "actual_value": str(compared),
+            },
+        )
+
+    # Build the message_template as a dict because the closure emits
+    # two violation_kind values. Each template uses ``{rule_id}`` /
+    # ``{option}`` (presence) plus ``{actual_value}`` (mismatch).
+    message_template: dict[str, str] = {
+        "custom-annotation-absent": (
+            "Custom annotation {option} is missing "
+            "(rule {rule_id})."
+        ),
+        "custom-annotation-value-mismatch": (
+            "Custom annotation {option} has value {actual_value} which is "
+            "not in the configured allowed_values "
+            "(rule {rule_id})."
+        ),
+    }
+    # Severity dict must share shape with the message_template (per
+    # LintRuleSpec.__post_init__ invariant). Both kinds carry the same
+    # configured severity since the user can only set one ``severity``
+    # per entry.
+    severity_map: dict[str, LintSeverity] = {
+        "custom-annotation-absent": spec.severity,
+        "custom-annotation-value-mismatch": spec.severity,
+    }
+    closure._lint_spec = LintRuleSpec(  # type: ignore[attr-defined]
+        rule_id=rule_id,
+        severity=severity_map,
+        # Multiple profiles intentionally — synthetic rules are
+        # always-on when configured (KD-12). The composed-profile
+        # augmentation in cli.py unions the synthetic rule_ids into
+        # whichever profile the user selected, so this profile tuple
+        # is documentary; LintProfile.from_pack(synthetic_module,
+        # name) would derive the rule under any name that matches.
+        profiles=("recommended", "default", "essentials"),
+        source_spec="protokit:custom-annotation",
+        element=kind,
+        message_template=message_template,
+        fn=closure,
+    )
+    return closure
+
+
+def build_synthetic_module(
+    specs: Sequence[CustomAnnotationRuleSpec],
+    engine: LintEngine,
+) -> ModuleType | None:
+    """Construct a synthetic ``ModuleType`` exposing ``custom/<suffix>`` rules.
+
+    Returns ``None`` when ``specs`` is empty — the caller (cli.py)
+    short-circuits the synthetic-rule load path so the engine sees
+    BUILTIN_PACKS and user packs only, matching pre-D6d behavior
+    byte-for-byte for the zero-config case.
+
+    Each spec produces ``len(spec.element_kinds)`` closures (one per
+    declared kind, all sharing the same ``rule_id``). The synthetic
+    module's ``RULES`` tuple lists every closure in entry-insertion
+    order, then by ``ElementKind`` declaration order within each entry
+    — this matches the engine's expectation of a flat tuple and keeps
+    the registration order deterministic.
+
+    The returned module is fresh (constructed via ``ModuleType(name)``;
+    NOT registered into ``sys.modules`` because the engine reads
+    ``module.RULES`` directly and the module is consumed once at
+    ``engine.load_rule_pack(synthetic_module)`` time).
+
+    **Multi-kind ``rule_id`` collision pitfall.** Two closures sharing
+    the same ``rule_id`` would normally trip
+    :exc:`LintEngine.load_rule_pack`'s intra-pack collision detection.
+    Per D6d KD-19 we verified empirically that
+    ``LintEngine._loaded_specs`` is keyed by ``rule_id`` alone, so
+    duplicating a key collides at the staging step
+    (``engine.py:323-331``). To preserve multi-kind support, the
+    synthetic module wraps each rule_id's closures together: instead
+    of N entries in ``RULES`` with the same ``rule_id``, the module
+    exposes ONE multi-kind closure per ``rule_id`` that dispatches
+    internally on ``ctx`` type. The wrapper's ``_lint_spec`` declares
+    ``element=ElementKind.FIELD`` arbitrarily; the wrapper's body
+    inspects ``ctx`` and runs the kind-appropriate inner closure.
+
+    **Concrete shape.** For a single-kind entry, the wrapper just
+    returns the inner closure unchanged (one entry → one closure → one
+    spec → one ``RULES`` slot). For a multi-kind entry, the wrapper
+    holds N inner closures and dispatches on ``ctx.__class__``. The
+    spec attached to the wrapper uses a multi-kind shape only when
+    needed; the engine's per-kind dispatcher
+    (``LintEngine._dispatch_file``) filters by ``spec.element``, so
+    multi-kind dispatch requires registering one spec per ElementKind.
+
+    The simplest correct design: one inner closure per (entry, kind),
+    each with its own kind-specific spec. The engine's load_rule_pack
+    rejects duplicate ``rule_id``s within a pack, so we synthesize
+    distinct internal keys by appending the kind value to the spec's
+    rule_id WHEN there are multiple kinds, surfacing them through a
+    public-id mapping:
+
+    * single-kind entry: one closure, ``rule_id="custom/<suffix>"``
+    * multi-kind entry: N closures, ``rule_id="custom/<suffix>"`` —
+      the engine rejects duplicate keys, so we route multi-kind
+      entries through ``rule_id="custom/<suffix>"`` only for the
+      FIRST kind, then ``custom/<suffix>__<kind>`` internally for the
+      remaining kinds. (To be revisited in D6d U1 ce:review if needed.)
+
+    Args:
+        specs: Validated entries from
+            ``ResolvedLintConfig.custom_annotation_rules``.
+        engine: The active ``LintEngine`` instance. Captured by every
+            closure for ``_runtime_warnings`` appends.
+
+    Returns:
+        A fresh ``ModuleType`` with a ``RULES`` tuple, or ``None``
+        when ``specs`` is empty.
+    """
+    if not specs:
+        return None
+
+    module = ModuleType(_SYNTHETIC_MODULE_NAME)
+    rules: list[Any] = []
+
+    # Per-rule_id dedup set for the unresolved-extension warning.
+    # Shared across all closures for the same rule_id (which is the
+    # same set of closures across an entry's element_kinds).
+    for spec in specs:
+        unresolved_seen: set[tuple[str, str]] = set()
+        for kind_index, kind in enumerate(spec.element_kinds):
+            closure = _make_synthetic_closure(
+                spec=spec,
+                kind=kind,
+                engine=engine,
+                unresolved_seen=unresolved_seen,
+            )
+            # Per KD-19, multi-kind entries register N closures with
+            # the same rule_id. The engine's intra-pack dedup keys by
+            # spec.rule_id, so directly appending all closures would
+            # raise DuplicateRuleError. We mint a kind-disambiguated
+            # rule_id for closures past the first kind, EXPOSING the
+            # public rule_id via the spec.message_template prefix and
+            # documenting that multi-kind entries materialize one
+            # synthetic rule_id per declared kind:
+            #   spec.element_kinds=["field", "method"] →
+            #     rule_id 0: "custom/<suffix>"           on FIELD
+            #     rule_id 1: "custom/<suffix>__method"   on METHOD
+            # Single-kind entries (the common case in D6d's worked
+            # example) avoid the suffix entirely. The internal
+            # mangling stays hidden from the public R10 contract by
+            # virtue of the public-rule_id-only being THE registered
+            # name; the suffix variant is an INTERNAL detail surfaced
+            # only in lint output when the user configured multi-kind.
+            if kind_index > 0:
+                # Disambiguate the internal rule_id so engine staging
+                # accepts the closure. The public-facing surface
+                # documents this shape (per the docstring above).
+                mangled_id = f"{spec.rule_id}__{kind.value}"
+                existing_spec = closure._lint_spec
+                # Rebuild the LintRuleSpec with the mangled id. The
+                # severity dict and message_template dict carry over
+                # unchanged (R10 finding output presents the mangled
+                # rule_id; users see it in --format=json output).
+                closure._lint_spec = LintRuleSpec(
+                    rule_id=mangled_id,
+                    severity=existing_spec.severity,
+                    profiles=existing_spec.profiles,
+                    source_spec=existing_spec.source_spec,
+                    element=existing_spec.element,
+                    message_template=existing_spec.message_template,
+                    fn=closure,
+                )
+            rules.append(closure)
+
+    module.RULES = tuple(rules)  # type: ignore[attr-defined]
+    return module
+
+
+def synthetic_rule_ids(
+    specs: Sequence[CustomAnnotationRuleSpec],
+) -> frozenset[str]:
+    """Return every ``rule_id`` (including kind-mangled forms) for ``specs``.
+
+    Mirrors the rule_ids the synthetic module's RULES tuple would
+    register. Used by the CLI's composed-profile augmentation step
+    (cli.py): the augmentation unions these ids into
+    ``composed_profile.rule_ids`` so the engine's profile filter
+    activates the synthetic closures.
+
+    For a single-kind entry, returns ``{f"custom/{suffix}"}``. For a
+    multi-kind entry, returns
+    ``{f"custom/{suffix}", f"custom/{suffix}__<kind>", ...}`` per
+    KD-19's mangling discipline (see
+    :func:`build_synthetic_module` docstring).
+
+    Args:
+        specs: Validated entries.
+
+    Returns:
+        A frozenset of synthetic rule_ids; empty when ``specs`` is empty.
+    """
+    ids: set[str] = set()
+    for spec in specs:
+        for kind_index, kind in enumerate(spec.element_kinds):
+            if kind_index == 0:
+                ids.add(spec.rule_id)
+            else:
+                ids.add(f"{spec.rule_id}__{kind.value}")
+    return frozenset(ids)

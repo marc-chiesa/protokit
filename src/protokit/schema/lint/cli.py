@@ -96,6 +96,10 @@ from protokit.schema.lint._config import (
     compile_exclude_patterns,
     load_pyproject_config,
 )
+from protokit.schema.lint._custom_rules import (
+    build_synthetic_module,
+    synthetic_rule_ids,
+)
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
     DuplicateRuleError,
@@ -804,6 +808,32 @@ def _main_impl(
                 )
             loaded_packs.append(pack)
 
+    # D6d U1: synthetic ``custom/<suffix>`` rules from
+    # ``[[tool.protokit.lint.custom_annotation_rules]]``. Loaded BEFORE
+    # ``--rule-pack`` modules so that a user pack that accidentally
+    # declares a ``custom/<suffix>`` rule_id (KD-8 violation) collides
+    # via the engine's DuplicateRuleError ladder, surfacing the
+    # mistake at load time with the existing rule-pack-load exit code.
+    # ``--no-builtin-rules`` does NOT gate this step — synthetic rules
+    # are user-declared, not built-in, so the no-builtin-rules flag's
+    # "skip BUILTIN_PACKS" semantics don't apply.
+    synthetic_module: ModuleType | None = None
+    if resolved.custom_annotation_rules:
+        synthetic_module = build_synthetic_module(
+            resolved.custom_annotation_rules, engine,
+        )
+        if synthetic_module is not None:
+            try:
+                engine.load_rule_pack(synthetic_module)
+            except (DuplicateRuleError, TypeError, AttributeError) as exc:
+                error_exit_with_code(
+                    "rule-pack-load",
+                    (
+                        f"kind=synthetic: synthetic custom-annotation pack "
+                        f"failed to load: {_scrub_exc_message(exc)}"
+                    ),
+                )
+
     for module_name in rule_packs:
         # Stderr load-banner: every --rule-pack invocation emits
         # an advisory line so the trust delegation is observable.
@@ -874,6 +904,23 @@ def _main_impl(
         if len(profiles_per_name) == 1
         else LintProfile.compose(*profiles_per_name)
     )
+
+    # D6d U1 / R5 + KD-12: union synthetic rule_ids into the composed
+    # profile so the engine's profile filter activates them. Synthetic
+    # rules are always-on when configured — they don't participate in
+    # the per-profile membership table because they originate from
+    # pyproject array-of-tables entries, not from packs declaring
+    # profile membership via @lint_rule(profiles=...). The augmentation
+    # happens AFTER profile composition (so the user's --profile choice
+    # is preserved) and BEFORE the [severities] overlay (so user
+    # demotion via [tool.protokit.lint.severities] applies).
+    if resolved.custom_annotation_rules:
+        synthetic_ids = synthetic_rule_ids(resolved.custom_annotation_rules)
+        if synthetic_ids:
+            composed_profile = dataclasses.replace(
+                composed_profile,
+                rule_ids=composed_profile.rule_ids | synthetic_ids,
+            )
 
     # Apply R9a severities overlay (D6a U9). User pyproject
     # ``[tool.protokit.lint.severities]`` always wins on collision

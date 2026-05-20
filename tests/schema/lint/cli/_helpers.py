@@ -10,8 +10,9 @@ D5 U5 added the cross-formatter render contract. The
 ``LINT_RUNTIME_WARNING_CATEGORIES`` tuple + ``warning_for_category``
 factory live here so the formatter test (``tests/test_builtin_lint_runtime_warnings.py``)
 and the CLI human-stderr test (``test_human_stderr_render.py``)
-share one definition — a 6th category lands by editing this file
-alone (D6b U5 added the 5th, ``severities_unloaded_rule``).
+share one definition — a 7th category lands by editing this file
+alone (D6b U5 added the 5th, ``severities_unloaded_rule``; D6d U1
+added the 6th, ``custom_annotation_extension_unresolved``).
 """
 
 from __future__ import annotations
@@ -21,9 +22,9 @@ from typing import Any
 
 from protokit.schema.lint.model import LintRuntimeWarning
 
-#: The five ``LintRuntimeWarning`` categories that exist as of D6b
-#: U5. Keep this tuple in sync with ``LintRuntimeWarning.category``'s
-#: ``Literal[...]`` in ``protokit.schema.lint.model``. Adding a 6th
+#: The six ``LintRuntimeWarning`` categories that exist as of D6d
+#: U1. Keep this tuple in sync with ``LintRuntimeWarning.category``'s
+#: ``Literal[...]`` in ``protokit.schema.lint.model``. Adding a 7th
 #: category is a deliberate act that requires updating both the
 #: model Literal AND this tuple — the cross-formatter parametrized
 #: matrix tests will then fail until every formatter render site is
@@ -34,6 +35,7 @@ LINT_RUNTIME_WARNING_CATEGORIES: tuple[str, ...] = (
     "severities_unloaded_rule",
     "min_severity_relaxed",
     "all_files_excluded",
+    "custom_annotation_extension_unresolved",
 )
 
 
@@ -120,6 +122,17 @@ def warning_for_category(
             message=(
                 f"all {index + 1} input file(s) excluded by --exclude "
                 f"patterns: **/*"
+            ),
+        )
+    if category == "custom_annotation_extension_unresolved":
+        return LintRuntimeWarning(
+            category="custom_annotation_extension_unresolved",
+            rule_id=f"custom/missing-extension-{index}",
+            message=(
+                f"synthetic rule 'custom/missing-extension-{index}' "
+                f"skipped on file 'acme/example_{index}.proto': "
+                f"extension 'notinpool.foo' is not registered in the "
+                f"compile pool"
             ),
         )
     raise AssertionError(f"unrecognized category: {category}")

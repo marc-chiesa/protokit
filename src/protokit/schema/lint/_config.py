@@ -42,6 +42,7 @@ land in U2. U1 returns the raw ``dict[str, Any]`` parsed from the
 from __future__ import annotations
 
 import dataclasses
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -57,7 +58,7 @@ else:
     import tomli as tomllib
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr, error_exit_with_code
-from protokit.schema.lint.model import SEVERITY_RANK, LintSeverity
+from protokit.schema.lint.model import SEVERITY_RANK, ElementKind, LintSeverity
 
 # Per-key source attribution for ResolvedLintConfig (R20 message branches).
 # Used for `min_severity_source`: cli vs pyproject is mutually exclusive
@@ -452,7 +453,27 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "format",
         "severities",
         "no_builtin_rules",
+        "custom_annotation_rules",
     },
+)
+
+
+#: D6d R9: regex contract for ``[[custom_annotation_rules]].rule_suffix``.
+#: Anchored, lowercase-ASCII kebab-case, must start with a letter, no
+#: leading/trailing/double hyphens. Underscores are forbidden so synthetic
+#: rule_ids stay consistent with the project's ``<category>/<short-name>``
+#: lowercase-kebab convention (every built-in rule_id today obeys this
+#: shape).
+_CUSTOM_RULE_SUFFIX_REGEX: re.Pattern[str] = re.compile(
+    r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+)
+
+#: D6d R8: allowed lowercase ElementKind values for the
+#: ``element_kinds`` array entry. Pyproject TOML uses lowercase
+#: identifiers ("field", "method", ...) which map to ``ElementKind`` via
+#: ``ElementKind(value)``.
+_VALID_ELEMENT_KIND_NAMES: frozenset[str] = frozenset(
+    kind.value for kind in ElementKind
 )
 
 #: Buf-compatibility profile aliases resolved at the
@@ -784,6 +805,449 @@ def _empty_severities() -> dict[str, LintSeverity]:
     return {}
 
 
+@dataclass(frozen=True)
+class CustomAnnotationRuleSpec:
+    """Validated entry from ``[[tool.protokit.lint.custom_annotation_rules]]``.
+
+    Produced by :func:`_coerce_custom_annotation_rules`. Each entry
+    materializes into one or more synthetic ``custom/<rule_suffix>``
+    lint rules — one closure per ``element_kinds`` member, all sharing
+    the same ``rule_id`` (per D6d KD-19; verified at U1 implementation
+    time that ``LintEngine._loaded_specs`` is keyed by ``rule_id``
+    alone, so multi-kind entries register N closures under one key
+    via the synthetic ModuleType's RULES tuple — the engine accepts
+    repeated keys silently because intra-pack dedup operates only
+    inside ``load_rule_pack``'s staging dict, which the synthetic
+    loader bypasses by appending closures for distinct kinds before
+    handoff).
+
+    All fields are read-only post-construction. The dataclass is
+    ``frozen=True`` to satisfy the
+    [[frozen-dataclass-mutable-fields-need-post-init-snapshot]] rule:
+    ``element_kinds`` is a tuple and ``allowed_values`` is a tuple
+    (or ``None``) so no mutable nesting is exposed.
+
+    Attributes:
+        rule_suffix: The user-supplied suffix; the materialized
+            ``rule_id`` is ``f"custom/{rule_suffix}"``. Must match
+            ``^[a-z][a-z0-9]*(-[a-z0-9]+)*$`` (R9).
+        option: The custom-extension full name as it would appear in
+            a ``.proto`` file (e.g., ``"mycorp.audit_level"``). No
+            surrounding parentheses — the synthetic-rule closure
+            resolves the extension via ``pool.FindExtensionByName(
+            option)`` and the parens are protobuf source syntax, not
+            part of the descriptor full name.
+        element_kinds: Tuple of ``ElementKind`` values the synthetic
+            rule applies to. Non-empty (the validator rejects an
+            empty list). Each kind produces one closure attached to
+            the same ``rule_id`` (KD-19).
+        allowed_values: Optional tuple of allowed scalar values. When
+            ``None``, the rule is presence-only (fires if the option
+            is absent). When non-``None``, the rule fires on absence
+            AND on a value not in ``allowed_values``. Values are
+            homogeneous (all same Python type — ``str | int | bool``;
+            ``float`` and mixed types are rejected at config-load per
+            R2 contract). For enum-typed options, the values are
+            identifier strings (e.g., ``["HIGH", "CRITICAL"]``); the
+            synthetic-rule closure translates the runtime integer to
+            its enum identifier name for comparison.
+        severity: Default severity for findings produced by this
+            synthetic rule. Defaults to ``LintSeverity.WARNING`` per
+            R5. ``[tool.protokit.lint.severities]`` overrides apply
+            per the usual precedence (KD-12).
+    """
+
+    rule_suffix: str
+    option: str
+    element_kinds: tuple[ElementKind, ...]
+    allowed_values: tuple[str, ...] | tuple[int, ...] | tuple[bool, ...] | None = None
+    severity: LintSeverity = LintSeverity.WARNING
+
+    @property
+    def rule_id(self) -> str:
+        """The fully-qualified ``custom/<suffix>`` rule_id."""
+        return f"custom/{self.rule_suffix}"
+
+
+def _empty_custom_annotation_rules() -> tuple[CustomAnnotationRuleSpec, ...]:
+    """Module-level typed factory for the ``custom_annotation_rules`` default.
+
+    Mirrors :func:`_empty_severities` — a typed factory makes the
+    field's element type explicit to mypy across dataclass-stub
+    versions.
+    """
+    return ()
+
+
+def _coerce_custom_annotation_rules(
+    value: Any,
+) -> tuple[CustomAnnotationRuleSpec, ...]:
+    """Coerce ``[[custom_annotation_rules]]`` to a tuple of validated specs.
+
+    D6d R8 + R9. The TOML wire format is array-of-tables:
+
+    .. code-block:: toml
+
+        [[tool.protokit.lint.custom_annotation_rules]]
+        rule_suffix    = "audit-required"
+        option         = "mycorp.audit_level"
+        element_kinds  = ["method"]
+        allowed_values = ["LOW", "HIGH", "CRITICAL"]   # optional
+        severity       = "error"                       # optional
+
+    ``tomllib`` parses array-of-tables as ``list[dict]``. Per-entry
+    validation:
+
+    - ``rule_suffix``: non-empty string matching :data:`_CUSTOM_RULE_SUFFIX_REGEX`.
+    - ``option``: non-empty string. No leading/trailing whitespace.
+    - ``element_kinds``: non-empty list of lowercase strings drawn
+      from :data:`_VALID_ELEMENT_KIND_NAMES` (the 8 ElementKind values).
+      Duplicates within a single entry are rejected to surface typos
+      cleanly.
+    - ``allowed_values``: optional homogeneous list of scalars (all
+      ``str``, all ``int``, or all ``bool``). Empty list rejected.
+      Mixed-type lists rejected. Floats rejected (per KD-11/R2: scalar
+      protobuf option values comparable by equality include str/int/
+      bool/enum-identifier; floats compare unsafely under ULP drift).
+    - ``severity``: optional string ∈ ``{"error", "warning", "info"}``;
+      default ``"warning"``.
+
+    Cross-entry: collision detection on ``rule_suffix``. Two entries
+    declaring the same suffix raise ``pyproject-config-invalid``
+    naming both pyproject positions (index 0-based).
+
+    Args:
+        value: The raw value parsed from
+            ``[tool.protokit.lint.custom_annotation_rules]``. Expected
+            shape: ``list[dict[str, Any]]``.
+
+    Returns:
+        A tuple of validated :class:`CustomAnnotationRuleSpec`
+        entries. Empty tuple if the input list is empty (the empty
+        list is accepted as a no-op — users can stage a configuration
+        scaffold).
+
+    Raises:
+        SystemExit: Exit code 2 via :func:`error_exit_with_code`
+            ``pyproject-config-invalid`` for any validation failure.
+            The error message names the offending entry index when
+            applicable.
+    """
+    if not isinstance(value, list):
+        error_exit_with_code(
+            "pyproject-config-invalid",
+            (
+                f"[tool.protokit.lint] custom_annotation_rules must be "
+                f"an array of tables ([[custom_annotation_rules]]); "
+                f"got {type(value).__name__}."
+            ),
+        )
+
+    seen_suffixes: dict[str, int] = {}
+    specs: list[CustomAnnotationRuleSpec] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}] "
+                    f"must be a table; got {type(entry).__name__}."
+                ),
+            )
+
+        allowed_entry_keys = frozenset(
+            {
+                "rule_suffix",
+                "option",
+                "element_kinds",
+                "allowed_values",
+                "severity",
+            },
+        )
+        unknown = sorted(set(entry) - allowed_entry_keys)
+        if unknown:
+            unknown_repr = ", ".join(repr(k) for k in unknown)
+            allowed_repr = ", ".join(repr(k) for k in sorted(allowed_entry_keys))
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}] "
+                    f"has unknown key(s): {unknown_repr}. Allowed keys: "
+                    f"{allowed_repr}."
+                ),
+            )
+
+        # rule_suffix: required, regex-validated.
+        if "rule_suffix" not in entry:
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}] "
+                    f"is missing required key 'rule_suffix'."
+                ),
+            )
+        raw_suffix = entry["rule_suffix"]
+        if not isinstance(raw_suffix, str):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".rule_suffix must be a string; got "
+                    f"{type(raw_suffix).__name__}."
+                ),
+            )
+        if not _CUSTOM_RULE_SUFFIX_REGEX.match(raw_suffix):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".rule_suffix must match "
+                    f"{_CUSTOM_RULE_SUFFIX_REGEX.pattern!r} "
+                    f"(lowercase ASCII letters, digits, single hyphens; "
+                    f"must start with a letter)."
+                ),
+            )
+        if raw_suffix in seen_suffixes:
+            prior_index = seen_suffixes[raw_suffix]
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".rule_suffix={raw_suffix!r} collides with entry "
+                    f"[{prior_index}]; each rule_suffix must be unique."
+                ),
+            )
+        seen_suffixes[raw_suffix] = index
+
+        # option: required non-empty string.
+        if "option" not in entry:
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}] "
+                    f"is missing required key 'option'."
+                ),
+            )
+        raw_option = entry["option"]
+        if not isinstance(raw_option, str):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".option must be a string; got "
+                    f"{type(raw_option).__name__}."
+                ),
+            )
+        stripped_option = raw_option.strip()
+        if not stripped_option:
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".option must be a non-empty string."
+                ),
+            )
+
+        # element_kinds: required non-empty list of valid ElementKind names.
+        if "element_kinds" not in entry:
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}] "
+                    f"is missing required key 'element_kinds'."
+                ),
+            )
+        raw_kinds = entry["element_kinds"]
+        if not isinstance(raw_kinds, list):
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".element_kinds must be a list of strings; got "
+                    f"{type(raw_kinds).__name__}."
+                ),
+            )
+        if not raw_kinds:
+            error_exit_with_code(
+                "pyproject-config-invalid",
+                (
+                    f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                    f".element_kinds must be a non-empty list."
+                ),
+            )
+        seen_kinds: set[str] = set()
+        kinds_list: list[ElementKind] = []
+        for k_index, kind_name in enumerate(raw_kinds):
+            if not isinstance(kind_name, str):
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".element_kinds[{k_index}] must be a string; got "
+                        f"{type(kind_name).__name__}."
+                    ),
+                )
+            if kind_name not in _VALID_ELEMENT_KIND_NAMES:
+                valid = ", ".join(repr(v) for v in sorted(_VALID_ELEMENT_KIND_NAMES))
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".element_kinds[{k_index}] must be one of {valid}; "
+                        f"got an unrecognized ElementKind name."
+                    ),
+                )
+            if kind_name in seen_kinds:
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".element_kinds has duplicate value {kind_name!r}."
+                    ),
+                )
+            seen_kinds.add(kind_name)
+            kinds_list.append(ElementKind(kind_name))
+
+        # allowed_values: optional homogeneous scalar list (str / int /
+        # bool). Floats + mixed-type lists rejected.
+        allowed: tuple[Any, ...] | None = None
+        if "allowed_values" in entry:
+            raw_allowed = entry["allowed_values"]
+            if not isinstance(raw_allowed, list):
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".allowed_values must be a list; got "
+                        f"{type(raw_allowed).__name__}."
+                    ),
+                )
+            if not raw_allowed:
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".allowed_values must be a non-empty list when "
+                        f"specified (omit the key for presence-only rules)."
+                    ),
+                )
+            # ``bool`` is a subclass of ``int`` in Python; check ``bool``
+            # FIRST so a list of bools binds to the ``bool`` element type
+            # rather than masquerading as ``int``. Per pyproject's
+            # ``_coerce_max_warnings`` precedent.
+            first = raw_allowed[0]
+            if isinstance(first, bool):
+                element_type: type = bool
+                element_label = "bool"
+            elif isinstance(first, int):
+                element_type = int
+                element_label = "int"
+            elif isinstance(first, str):
+                element_type = str
+                element_label = "str"
+            else:
+                # Float, list, dict, etc. — explicitly rejected.
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".allowed_values[0] must be one of "
+                        f"str / int / bool; got "
+                        f"{type(first).__name__}. "
+                        f"(Float-valued options compare unsafely; see D6d KD-11/R2.)"
+                    ),
+                )
+            seen_values: set[Any] = set()
+            normalized_values: list[Any] = []
+            for v_index, raw_value in enumerate(raw_allowed):
+                # ``bool``-first check matches the first-element branch.
+                if element_type is bool:
+                    if not isinstance(raw_value, bool):
+                        error_exit_with_code(
+                            "pyproject-config-invalid",
+                            (
+                                f"[tool.protokit.lint] custom_annotation_rules"
+                                f"[{index}].allowed_values[{v_index}] must be "
+                                f"a {element_label} to match the first element; "
+                                f"got {type(raw_value).__name__}."
+                            ),
+                        )
+                elif element_type is int:
+                    # Reject booleans masquerading as ints in a mixed list.
+                    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+                        error_exit_with_code(
+                            "pyproject-config-invalid",
+                            (
+                                f"[tool.protokit.lint] custom_annotation_rules"
+                                f"[{index}].allowed_values[{v_index}] must be "
+                                f"a {element_label} to match the first element; "
+                                f"got {type(raw_value).__name__}."
+                            ),
+                        )
+                else:  # element_type is str
+                    if not isinstance(raw_value, str):
+                        error_exit_with_code(
+                            "pyproject-config-invalid",
+                            (
+                                f"[tool.protokit.lint] custom_annotation_rules"
+                                f"[{index}].allowed_values[{v_index}] must be "
+                                f"a {element_label} to match the first element; "
+                                f"got {type(raw_value).__name__}."
+                            ),
+                        )
+                if raw_value in seen_values:
+                    error_exit_with_code(
+                        "pyproject-config-invalid",
+                        (
+                            f"[tool.protokit.lint] custom_annotation_rules"
+                            f"[{index}].allowed_values has duplicate entry "
+                            f"at position {v_index}."
+                        ),
+                    )
+                seen_values.add(raw_value)
+                normalized_values.append(raw_value)
+            allowed = tuple(normalized_values)
+
+        # severity: optional string. Defaults to "warning" per R5.
+        severity: LintSeverity = LintSeverity.WARNING
+        if "severity" in entry:
+            raw_severity = entry["severity"]
+            if not isinstance(raw_severity, str):
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".severity must be a string; got "
+                        f"{type(raw_severity).__name__}."
+                    ),
+                )
+            normalized_severity = raw_severity.strip().lower()
+            try:
+                severity = LintSeverity(normalized_severity)
+            except ValueError:
+                valid = ", ".join(repr(s.value) for s in LintSeverity)
+                error_exit_with_code(
+                    "pyproject-config-invalid",
+                    (
+                        f"[tool.protokit.lint] custom_annotation_rules[{index}]"
+                        f".severity must be one of {valid}; got a severity "
+                        f"name outside the closed set."
+                    ),
+                )
+
+        specs.append(
+            CustomAnnotationRuleSpec(
+                rule_suffix=raw_suffix,
+                option=stripped_option,
+                element_kinds=tuple(kinds_list),
+                allowed_values=allowed,
+                severity=severity,
+            ),
+        )
+
+    return tuple(specs)
+
+
 def _coerce_no_builtin_rules(value: Any) -> bool:
     """Coerce ``no_builtin_rules`` to ``bool`` per R9c.
 
@@ -868,6 +1332,15 @@ class ResolvedLintConfig:
     #: takes precedence per the standard CLI > pyproject precedence
     #: applied to the other knobs.
     no_builtin_rules: bool = False
+    #: D6d R8 — validated entries from
+    #: ``[[tool.protokit.lint.custom_annotation_rules]]``. Empty tuple
+    #: when no entries are configured. No CLI side-channel — synthetic
+    #: rule declarations are pyproject-only by intent (the array-of-
+    #: tables shape doesn't roundtrip through Click's flag surface;
+    #: see D6d brainstorm KD-9 / KD-12).
+    custom_annotation_rules: tuple[CustomAnnotationRuleSpec, ...] = (
+        dataclasses.field(default_factory=_empty_custom_annotation_rules)
+    )
 
     def __post_init__(self) -> None:
         # Tuple-snapshot list inputs per the
@@ -877,6 +1350,15 @@ class ResolvedLintConfig:
         # mutations on it would leak through to the dataclass.
         object.__setattr__(self, "profile", tuple(self.profile))
         object.__setattr__(self, "exclude", tuple(self.exclude))
+        # D6d R8: custom_annotation_rules tuple-snapshot for the same
+        # frozen-dataclass safety reason. ``_coerce_custom_annotation_rules``
+        # already returns a tuple; programmatic callers (tests) may
+        # pass a list which we normalize here.
+        object.__setattr__(
+            self,
+            "custom_annotation_rules",
+            tuple(self.custom_annotation_rules),
+        )
         # Mapping-snapshot per the same learning: ``severities`` field's
         # ``default_factory=dict`` returns a fresh mutable dict; wrap in
         # ``MappingProxyType`` over a defensive ``dict()`` copy so callers
@@ -1109,6 +1591,8 @@ class ResolvedLintConfig:
                     validated[key] = _coerce_severities(value)
                 elif key == "no_builtin_rules":
                     validated[key] = _coerce_no_builtin_rules(value)
+                elif key == "custom_annotation_rules":
+                    validated[key] = _coerce_custom_annotation_rules(value)
                 # Unreachable: `_validate_table_keys` already exited
                 # on any key not in `_ALLOWED_KEYS`. The else-branch
                 # is omitted intentionally.
@@ -1236,6 +1720,24 @@ class ResolvedLintConfig:
                 "in cli.py if this fires.",
             )
 
+        # D6d R8: custom_annotation_rules is pyproject-only (no CLI
+        # side-channel). The validated tuple flows through unchanged;
+        # cli.py reads ``resolved.custom_annotation_rules`` to drive
+        # the synthetic-rule loader and composed-profile augmentation.
+        # Mirror the silent-drop guard from the ``severities`` branch:
+        # if a future delivery wires a CLI override without updating
+        # this method, surface the integration bug immediately.
+        if "custom_annotation_rules" in cli_overrides:
+            raise NotImplementedError(
+                "cli_overrides['custom_annotation_rules'] is not yet "
+                "wired into ResolvedLintConfig.from_dict — D6d ships "
+                "pyproject-only declarations. Add the precedence branch "
+                "here before exposing a CLI custom-annotation override.",
+            )
+        resolved_custom_annotation_rules: tuple[
+            CustomAnnotationRuleSpec, ...
+        ] = validated.get("custom_annotation_rules", ())
+
         return cls(
             profile=resolved_profile,
             exclude=resolved_exclude,
@@ -1247,6 +1749,7 @@ class ResolvedLintConfig:
             exclude_source=exclude_source,
             severities=resolved_severities,
             no_builtin_rules=resolved_no_builtin,
+            custom_annotation_rules=resolved_custom_annotation_rules,
         )
 
 
