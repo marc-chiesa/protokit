@@ -1,7 +1,7 @@
 ---
 title: "Closed Literal discriminator additions bump schema_version; open severity ladders don't — apply the consumer-correctness test"
 date: 2026-05-17
-last_updated: 2026-05-19-u3
+last_updated: 2026-05-20-d6d-u2
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -74,6 +74,21 @@ Sub-rules:
    **First case under this carve-out:** D6c U2 shipped R8b's `package/directory-same-package/empty-mixed` violation_kind. D6c U3's parity gate surfaced the multi-declared+packageless template gap (see [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] Case 4); the fix renamed `/empty-mixed` to `/empty-mixed-single` AND added `/empty-mixed-multi`. The rename portion takes the carve-out (un-released, internal); the addition portion takes the standard sub-rule 1 bump treatment — but the bump is deferred to U5's CHANGELOG-fold commit since BOTH the rename and the addition land in the same un-released cycle. `_LINT_JSON_SCHEMA_VERSION` stays at `"0.3"` through U3; U5 will bump to `"0.4"` carrying the final user-visible violation_kind set.
 
    **Post-1.0**: the carve-out collapses to zero window. Once the project reaches 1.0.0 and semver is binding, every closed-discriminator rename bumps regardless of release phase — even pre-release RCs carry consumer expectation at 1.0.x.
+
+8. **When two related learnings cover the same wire-format surface, apply the NEWER one and verify the older one's clause is still authoritative before citing it** (added 2026-05-20 at D6d U2). This learning was written specifically to REFINE the older blanket sentence in [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]] that said "Adding new severity-level / category strings to an existing enum field does NOT bump the version." That blanket sentence is now WRONG for closed-discriminator additions; this 2026-05-17 doc replaced it with the closed-vs-open distinction.
+
+   D6d U2's brainstorm decision cited the 2026-05-13 learning by name and concluded "additive Literal addition is bump-permissive — no schema_version bump." ce:review (L-1 + AC-1 convergence, 2026-05-20) caught the miscitation: the brainstorm author had applied the OLDER, now-superseded blanket sentence instead of the 2026-05-17 refinement that supersedes it for closed-discriminator Literals.
+
+   **Mechanical check when about to cite an older learning:** search for newer learnings that link back to it (via `[[wikilink]]` traversal in `docs/solutions/`). If the newer learning was written to REFINE the older one (as this 2026-05-17 doc was written to refine the 2026-05-13 doc — see the "Related" section's first entry), the newer one's guidance takes precedence for the relevant clause. The older doc's REMAINING guidance is still valid; only the specific clause it superseded is stale.
+
+   **Recency test — both must hold:**
+
+   1. The newer learning's title or `Related:` section explicitly states it EXTENDS or REFINES the older one.
+   2. The clause being cited in the older learning is the one the newer learning supersedes (not a different clause in the same older doc).
+
+   When both hold, cite the NEWER learning in the plan/brainstorm; do NOT cite the older one for that clause. Other clauses in the older doc remain citable.
+
+   **Operational signal:** the older doc's `last_updated` field is the recency anchor. If a newer doc in the same area was last updated AFTER the older doc's `last_updated`, treat the newer doc's overlap as the authoritative version. The brainstorm phase should treat `last_updated` as a load-bearing field, not metadata.
 
 ## Why This Matters
 
@@ -189,6 +204,27 @@ def test_literal_lists_all_five_categories(self) -> None:
 ```
 
 Adding a 6th value without the lockstep test update fails this test loudly. The test makes it structurally impossible to widen the Literal without remembering to apply the consumer-correctness test (and bump if it fails).
+
+### Second concrete application: D6d U1 + U2 `LintRuntimeWarning.category` additions
+
+D6d shipped TWO new closed-discriminator values within a single delivery cycle, each landing in its own per-unit commit with its own bump:
+
+- **D6d U1 (2026-05-19):** added `"custom_annotation_extension_unresolved"` (6th value) for synthetic `custom/<suffix>` rules whose user-configured `option` is not registered in the compile pool. Bumped `_LINT_JSON_SCHEMA_VERSION` `"0.3"` → `"0.4"`.
+- **D6d U2 (2026-05-20):** added `"extension_unresolved"` (7th value) for BUILT-IN option-aware rules (e.g., `options/field-behavior-consistent`) whose depended-on extension is absent from the compile set. Bumped `"0.4"` → `"0.5"`. Distinct category from U1's 6th value: same root condition (extension not in pool), different root cause (user mis-configured pyproject vs user did not include the well-known proto); consumers discriminate via `category` without text parsing.
+
+Both adds independently triggered sub-rule 1 (bump in the same commit as the Literal widening). No batching across the delivery cycle — each closed-discriminator addition got its own bump even though both fell within the D6d 0.5.0 release window. The U2 bump-rationale block in `_builtin_lint.py` documents both additions side-by-side:
+
+```python
+#: D6d U1: added ``"custom_annotation_extension_unresolved"`` (6th value).
+#:   Closed discriminator; bumped 0.3 → 0.4.
+#: D6d U2: added ``"extension_unresolved"`` (7th value).
+#:   Closed discriminator; bumps 0.4 → 0.5.
+_LINT_JSON_SCHEMA_VERSION: str = "0.5"
+```
+
+**The miscitation that sub-rule 8 prevents.** D6d U2's brainstorm decision cited [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]] (the OLDER 2026-05-13 doc) and concluded the addition was "bump-permissive" per the older blanket sentence. ce:review L-1 + AC-1 (2-way convergence at 0.98, 2026-05-20) caught the miscitation against this 2026-05-17 refinement — the newer doc explicitly supersedes the older blanket sentence for closed discriminators. Sub-rule 8 codifies the recency-check discipline so future brainstorms don't repeat the miscitation.
+
+The presence-ratchet test (`tests/schema/lint/test_model_dataclass_changes.py`) caught both additions structurally — the 6-category and 7-category counts forced lockstep test updates AND surfaced the closed-discriminator classification question for review.
 
 ### The same lesson at the field site
 

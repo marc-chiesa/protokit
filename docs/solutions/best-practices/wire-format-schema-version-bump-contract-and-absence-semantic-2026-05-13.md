@@ -351,7 +351,12 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   triggered the 0.2 → 0.3 bump because consumers exhaustively
   switch on `category` (closed discriminator). Adding a value to
   `LintFinding.severity` would NOT bump because consumers render
-  / order it (open ladder).
+  / order it (open ladder). **D6d U2 added sub-rule 8 (2026-05-20)
+  to the refinement learning: when this 2026-05-13 doc's blanket
+  sentence and the 2026-05-17 refinement appear to disagree, the
+  newer 2026-05-17 refinement governs.** The U2 brainstorm cited
+  THIS doc's older sentence without noticing the refinement,
+  caught by ce:review L-1 + AC-1 2-way convergence.
 - [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] —
   CONSUMER-SIDE companion. When the bump fires, this learning
   tells the producer when to bump; the value-migrated learning
