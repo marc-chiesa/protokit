@@ -21,7 +21,19 @@ The pattern is used by:
   extensions.
 
 See :func:`get_pool_bound_options_class` and
-:func:`resolve_enum_value_for_comparison` for the public surface.
+:func:`resolve_enum_value_for_comparison` for the helpers exposed
+by this module.
+
+**Visibility note (D6d U2 ce:review MAINT-3 / AC-3):** the leading
+underscore on the module name marks this as an implementation detail
+of the lint package — NOT part of the protokit public API. The two
+helpers intentionally lack underscore prefixes so internal callers
+within the lint package can import them by name; they are
+``package-internal public`` (callable from any module under
+``protokit.schema.lint.*``) but not stable across protokit releases.
+External rule-pack authors should pin a protokit version range if
+they depend on these helpers; the Public Surface (DRAFT) appendix in
+README classifies this module as INTERNAL.
 
 References:
 

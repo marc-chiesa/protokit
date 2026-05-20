@@ -144,7 +144,7 @@ def warning_for_category(
             message=(
                 f"rule 'options/builtin-rule-{index}' skipped on file "
                 f"'acme/example_{index}.proto': extension "
-                f"'(google.api.field_behavior)' is not registered in "
+                f"'google.api.field_behavior' is not registered in "
                 f"the compile pool"
             ),
         )

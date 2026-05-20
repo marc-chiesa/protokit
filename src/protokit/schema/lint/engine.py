@@ -67,6 +67,8 @@ from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
+from google.protobuf.message import DecodeError
+
 from protokit._cli_utils import _scrub_exc_message
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint.model import (
@@ -112,12 +114,25 @@ if TYPE_CHECKING:
 # ``KeyError`` is intentionally NOT listed separately — it is a subclass
 # of ``LookupError``, which is already in the tuple, so adding it would
 # be dead coverage.
+#
+# ``DecodeError`` (D6d U2 ce:review REL-1 + SEC-002) is added because
+# option-aware rules using the dynamic-pool re-parse pattern
+# (``parsed.MergeFromString(descriptor.GetOptions().SerializeToString())``)
+# can encounter malformed serialized options bytes if a future protobuf
+# version, protoxy upgrade, or descriptor-set corruption surfaces them.
+# Without ``DecodeError`` in the tuple, the exception propagates uncaught
+# past ``_invoke_rule`` and crashes ``engine.run()`` instead of being
+# recorded as a ``rule_exception`` warning. ``DecodeError`` is the only
+# subclass of ``google.protobuf.message.Error`` the engine needs to
+# anticipate; the parent class is not added because no other
+# ``Error`` subclass is reachable via the current rule-callable surface.
 _RULE_EXCEPTION_TUPLE: tuple[type[BaseException], ...] = (
     SystemExit,
     ValueError,
     TypeError,
     AttributeError,
     LookupError,
+    DecodeError,
     LintRuleError,
 )
 

@@ -52,12 +52,15 @@ from protokit.schema.lint.model import (
     ElementKind,
     LintProfile,
     LintReport,
+    LintRuleError,
     LintSeverity,
 )
 from protokit.schema.lint.rules.options import field_behavior
 from protokit.schema.lint.rules.options.field_behavior import (
+    _CONTRADICTORY_PAIRS,
     RULE_ID,
     RULES,
+    _engine_for_ctx,
     check_field_behavior_consistent,
 )
 
@@ -658,7 +661,7 @@ class TestProfileScope:
 
 
 class TestDormancy:
-    def test_not_in_builtin_packs_at_u2(self) -> None:
+    def test_rule_id_not_in_any_builtin_pack_at_u2(self) -> None:
         """U2 ships the rule + pack but does NOT register in
         ``BUILTIN_PACKS``. Registration ships in D6d U5 (delivery
         boundary) per
@@ -667,7 +670,230 @@ class TestDormancy:
         A zero-config ``protokit lint --profile default`` invocation
         on a proto with malformed ``(google.api.field_behavior)``
         annotations produces ZERO findings of this rule before U5.
+
+        The assertion checks rule_id presence across every BUILTIN_PACKS
+        module — NOT just module identity — so a future contributor who
+        creates a renamed copy of this module (e.g.,
+        ``field_behavior_v2``) and registers IT cannot bypass the
+        dormancy gate. The stronger assertion catches the rename-bypass
+        attack documented in ce:review ADV-5 (P3, D6d U2).
         """
         from protokit.schema.lint.cli import BUILTIN_PACKS
 
         assert field_behavior not in BUILTIN_PACKS
+        assert not any(
+            RULE_ID in (r._lint_spec.rule_id for r in pack.RULES)  # type: ignore[attr-defined]
+            for pack in BUILTIN_PACKS
+        ), (
+            f"rule_id {RULE_ID!r} found in BUILTIN_PACKS via a module "
+            f"OTHER than field_behavior — the rule has been promoted to "
+            f"auto-load. Update this test (and the CHANGELOG) when D6d "
+            f"U5 ships the promotion."
+        )
+
+
+# ---------------------------------------------------------------------------
+# ce:review follow-up regressions (D6d U2 ce:review 2026-05-20)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossRunDedupReset:
+    """ce:review COR-1 / ADV-1: cross-run dedup state must reset.
+
+    Without the per-run reset (id(engine._runtime_warnings) tracking),
+    a second engine.run() on the same engine would silently emit zero
+    extension_unresolved warnings even though the unresolved-extension
+    condition still holds. The CLI is not affected today (one
+    engine.run() per process), but MCP/IDE D6e+ runtimes that recycle
+    engines across sessions would hit the leak.
+    """
+
+    def test_second_run_reemits_warning_on_same_engine(
+        self, tmp_path: Path,
+    ) -> None:
+        """Run engine.run() twice on the same engine against the same
+        proto file without field_behavior.proto. The second run must
+        emit its own extension_unresolved warning (NOT silently
+        suppress it due to dedup state from the first run).
+        """
+        # Two separate compile dirs (compile fails fixture across runs
+        # if we reuse one tmp_path without rewriting).
+        sub_a = tmp_path / "run_a"
+        sub_b = tmp_path / "run_b"
+        sub_a.mkdir()
+        sub_b.mkdir()
+
+        user_proto = (
+            'syntax = "proto3";\n\n'
+            "package user;\n\n"
+            "message M {\n"
+            "    string a = 1;\n"
+            "}\n"
+        )
+
+        def _make_result(sub: Path) -> Any:
+            p = sub / "user" / "msg.proto"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(user_proto)
+            return compile_protos_to_result(
+                paths=[p],
+                proto_paths=[str(sub)],
+            )
+
+        result_a = _make_result(sub_a)
+        result_b = _make_result(sub_b)
+
+        engine = LintEngine()
+        engine.load_rule_pack(field_behavior)
+        profile = LintProfile(
+            name="_test_isolation",
+            rule_ids=frozenset({RULE_ID}),
+            min_severity=LintSeverity.INFO,
+        )
+
+        r1 = engine.run(result_a, profile=profile)
+        r2 = engine.run(result_b, profile=profile)
+
+        warns_a = [
+            w for w in r1.runtime_warnings
+            if w.category == "extension_unresolved"
+        ]
+        warns_b = [
+            w for w in r2.runtime_warnings
+            if w.category == "extension_unresolved"
+        ]
+        assert len(warns_a) == 1
+        assert len(warns_b) == 1, (
+            "Second engine.run() emitted zero extension_unresolved "
+            "warnings — the per-run dedup reset is broken. See "
+            "ce:review COR-1/ADV-1."
+        )
+
+
+class TestCrossEngineDedupIsolation:
+    """ce:review T-04: WeakKeyDictionary key isolation across engines.
+
+    Engine A's dedup state must NOT suppress engine B's warning for
+    the same (rule_id, file_name) pair. The WeakKeyDictionary keyed
+    by engine instance provides this isolation structurally; this
+    test pins the contract so a future refactor to module-level state
+    surfaces immediately.
+    """
+
+    def test_independent_engines_each_emit_warning(
+        self, tmp_path: Path,
+    ) -> None:
+        user_proto = (
+            'syntax = "proto3";\n\n'
+            "package user;\n\n"
+            "message M {\n"
+            "    string a = 1;\n"
+            "}\n"
+        )
+        p = tmp_path / "user" / "msg.proto"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(user_proto)
+        result = compile_protos_to_result(
+            paths=[p],
+            proto_paths=[str(tmp_path)],
+        )
+        profile = LintProfile(
+            name="_test_isolation",
+            rule_ids=frozenset({RULE_ID}),
+            min_severity=LintSeverity.INFO,
+        )
+
+        engine_a = LintEngine()
+        engine_a.load_rule_pack(field_behavior)
+        engine_b = LintEngine()
+        engine_b.load_rule_pack(field_behavior)
+
+        r_a = engine_a.run(result, profile=profile)
+        r_b = engine_b.run(result, profile=profile)
+
+        assert len([
+            w for w in r_a.runtime_warnings
+            if w.category == "extension_unresolved"
+        ]) == 1
+        assert len([
+            w for w in r_b.runtime_warnings
+            if w.category == "extension_unresolved"
+        ]) == 1
+
+
+class TestLintRuleErrorRouting:
+    """ce:review ADV-2 / REL-2 / T-03: structural-env failures inside
+    the rule callable raise LintRuleError (not bare RuntimeError) so
+    the engine routes them through _RULE_EXCEPTION_TUPLE and records
+    a rule_exception warning rather than crashing engine.run().
+    """
+
+    def test_engine_for_ctx_raises_lint_rule_error_on_broken_emit_fn(
+        self,
+    ) -> None:
+        """When ctx._emit_fn is not a bound method (e.g., a plain
+        lambda from a test helper), _engine_for_ctx raises
+        LintRuleError — which is in the engine's catch tuple, so
+        downstream walks continue.
+        """
+        from dataclasses import dataclass
+
+        # Construct a minimal stub context where _emit_fn is a free
+        # function (no __self__). Replicates the failure mode without
+        # needing a real LintEngine.
+
+        @dataclass(frozen=True)
+        class _StubCtx:
+            _emit_fn: Any
+            _rule_id: str = "options/field-behavior-consistent"
+
+        stub = _StubCtx(_emit_fn=lambda f: None)
+        with pytest.raises(LintRuleError) as exc_info:
+            _engine_for_ctx(stub)  # type: ignore[arg-type]
+        assert "options/field-behavior-consistent" in str(exc_info.value)
+
+
+class TestContradictoryPairsAlphabeticInvariant:
+    """ce:review MAINT-4 / ADV-3 / KP-4: alphabetic-storage convention
+    of _CONTRADICTORY_PAIRS is enforced structurally.
+
+    A future contributor adding ("REQUIRED", "OPTIONAL") instead of
+    ("OPTIONAL", "REQUIRED") would cause value_a/value_b to flip in
+    emitted params based on proto source order. The module-level
+    assertion in field_behavior.py fires at import time; this test
+    pins the contract via the public frozenset so the assertion's
+    presence is also enforced.
+    """
+
+    def test_every_pair_is_alphabetically_sorted(self) -> None:
+        for pair in _CONTRADICTORY_PAIRS:
+            assert pair[0] < pair[1], (
+                f"_CONTRADICTORY_PAIRS contains {pair!r} which is "
+                f"NOT alphabetically sorted (a < b). Mis-ordered "
+                f"pairs flip value_a/value_b in emitted params and "
+                f"break the order-invariance contract."
+            )
+
+
+class TestExceptionTupleCoverage:
+    """ce:review REL-1 / SEC-002: DecodeError from MergeFromString
+    must be caught by the engine's rule-exception handler (not
+    propagate uncaught and crash engine.run()).
+
+    This is an engine-side fix (DecodeError added to
+    _RULE_EXCEPTION_TUPLE in engine.py), so the regression test
+    asserts the tuple's contents directly.
+    """
+
+    def test_decode_error_in_rule_exception_tuple(self) -> None:
+        from google.protobuf.message import DecodeError
+
+        from protokit.schema.lint.engine import _RULE_EXCEPTION_TUPLE
+
+        assert DecodeError in _RULE_EXCEPTION_TUPLE, (
+            "google.protobuf.message.DecodeError must be in "
+            "_RULE_EXCEPTION_TUPLE so rules using the dynamic-pool "
+            "re-parse pattern (MergeFromString on serialized options "
+            "bytes) do not crash engine.run() on corrupted bytes. "
+            "See ce:review REL-1 / SEC-002 (D6d U2)."
+        )

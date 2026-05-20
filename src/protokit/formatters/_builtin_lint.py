@@ -288,16 +288,28 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     Post-1.0, the same rename WOULD bump per the
 #:     value-migrated-vs-value-added distinction in
 #:     [[closed-literal-discriminator-bump-trigger-2026-05-17]].
-#:   - **D6d 0.5.0 bump**: ``_LINT_JSON_SCHEMA_VERSION`` advances
-#:     ``"0.3"`` → ``"0.4"`` because D6d adds a sixth value to the
-#:     ``LintRuntimeWarning.category`` closed Literal:
-#:     ``"custom_annotation_extension_unresolved"`` (synthetic
-#:     ``custom/<suffix>`` rule skipped because its configured
-#:     ``option`` is not registered in the compile pool). Consumers
-#:     that exhaustively switch on ``category`` (per the mypy-strict
-#:     narrowing pattern documented on :class:`LintRuntimeWarning`)
-#:     must extend their match construct to handle the new case.
-_LINT_JSON_SCHEMA_VERSION: str = "0.4"
+#:   - **D6d 0.5.0 bumps**: ``_LINT_JSON_SCHEMA_VERSION`` advances
+#:     in TWO steps under the closed-Literal discriminator contract:
+#:
+#:     * **U1**: ``"0.3"`` → ``"0.4"`` for the sixth value
+#:       ``"custom_annotation_extension_unresolved"`` (synthetic
+#:       ``custom/<suffix>`` rule skipped because its configured
+#:       ``option`` is not registered in the compile pool).
+#:     * **U2**: ``"0.4"`` → ``"0.5"`` for the seventh value
+#:       ``"extension_unresolved"`` (built-in option-aware rule —
+#:       e.g., ``options/field-behavior-consistent`` — skipped
+#:       because the compile set is missing the well-known proto
+#:       its depended-on extension lives in). Distinct category
+#:       from the U1 sixth value: same root condition, different
+#:       root cause (user mis-configured pyproject vs user did not
+#:       include googleapis); consumers discriminate via the
+#:       ``category`` field without text parsing.
+#:
+#:     Consumers that exhaustively switch on ``category`` (per the
+#:     mypy-strict narrowing pattern documented on
+#:     :class:`LintRuntimeWarning`) must extend their match
+#:     construct to handle BOTH new cases.
+_LINT_JSON_SCHEMA_VERSION: str = "0.5"
 
 
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
@@ -314,12 +326,22 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       ``--min-severity`` filtering).
     - ``runtime_warnings``: list of warning dicts (category,
       rule_id, message, exception_type, descriptor_path). The
-      ``rule_id`` field is populated for rule-scoped categories
-      (``rule_exception``, ``unloaded_rule``,
-      ``severities_unloaded_rule``) and ``null`` for non-rule-scoped
-      categories (``min_severity_relaxed``, ``all_files_excluded``).
-      See :class:`LintRuntimeWarning` for the full per-category
-      field-population contract.
+      ``rule_id`` field is populated for the five rule-scoped
+      categories (``rule_exception``, ``unloaded_rule``,
+      ``severities_unloaded_rule``,
+      ``custom_annotation_extension_unresolved``,
+      ``extension_unresolved``) and ``null`` for the two
+      non-rule-scoped categories (``min_severity_relaxed``,
+      ``all_files_excluded``). See :class:`LintRuntimeWarning` for
+      the full per-category field-population contract. For rules
+      with dict-shaped ``message_template`` (multi-arm — e.g.,
+      ``package/directory-same-package`` with three arms or
+      ``options/field-behavior-consistent`` with three arms), the
+      per-finding ``params`` keys are arm-specific: discriminate via
+      ``params["violation_kind"]`` (or the finding's
+      ``violation_kind`` field) before reading arm-specific payload
+      keys, since arms may share some keys (``field_name``) but
+      diverge on others (``value`` vs ``value_a``/``value_b``).
     - ``diagnostics``: list of compile-time diagnostic dicts
       (level, category, message); empty unless ``--proto`` mode
       surfaced backend notices.

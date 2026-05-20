@@ -77,12 +77,14 @@ matching D6b R6's leading-comment family. Promotion to
 ``recommended`` deferred to D6e+ pending corpus evidence.
 
 **Severity profile dispatch:** the three violation arms share a
-single severity (``WARNING``) so the spec's ``severity`` field is a
-scalar ``LintSeverity`` (NOT a per-arm dict). The ``message_template``
-is a dict because each arm uses different placeholders — the
-single-vs-dict shape mismatch is allowed when severity is uniform.
-(LintRuleSpec's ``__post_init__`` enforces dict↔dict only when
-severity is itself a dict.)
+uniform ``WARNING`` severity, implemented as a dict-shaped
+``_SEVERITIES`` (matching the dict-shaped ``_MESSAGE_TEMPLATES``,
+per :meth:`LintRuleSpec.__post_init__`'s shape-pairing invariant —
+``severity`` and ``message_template`` must both be scalar or both
+be dict; mismatch raises ``TypeError`` at module import). All three
+arms share ``WARNING`` for the conservative-launch posture; the
+dict shape supports per-arm severity divergence in the future
+without touching the rule body.
 
 References:
 
@@ -102,7 +104,8 @@ from __future__ import annotations
 
 import weakref
 from collections import Counter
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint._extension_access import (
@@ -113,9 +116,13 @@ from protokit.schema.lint.decorator import lint_rule
 from protokit.schema.lint.model import (
     ElementKind,
     FieldLintContext,
+    LintRuleError,
     LintRuntimeWarning,
     LintSeverity,
 )
+
+if TYPE_CHECKING:
+    from protokit.schema.lint.engine import LintEngine
 
 #: Per-finding parameter cap, mirroring the R7/R8 disciplines: each
 #: ``params`` value is bounded so attacker-controlled identifier names
@@ -187,9 +194,66 @@ _CONTRADICTORY_PAIRS: frozenset[tuple[str, str]] = frozenset(
         ("IMMUTABLE", "INPUT_ONLY"),
     }
 )
+# Structural enforcement of the alphabetic-storage convention — a
+# non-alphabetic tuple (e.g., ("REQUIRED", "OPTIONAL")) would cause
+# value_a/value_b to flip in emitted params depending on proto source
+# order, breaking the order-invariance contract. Fires at module
+# import time so a malformed addition fails CI immediately.
+assert all(a < b for a, b in _CONTRADICTORY_PAIRS), (
+    "_CONTRADICTORY_PAIRS tuples must be alphabetically sorted "
+    "(a < b). Mis-ordered pairs flip value_a/value_b in emitted params."
+)
 
 #: The zero-value identifier the rule flags as ``unspecified-value``.
 _UNSPECIFIED_VALUE: str = "FIELD_BEHAVIOR_UNSPECIFIED"
+
+# Per-engine + per-run dedup map for unresolved-extension warnings.
+# Keyed by engine instance (via ``WeakKeyDictionary`` so dedup state
+# is collected when the engine is GC'd — no cross-engine leakage, no
+# manual reset). Value is ``(runtime_warnings_list_id, dedup_set)``;
+# ``id(engine._runtime_warnings)`` changes on every ``engine.run()``
+# entry (the engine assigns a fresh list at engine.py:418), so a
+# mismatched id signals a NEW run and the dedup set is reset
+# automatically. This closes the cross-run dedup leak documented at
+# ce:review COR-1 / ADV-1: without the per-run reset, a second
+# ``engine.run()`` on the same engine would silently emit zero
+# warnings even though the unresolved-extension condition still
+# holds for the second run.
+_UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _engine_for_ctx(ctx: FieldLintContext) -> LintEngine:
+    """Return the active ``LintEngine`` for a given context.
+
+    ``FieldLintContext`` doesn't expose a public ``engine`` attribute,
+    but the engine threads itself in via ``ctx._emit_fn``, which is
+    the engine's bound ``_emit`` method. The bound method's
+    ``__self__`` IS the active engine instance — the cleanest path
+    for built-in rules that need to enqueue runtime warnings without
+    requiring a public surface change on ``LintContext``.
+
+    Raises:
+        LintRuleError: if ``ctx._emit_fn`` is not a bound method (the
+            engine's context-construction shape changed). Raising
+            ``LintRuleError`` (NOT bare ``RuntimeError``) routes the
+            failure through ``_RULE_EXCEPTION_TUPLE`` so the engine
+            records a ``rule_exception`` runtime warning and continues
+            walking remaining files rather than hard-crashing
+            ``engine.run()``. Failing loudly via the rule_exception
+            channel is the project's discipline for structural-env
+            failures inside rule callables.
+    """
+    emit_fn = ctx._emit_fn
+    engine = getattr(emit_fn, "__self__", None)
+    if engine is None:
+        raise LintRuleError(
+            "options/field-behavior-consistent could not resolve the "
+            "active LintEngine through ctx._emit_fn. The context shape "
+            "changed; update _engine_for_ctx accordingly."
+        )
+    return engine  # type: ignore[no-any-return]
 
 
 def _emit_unresolved_extension(ctx: FieldLintContext) -> None:
@@ -200,22 +264,35 @@ def _emit_unresolved_extension(ctx: FieldLintContext) -> None:
     for built-in option-aware rules whose depended-on extension is
     absent from the compile set).
 
-    Dedup is keyed by ``(rule_id, file_name)`` within a per-engine
-    set; the per-engine set is held in
-    :data:`_UNRESOLVED_SEEN` as a ``WeakKeyDictionary[engine, set]``
-    so multi-engine processes (long-lived MCP / test runs) don't
-    leak suppression state across engines.
+    Dedup is keyed by ``(rule_id, file_name)`` within a per-engine,
+    per-run set: the value held in :data:`_UNRESOLVED_SEEN` is the
+    tuple ``(id(engine._runtime_warnings), dedup_set)``. On each
+    ``engine.run()`` entry the engine assigns a fresh list to
+    ``_runtime_warnings`` (engine.py:418), so a stale tuple whose
+    ``id`` no longer matches the engine's current list signals a NEW
+    run, and the dedup set is reset. This handles both cross-engine
+    isolation (via ``WeakKeyDictionary``) and cross-run isolation
+    on the same engine (via the id-mismatch detection) without
+    needing a public engine-side reset hook.
     """
     engine = _engine_for_ctx(ctx)
-    seen = _UNRESOLVED_SEEN.setdefault(engine, set())
+    current_id = id(engine._runtime_warnings)
+    state = _UNRESOLVED_SEEN.get(engine)
+    if state is None or state[0] != current_id:
+        # New engine (no prior state) OR same engine but fresh
+        # _runtime_warnings list (= new run() call).
+        seen: set[tuple[str, str]] = set()
+        _UNRESOLVED_SEEN[engine] = (current_id, seen)
+    else:
+        seen = state[1]
     file_name = ctx.file.name
     dedup_key = (RULE_ID, file_name)
     if dedup_key in seen:
         return
     seen.add(dedup_key)
-    safe_rule_id = _safe_for_stderr(RULE_ID)
-    safe_option = _safe_for_stderr(_FIELD_BEHAVIOR_EXTENSION)
-    safe_file = _safe_for_stderr(file_name)
+    safe_rule_id = _safe_for_stderr(RULE_ID)[:_PARAM_CAP]
+    safe_option = _safe_for_stderr(_FIELD_BEHAVIOR_EXTENSION)[:_PARAM_CAP]
+    safe_file = _safe_for_stderr(file_name)[:_PARAM_CAP]
     engine._runtime_warnings.append(
         LintRuntimeWarning(
             category="extension_unresolved",
@@ -227,48 +304,6 @@ def _emit_unresolved_extension(ctx: FieldLintContext) -> None:
             ),
         ),
     )
-
-
-def _engine_for_ctx(ctx: FieldLintContext) -> Any:
-    """Return the active ``LintEngine`` for a given context.
-
-    ``FieldLintContext`` doesn't expose a public ``engine`` attribute,
-    but the engine threads itself in via ``ctx._emit_fn``, which is
-    the engine's bound ``_emit`` method. The bound method's
-    ``__self__`` IS the active engine instance — the cleanest path
-    for built-in rules that need to enqueue runtime warnings without
-    requiring a public surface change on ``LintContext``.
-
-    Raises:
-        RuntimeError: if ``ctx._emit_fn`` is not a bound method (the
-            engine's context-construction shape changed). Failing
-            loudly is better than silently dropping warnings.
-    """
-    emit_fn = ctx._emit_fn
-    engine = getattr(emit_fn, "__self__", None)
-    if engine is None:
-        raise RuntimeError(
-            "options/field-behavior-consistent could not resolve the "
-            "active LintEngine through ctx._emit_fn. The context shape "
-            "changed; update _engine_for_ctx accordingly."
-        )
-    return engine
-
-
-# Per-engine dedup map for unresolved-extension warnings. Keyed by
-# engine instance (via WeakKeyDictionary so dedup state is collected
-# when the engine is GC'd — no cross-engine leakage, no manual
-# reset). Each engine's set holds ``(rule_id, file_name)`` tuples.
-#
-# Module-level state would have been wrong: a long-lived process
-# spawning N engines (D6e+ MCP / IDE integrations, or pytest runs
-# constructing many engines back-to-back) would leak entries from
-# one engine into the next, silently suppressing warnings on the
-# second engine for files the FIRST engine already saw. The weak
-# map cleans up automatically.
-_UNRESOLVED_SEEN: weakref.WeakKeyDictionary[Any, set[tuple[str, str]]] = (
-    weakref.WeakKeyDictionary()
-)
 
 
 @lint_rule(
@@ -373,4 +408,4 @@ def check_field_behavior_consistent(ctx: FieldLintContext) -> None:
 
 
 #: Pack tuple — exposes the single rule for ``LintEngine.load_rule_pack``.
-RULES: tuple[Any, ...] = (check_field_behavior_consistent,)
+RULES: tuple[Callable[..., None], ...] = (check_field_behavior_consistent,)

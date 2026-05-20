@@ -938,11 +938,11 @@ class TestLintRuleError:
         new caught exceptions empirically. The corrected wording locks
         the contract at the documented set, and the listed tuple
         matches ``engine.py:_RULE_EXCEPTION_TUPLE`` byte-for-byte
-        (six items: ``KeyError`` is omitted because ``LookupError``
-        already covers it). The structural tuple-value pin lives in
-        ``test_engine.py`` adjacent to ``_RULE_EXCEPTION_TUPLE`` so
-        engine renames trip the test next door rather than across
-        modules.
+        (seven items: ``KeyError`` is omitted because ``LookupError``
+        already covers it; ``DecodeError`` was added at D6d U2). The
+        structural tuple-value pin lives in ``test_engine.py``
+        adjacent to ``_RULE_EXCEPTION_TUPLE`` so engine renames trip
+        the test next door rather than across modules.
         """
         raw = LintRuleError.__doc__
         assert raw is not None
@@ -957,7 +957,7 @@ class TestLintRuleError:
         )
         for member in (
             "SystemExit", "ValueError", "TypeError",
-            "AttributeError", "LookupError", "LintRuleError",
+            "AttributeError", "LookupError", "DecodeError", "LintRuleError",
         ):
             assert member in doc, (
                 f"docstring missing tuple member {member!r}"
@@ -970,10 +970,10 @@ class TestLintRuleError:
         # listing rather than the whole docstring.
         assert (
             "(SystemExit, ValueError, TypeError, "
-            "AttributeError, LookupError, LintRuleError)"
+            "AttributeError, LookupError, DecodeError, LintRuleError)"
         ) in doc, (
             "LintRuleError docstring must list the catch tuple verbatim "
-            "(6 items, no KeyError). A re-insertion of KeyError or any "
+            "(7 items, no KeyError). A re-insertion of KeyError or any "
             "wording drift trips this pin."
         )
         assert "AC-06" in doc

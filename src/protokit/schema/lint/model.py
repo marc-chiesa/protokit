@@ -617,12 +617,14 @@ class LintReport:
             invoked because no element of its ``ElementKind`` was
             present in any walked file. Defaults to ``()``.
         runtime_warnings: Tuple of engine- AND CLI-stage warnings
-            raised during the run. Six categories share the type:
-            ``rule_exception``, ``unloaded_rule``, and
-            ``custom_annotation_extension_unresolved`` (D6d, engine-
-            emitted) plus ``severities_unloaded_rule`` (D6b U5),
-            ``min_severity_relaxed`` (D5 U4), and
-            ``all_files_excluded`` (D5 U3) (all CLI-emitted). See
+            raised during the run. Seven categories share the type:
+            ``rule_exception``, ``unloaded_rule``,
+            ``custom_annotation_extension_unresolved`` (D6d U1), and
+            ``extension_unresolved`` (D6d U2) (all engine-emitted)
+            plus ``severities_unloaded_rule`` (D6b U5, rule-scoped
+            CLI-emitted), ``min_severity_relaxed`` (D5 U4), and
+            ``all_files_excluded`` (D5 U3) (the last two are
+            non-rule-scoped CLI-emitted with ``rule_id=None``). See
             :class:`LintRuntimeWarning` for the full per-category
             field-population contract. Defaults to ``()``.
         filtered_count: Count of findings dropped at emit time
@@ -1477,9 +1479,15 @@ class LintRuleError(Exception):
 
     The catch tuple is documented in the engine's source; it is
     exactly ``(SystemExit, ValueError, TypeError, AttributeError,
-    LookupError, LintRuleError)``. ``KeyError`` is intentionally
-    omitted — it is a subclass of ``LookupError``, which is already
-    in the tuple, so listing it would be dead coverage. (AC-06.)
+    LookupError, DecodeError, LintRuleError)``. ``KeyError`` is
+    intentionally omitted — it is a subclass of ``LookupError``,
+    which is already in the tuple, so listing it would be dead
+    coverage. ``DecodeError`` (``google.protobuf.message.DecodeError``)
+    was added at D6d U2 ce:review to cover the dynamic-pool re-parse
+    pattern used by option-aware rules (``MergeFromString`` on
+    serialized options bytes). Other ``google.protobuf.message.Error``
+    subclasses are not listed because no other subclass is reachable
+    via the current rule-callable surface. (AC-06.)
 
     **Escape hatch for "abort the run".** Rule authors who want to
     halt the entire lint pass (e.g., catastrophic schema corruption

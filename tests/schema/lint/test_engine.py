@@ -486,26 +486,37 @@ class TestSeverityAndFilter:
 class TestFailureContainment:
     """Narrow catch tuple including SystemExit (R16 amendment)."""
 
-    def test_rule_exception_tuple_pinned_to_documented_six(self) -> None:
-        """AC-06 structural pin: ``_RULE_EXCEPTION_TUPLE`` is exactly 6 items.
+    def test_rule_exception_tuple_pinned_to_documented_seven(self) -> None:
+        """AC-06 structural pin: ``_RULE_EXCEPTION_TUPLE`` is exactly 7 items.
 
         ``LintRuleError.__doc__`` claims the catch tuple "is exactly"
         ``(SystemExit, ValueError, TypeError, AttributeError, LookupError,
-        LintRuleError)``. A future engine delivery that adds a 7th
-        exception class to the tuple MUST also update the docstring in
-        the same commit; this pin trips otherwise. Lives next to
-        ``_RULE_EXCEPTION_TUPLE`` in ``test_engine.py`` (the engine
-        symbol's home test module) so renames trip the test adjacent
-        to the rename rather than across modules. The companion
-        docstring-wording test lives in ``test_model.py`` next to
-        ``LintRuleError``.
+        DecodeError, LintRuleError)``. A future engine delivery that
+        adds an 8th exception class to the tuple MUST also update the
+        docstring in the same commit; this pin trips otherwise. Lives
+        next to ``_RULE_EXCEPTION_TUPLE`` in ``test_engine.py`` (the
+        engine symbol's home test module) so renames trip the test
+        adjacent to the rename rather than across modules. The
+        companion docstring-wording test lives in ``test_model.py``
+        next to ``LintRuleError``.
+
+        D6d U2 ce:review added ``google.protobuf.message.DecodeError``
+        as the seventh item to cover the dynamic-pool re-parse pattern
+        used by option-aware rules (``MergeFromString`` on serialized
+        options bytes can raise ``DecodeError`` on corrupted bytes;
+        before the addition, the exception would have crashed
+        ``engine.run()`` instead of being recorded as a
+        ``rule_exception`` warning).
         """
+        from google.protobuf.message import DecodeError
+
         assert (
             SystemExit,
             ValueError,
             TypeError,
             AttributeError,
             LookupError,
+            DecodeError,
             LintRuleError,
         ) == _RULE_EXCEPTION_TUPLE
 
