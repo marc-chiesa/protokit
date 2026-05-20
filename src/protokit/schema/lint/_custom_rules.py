@@ -29,17 +29,24 @@ The workaround used here:
    (category ``custom_annotation_extension_unresolved``) and skip.
 2. Look up the options descriptor for the element kind
    (``MethodOptions`` / ``FieldOptions`` / ``FileOptions`` / ...) in
-   the SAME pool.
+   the SAME pool — done by
+   :func:`protokit.schema.lint._extension_access.get_pool_bound_options_class`.
 3. Build a pool-bound options message class via
    ``google.protobuf.message_factory.GetMessageClass(options_desc)``
    (protobuf 5.26+; fall back to
    ``MessageFactory(pool=pool).GetPrototype(options_desc)`` for
-   4.21–5.25 compatibility).
+   4.21–5.25 compatibility) — same helper.
 4. Re-parse the serialized bytes from
    ``descriptor.GetOptions().SerializeToString()`` into the pool-
    bound class. ``parsed.HasExtension(ext_desc)`` and
    ``parsed.Extensions[ext_desc]`` now work correctly with proto2
    presence semantics on the options message.
+
+Steps 2-3 (the pool-bound class lookup) and the enum-int → identifier
+normalization live in :mod:`protokit.schema.lint._extension_access`
+so built-in option-aware rules (such as
+``options/field-behavior-consistent``) reuse the same code path
+without depending on private symbols from this module.
 
 For enum-typed extensions, the runtime value is the enum number
 (int). The closure translates to the identifier string via
@@ -85,9 +92,11 @@ from collections.abc import Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-from google.protobuf import descriptor_pb2, message_factory
-
 from protokit.schema.lint._cli_utils import _safe_for_stderr
+from protokit.schema.lint._extension_access import (
+    get_pool_bound_options_class,
+    resolve_enum_value_for_comparison,
+)
 from protokit.schema.lint.model import (
     ElementKind,
     LintRuleSpec,
@@ -123,72 +132,6 @@ _KIND_DESCRIPTOR_TABLE: dict[ElementKind, tuple[str, str]] = {
     ElementKind.FIELD: ("field", "google.protobuf.FieldOptions"),
     ElementKind.ONEOF: ("oneof", "google.protobuf.OneofOptions"),
 }
-
-
-#: Protobuf ``FieldDescriptorProto.Type.TYPE_ENUM`` constant.
-#: Inlined to avoid importing ``descriptor_pb2`` just for the enum
-#: value (the value is wire-format-stable per the protobuf
-#: backwards-compat contract).
-_TYPE_ENUM: int = descriptor_pb2.FieldDescriptorProto.TYPE_ENUM
-
-
-def _get_pool_bound_options_class(
-    pool: Any, options_full_name: str,
-) -> type | None:
-    """Return a pool-bound options message class, or ``None`` on failure.
-
-    The dynamic-pool options class is the hinge of the D6d
-    extension-resolution model — see the module docstring. Returns
-    ``None`` if the options message descriptor is not in the pool
-    (e.g., extremely minimal compile sets that exclude
-    ``descriptor.proto``); callers treat that as a soft no-op and
-    skip rather than raising.
-
-    Uses ``message_factory.GetMessageClass`` (protobuf 5.26+) when
-    available; falls back to ``MessageFactory(pool=pool).GetPrototype()``
-    for older protobuf releases. The fallback raises a deprecation
-    warning on newer protobuf but still functions.
-    """
-    try:
-        options_desc = pool.FindMessageTypeByName(options_full_name)
-    except KeyError:
-        return None
-    # Newer protobuf (5.26+) exposes ``GetMessageClass`` at module
-    # scope; older releases use ``MessageFactory(pool).GetPrototype``.
-    get_message_class = getattr(message_factory, "GetMessageClass", None)
-    if get_message_class is not None:
-        cls: type = get_message_class(options_desc)
-        return cls
-    # Fallback for protobuf 4.21–5.25.
-    factory = message_factory.MessageFactory(pool=pool)
-    fallback_cls: type = factory.GetPrototype(options_desc)
-    return fallback_cls
-
-
-def _resolve_value_for_comparison(
-    ext_desc: Any, value: Any,
-) -> Any:
-    """Normalize a raw extension value for ``allowed_values`` comparison.
-
-    For enum-typed extensions, translates the runtime integer to its
-    identifier name via ``ext_desc.enum_type.values_by_number[value].name``.
-    For unknown enum numbers (e.g., a buf-time enum that was removed
-    from a later proto revision and now appears as a stale integer),
-    returns the raw integer cast to ``str`` so the comparison fails
-    cleanly rather than raising.
-
-    Other scalar types pass through unchanged.
-    """
-    if ext_desc.type != _TYPE_ENUM:
-        return value
-    enum_type = ext_desc.enum_type
-    if enum_type is None:
-        return value
-    enum_value = enum_type.values_by_number.get(value)
-    if enum_value is None:
-        # Unknown enum number — keep raw int for diagnostic value.
-        return value
-    return enum_value.name
 
 
 def _make_synthetic_closure(
@@ -272,7 +215,7 @@ def _make_synthetic_closure(
                 )
             return
 
-        options_cls = _get_pool_bound_options_class(pool, options_full_name)
+        options_cls = get_pool_bound_options_class(pool, options_full_name)
         if options_cls is None:
             # Pool missing ``descriptor.proto``-derived options class.
             # Skip silently — non-actionable env condition.
@@ -301,7 +244,7 @@ def _make_synthetic_closure(
             return
 
         raw_value = parsed.Extensions[ext_desc]
-        compared = _resolve_value_for_comparison(ext_desc, raw_value)
+        compared = resolve_enum_value_for_comparison(ext_desc, raw_value)
         if compared in allowed_values:
             return
         # Value-mismatch violation. Stringify ``compared`` for the

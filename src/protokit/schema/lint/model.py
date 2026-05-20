@@ -408,7 +408,7 @@ class LintRuntimeWarning:
        CLI-side, NOT by the engine; engine is short-circuited.
        ``rule_id`` is ``None`` because the warning is not scoped to
        a single rule.
-    6. ``"custom_annotation_extension_unresolved"`` (D6d, engine-
+    6. ``"custom_annotation_extension_unresolved"`` (D6d U1, engine-
        emitted) — a synthetic ``custom/<suffix>`` rule's configured
        ``option`` is not a registered extension in the compile pool
        (``pool.FindExtensionByName(option)`` raises ``KeyError``). The
@@ -419,6 +419,26 @@ class LintRuntimeWarning:
        most once per (rule_id, file) pair to avoid log floods on
        multi-element walks. ``exception_type`` / ``descriptor_path``
        ``None``.
+    7. ``"extension_unresolved"`` (D6d U2, engine-emitted) — a
+       built-in option-aware rule (e.g.,
+       ``options/field-behavior-consistent``) needs a specific
+       protobuf extension that is not registered in the compile pool
+       (``pool.FindExtensionByName(option)`` raises ``KeyError``). The
+       typical root cause is that the user's compile inputs do not
+       include the well-known proto that defines the extension (e.g.,
+       ``google/api/field_behavior.proto`` for AIP-203 rules). The
+       rule skips without firing findings and records this warning.
+       Carries ``rule_id`` populated (the built-in rule_id); the
+       message names the unresolved option path. Emitted at most once
+       per (rule_id, file) pair, matching category 6's dedup
+       discipline. ``exception_type`` / ``descriptor_path`` ``None``.
+       Distinct from category 6 because the root cause differs:
+       category 6 indicates a user-configured pyproject error (the
+       extension name was typed wrong or the user forgot to include
+       the defining proto); category 7 indicates the user's compile
+       set is missing the well-known proto a built-in rule depends
+       on. Consumers can discriminate via the ``category`` field
+       without text parsing.
 
     **BREAKING (D5 U3)**: ``rule_id`` was widened from ``str`` to
     ``str | None``. The three rule-scoped categories
@@ -469,12 +489,21 @@ class LintRuntimeWarning:
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"custom_annotation_extension_unresolved"`` (engine-emitted, D6d):
+    ``"custom_annotation_extension_unresolved"`` (engine-emitted, D6d U1):
         - ``rule_id``: populated (``str``) — the synthetic
           ``custom/<suffix>`` rule whose configured ``option`` could
           not be resolved
         - ``message``: human-readable "synthetic rule <rid> skipped:
           extension <option> is not registered in the compile pool"
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
+    ``"extension_unresolved"`` (engine-emitted, D6d U2):
+        - ``rule_id``: populated (``str``) — the built-in rule_id
+          whose configured ``option`` could not be resolved
+        - ``message``: human-readable "rule <rid> skipped on file
+          <file>: extension <option> is not registered in the
+          compile pool"
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
@@ -511,11 +540,12 @@ class LintRuntimeWarning:
     ``severities_unloaded_rule`` to the rule-scoped set.
 
     Attributes:
-        category: Discriminator for the six event shapes. Three
+        category: Discriminator for the seven event shapes. Four
             engine-emitted (``rule_exception``, ``unloaded_rule``,
-            ``custom_annotation_extension_unresolved``) and three
-            CLI-emitted (``severities_unloaded_rule``,
-            ``min_severity_relaxed``, ``all_files_excluded``).
+            ``custom_annotation_extension_unresolved``,
+            ``extension_unresolved``) and three CLI-emitted
+            (``severities_unloaded_rule``, ``min_severity_relaxed``,
+            ``all_files_excluded``).
         rule_id: The id of the rule the warning is about. For
             ``"rule_exception"`` this is the rule that raised; for
             ``"unloaded_rule"`` this is the missing id named in the
@@ -523,8 +553,10 @@ class LintRuntimeWarning:
             bad key from ``[tool.protokit.lint.severities]``; for
             ``"custom_annotation_extension_unresolved"`` this is the
             synthetic ``custom/<suffix>`` rule that was skipped; for
-            the two non-rule-scoped CLI-emitted categories this is
-            ``None``.
+            ``"extension_unresolved"`` this is the built-in rule_id
+            that was skipped because a depended-on extension was not
+            in the compile pool; for the two non-rule-scoped
+            CLI-emitted categories this is ``None``.
         message: Human-readable description. For
             ``"rule_exception"`` typically ``str(exc)``; for the two
             ``*unloaded_rule`` categories an explanation of the
@@ -545,6 +577,7 @@ class LintRuntimeWarning:
         "min_severity_relaxed",
         "all_files_excluded",
         "custom_annotation_extension_unresolved",
+        "extension_unresolved",
     ]
     rule_id: str | None
     message: str

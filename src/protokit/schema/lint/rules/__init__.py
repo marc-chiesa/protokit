@@ -75,7 +75,10 @@ from protokit.schema.lint.rules import (
     package,
     package_same,
 )
-from protokit.schema.lint.rules.options import deprecated_replacement
+from protokit.schema.lint.rules.options import (
+    deprecated_replacement,
+    field_behavior,  # noqa: F401  # D6d U2 — staged dormant; lands in BUILTIN_PACKS at D6d U5 delivery boundary.
+)
 
 # ``package_same`` (D6b U4b R7 PACKAGE_SAME_* family — cross-language
 # namespace consistency rules) is imported here for two reasons that

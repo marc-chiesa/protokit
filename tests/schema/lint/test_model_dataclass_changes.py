@@ -2,23 +2,27 @@
 
 Covers:
 
-- **Literal extension** from 2 → 4 → 5 → 6 categories:
+- **Literal extension** from 2 → 4 → 5 → 6 → 7 categories:
   ``rule_exception``, ``unloaded_rule`` (engine-emitted), plus
   ``min_severity_relaxed`` and ``all_files_excluded`` (D5 U3/U4,
   CLI-emitted), plus ``severities_unloaded_rule`` (D6b U5,
   CLI-emitted with rule_id populated — closes D6a U9 KTD-2
   accepted tradeoff), plus ``custom_annotation_extension_unresolved``
-  (D6d U1, engine-emitted with rule_id populated).
+  (D6d U1, engine-emitted with rule_id populated for synthetic
+  ``custom/<suffix>`` rules), plus ``extension_unresolved``
+  (D6d U2, engine-emitted with rule_id populated for built-in
+  option-aware rules whose depended-on extension is absent from
+  the compile pool).
 - ``rule_id: str`` → ``rule_id: str | None`` widening (BREAKING per
-  R18/R18a). The four rule-scoped categories
+  R18/R18a). The five rule-scoped categories
   (``rule_exception``, ``unloaded_rule``,
   ``severities_unloaded_rule``,
-  ``custom_annotation_extension_unresolved``) continue to populate
-  ``rule_id`` with a non-None string at every emit site; only the
-  two non-rule-scoped CLI-emitted categories construct with
-  ``rule_id=None``.
+  ``custom_annotation_extension_unresolved``,
+  ``extension_unresolved``) continue to populate ``rule_id`` with a
+  non-None string at every emit site; only the two non-rule-scoped
+  CLI-emitted categories construct with ``rule_id=None``.
 - Frozen-dataclass mutation discipline still enforced for every
-  field across all six categories.
+  field across all seven categories.
 - Field-population invariants per the docstring table (rule_id is
   None ↔ category is one of the two non-rule-scoped CLI-emitted
   categories).
@@ -43,16 +47,24 @@ from protokit.schema.lint.model import LintRuntimeWarning
 
 
 class TestCategoryLiteral:
-    def test_literal_lists_all_six_categories(self) -> None:
-        """The Literal annotation must enumerate exactly 6 category
-        names. A drift to 5 or 7 indicates an accidental break in the
+    def test_literal_lists_all_seven_categories(self) -> None:
+        """The Literal annotation must enumerate exactly 7 category
+        names. A drift to 6 or 8 indicates an accidental break in the
         category contract that this test catches at import time.
 
         D6d U1 added the sixth category
         ``custom_annotation_extension_unresolved`` (engine-emitted
         when a synthetic ``custom/<suffix>`` rule's configured
-        ``option`` is not a registered extension in the compile pool).
-        Bumps ``_LINT_JSON_SCHEMA_VERSION`` ``"0.3"`` → ``"0.4"``.
+        ``option`` is not a registered extension in the compile pool);
+        bumped ``_LINT_JSON_SCHEMA_VERSION`` ``"0.3"`` → ``"0.4"``.
+
+        D6d U2 added the seventh category ``extension_unresolved``
+        (engine-emitted when a BUILT-IN option-aware rule's
+        depended-on extension is absent from the compile pool, e.g.,
+        ``options/field-behavior-consistent`` linting protos that
+        don't include ``google/api/field_behavior.proto``).
+        Bump-permissive additive Literal value per the wire-format
+        schema-version bump contract — no schema_version bump.
         """
         type_hints = typing.get_type_hints(LintRuntimeWarning)
         category_type = type_hints["category"]
@@ -64,16 +76,17 @@ class TestCategoryLiteral:
             "min_severity_relaxed",
             "all_files_excluded",
             "custom_annotation_extension_unresolved",
+            "extension_unresolved",
         }
-        # And exactly 6 — not "a superset" — so adding a seventh without
+        # And exactly 7 — not "a superset" — so adding an eighth without
         # a corresponding test update will fail this assertion.
-        assert len(literal_args) == 6
+        assert len(literal_args) == 7
 
     def test_test_helper_mirror_stays_in_sync_with_model(self) -> None:
         """``LINT_RUNTIME_WARNING_CATEGORIES`` in ``tests/schema/lint/cli/_helpers.py``
         is a manually-maintained mirror of the model Literal — the
         cross-formatter parametrized matrix iterates that tuple, so a
-        6th category added to the model but missed in the helper
+        7th category added to the model but missed in the helper
         silently stops getting matrix coverage. Fail the test now if
         the two diverge so the discipline is mechanically enforced
         rather than relying on the helper docstring's "Keep in sync"
@@ -171,6 +184,8 @@ class TestFrozen:
             ("severities_unloaded_rule", "rule/id"),
             ("min_severity_relaxed", None),
             ("all_files_excluded", None),
+            ("custom_annotation_extension_unresolved", "custom/x"),
+            ("extension_unresolved", "options/x"),
         ],
     )
     def test_assignment_raises_for_every_category(
