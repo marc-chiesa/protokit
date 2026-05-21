@@ -65,10 +65,12 @@ raises ``KeyError``; the rule emits a deduplicated
 ``LintRuntimeWarning(category="extension_unresolved")`` and skips
 firing for that file.
 
-**Dormancy (D6d U2):** the rule pack is module-imported but NOT
-registered in ``BUILTIN_PACKS``. Registration ships in D6d U5
-(delivery boundary) per
-[[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]].
+**Registration (D6d U5 delivery boundary, 0.5.0):** the rule pack
+is registered in ``BUILTIN_PACKS`` alongside ``deprecated_replacement``.
+Module-import dormancy through U2-U4 followed the
+[[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]]
+discipline; the U5 boundary flipped the registration with the
+0.4.0 → 0.5.0 version bump.
 
 **Profile placement:** ``severity=WARNING``, ``profiles=("default",)``
 only. ``recommended``-profile users see ZERO new findings on D6d

@@ -61,6 +61,21 @@ version-bump coordination; those remain **soft norms enforced
 via PR review**, not structural gates. The right time to invest
 in a structural CHANGELOG-diff hook is post-1.0, when the
 auto-load set becomes a stability-bearing surface.
+
+Synthetic ``custom/<suffix>`` rules (D6d U1) note
+--------------------------------------------------
+
+Synthetic rules materialized from
+``[[tool.protokit.lint.custom_annotation_rules]]`` pyproject entries
+live alongside (NOT inside) ``BUILTIN_PACKS``. They participate in
+profile composition + ``[severities]`` overlays just like built-in
+rules but are loaded by the CLI from a fresh per-invocation
+synthetic module — they do NOT enter the curated tuple. See
+``src/protokit/schema/lint/_custom_rules.py`` for the
+materialization contract + the 0.5.0 CHANGELOG entry for the user-
+facing surface. KD-8 invariant: this tuple MUST NEVER contain a
+pack that ships a ``custom/<suffix>`` rule_id; the ``custom/``
+namespace is reserved for user-declared synthetic rules.
 """
 
 from __future__ import annotations
@@ -77,7 +92,7 @@ from protokit.schema.lint.rules import (
 )
 from protokit.schema.lint.rules.options import (
     deprecated_replacement,
-    field_behavior,  # noqa: F401  # D6d U2 — staged dormant; lands in BUILTIN_PACKS at D6d U5 delivery boundary.
+    field_behavior,
 )
 
 # ``package_same`` (D6b U4b R7 PACKAGE_SAME_* family — cross-language
@@ -129,12 +144,23 @@ from protokit.schema.lint.rules.options import (
 #: ``naming/snake-case-fields`` ``source_spec`` to
 #: ``buf:FIELD_LOWER_SNAKE_CASE`` (KTD-11). Combined coverage:
 #: ``protokit lint`` now matches **25 of 26 buf BASIC rules** (the
-#: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6d; the proto2-only
+#: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6e+; the proto2-only
 #: ``FIELD_NOT_REQUIRED`` is not counted in protokit's 26-rule
-#: baseline and also defers to D6d alongside). The 0.4.0 CHANGELOG
-#: entry (D6c) documents
-#: the rule additions + the 5-path pre-upgrade migration recipe per
-#: the KD-9 communication contract.
+#: baseline and is the +1 scheduled rule deferred to D6e+ per the
+#: 2026-05-20 strategic deferral). The 0.4.0 CHANGELOG entry (D6c)
+#: documents the rule additions + the 5-path pre-upgrade migration
+#: recipe per the KD-9 communication contract.
+#:
+#: D6d U5 (0.5.0) adds the ``options.field_behavior`` pack — the
+#: AIP-203 well-formedness validator for
+#: ``(google.api.field_behavior)`` annotation lists. Single rule
+#: (``options/field-behavior-consistent``) with three dict-shaped
+#: ``violation_kind`` arms (``duplicate-value``,
+#: ``unspecified-value``, ``contradictory-pair``).
+#: ``severity=WARNING``; ships in the ``default`` profile only —
+#: ``recommended``-profile users see ZERO new findings on D6d
+#: upgrade. The 0.5.0 CHANGELOG entry (D6d) documents the addition
+#: + the demotion paths for ``default``-profile users.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,
@@ -142,6 +168,7 @@ BUILTIN_PACKS: tuple[ModuleType, ...] = (
     package,
     file,
     deprecated_replacement,
+    field_behavior,
     package_same,
 )
 

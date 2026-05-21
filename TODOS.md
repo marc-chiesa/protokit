@@ -210,17 +210,22 @@ brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
   (the renamed-from-`source_locations` index) landed at U2 and is
   classified INTERNAL in the Public Surface DRAFT.
 
-**D6d backlog items deferred from D6c:**
+**D6e+ backlog items (originally scoped for D6d; deferred per the
+2026-05-20 strategic-deferral revision + the 2026-05-19 D6c
+deferral chain):**
 
 - **`PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule)**: deferred to
-  D6d — cross-file cycle-detection algorithm (DAG construction +
+  D6e+ — cross-file cycle-detection algorithm (DAG construction +
   cycle detection); not amenable to the Arch-D accumulator pattern
-  established in D6c. Brainstorm Verification Step 5 records the
-  empirical investigation that unblocks D6d planning.
+  established in D6c. Originally scoped for D6d but rolled forward
+  per the option-aware-headline strategic-positioning decision in
+  the D6d brainstorm.
 - **`FIELD_NOT_REQUIRED` (proto2-only BASIC rule, not counted in
-  the 26-rule baseline)**: deferred to D6d alongside — trivial
-  single-unit add via existing `ElementKind.FIELD` check
-  (`field.label == LABEL_REQUIRED`).
+  the 26-rule baseline)**: deferred to D6e+ — trivial single-unit
+  add via existing `ElementKind.FIELD` check
+  (`field.label == LABEL_REQUIRED`). Originally scoped for D6d
+  U3; deferred 2026-05-20 per the umbrella brainstorm Strategic
+  Deferral section to keep the D6d 0.5.0 release surface tight.
 - **R9b — per-rule disable/enable CLI flag** (`disabled_rules` /
   `enabled_rules` pyproject lists): deferred from D6a + D6b per
   the brainstorms; needs real-demand evidence to design the 4

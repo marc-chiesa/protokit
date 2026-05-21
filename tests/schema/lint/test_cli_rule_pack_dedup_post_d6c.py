@@ -32,10 +32,11 @@ import json
 from pathlib import Path
 
 from click.testing import CliRunner
-from google.protobuf import descriptor_pb2
 
-from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint.cli import main as lint_main
+from tests.schema.lint._cli_dedup_helpers import (
+    compile_sources_to_descriptor_set,
+)
 
 _PROTO_PKG_FOO = (
     'syntax = "proto3";\n'
@@ -51,31 +52,16 @@ _PROTO_PKG_BAR = (
 def _compile_to_descriptor_set(
     tmp_path: Path, sources: dict[str, str],
 ) -> Path:
-    """Compile ``sources`` to a serialized ``.descriptor_set`` file.
+    """Thin wrapper around the shared dedup helper.
 
-    Mirrors :func:`tests.schema.lint.test_cli_package_same_e2e._compile_to_descriptor_set`
-    inline. The fixture has no cross-file dependencies, so
-    ``include_imports`` has no practical effect, but matching the
-    sibling helper's shape avoids divergence risk.
+    Pins the per-file output name (``package.descriptor_set``) for
+    this test file so failure messages keep the package-pack
+    context. Behavior is identical to the shared helper otherwise.
+    See :mod:`tests.schema.lint._cli_dedup_helpers` for the SSOT.
     """
-    for fname, text in sources.items():
-        path = tmp_path / fname
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    result = compile_protos_to_result(
-        paths=[tmp_path / fname for fname in sources],
-        proto_paths=(str(tmp_path),),
+    return compile_sources_to_descriptor_set(
+        tmp_path, sources, out_filename="package.descriptor_set",
     )
-    error_diags = [d for d in result.diagnostics if d.level == "error"]
-    assert not error_diags, f"fixture compile failed: {error_diags}"
-    fds = descriptor_pb2.FileDescriptorSet()
-    for fname in result.pool_file_names:
-        fd_proto = descriptor_pb2.FileDescriptorProto()
-        result.pool.FindFileByName(fname).CopyToProto(fd_proto)
-        fds.file.add().CopyFrom(fd_proto)
-    out = tmp_path / "package.descriptor_set"
-    out.write_bytes(fds.SerializeToString())
-    return out
 
 
 class TestPackagePackExplicitLoadIsIdempotent:

@@ -711,7 +711,7 @@ class TestBumpContractDocstring:
     (Pattern B per [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]]).
 
     This is NOT a stability contract over wording; this asserts
-    that 4 load-bearing substrings remain present. If a future
+    that the load-bearing substrings remain present. If a future
     docstring rewrite changes the wording while preserving the
     contract, update ``ratchet_substrings`` after confirming
     semantic equivalence. If the contract itself is dropped
@@ -743,6 +743,8 @@ class TestBumpContractDocstring:
             "additions DO bump the",
             "Open severity-string ladders",
             '"severities_unloaded_rule"',
+            '"custom_annotation_extension_unresolved"',
+            '"extension_unresolved"',
         )
         for substring in ratchet_substrings:
             assert substring in source, (

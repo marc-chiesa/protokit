@@ -452,17 +452,56 @@ class TestStatisticsFooter:
     def test_statistics_on_clean_input_emits_minimal_footer(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """All-zero counts → no severity rows, but the footer
-        marker should still indicate statistics ran."""
+        """All-zero severity counts → no severity rows, but the footer
+        marker should still indicate statistics ran.
+
+        Note (D6d U5): the D6d delivery promoted
+        ``options/field-behavior-consistent`` into ``BUILTIN_PACKS``
+        under the ``default`` profile. The rule emits a deduplicated
+        ``extension_unresolved`` runtime warning per file when the
+        compile pool lacks ``google/api/field_behavior.proto`` — so
+        the footer's ``runtime-warnings: N`` row now appears on this
+        fixture. That row is structural (not a severity count) and
+        the assertion below explicitly excludes it from the
+        severity-row check.
+        """
         result = CliRunner().invoke(
             lint_main,
             ["--statistics", str(clean_descriptor_set)],
         )
         assert result.exit_code == 0, result.output
         assert "statistics:" in result.stdout
-        # No severity rows because zero findings.
-        assert "warning" not in result.stdout.lower()
-        assert "error" not in result.stdout.lower()
+        # No severity rows because zero severity-bearing findings.
+        # Use splitlines + startswith on the 2-space-indented row
+        # prefix so the structural ``runtime-warnings:`` row (also
+        # 2-space indented) does NOT satisfy a substring containment
+        # check, and so a future indent-width change in the cli's
+        # statistics-footer rendering fails loudly (a containment
+        # check could pass silently when the indent changes).
+        rows = [
+            line for line in result.stdout.splitlines()
+            if line.startswith("  ")
+        ]
+        severity_rows = [
+            row for row in rows
+            if row.startswith(("  warnings:", "  errors:", "  info:"))
+        ]
+        assert severity_rows == [], (
+            f"unexpected severity rows in clean-input statistics: "
+            f"{severity_rows!r}"
+        )
+        # Positive assertion: the D6d-introduced runtime-warnings row
+        # IS present (catches a silent regression where the row stops
+        # emitting — see ce:review T-03 / TG-1).
+        runtime_rows = [
+            row for row in rows
+            if row.startswith("  runtime-warnings:")
+        ]
+        assert len(runtime_rows) == 1, (
+            f"expected exactly one runtime-warnings row from the "
+            f"D6d field-behavior rule's extension_unresolved warning; "
+            f"got {runtime_rows!r}"
+        )
 
     def test_statistics_footer_emits_to_stdout_not_stderr(
         self, bad_naming_descriptor_set: Path,

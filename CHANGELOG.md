@@ -432,6 +432,365 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D6d — option-aware pack expansion + AIP-203 well-formedness (0.5.0)
+
+D6d ships the strategic-differentiator headline as the
+**0.5.0 release**: option-aware pack expansion via user-declarable
+custom-annotation rules, plus the first AIP-203 well-formedness
+validator for `(google.api.field_behavior)` annotation lists. Two
+new rules + one new synthetic-rule infrastructure land:
+
+1. **`custom/<user-suffix>`** — synthetic per-requirement rule_ids
+   materialized from pyproject `[[tool.protokit.lint.custom_annotation_rules]]`
+   array-of-tables entries. Presence + closed-value-set semantics
+   over scalar option values, including enum-identifier
+   normalization. Users now declare option-aware lint requirements
+   in `pyproject.toml` without writing Python.
+2. **`options/field-behavior-consistent`** — well-formedness
+   validator for `(google.api.field_behavior)` annotation lists
+   (duplicate values, `FIELD_BEHAVIOR_UNSPECIFIED` rejection per
+   AIP-203, contradictory-pair detection). Three dict-shaped
+   `violation_kind` arms. Ships in the `default` profile only;
+   `recommended` users see zero new findings.
+
+The buf BASIC parity numerator is unchanged at **25 of 26 +
+1 scheduled**. The +1 scheduled rule is `FIELD_NOT_REQUIRED` (a
+proto2-only BASIC rule); it was originally scoped for D6d but
+deferred to D6e+ per the 2026-05-20 strategic-deferral note in
+`docs/plans/2026-05-19-001-feat-d6d-option-aware-pack-expansion-plan.md`.
+The 26th BASIC rule (`PACKAGE_NO_IMPORT_CYCLE`) also remains
+deferred — its cross-file cycle-detection algorithm is not
+amenable to the D6c Arch-D pre-walk accumulator pattern.
+
+Teams using `recommended` will see no new findings. Teams using
+`default` AND consuming `(google.api.field_behavior)` in their
+schemas may see new warning-severity findings; the pre-upgrade
+migration recipe below covers the demotion paths.
+
+#### Added
+
+- **`custom/<user-suffix>` synthetic-rule infrastructure** — new
+  pyproject array-of-tables `[[tool.protokit.lint.custom_annotation_rules]]`
+  declares option-aware annotation requirements without writing
+  Python. Each entry materializes a synthetic rule_id of the form
+  `custom/<rule_suffix>` participating in profile composition +
+  `[severities]` overlay exactly like a built-in rule. The per-entry
+  field schema (`rule_suffix`, `option`, `element_kinds`,
+  `allowed_values`, `severity`) is documented in full in the README
+  Schema Linting section under "Custom annotation rules" (the
+  canonical source); the worked-example fixture at
+  `tests/schema/lint/cli/cli_fixtures/d6d_custom_annotation/pyproject.toml`
+  is the executable reference.
+
+  Footgun to flag: `option` is the bare descriptor-pool name
+  (`example.audit_level`), NOT the parenthesized proto-source form
+  (`(example.audit_level)`). `pool.FindExtensionByName` accepts only
+  the bare form; passing parens silently emits one
+  `LintRuntimeWarning(category="custom_annotation_extension_unresolved")`
+  per file instead of firing.
+
+  Unresolved-extension behavior: when `pool.FindExtensionByName`
+  raises `KeyError` (the configured extension is not in any proto
+  file's compile set), the rule emits one structured
+  `LintRuntimeWarning(category="custom_annotation_extension_unresolved")`
+  per `(rule_id, file)` pair naming the synthetic rule_id and skips
+  firing. KD-8 invariant: `BUILTIN_PACKS` MUST NEVER ship a
+  `custom/*` rule_id — the `custom/` prefix is reserved for user
+  declarations.
+
+- **`options/field-behavior-consistent`** — warning-severity rule
+  in the `default` profile only. AIP-203 well-formedness validator
+  with three dict-shaped `violation_kind` arms:
+
+  * `options/field-behavior-consistent/duplicate-value` — same
+    `FieldBehavior` enum identifier appears 2+ times in the
+    annotation list. One finding per duplicated value (NOT per
+    duplicate occurrence), emitted in alphabetic-by-value order.
+  * `options/field-behavior-consistent/unspecified-value` —
+    `FIELD_BEHAVIOR_UNSPECIFIED` appears in the list. AIP-203
+    forbids the zero value as an explicit annotation.
+  * `options/field-behavior-consistent/contradictory-pair` — two
+    values appear that are mutually exclusive under AIP-203
+    semantics. Curated set (5 pairs): `(OPTIONAL, REQUIRED)`,
+    `(REQUIRED, OUTPUT_ONLY)`, `(INPUT_ONLY, OUTPUT_ONLY)`,
+    `(IMMUTABLE, OUTPUT_ONLY)`, `(IMMUTABLE, INPUT_ONLY)`.
+    `IDENTIFIER`-based contradictions are deliberately excluded —
+    AIP-203 contextual semantics make a hard contradiction claim
+    harder to defend.
+
+  Unresolved-extension behavior: when the user's compile set does
+  NOT include `google/api/field_behavior.proto` (i.e.,
+  `pool.FindExtensionByName("google.api.field_behavior")` raises),
+  the rule emits one deduplicated
+  `LintRuntimeWarning(category="extension_unresolved")` per file and
+  skips firing.
+
+- **Dynamic-pool extension-access helper** — new internal module
+  `protokit.schema.lint._extension_access` (helpers:
+  `get_pool_bound_options_class`,
+  `resolve_enum_value_for_comparison`) factors out the bootstrap-
+  pool re-parse workaround that lets option-aware rules read
+  extension values registered through `protoxy`-built
+  `DescriptorPool`. The naive `protokit.options.get_option_value`
+  path raises `KeyError("Extension doesn't match")` on dynamic-pool
+  extension descriptors; the helper builds a pool-bound options
+  class via `message_factory.GetMessageClass` and re-parses the
+  serialized options bytes. Classified INTERNAL — consumers should
+  not depend on the module path or signatures.
+
+- **Worked example** — `tests/schema/lint/cli/test_d6d_custom_annotation_example.py`
+  exercises the full `custom/<suffix>` lifecycle end-to-end:
+  pyproject config → synthetic rule materialization → finding
+  emission → JSON output, plus presence-only and closed-value-set
+  variants and severity-overlay verification.
+
+#### Changed
+
+- **`_LINT_JSON_SCHEMA_VERSION`** advances `"0.3"` → `"0.5"` in two
+  closed-Literal-discriminator steps per the bump contract at
+  `_builtin_lint.py:227-312`:
+
+  * **U1**: `"0.3"` → `"0.4"` for the sixth `LintRuntimeWarning.category`
+    value `"custom_annotation_extension_unresolved"` (synthetic
+    `custom/<suffix>` rule skipped because its configured
+    extension is not registered in the compile pool).
+  * **U2**: `"0.4"` → `"0.5"` for the seventh value
+    `"extension_unresolved"` (built-in option-aware rule skipped
+    because the compile set is missing the well-known proto
+    its depended-on extension lives in). Distinct from the U1
+    sixth value: same root condition, different root cause (user
+    mis-configured pyproject vs user did not include googleapis).
+    Consumers discriminate via the `category` field without text
+    parsing.
+
+  Consumers that exhaustively switch on `LintRuntimeWarning.category`
+  (per the mypy-strict narrowing pattern documented on the
+  dataclass) MUST extend their match construct to handle BOTH new
+  cases. The two cases share a deduplication discipline (at most
+  one warning per `(rule_id, file)` pair) so consumer cardinality
+  is bounded.
+
+- **`BUILTIN_PACKS`** grows from 7 packs to 8 packs with the
+  addition of `options.field_behavior`. The auto-load tuple order
+  is unchanged for existing packs.
+
+#### Behavior changes (defaults; demotable)
+
+- **`custom/<suffix>` synthetic rules** fire ONLY when the user
+  declares them in `pyproject.toml`. Zero-config invocation is
+  unaffected.
+
+- **`options/field-behavior-consistent`** fires under the `default`
+  profile. `--profile recommended` users see ZERO new findings on
+  the 0.5.0 upgrade. `default`-profile users whose schemas consume
+  `(google.api.field_behavior)` will see new warning-severity
+  findings if their annotation lists contain duplicates, the
+  `FIELD_BEHAVIOR_UNSPECIFIED` zero value, or any of the 5 curated
+  contradictory pairs. The rule does NOT fire on absence — it is a
+  well-formedness validator, not a presence enforcer.
+
+- **Wire format** — both structured-output formats advance their
+  schema-version field to `"0.5"` in parity:
+  - `lint_json["schema_version"] = "0.5"`
+  - `lint_sarif.runs[0].properties.lint_schema_version = "0.5"`
+
+  Both surfaces share the same `_LINT_JSON_SCHEMA_VERSION` constant
+  so the values always match. Both new `LintRuntimeWarning.category`
+  values must be handled by exhaustive-switch consumers per the
+  closed-Literal contract documented above.
+
+#### Pre-upgrade migration recipe
+
+Teams whose CI passes on protokit 0.4.0 fall into four groups:
+
+- **`recommended` users** — no migration needed. Zero new findings
+  (this rule ships in `default` only).
+- **`default` users without `(google.api.field_behavior)`** —
+  zero new findings, but the rule does emit one
+  `LintRuntimeWarning(category="extension_unresolved")` per file
+  on every invocation (deduplicated per `(rule_id, file)`).
+  Visible in `--format=json runtime_warnings`, in `--statistics`
+  output as `runtime-warnings: N`, and (above the `_LINT_HUMAN_SUMMARIZATION_THRESHOLD`)
+  in stderr. To suppress the warning surface entirely: demote the
+  rule (see path 2 below). To keep the warning while suppressing
+  the `--statistics` row: `--no-statistics`.
+- **`default` users with `(google.api.field_behavior)`** — review
+  new findings; choose one of the demotion paths below per rule.
+  Each affected field can emit up to ~14 findings (5 contradictory
+  pairs + 8 duplicate-value arms + 1 unspecified-value); a
+  googleapis-heavy schema with K affected fields has worst-case
+  ~14·K findings on first 0.5.0 invocation.
+- **`default` users with `--max-warnings N`** — warning-severity
+  findings count against `--max-warnings`. Teams with a tight cap
+  may need to raise the cap, demote the rule, or fix the schema
+  before upgrading.
+
+**Numbered demotion paths**, ranked by team situation:
+
+1. **Fix the schema — preferred** (when the violation is real
+   schema drift). Remove duplicate `field_behavior` entries,
+   replace `FIELD_BEHAVIOR_UNSPECIFIED` with a meaningful
+   value (or drop the annotation entirely), and resolve
+   contradictory pairs per AIP-203 guidance.
+
+2. **Demote the rule to `info`** (per-rule severity escape hatch).
+   The rule ships at `warning`; demoting to `info` drops the
+   findings below the default `min_severity = "warning"` floor at
+   `LintProfile.min_severity` (see `model.py`), so they enter
+   `report.filtered_count` rather than `report.findings`. The
+   `--statistics` footer shows them under `filtered: N`. To
+   surface the demoted findings as advisory output, pair with
+   `--min-severity info`:
+   ```toml
+   [tool.protokit.lint.severities]
+   "options/field-behavior-consistent" = "info"
+   ```
+   ```bash
+   protokit lint --min-severity info <inputs>   # to see them
+   ```
+   Note: `"off"` is **NOT** currently a valid severity value
+   (`LintSeverity` accepts `"error"` / `"warning"` / `"info"`
+   only). The R9b per-rule disable mechanism is scheduled for
+   D6e+; until then, demote to `info` instead. If the
+   `[tool.protokit.lint.severities]` table already exists in your
+   `pyproject.toml`, **add the key to the existing table** rather
+   than re-declaring the section header (TOML rejects duplicate
+   section headers).
+
+3. **Raise `--max-warnings N`** (or remove the cap) — for teams
+   whose only blocker is the warning-count gate, not the findings
+   themselves.
+
+**No `pyproject.toml`?** A 3-line stub at the repo root suffices —
+protokit discovers `pyproject.toml` independently of pip/build
+tooling, so the file does not need to define a build system. (See
+the D6c migration recipe for the exact stub shape.)
+
+#### Upgrade notes (triage recipe)
+
+1. Run `protokit lint <inputs>` against your protos under the
+   `default` profile.
+2. If exit code 0 and `--statistics` shows no warning rows: no
+   migration needed beyond optionally suppressing the
+   `runtime-warnings: N` row (see groups above).
+3. If `options/field-behavior-consistent` findings appear: choose
+   one of the demotion paths above. Most teams will land on path
+   1 (fix the schema) for AIP-203 well-formedness issues.
+4. Re-run after applying demotion/fix; commit the updated
+   `pyproject.toml` or schema fix.
+
+#### Worked example (synthetic `custom/<suffix>`)
+
+The CI-runnable fixture at
+`tests/schema/lint/cli/test_d6d_custom_annotation_example.py` +
+`tests/schema/lint/cli/cli_fixtures/d6d_custom_annotation/`
+demonstrates the full custom-annotation lifecycle. A minimal
+pyproject entry:
+
+```toml
+[[tool.protokit.lint.custom_annotation_rules]]
+rule_suffix    = "audit-required"
+option         = "example.audit_level"
+element_kinds  = ["method"]
+allowed_values = ["LOW", "HIGH", "CRITICAL"]
+severity       = "error"
+```
+
+materializes a synthetic `custom/audit-required` rule that fires
+on every method whose `(example.audit_level)` annotation is absent OR set to
+a value outside `{LOW, HIGH, CRITICAL}`. The extension itself is
+defined in user-controlled proto files (e.g.,
+`extend google.protobuf.MethodOptions { optional AuditLevel
+audit_level = 50000; }`); protokit reads the option value via the
+dynamic-pool re-parse helper at
+`protokit.schema.lint._extension_access`.
+
+#### Consumer migration (Python API + JSON / SARIF wire format)
+
+- **`LintRuntimeWarning.category`** Literal grows from 5 values to
+  7. Consumers exhaustively switching on `category` (per the
+  mypy-strict narrowing pattern documented at
+  `src/protokit/schema/lint/model.py:573-581`) MUST add branches
+  for `"custom_annotation_extension_unresolved"` (D6d U1) and
+  `"extension_unresolved"` (D6d U2). The two values share a root
+  symptom (the rule could not resolve its configured extension)
+  but discriminate the root cause (user pyproject mis-configuration
+  vs user compile-set incomplete).
+
+- **`custom/<suffix>` finding shape** (synthetic-rule path):
+  - `violation_kind` is one of `"custom-annotation-absent"` (the
+    option is not present on the descriptor) or
+    `"custom-annotation-value-mismatch"` (the option is present
+    but its value is outside `allowed_values`).
+  - `params` always carries `"rule_id"` (the synthetic
+    `custom/<suffix>` id) and `"option"` (the configured
+    fully-qualified extension name in bare form).
+  - `params["actual_value"]` is present only on the value-mismatch
+    arm — a string-coerced enum identifier (or raw scalar) of the
+    rejected value.
+
+- **`options/field-behavior-consistent` finding shape** (built-in
+  AIP-203 rule):
+  - `violation_kind` is one of `"options/field-behavior-consistent/duplicate-value"`,
+    `"options/field-behavior-consistent/unspecified-value"`, or
+    `"options/field-behavior-consistent/contradictory-pair"`.
+  - `params` always carries `"field_name"`. The duplicate + unspecified
+    arms additionally carry `"value"`; the contradictory-pair arm
+    carries `"value_a"` + `"value_b"` (alphabetically sorted).
+
+- **`protokit.schema.lint._extension_access`** is **INTERNAL** —
+  not part of the public surface; consumers that need pool-bound
+  extension access should use
+  `protokit.options.get_option_value` for ordinary descriptor-pool
+  cases and treat the dynamic-pool re-parse workaround as
+  implementation detail.
+
+- **`protokit.schema.lint._custom_rules`** is similarly
+  **INTERNAL** — the synthetic-module materialization contract may
+  change pre-1.0 as the option-aware path accumulates real-world
+  evidence.
+
+- **`CustomAnnotationRuleSpec`** at
+  `protokit.schema.lint._config` is **INTERNAL** — the spec
+  dataclass models a validated pyproject entry; consumers should
+  treat declarative configuration via the pyproject table as the
+  public surface.
+
+#### Deferred to D6e+
+
+D6d explicitly defers the following items (rolled forward from D6c
++ the 2026-05-20 strategic-deferral revision):
+
+- **`FIELD_NOT_REQUIRED`** — the proto2-only buf BASIC rule
+  originally scoped for D6d U3. Deferred per the umbrella
+  brainstorm Strategic Deferral section: the rule's scope, while
+  individually small, would have widened the D6d release surface
+  and risked muddying the headline. The +1 scheduled rule rolls
+  forward; D6e+ owns implementation.
+- **`PACKAGE_NO_IMPORT_CYCLE`** — the 26th buf BASIC rule;
+  cross-file cycle-detection algorithm requires DAG construction
+  + cycle detection, not amenable to the D6c Arch-D accumulator
+  pattern.
+- **R6 deprecated-replacement promotion to `recommended`** —
+  pending real-world experience with the leading-comment heuristic
+  accuracy + the corpus signal from the 0.5.0 release window.
+- **`strict` profile rule enumeration** — placeholder profile name
+  reserved for a future curation pass.
+- **R9b per-rule disable/enable CLI flag** — `[severities] = "off"`
+  remains the de-facto disable mechanism.
+- **`LintLocation` exhaustiveness contract decision** —
+  whether the location discriminator becomes a closed Literal or
+  remains an open structural variant.
+- **`IDENTIFIER`-based contradictory pairs in
+  `options/field-behavior-consistent`** — pending AIP-203 corpus
+  evidence; the curated set holds the line at 5 pairs.
+- **Long-lived engine config-reload contract for synthetic rules**
+  — D6d's `_custom_rules` materialization assumes a CLI-style
+  one-shot engine lifecycle (the synthetic module is built once at
+  config-load); long-lived consumers (D6e+ MCP / IDE integrations)
+  will need a rebuild discipline documented as part of the engine
+  API.
+
 ### D6c — cross-file lint dispatch (Arch-D pre-walk accumulator) + 25/26 buf BASIC parity (0.4.0)
 
 D6c adds the first cross-file lint dispatch infrastructure (Arch-D

@@ -407,7 +407,7 @@ def build_synthetic_module(
       the engine rejects duplicate keys, so we route multi-kind
       entries through ``rule_id="custom/<suffix>"`` only for the
       FIRST kind, then ``custom/<suffix>__<kind>`` internally for the
-      remaining kinds. (To be revisited in D6d U1 ce:review if needed.)
+      remaining kinds.
 
     Args:
         specs: Validated entries from

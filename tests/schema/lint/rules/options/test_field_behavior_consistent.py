@@ -32,11 +32,14 @@ re-parse helpers from
 built ``DescriptorPool`` (where the bootstrap-pool ``Extensions[]``
 accessor raises ``KeyError``).
 
-**Dormancy (D6d U2):** the rule pack is module-imported via
-``rules/__init__.py`` but NOT registered in ``BUILTIN_PACKS``. Tests
-load the pack explicitly via ``engine.load_rule_pack(field_behavior)``.
-The BUILTIN_PACKS registration ships in D6d U5 (delivery boundary)
-per [[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]].
+**Registration (D6d U5 delivery boundary, 0.5.0):** the rule pack
+is registered in ``BUILTIN_PACKS``. These tests load the pack
+explicitly via ``engine.load_rule_pack(field_behavior)`` to keep
+each test scoped to the rule under examination (independent of the
+BUILTIN_PACKS-curated auto-load surface). Module-import dormancy
+through U2-U4 followed the
+[[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]]
+discipline.
 """
 
 from __future__ import annotations
@@ -656,39 +659,51 @@ class TestProfileScope:
 
 
 # ---------------------------------------------------------------------------
-# Module-level dormancy: NOT in BUILTIN_PACKS at D6d U2
+# Module-level registration: IN BUILTIN_PACKS at D6d U5 (0.5.0)
 # ---------------------------------------------------------------------------
 
 
-class TestDormancy:
-    def test_rule_id_not_in_any_builtin_pack_at_u2(self) -> None:
-        """U2 ships the rule + pack but does NOT register in
-        ``BUILTIN_PACKS``. Registration ships in D6d U5 (delivery
-        boundary) per
-        [[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]].
+class TestBuiltinPacksRegistration:
+    """``options/field-behavior-consistent`` is reachable via exactly
+    one ``BUILTIN_PACKS`` module (the canonical ``field_behavior`` pack).
 
-        A zero-config ``protokit lint --profile default`` invocation
-        on a proto with malformed ``(google.api.field_behavior)``
-        annotations produces ZERO findings of this rule before U5.
+    Live invariant guarded:
 
-        The assertion checks rule_id presence across every BUILTIN_PACKS
-        module — NOT just module identity — so a future contributor who
-        creates a renamed copy of this module (e.g.,
-        ``field_behavior_v2``) and registers IT cannot bypass the
-        dormancy gate. The stronger assertion catches the rename-bypass
-        attack documented in ce:review ADV-5 (P3, D6d U2).
-        """
+    1. ``field_behavior in BUILTIN_PACKS`` — the canonical pack is
+       a member of the auto-load tuple.
+    2. The rule_id ``options/field-behavior-consistent`` is exposed
+       via exactly one ``BUILTIN_PACKS`` module (no rename-bypass
+       attack where a contributor creates ``field_behavior_v2`` and
+       registers it alongside or instead of the canonical pack —
+       per ce:review ADV-5, P3, D6d U2).
+
+    The assertion uses the typed ``get_lint_spec`` accessor from
+    ``protokit.schema.lint.decorator`` rather than reaching into
+    each rule's private ``_lint_spec`` attribute — see
+    ``tests/schema/lint/test_builtin_packs.py`` for the canonical
+    accessor pattern.
+    """
+
+    def test_rule_id_reachable_via_field_behavior_pack_in_builtin_packs(
+        self,
+    ) -> None:
         from protokit.schema.lint.cli import BUILTIN_PACKS
+        from protokit.schema.lint.decorator import get_lint_spec
 
-        assert field_behavior not in BUILTIN_PACKS
-        assert not any(
-            RULE_ID in (r._lint_spec.rule_id for r in pack.RULES)  # type: ignore[attr-defined]
-            for pack in BUILTIN_PACKS
-        ), (
-            f"rule_id {RULE_ID!r} found in BUILTIN_PACKS via a module "
-            f"OTHER than field_behavior — the rule has been promoted to "
-            f"auto-load. Update this test (and the CHANGELOG) when D6d "
-            f"U5 ships the promotion."
+        assert field_behavior in BUILTIN_PACKS
+        matching_packs = [
+            pack for pack in BUILTIN_PACKS
+            if any(
+                get_lint_spec(r).rule_id == RULE_ID
+                for r in pack.RULES
+            )
+        ]
+        assert matching_packs == [field_behavior], (
+            f"rule_id {RULE_ID!r} should be reachable via exactly the "
+            f"``field_behavior`` pack in BUILTIN_PACKS, but matched "
+            f"{[p.__name__ for p in matching_packs]!r}. If the rule "
+            f"has been intentionally moved to another pack module, "
+            f"update this assertion alongside the move."
         )
 
 

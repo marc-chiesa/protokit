@@ -481,25 +481,32 @@ walk against a ref where the importer has been updated.
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
-As of `protokit 0.4.0`, `protokit lint` covers **25 of 26 buf BASIC
-rules** (the 26th, `PACKAGE_NO_IMPORT_CYCLE`, defers to D6d —
+As of `protokit 0.5.0`, `protokit lint` covers **25 of 26 buf BASIC
+rules** (the 26th, `PACKAGE_NO_IMPORT_CYCLE`, defers to D6e+ —
 cross-file cycle detection requires its own architectural design
-pass; `FIELD_NOT_REQUIRED`, a proto2-only buf BASIC rule not counted
-in protokit's 26-rule baseline, defers to D6d alongside). The built-in packs span
-single-language style + cross-language namespace consistency +
-cross-file directory/package layout: `naming` (AIP-122 +
+pass). The proto2-only buf BASIC rule `FIELD_NOT_REQUIRED` is
+outside the 26-rule baseline and is also scheduled for D6e+. The built-in packs span single-language style +
+cross-language namespace consistency + cross-file directory/package
+layout + AIP-203 well-formedness: `naming` (AIP-122 +
 PascalCase/snake_case/UPPER_SNAKE conventions for messages, enums,
 services, RPCs, oneofs, files, and packages), `enum`
 (`no-allow-alias`, `first-value-zero`), `imports` (`no-public`,
 `no-weak`, `unused`), `package` (`defined`, `directory-match`,
 `same-directory`, `directory-same-package`), `file`
-(`syntax-specified`), and `package_same` (`go-package`,
+(`syntax-specified`), `package_same` (`go-package`,
 `java-package`, `csharp-namespace`, `php-namespace`, `ruby-package`,
-`swift-prefix`, `java-multiple-files`). **26 rules across 6 packs**
-in the `recommended` profile, +5 R6 deprecated-replacement rules in
-`default`. Lint is intentionally orthogonal to `protokit compat` —
-compat answers "is this schema change safe for consumers?", lint
-answers "does this schema follow our style conventions?".
+`swift-prefix`, `java-multiple-files`), and (new in 0.5.0)
+`options/field-behavior-consistent` (AIP-203 well-formedness).
+**26 rules across 6 packs** in the `recommended` profile, **32
+rules** in `default` (+R6 deprecated-replacement 5-rule family +
+`options/field-behavior-consistent`). Plus, as of 0.5.0, users may
+declare **`custom/<user-suffix>`** synthetic rules in
+`pyproject.toml` to enforce option-aware annotation requirements
+without writing Python (see
+[Custom annotation rules](#custom-annotation-rules) below). Lint is
+intentionally orthogonal to `protokit compat` — compat answers "is
+this schema change safe for consumers?", lint answers "does this
+schema follow our style conventions?".
 
 ### Quick Start
 
@@ -541,9 +548,9 @@ its target before rule-pack profile-name lookup.
 
 | Profile | Rules | Purpose |
 |---------|-------|---------|
-| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.4.0. |
-| `recommended` | 26 | Buf BASIC parity (25 of 26 buf BASIC rules; `PACKAGE_NO_IMPORT_CYCLE` is the 26th, deferred to D6d; `FIELD_NOT_REQUIRED` is proto2-only and not counted in the 26-rule baseline, also deferred to D6d). `naming` (9), `enum` (2), `imports` (3), `package` (4), `file` (1), `package_same` (7). |
-| `default` | 31 | Buf BASIC parity (`recommended`'s 26 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`). |
+| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.5.0. |
+| `recommended` | 26 | Buf BASIC parity (25 of 26 buf BASIC rules; `PACKAGE_NO_IMPORT_CYCLE` is the 26th, deferred to D6e+). Plus `FIELD_NOT_REQUIRED` — a proto2-only buf BASIC rule outside the 26-rule baseline — scheduled for D6e+. `naming` (9), `enum` (2), `imports` (3), `package` (4), `file` (1), `package_same` (7). |
+| `default` | 32 | Buf BASIC parity (`recommended`'s 26 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
 | `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
 
@@ -554,6 +561,112 @@ bound the leading-comment-regex heuristic's blast radius. To soften
 the floor without dropping rules: use `--min-severity=warning`
 globally, or `[tool.protokit.lint.severities]` per-rule (see
 below).
+
+### Upgrade notes (0.4.x → 0.5.0)
+
+D6d ships option-aware pack expansion as the strategic-
+differentiator headline: users now declare option-aware annotation
+requirements via `[[tool.protokit.lint.custom_annotation_rules]]`
+in `pyproject.toml` without writing Python (synthetic
+`custom/<user-suffix>` rules). D6d also adds the first AIP-203
+well-formedness validator (`options/field-behavior-consistent`) to
+the `default` profile.
+
+Migration impact:
+
+- **`recommended` users** — zero new findings on upgrade.
+- **`default` users without `(google.api.field_behavior)`** — zero
+  new findings on upgrade.
+- **`default` users consuming `(google.api.field_behavior)`** —
+  may see new warning-severity findings on duplicate values, the
+  `FIELD_BEHAVIOR_UNSPECIFIED` zero value, or 5 curated
+  contradictory pairs. Demote to `info` via `[severities]` or fix
+  the schema per AIP-203 guidance.
+
+The buf BASIC parity numerator is unchanged at **25 of 26 + 1
+scheduled** (the +1 scheduled rule is `FIELD_NOT_REQUIRED`,
+originally scoped for D6d but deferred to D6e+ per the
+2026-05-20 strategic-deferral note).
+
+See `CHANGELOG.md` `### D6d — 0.5.0` section for:
+
+- Full additions enumeration (`custom/<suffix>` synthetic rule
+  infrastructure + `options/field-behavior-consistent` 3-arm
+  dict-template rule + dynamic-pool extension-access helper +
+  worked-example integration fixture).
+- Wire-format changes (`schema_version` `0.3` → `0.5` via two
+  closed-Literal `LintRuntimeWarning.category` additions:
+  `custom_annotation_extension_unresolved` + `extension_unresolved`).
+- **Pre-upgrade migration recipe** (2 numbered demotion paths;
+  schema-fix preferred).
+- Worked-example walkthrough (synthetic `custom/<suffix>`).
+- Consumer migration (Python API audit for `LintRuntimeWarning.
+  category` switch tables; `_extension_access` + `_custom_rules`
+  + `CustomAnnotationRuleSpec` INTERNAL classifications).
+
+### Custom annotation rules
+
+Declare option-aware annotation requirements in `pyproject.toml`
+via the `[[tool.protokit.lint.custom_annotation_rules]]` array-of-
+tables. Each entry materializes a synthetic `custom/<rule_suffix>`
+rule that participates in profile composition + `[severities]`
+overlay exactly like a built-in rule.
+
+```toml
+[[tool.protokit.lint.custom_annotation_rules]]
+rule_suffix    = "audit-required"
+option         = "example.audit_level"
+element_kinds  = ["method"]
+allowed_values = ["LOW", "HIGH", "CRITICAL"]
+severity       = "error"
+```
+
+Fields:
+
+- `rule_suffix` (required) — kebab-case identifier matching
+  `[a-z][a-z0-9]*(-[a-z0-9]+)*`. The synthetic rule_id is
+  `custom/<rule_suffix>`. Must NOT collide with another entry or
+  with a built-in `custom/*` rule_id (none ship today; the prefix
+  is reserved for user declarations).
+- `option` (required) — fully-qualified extension name in
+  descriptor-pool form (bare; e.g., `example.audit_level`). NOT
+  the parenthesized proto-source syntax (`(example.audit_level)`);
+  `pool.FindExtensionByName` accepts only the bare form, and
+  passing the parenthesized form silently emits one
+  `LintRuntimeWarning(category="custom_annotation_extension_unresolved")`
+  per file instead of firing the rule. Duplicate `rule_suffix`
+  across entries is rejected at config-load with exit code 2
+  (`error[lint-pyproject-config-invalid]:`).
+- `element_kinds` (required) — non-empty subset of `ElementKind`
+  values: `"field"`, `"method"`, `"message"`, `"enum"`,
+  `"enum_value"`, `"service"`, `"file"`, `"oneof"`.
+- `allowed_values` (optional) — homogeneous scalar list (all
+  strings OR all ints OR all bools). When present, the rule fires
+  both on presence absence AND on values outside the set. Floats
+  and mixed-type lists are rejected at config-load.
+- `severity` (optional) — `"error"` / `"warning"` / `"info"`;
+  defaults to `"warning"`. Note: `"off"` is NOT currently a valid
+  severity (R9b per-rule disable is scheduled for D6e+); demote to
+  `"info"` to suppress without removing the entry.
+
+Behavior:
+
+- The rule fires when the option is **absent** OR (when
+  `allowed_values` is set) when its value is **outside the set**.
+- Each finding's `violation_kind` is one of
+  `"custom-annotation-absent"` (option not present) or
+  `"custom-annotation-value-mismatch"` (value not in
+  `allowed_values`). `params` carries `"option"` + `"rule_id"`
+  on every finding, plus `"actual_value"` on the value-mismatch
+  arm (string-coerced enum identifier or raw scalar).
+- When `pool.FindExtensionByName` raises `KeyError` (the extension
+  is not registered in any input proto), the rule emits one
+  structured `LintRuntimeWarning(category="custom_annotation_extension_unresolved")`
+  per `(rule_id, file)` pair and skips firing.
+
+A CI-runnable worked example lives at
+`tests/schema/lint/cli/test_d6d_custom_annotation_example.py` (with
+fixtures under `tests/schema/lint/cli/cli_fixtures/d6d_custom_annotation/`).
 
 ### Upgrade notes (0.3.x → 0.4.0)
 
@@ -724,10 +837,10 @@ and agents. Top-level keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `schema_version` | string | Wire-format version (currently `"0.3"`). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
+| `schema_version` | string | Wire-format version (currently `"0.5"`). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
-| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"`), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
+| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"`), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
 | `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty for `--input` descriptor-set mode. |
 | `summary` | object | Aggregate counts. Keys: `errors`, `warnings`, `info`, `total`, `filtered_count`, `runtime_warning_count`. |
 
@@ -814,7 +927,7 @@ accumulation.
 | Surface | Element | Status |
 |---------|---------|--------|
 | Python dataclass | `LintReport` (fields, ordering, frozen-ness) | IN |
-| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-270`. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
+| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-312`. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
 | Python module | `BUILTIN_PACKS` (auto-loaded rule packs; includes `package_same` as of 0.3.0 → 7 R7 PACKAGE_SAME_* rules default-on under `recommended` + `default` profiles) | IN |
 | Python function | `leading_comment(source_info_descriptors, file_name, path)` (free function in `protokit.schema.lint.rules.options._comments`; reads `[replaced-by: <X>]` and similar leading-comment annotations from the indexed source-info descriptors) | IN |
 | Python class field | `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] \| None` (D6b U2 R6b — the source-locations index built from `FileDescriptorSet` before `pool.Add()` discards `source_code_info`; consumed by leading-comment introspection) | INTERNAL |
@@ -829,10 +942,10 @@ accumulation.
 | Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
 | Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
 | JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
-| JSON wire | `lint_json["schema_version"]: "0.3"` (top-level wire-format version; absence → implicit "0.1") | IN |
+| JSON wire | `lint_json["schema_version"]: "0.5"` (top-level wire-format version; absence → implicit "0.1") | IN |
 | SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
-| SARIF wire | `runs[].properties.lint_schema_version: "0.3"` (parity with `lint_json["schema_version"]`) | IN |
+| SARIF wire | `runs[].properties.lint_schema_version: "0.5"` (parity with `lint_json["schema_version"]`) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with R6 deprecated-replacement family (5 warning-severity option-aware rules as of 0.3.0)) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |

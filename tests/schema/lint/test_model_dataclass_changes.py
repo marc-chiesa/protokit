@@ -62,9 +62,12 @@ class TestCategoryLiteral:
         (engine-emitted when a BUILT-IN option-aware rule's
         depended-on extension is absent from the compile pool, e.g.,
         ``options/field-behavior-consistent`` linting protos that
-        don't include ``google/api/field_behavior.proto``).
-        Bump-permissive additive Literal value per the wire-format
-        schema-version bump contract — no schema_version bump.
+        don't include ``google/api/field_behavior.proto``); bumped
+        ``_LINT_JSON_SCHEMA_VERSION`` ``"0.4"`` → ``"0.5"`` per the
+        closed-Literal-discriminator bump contract at
+        ``_builtin_lint.py:227-312``. Both D6d category additions
+        are closed-Literal extensions that require consumer
+        exhaustive-switch updates; each bumps the schema version.
         """
         type_hints = typing.get_type_hints(LintRuntimeWarning)
         category_type = type_hints["category"]

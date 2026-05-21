@@ -85,6 +85,7 @@ class TestBuiltinPacks:
             "protokit.schema.lint.rules.package",
             "protokit.schema.lint.rules.file",
             "protokit.schema.lint.rules.options.deprecated_replacement",
+            "protokit.schema.lint.rules.options.field_behavior",
             "protokit.schema.lint.rules.package_same",
         )
         assert actual == expected, (
