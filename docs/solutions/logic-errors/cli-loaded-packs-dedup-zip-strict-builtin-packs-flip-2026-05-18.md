@@ -1,6 +1,7 @@
 ---
 title: "CLI loaded_packs list grows past engine-deduplicated dict on BUILTIN_PACKS flip — zip(strict=True) length mismatch"
 date: 2026-05-18
+last_updated: 2026-05-21-d6d-new-u4
 category: docs/solutions/logic-errors
 module: src/protokit/schema/lint/cli.py
 component: tooling
@@ -125,9 +126,21 @@ Per [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-20
 
 5. **Three-mechanism documentation discipline**: the test class docstring documenting this fix must enumerate ALL THREE coupled mechanisms (CLI dedup + engine idempotency + frozenset union), each with the SPECIFIC failure mode that surfaces if that mechanism alone is removed. See [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]]. The 5-reviewer ce:review convergence on the stale docstring at this exact site (5 reviewers independently flagged the pre-fix docstring as misleading) is the worked example.
 
+6. **Per-flip dedup-regression test (canonical pattern post-D6c U2)**: every BUILTIN_PACKS flip ships a sibling test file at `tests/schema/lint/test_cli_rule_pack_dedup_post_<delivery>.py` that invokes `--rule-pack=<the-newly-registered-pack>` against a minimal fixture and asserts no `ValueError` at the R25 provenance line. Three concrete instances:
+
+   * `test_cli_rule_pack_dedup_post_d6c.py` — D6c U2 expanded the `package` pack from 2 to 4 rules (added R8 + R8b). Test asserts R8 + R8b firing counts to catch count-inflation from duplicate-pack-load.
+   * `test_cli_rule_pack_dedup_post_d6d.py` — D6d U5 promoted `options/field-behavior-consistent` into BUILTIN_PACKS. The fixture omits `google/api/field_behavior.proto` so the rule short-circuits via `extension_unresolved` (no findings to count); the test asserts `result.exception is None` to catch a future broad-except absorbing the ValueError, plus `result.exit_code == 0` for the clean-fixture invariant.
+
+   The `_cli_dedup_helpers.compile_sources_to_descriptor_set` helper is the shared SSOT for descriptor-set compilation; introduced at D6d new-U4 per MAINT-2 to prevent the third copy-paste at the next BUILTIN_PACKS flip (the [[shared-helper-third-instance-trigger]] discipline). When a third dedup-regression test ships, both existing tests should already be migrated to use the helper.
+
+7. **`catch_exceptions=False` + `assert result.exception is None`** — pair the explicit-CliRunner-flag discipline (per [[clirunner-catch-exceptions-false-explicit-discipline-2026-05-21]]) with a positive exception-None assertion. The flag propagates exceptions cleanly; the assertion guards against a future `except Exception:` broadening in CLI code that could absorb the ValueError and silently set `exit_code=0`. Either one alone is necessary but not sufficient.
+
 ## Related
 
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — Case 2 (D6b U7) of the integration-test-surfaces-latent-bug pattern; this bug fix is the canonical worked example.
 - [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]] — the docstring discipline that prevents future-engineer removal of the load-bearing CLI dedup guard.
 - [[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]] — the BUILTIN_PACKS flip pattern that U7 executes; U7's delivery-boundary commit was the trigger event for this bug to surface.
 - [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — Case 4 (BOOST mode); the 5-reviewer convergence on the U7 docstring is the documentation analog of this code-finding convergence.
+- [[clirunner-catch-exceptions-false-explicit-discipline-2026-05-21]] — companion: the `catch_exceptions=False` discipline that the per-flip dedup-regression test relies on. The ValueError propagation only works if the test harness doesn't silently absorb it.
+- [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]] — sibling delivery-boundary discipline from the same D6d new-U4 ce:review pass.
+- [[migration-recipe-severity-aware-template-reuse-2026-05-21]] — sibling delivery-boundary discipline; both surfaced at the D6d new-U4 ce:review.
