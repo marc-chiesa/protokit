@@ -1,6 +1,7 @@
 ---
 title: "WeakKeyDictionary + id-of-resettable-engine-attribute for per-engine, per-run state isolation in rule callables"
 date: 2026-05-20
+last_updated: 2026-05-21
 category: docs/solutions/best-practices
 module: src/protokit/schema/lint/rules/options/field_behavior.py
 problem_type: best_practice
@@ -22,6 +23,7 @@ tags:
   - runtime-warning
   - isolation
   - silent-failure
+  - shared-helper-trigger
 ---
 
 # WeakKeyDictionary + id-of-resettable-engine-attribute for per-engine, per-run state isolation
@@ -211,6 +213,42 @@ def test_second_run_reemits_warning_on_same_engine(tmp_path):
 ```
 
 A test that only asserts on `r1` would pass even with the broken module-level `set` pattern, providing false confidence.
+
+### Second instance — D6d U3 ce:review backport to `_custom_rules.py` (2026-05-21)
+
+The first instance landed at D6d U2 (`options/field_behavior.py:212-303`). The second instance landed at D6d U3 ce:review (`src/protokit/schema/lint/_custom_rules.py:118-153`), backporting the closure-captured-set pattern in `_make_synthetic_closure` to the same `WeakKeyDictionary + id-sentinel` discipline. Surfaced by adversarial-reviewer ADV-5 (P3, 0.88) + learnings-researcher citation in the same pass.
+
+Concrete shape of the second instance:
+
+```python
+# src/protokit/schema/lint/_custom_rules.py
+_UNRESOLVED_SEEN: weakref.WeakKeyDictionary[
+    LintEngine, tuple[int, set[tuple[str, str]]]
+] = weakref.WeakKeyDictionary()
+
+
+def _dedup_seen_for_run(engine: LintEngine) -> set[tuple[str, str]]:
+    """Return the dedup set scoped to the engine's current run()."""
+    current_id = id(engine._runtime_warnings)
+    state = _UNRESOLVED_SEEN.get(engine)
+    if state is None or state[0] != current_id:
+        seen: set[tuple[str, str]] = set()
+        _UNRESOLVED_SEEN[engine] = (current_id, seen)
+        return seen
+    return state[1]
+```
+
+The U3 backport differs from the U2 original in one minor respect: the helper returns the set directly (`-> set[tuple[str, str]]`) rather than threading the state tuple through the caller. The shape is equivalent — the caller does `seen = _dedup_seen_for_run(engine)` then checks/adds the dedup key — and is friendlier to the closure factory pattern that already has the `engine` reference in scope.
+
+**Trigger rule — third instance promotes to a shared helper.** Two sibling implementations of the same per-run dedup pattern in the same module subsystem (`src/protokit/schema/lint/`) is acceptable; the boilerplate is small and the helper signature differs slightly between callers (one returns a set, the other a tuple). When a **third** rule callable needs the same pattern, the duplication crosses the trigger threshold: extract to a shared helper at `src/protokit/schema/lint/_engine_dedup.py` (or equivalent) and migrate all three callers. The shared helper's signature should be `_per_run_dedup_set(engine: LintEngine, key: Hashable) -> tuple[set, bool]` (returns the set + a "was-new" flag) so callers can check-and-add in one call.
+
+Drift indicators that prompt extraction even before the third instance:
+
+- A reviewer asks "why are there two of these?" in a ce:review pass.
+- The two existing instances diverge subtly (e.g., one resets on `_runtime_warnings` id while the other resets on `_findings` id; one stores tuples while the other stores sets).
+- Test infrastructure for the pattern (the two-`run()` regression test shape) is duplicated across rule-pack test files.
+
+If two instances exist and the codebase is otherwise stable, the boilerplate cost is low — extracting prematurely would tradeoff abstraction overhead against minor duplication savings. Wait for the third instance, then extract.
 
 ## Related
 
