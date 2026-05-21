@@ -1,9 +1,65 @@
 ---
 date: 2026-05-19
+last_revised: 2026-05-20
 topic: protokit-lint-delivery-6d-option-aware-pack-expansion
 ---
 
 # Protokit Lint Delivery 6d — Option-Aware Pack Expansion (0.5.0)
+
+## Strategic Deferral (added 2026-05-20)
+
+**`field/not-required` is DEFERRED from D6d to D6e+** per the
+D6d U3 escalation analysis. The umbrella scope below preserves the
+*option-aware pack expansion* headline (R1/R2/R3/R5/R6/R8/R9/R10
+remain in scope) but RETIRES the bundled buf-BASIC parity close-out
+(R4/R7/KD-5/S5) pending a comprehensive post-D6d UX-philosophy
+revision.
+
+**Why deferred (one paragraph):** The U3 per-unit brainstorm at
+`docs/brainstorms/2026-05-20-d6d-u3-field-not-required-requirements.md`
++ two doc-review passes surfaced a 4-persona convergence: shipping
+`field/not-required` at ERROR in `recommended`+`default` creates
+double-jeopardy with the existing `file/syntax-specified` rule
+(every proto2 file fires 1+N errors). The escalation also exposed
+that protokit's lint defaults have drifted into an implicit anti-
+proto2 stance via buf-parity-mirroring, without an explicit product
+decision that proto2 is second-class. Resolving this requires a
+larger conversation than D6d can host: principle articulation
+("UX above buf parity"), retroactive `file/syntax-specified`
+treatment, proto2-aware profile design, and an existing-rules audit.
+That conversation lives at
+`docs/brainstorms/2026-05-20-protokit-ux-philosophy-revision-requirements.md`
+(placeholder); D6d defers the rule rather than ship-then-reverse.
+
+**What this revision changes** (in-place markers below; the
+forward-compatibility argument is laid out in the U3 brainstorm's
+escalation analysis):
+
+- **R4, R7, KD-5, S5** — marked SUPERSEDED/DEFERRED-to-D6e+ inline.
+- **R11 CHANGELOG framing** — "buf BASIC FIELD_NOT_REQUIRED close-
+  out" removed from the section title and migration recipe; numerator
+  language reverts to "25 of 26 + FIELD_NOT_REQUIRED scheduled for
+  D6e+" (matches D6c's existing CHANGELOG language).
+- **Visual table** — `FIELD_NOT_REQUIRED` row removed.
+- **S6** — wording adjusted (the "FIELD_NOT_REQUIRED for proto2
+  users" carve-out is removed because the rule isn't shipping).
+- **Implementation Units** (in the umbrella plan) — U3 deferred; U4
+  becomes new U3; U5 becomes new U4. D6d ships in 4 units instead of
+  5.
+- **KD-17 numerator framing** (in the umbrella plan) — reverted.
+
+**What this revision does NOT change**:
+
+- Option-aware pack expansion headline (R1-R3, R5-R10, KD-1 through
+  KD-4, KD-7 through KD-10) all stay.
+- D6d still satisfies OQ-8 (option-aware as headline; the parity
+  close-out was a bundled secondary scope item, not the headline).
+- `file/syntax-specified` behavior at 0.5.0 — untouched pending the
+  post-D6d UX-philosophy revision.
+- U3 per-unit brainstorm at `docs/brainstorms/2026-05-20-d6d-u3-...md`
+  — kept as analytical context; receives a SUPERSEDED-pending-
+  philosophy-revision header but stays committed for the D6e+ unit
+  that picks it back up.
 
 **Scope:** strategic-differentiator delivery. D6d satisfies the OQ-8 forcing
 function from D6c (binding pre-commit: "D6d MUST ship option-aware pack
@@ -123,13 +179,20 @@ section.
   "required" prefix; the rule does not require presence, only validates
   consistency when present.)
 
-**Buf BASIC parity close-out (bundled)**
+**Buf BASIC parity close-out (bundled)** — **DEFERRED to D6e+ per
+Strategic Deferral above (2026-05-20).**
 
-- **R4.** New rule `FIELD_NOT_REQUIRED` (in the `field` rule pack) — fires
-  on every proto2 field with `label == LABEL_REQUIRED`. Closes the
-  proto2-only buf BASIC gap deferred from D6c. Proto3 files trigger zero
-  findings (protoc rejects `required` at compile-time, so the predicate
-  is never true).
+- **R4. [SUPERSEDED — DEFERRED to D6e+]** New rule `FIELD_NOT_REQUIRED`
+  (in the `field` rule pack) — fires on every proto2 field with
+  `label == LABEL_REQUIRED`. *Original disposition: closes the
+  proto2-only buf BASIC gap deferred from D6c.* **Revised disposition
+  (2026-05-20):** deferred to D6e+ bundled with engine
+  `ElementKind.EXTENSION_FIELD` walker work; that bundling lets the
+  rule fire on cross-file `extend`-block extensions too (the divergence
+  EV-2 surfaced in the U3 brainstorm), yielding a clean unhedged
+  "27 of 27 buf BASIC rules" at D6e instead of a hedged "26 of 27 (with
+  asterisks)" at D6d. See post-D6d philosophy revision placeholder for
+  the broader context.
 
 **Profile + severity defaults**
 
@@ -158,9 +221,15 @@ section.
   upgrade. Promotion to `error` and/or `recommended` membership deferred
   to D6e+ pending real-world adoption data.
 
-- **R7.** `FIELD_NOT_REQUIRED` ships at `severity = "error"` in both
-  `recommended` + `default` profiles (forced by buf BASIC parity — buf
-  v1.69.0 surfaces this rule at error severity).
+- **R7. [SUPERSEDED — DEFERRED to D6e+]** `FIELD_NOT_REQUIRED` ships at
+  `severity = "error"` in both `recommended` + `default` profiles
+  (forced by buf BASIC parity — buf v1.69.0 surfaces this rule at
+  error severity). *Original rationale.* **Revised (2026-05-20):**
+  R4 deferred to D6e+; severity/profile decisions defer to the
+  bundling delivery + post-D6d UX-philosophy revision (which may
+  conclude buf-parity-default ERROR is the wrong UX call for protokit
+  given existing `file/syntax-specified` ERROR already covers proto2-
+  file detection).
 
 **Configuration surface**
 
@@ -223,21 +292,33 @@ section.
 
 **Delivery surface**
 
-- **R11.** CHANGELOG section `### D6d — option-aware pack expansion + buf
-  BASIC FIELD_NOT_REQUIRED close-out (0.5.0)` documents:
+- **R11.** CHANGELOG section `### D6d — option-aware pack expansion
+  (0.5.0)` documents:
   - Headline framing (OQ-8 forcing function satisfied).
-  - The three new rules with severity + profile placement.
-  - The pre-upgrade migration recipe for `custom/<suffix>` newcomers (zero
-    impact unless configured) + `options/field-behavior-consistent` (proto
-    teams using `(google.api.field_behavior)` may see warnings on
-    `default` profile) + `FIELD_NOT_REQUIRED` (proto2 users see new
-    errors).
+  - The TWO new rules shipping in D6d with severity + profile placement
+    (`custom/<user-suffix>` synthetic template + `options/field-
+    behavior-consistent`). `FIELD_NOT_REQUIRED` is NOT shipped in D6d.
+  - The pre-upgrade migration recipe for `custom/<suffix>` newcomers
+    (zero impact unless configured) + `options/field-behavior-
+    consistent` (proto teams using `(google.api.field_behavior)` may
+    see warnings on `default` profile).
+  - Buf BASIC parity numerator: reverts to D6c's "25 of 26 buf BASIC
+    rules" (the 26th is `PACKAGE_NO_IMPORT_CYCLE`; `FIELD_NOT_REQUIRED`
+    is proto2-only and stays deferred per D6c's existing framing).
+    Scheduled for D6e+ bundled with engine `ElementKind.EXTENSION_FIELD`
+    walker work for clean "27 of 27" framing.
   - Explicit acknowledgment that D6b R6 promotion (the deprecated-
-    replacement family severity promotion — distinct from this document's
-    R6 which sets field-behavior-consistent severity defaults), R9b,
-    strict profile, `LintLocation` exhaustiveness contract, and
-    `PACKAGE_NO_IMPORT_CYCLE` STILL defer to D6e+ — with the same
-    in-CHANGELOG visibility pattern D6c established.
+    replacement family severity promotion — distinct from this
+    document's R6 which sets field-behavior-consistent severity
+    defaults), R9b, strict profile, `LintLocation` exhaustiveness
+    contract, `PACKAGE_NO_IMPORT_CYCLE`, AND `FIELD_NOT_REQUIRED`
+    (newly added) STILL defer to D6e+ — with the same in-CHANGELOG
+    visibility pattern D6c established.
+  - **NEW**: Forward pointer to the post-D6d UX-philosophy revision
+    (placeholder at `docs/brainstorms/2026-05-20-protokit-ux-
+    philosophy-revision-requirements.md`) — a structural-revisit
+    delivery that will re-evaluate buf-parity-vs-protokit-UX defaults
+    across the existing rule set.
 
 - **R12.** README updates: Schema Linting section's rule table adds the
   three new rules; profile table reflects updated counts; worked example
@@ -255,7 +336,9 @@ section.
 |---|---|---|---|---|---|
 | `custom/<user-suffix>` | Presence + closed-value-set (synthetic) | `warning` (overridable per-instance) | added to composed profile when configured (fires on all `--profile` invocations) | `protokit:custom-annotation` | Zero unless user configures `[[tool.protokit.lint.custom_annotation_rules]]` |
 | `options/field-behavior-consistent` | Value-validation (built-in) | `warning` | `default` only | `https://google.aip.dev/203` | `default`-profile users with `(google.api.field_behavior)` typos/duplicates see warnings |
-| `FIELD_NOT_REQUIRED` (in `field` pack) | Standard buf-parity (built-in) | `error` | `recommended` + `default` | `buf:FIELD_NOT_REQUIRED` | Proto2 users with `required` fields see errors |
+
+*(`FIELD_NOT_REQUIRED` row removed 2026-05-20 — rule deferred to D6e+
+per Strategic Deferral.)*
 
 ## Success Criteria
 
@@ -294,19 +377,24 @@ section.
   (b) INVALID value, (c) at least one contradictory pair (the exact
   curated set deferred to planning per AIP-203 research).
 
-- **S5.** `FIELD_NOT_REQUIRED` fires on every proto2 `required` field +
-  zero proto3 fields. Buf-parity gate against v1.69.0 NDJSON snapshots
-  asserts byte-equivalent output for a curated fixture corpus.
+- **S5. [SUPERSEDED — DEFERRED to D6e+]** `FIELD_NOT_REQUIRED` fires
+  on every proto2 `required` field + zero proto3 fields. Buf-parity
+  gate against v1.69.0 NDJSON snapshots asserts byte-equivalent output
+  for a curated fixture corpus. *Original criterion.* **Revised
+  (2026-05-20):** rule deferred per Strategic Deferral; success criterion
+  moves to the D6e+ bundling delivery.
 
 - **S6.** Multi-language teams using `--profile recommended` with **no
-  configured `custom/<suffix>` entries** see ZERO new findings on 0.5.0
-  upgrade (except `FIELD_NOT_REQUIRED` for proto2 users).
-  `options/field-behavior-consistent` is confined to `default` per R6;
-  `custom/<suffix>` is opt-in per R5 (zero-config users see no synthetic
-  rules). Teams that DO configure `custom/<suffix>` entries see those
-  rules fire on `--profile recommended` per R5's all-profile-firing
-  commitment — this is intentional and documented in the pre-upgrade
-  migration recipe.
+  configured `custom/<suffix>` entries** see ZERO new findings on
+  0.5.0 upgrade. `options/field-behavior-consistent` is confined to
+  `default` per R6; `custom/<suffix>` is opt-in per R5 (zero-config
+  users see no synthetic rules). Teams that DO configure
+  `custom/<suffix>` entries see those rules fire on `--profile
+  recommended` per R5's all-profile-firing commitment — this is
+  intentional and documented in the pre-upgrade migration recipe.
+  *(2026-05-20: removed "except `FIELD_NOT_REQUIRED` for proto2 users"
+  carve-out since R4/R7 are deferred. Net: zero-config proto2 users
+  see ZERO new findings in `recommended` on 0.5.0.)*
 
 - **S7.** D6c's deferral-chain acknowledgment pattern continues — the
   D6d CHANGELOG explicitly names the five items STILL deferred (D6b R6
@@ -428,14 +516,22 @@ section.
   `options/required-field-behavior` can be added in D6e+ with explicit
   configuration.
 
-- **KD-5. FIELD_NOT_REQUIRED bundled as trivial close-out.** Trivial
-  proto2-only `field.label == LABEL_REQUIRED` check via existing
-  `ElementKind.FIELD` path. No new infrastructure, no architectural
-  surface. Bundling DOES NOT dilute the option-aware headline because
-  (a) it ships under the `field` rule pack, not the `options` pack,
-  (b) CHANGELOG section title carries both concepts without
-  competition. Closes the only proto2-specific buf BASIC gap, freeing
-  D6e+ to be entirely proto3-focused.
+- **KD-5. [SUPERSEDED — REVERSED 2026-05-20]** *Original:
+  `FIELD_NOT_REQUIRED` bundled as trivial close-out.* **Revised:** the
+  "trivial" framing was wrong on closer inspection. The rule body is
+  ≤10 LOC but its full delivery requires Phase 0 empirical verification
+  + 8-9 fixture corpus + parity-helper extension + divergence-fixture
+  test wiring + CLI dedup regression test + ratchet substring
+  coordination + an accepted parity-gate divergence (EV-2 engine
+  walker gap) — collectively NOT a trivial close-out. Additionally,
+  shipping the rule at ERROR in `recommended`+`default` creates
+  double-jeopardy with the existing `file/syntax-specified` rule
+  (proto2 file: 1 file-level error + N field-level errors). The
+  decision to defer to D6e+ (bundled with engine
+  `ElementKind.EXTENSION_FIELD` walker work for clean unhedged
+  parity) is recorded here for future readers. The D6d differentiator
+  narrative is also better-served by NOT bundling the parity rule —
+  the option-aware headline stands alone in 0.5.0.
 
 - **KD-6. Five-item deferral chain (D6b R6 promotion, R9b, strict
   profile, LintLocation contract, PACKAGE_NO_IMPORT_CYCLE) STILL

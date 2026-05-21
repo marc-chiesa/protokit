@@ -3,10 +3,43 @@ title: "feat: D6d Option-Aware Pack Expansion (0.5.0)"
 type: feat
 status: active
 date: 2026-05-19
+last_revised: 2026-05-20
 origin: docs/brainstorms/2026-05-19-d6d-option-aware-pack-expansion-requirements.md
 ---
 
 # feat: D6d Option-Aware Pack Expansion (0.5.0)
+
+## Strategic Deferral (added 2026-05-20)
+
+**`field/not-required` (Unit 3 in the original plan) is DEFERRED from
+D6d to D6e+** per the umbrella brainstorm's Strategic Deferral section
++ the D6d U3 escalation analysis. D6d now ships in **4 units** instead
+of 5:
+
+| Original | Revised | Status |
+|---|---|---|
+| U1 — synthetic-rule infrastructure | U1 (unchanged) | ✅ shipped (`c137dea`) |
+| U2 — `options/field-behavior-consistent` | U2 (unchanged) | ✅ shipped (`c192d5b`) |
+| **U3 — `field/not-required` rule** | **DEFERRED to D6e+** | replaced by renumbering |
+| U4 — integration-test fixture | **becomes new U3** | pending |
+| U5 — delivery boundary 0.5.0 | **becomes new U4** | pending |
+
+**Why deferred**: see the umbrella brainstorm Strategic Deferral
+section at
+`docs/brainstorms/2026-05-19-d6d-option-aware-pack-expansion-requirements.md`
+and the U3 per-unit brainstorm + escalation analysis at
+`docs/brainstorms/2026-05-20-d6d-u3-field-not-required-requirements.md`.
+
+**Affected items below** — marked inline with `[SUPERSEDED]` /
+`[DEFERRED]`:
+- Requirements Trace table: R4, R7 (rule + severity) deferred; S5
+  deferred; S6 wording adjusted.
+- KD-5 (umbrella brainstorm) reversed.
+- KD-17 (plan numerator framing) reverted to D6c's "25 of 26 + 1
+  scheduled" language.
+- Implementation Units U3 marked DEFERRED in full; U4 + U5 renumbered.
+- KD-18 migration recipe simplified (no `field/not-required` demote-
+  both content; Path 1b proto3-migration text moves to D6e+).
 
 ## Overview
 
@@ -21,8 +54,10 @@ custom-annotation rules. Three new rules land:
 2. **`options/field-behavior-consistent`** — well-formedness validator
    for `(google.api.field_behavior)` annotation lists (duplicates,
    INVALID values, contradictory pairs). AIP-203 anchored.
-3. **`field/not-required`** — proto2-only buf-parity rule equivalent
-   to `buf:FIELD_NOT_REQUIRED`. Closes the proto2 gap from D6c.
+3. ~~**`field/not-required`** — proto2-only buf-parity rule equivalent
+   to `buf:FIELD_NOT_REQUIRED`. Closes the proto2 gap from D6c.~~
+   **[DEFERRED to D6e+ — 2026-05-20; see Strategic Deferral at top
+   of plan]**
 
 Plus pyproject `0.4.0` → `0.5.0`, `_LINT_JSON_SCHEMA_VERSION` bump
 `"0.3"` → `"0.4"` (new closed-Literal value), CHANGELOG fold +
@@ -58,10 +93,12 @@ Outstanding architectural decisions resolved at plan time per Phase 0.5
   absent. D6d creates `src/protokit/schema/lint/rules/field.py` as a
   1-rule pack mirroring `file.py`.
 
-D6d also bundles `FIELD_NOT_REQUIRED` as a trivial proto2-only
-close-out (one of the seven D6c-deferred items). The remaining five
-deferred items (D6b R6 promotion, R9b, strict profile, `LintLocation`
-exhaustiveness contract, `PACKAGE_NO_IMPORT_CYCLE`) stay deferred to
+D6d ~~also bundles `FIELD_NOT_REQUIRED` as a trivial proto2-only
+close-out (one of the seven D6c-deferred items).~~ **[Bundling
+reversed 2026-05-20 — see Strategic Deferral.]** The deferred items
+list grows: D6b R6 promotion, R9b, strict profile, `LintLocation`
+exhaustiveness contract, `PACKAGE_NO_IMPORT_CYCLE`, AND
+`FIELD_NOT_REQUIRED` (newly added 2026-05-20) all stay deferred to
 D6e+ with explicit CHANGELOG acknowledgment.
 
 ## Requirements Trace
@@ -73,10 +110,10 @@ Origin: `docs/brainstorms/2026-05-19-d6d-option-aware-pack-expansion-requirement
 | R1 | New rule template `custom/<user-suffix>` — synthetic-rule-id per pyproject entry under `custom/` namespace; first-class in finding output | U1 |
 | R2 | Presence + closed-value-set semantics on scalar option values; per-scalar-type encoding table; unresolved-extension `LintRuntimeWarning` | U1 + U2 (worked example) |
 | R3 | New rule `options/field-behavior-consistent` — well-formedness of `(google.api.field_behavior)` lists | U2 |
-| R4 | New rule `field/not-required` (proto2-only `buf:FIELD_NOT_REQUIRED` equivalent) in NEW `field` rule pack | U3 |
+| R4 | ~~New rule `field/not-required` (proto2-only `buf:FIELD_NOT_REQUIRED` equivalent) in NEW `field` rule pack~~ **[DEFERRED to D6e+ — 2026-05-20]** | ~~U3~~ deferred |
 | R5 | `custom/<suffix>` defaults `severity = "warning"`; rule_ids added to composed profile's `rule_ids` at config-resolution; fires on all profiles when configured | U1 |
 | R6 | `options/field-behavior-consistent` severity = `warning` in `default` profile only | U2 |
-| R7 | `field/not-required` severity = `error` in `recommended` + `default` (buf-parity forced) | U3 |
+| R7 | ~~`field/not-required` severity = `error` in `recommended` + `default` (buf-parity forced)~~ **[DEFERRED to D6e+ — 2026-05-20]** | ~~U3~~ deferred |
 | R8 | Pyproject schema `[[tool.protokit.lint.custom_annotation_rules]]` array-of-tables; per-entry: `rule_suffix`, `option`, `element_kinds`, `allowed_values` (optional), `severity` (optional) | U1 |
 | R9 | `rule_suffix` regex `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`; collision detection via `error[lint-pyproject-config-invalid]:`; `test_no_builtin_rule_uses_custom_prefix` regression | U1 |
 | R10 | Synthetic rule_ids surface in existing `--format=json` finding output + `[severities]` + `_loaded_specs` registry; `source_spec = "protokit:custom-annotation"`; NOT dependent on `--list-rules` | U1 |
@@ -90,8 +127,8 @@ Origin: `docs/brainstorms/2026-05-19-d6d-option-aware-pack-expansion-requirement
 | S2: Differentiator provable via integration test (`tests/schema/lint/cli/test_d6d_custom_annotation_example.py`) | U4 (test fixture) + U5 (README link) |
 | S3: Synthetic rule_ids first-class in `--format=json` finding output + `[severities]` controllable | U1 + U4 |
 | S4: `options/field-behavior-consistent` catches ≥3 violation classes (duplicate, INVALID, ≥1 contradictory pair) | U2 |
-| S5: `field/not-required` fires on every proto2 `required` field; zero proto3 fires; buf v1.69.0 byte-equivalent | U3 |
-| S6: `--profile recommended` zero-config users see ZERO new findings (proto3); FIELD_NOT_REQUIRED only for proto2 | U3 + U5 verification |
+| S5: ~~`field/not-required` fires on every proto2 `required` field; zero proto3 fires; buf v1.69.0 byte-equivalent~~ **[DEFERRED to D6e+ — 2026-05-20]** | ~~U3~~ deferred |
+| S6: `--profile recommended` zero-config users see ZERO new findings (proto3 AND proto2; FIELD_NOT_REQUIRED carve-out removed 2026-05-20 since R4/R7 deferred) | new U4 verification |
 | S7: D6c deferral-chain acknowledgment pattern continues in D6d CHANGELOG | U5 |
 
 ## Scope Boundaries
@@ -421,13 +458,20 @@ sibling `cli_fixtures/d6d_custom_annotation/` directory.
   documented plan-revision at `docs/plans/2026-05-XX-d6d-u3-legacy-required-scope.md`
   rather than silent scope-widening).
 
-- **KD-17. Numerator framing post-D6d: "26 of 27 buf BASIC rules"**
-  (option (a) from brainstorm Outstanding Questions). Drops the
-  proto2-only carve-out gimmick. Denominator = buf's true total
-  (`field/not-required` ships; PACKAGE_NO_IMPORT_CYCLE remains the
-  one gap). Decided AT U1 design time, not U5, so U5's presence-
-  ratchet test can pin the substring with confidence per
-  [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]].
+- **KD-17. [SUPERSEDED — REVERTED 2026-05-20]** *Original: "26 of 27
+  buf BASIC rules" post-D6d numerator framing.* **Revised**:
+  `field/not-required` deferred to D6e+ per Strategic Deferral;
+  numerator stays at D6c's "25 of 26 buf BASIC rules"
+  (`PACKAGE_NO_IMPORT_CYCLE` + `FIELD_NOT_REQUIRED` both deferred).
+  D6c CHANGELOG's existing wording at
+  `src/protokit/schema/lint/rules/__init__.py:120-137` does not need
+  to change for D6d — D6d's CHANGELOG section explicitly states the
+  numerator is unchanged from D6c. The presence-ratchet substring U4
+  pins is `"25 of 26 buf BASIC rules"` (matching D6c's already-shipped
+  language). D6e+ delivers "27 of 27" cleanly when both deferred rules
+  ship bundled with their respective architectural work
+  (PACKAGE_NO_IMPORT_CYCLE = cycle detection; FIELD_NOT_REQUIRED =
+  engine `ElementKind.EXTENSION_FIELD` walker).
 
 - **KD-19. Multi-`element_kinds` entry produces N closures with same
   `rule_id`, distinct `LintRuleSpec.element`** (resolves scope-guardian
@@ -916,9 +960,21 @@ without text parsing.
 
 ---
 
-- [ ] **Unit 3: `field/not-required` rule + new `field` rule pack**
+- [~~] **Unit 3: `field/not-required` rule + new `field` rule pack
+  — DEFERRED to D6e+ per Strategic Deferral (2026-05-20)**
 
-**Goal:** Ship the proto2-only buf-parity rule equivalent to
+**Status (2026-05-20)**: Unit deferred entirely. The remaining text
+below describes the *original* scope; preserved for the D6e+ unit
+that picks it back up. The U3 per-unit brainstorm at
+`docs/brainstorms/2026-05-20-d6d-u3-field-not-required-requirements.md`
++ its 2 doc-review passes are the analytical context for the D6e+
+implementer. D6d Unit 3 in the revised lineup becomes the original
+Unit 4 (integration-test fixture); see renumbering note at top of
+plan.
+
+---
+
+**Original Goal:** Ship the proto2-only buf-parity rule equivalent to
 `buf:FIELD_NOT_REQUIRED` in a new `field` rule pack. Validate against
 buf v1.69.0 NDJSON snapshots.
 
@@ -1028,7 +1084,8 @@ appears, fix inline before proceeding.
 
 ---
 
-- [ ] **Unit 4: Integration-test fixture for worked example (S2)**
+- [ ] **Unit 3 (revised 2026-05-20; was Unit 4): Integration-test
+  fixture for worked example (S2)**
 
 **Goal:** Ship a self-contained CI-runnable fixture that demonstrates
 the full custom-annotation flow end-to-end. Makes OQ-8 satisfaction
@@ -1110,7 +1167,8 @@ U4's job is the test fixture + the test. U5 links to it.
 
 ---
 
-- [ ] **Unit 5: Delivery boundary (0.4.0 → 0.5.0)**
+- [ ] **Unit 4 (revised 2026-05-20; was Unit 5): Delivery boundary
+  (0.4.0 → 0.5.0)**
 
 **Goal:** Fold staged CHANGELOG-DRAFT.md content into CHANGELOG.md
 under `### D6d`, bump pyproject + `_LINT_JSON_SCHEMA_VERSION`, flip

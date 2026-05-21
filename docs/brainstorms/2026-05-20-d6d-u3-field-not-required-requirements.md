@@ -1,9 +1,52 @@
 ---
 date: 2026-05-20
+last_revised: 2026-05-20
+status: SUPERSEDED-pending-philosophy-revision
 topic: protokit-lint-delivery-6d-u3-field-not-required
 ---
 
 # Protokit Lint Delivery 6d Unit 3 — `field/not-required` Rule + New `field` Rule Pack
+
+## SUPERSEDED Notice (2026-05-20)
+
+**This per-unit brainstorm is SUPERSEDED in the D6d window — the
+underlying rule (`field/not-required`) is DEFERRED from D6d to D6e+**
+per the umbrella brainstorm's Strategic Deferral section at
+`docs/brainstorms/2026-05-19-d6d-option-aware-pack-expansion-requirements.md`.
+
+**Why this doc still exists**: it captures the analytical work that
+SURFACED the deferral decision (empirical Phase 0 verifications,
+double-jeopardy with `file/syntax-specified`, EV-2 engine-walker gap,
+3-outcome edition-LEGACY_REQUIRED decision matrix, ratchet substring
+staging discipline, U3-KD-6 buf-parity-precedent question). All of
+that input is load-bearing for either (a) the D6e+ unit that picks
+the rule back up, or (b) the post-D6d UX-philosophy revision at
+`docs/brainstorms/2026-05-20-protokit-ux-philosophy-revision-requirements.md`
+(placeholder) — whichever happens first.
+
+**What stays accurate below**: empirical findings (EV-1..EV-4 +
+EV-5..EV-8 deferred), code-path verifications (`ctx.emit` signature,
+`proto_descriptor.FieldDescriptor.LABEL_REQUIRED` type discipline,
+engine walker gap at `engine.py:818-893`, `_PARITY_EXCEPTIONS`
+infrastructure constraints, ratchet test at
+`test_builtin_packs.py:144-170`), and the per-unit decision matrices
+(EV-1 outcome A/B/C, EV-2 disposition, EV-3 group-field handling).
+
+**What's now outdated**: the assumption that D6d U3 ships
+`field/not-required` at ERROR in `recommended`+`default`. U3-KD-6
+(buf-parity-overrides-protokit-UX precedent) is also explicitly
+under reconsideration per the post-D6d philosophy revision — the
+new likely framing is INVERTED ("protokit-UX overrides buf-parity
+when they conflict"), but the conclusion is deferred to the
+philosophy-revision delivery.
+
+**Pointer for future readers**: when this doc is reactivated for D6e+
+implementation, the EV outcomes are still binding (run-and-bind
+discipline per U3-KD-8 stands), and the rule body shape (UR-6) is
+still correct. The default severity / profile membership decisions
+are deferred to the post-philosophy-revision delivery context.
+
+---
 
 **Scope:** narrow per-unit brainstorm refining the umbrella plan's U3
 section. Inherits all umbrella decisions verbatim. The doc's load-
