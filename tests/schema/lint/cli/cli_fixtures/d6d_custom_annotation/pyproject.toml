@@ -1,0 +1,52 @@
+# D6d new-U3 worked-example pyproject for the custom-annotation
+# demonstration fixture.
+#
+# This file is the canonical end-to-end example of how a downstream
+# user declares a custom-annotation rule via
+# ``[[tool.protokit.lint.custom_annotation_rules]]`` without writing
+# any Python. The integration test
+# ``tests/schema/lint/cli/test_d6d_custom_annotation_example.py``
+# invokes ``protokit lint --config <this-file> --proto
+# proto/example/service.proto -I proto/ --format json`` and asserts
+# the rule materializes as a first-class ``custom/audit-required``
+# rule firing on the appropriate methods.
+#
+# A user adapting this fixture for their own project copies the
+# ``[[tool.protokit.lint.custom_annotation_rules]]`` block, replaces
+# the ``option`` reference with their own extension path, and adjusts
+# ``element_kinds`` / ``allowed_values`` to match their schema policy.
+
+[tool.protokit.lint]
+profile = "recommended"
+
+# Demoting ``imports/unused`` because the rule has a documented
+# false-positive on imports used solely through proto2 ``extend``
+# blocks or custom options — see the rule's own message text and
+# ``src/protokit/schema/lint/rules/imports.py``. The worked example
+# imports ``example/audit.proto`` purely to apply the custom
+# option ``(example.audit_level)``; without this demotion, every
+# user copying this fixture would see a noisy false-positive
+# ERROR alongside the custom-annotation findings the demo is
+# trying to highlight. A follow-up to teach ``imports/unused``
+# about extension-only imports is tracked alongside the post-D6d
+# UX-philosophy revision.
+[tool.protokit.lint.severities]
+"imports/unused" = "info"
+
+[[tool.protokit.lint.custom_annotation_rules]]
+rule_suffix    = "audit-required"
+# NOTE: ``option`` is the bare fully-qualified extension name as
+# stored in the descriptor pool — NOT the parenthesized form that
+# appears in ``.proto`` source (``option (example.audit_level) =
+# HIGH``). U1's ``_coerce_custom_annotation_rules`` validator
+# strips whitespace but does not strip surrounding parens; passing
+# ``"(example.audit_level)"`` here causes
+# ``pool.FindExtensionByName`` to raise ``KeyError`` and the rule
+# to emit a ``custom_annotation_extension_unresolved`` runtime
+# warning instead of firing. A future revision may accept both
+# forms (tracked for the post-D6d UX-philosophy revision); for
+# 0.5.0 the bare form is the only supported shape.
+option         = "example.audit_level"
+element_kinds  = ["method"]
+allowed_values = ["LOW", "HIGH", "CRITICAL"]
+severity       = "error"

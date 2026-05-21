@@ -1,0 +1,35 @@
+// D6d new-U3 worked-example extension definition.
+//
+// Declares a custom protobuf option ``(example.audit_level)`` on
+// ``MethodOptions`` plus the ``AuditLevel`` enum the option ranges
+// over. Consumed by ``service.proto`` (which annotates select RPCs)
+// and by the worked-example ``pyproject.toml`` (which declares a
+// ``[[tool.protokit.lint.custom_annotation_rules]]`` entry that
+// gates the option's presence + value set).
+//
+// proto2 syntax is required because proto3 does not allow
+// ``extend`` blocks. The extension proto itself does not need to
+// be proto3 — the schema that USES the extension (``service.proto``)
+// can be proto3 and still apply the option.
+//
+// The ``example`` package + ``audit_level`` name are deliberately
+// curated for protokit's own integration test corpus; they avoid
+// collision with any real-world ``(mycorp.*)`` patterns a user
+// might be using.
+
+syntax = "proto2";
+
+package example;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MethodOptions {
+  optional AuditLevel audit_level = 50000;
+}
+
+enum AuditLevel {
+  NONE = 0;
+  LOW = 1;
+  HIGH = 2;
+  CRITICAL = 3;
+}

@@ -1,0 +1,53 @@
+// D6d new-U3 worked-example service schema.
+//
+// Demonstrates the four cases the ``custom/audit-required``
+// synthetic rule (declared in this fixture's ``pyproject.toml``)
+// should fire on:
+//
+//   1. ``HighAudit``    — annotated ``audit_level = HIGH``    — passes (value in allowed set).
+//   2. ``LowAudit``     — annotated ``audit_level = LOW``     — passes (value in allowed set).
+//   3. ``BareAudit``    — UNANNOTATED                          — fails (presence violation).
+//   4. ``DisallowedAudit`` — annotated ``audit_level = NONE`` — fails (value not in allowed set).
+//
+// Expected finding count under the worked-example pyproject:
+//   - ``BareAudit``       → 1 ``custom/audit-required`` finding (presence violation).
+//   - ``DisallowedAudit`` → 1 ``custom/audit-required`` finding (value-mismatch violation).
+//   - 2 findings total.
+//
+// proto3 is used here intentionally to show the rule operates on
+// the protobuf wire-level option mechanism (which proto3 fully
+// supports for custom options on ``MethodOptions``), even though
+// the extension itself was declared in a proto2 file
+// (``audit.proto``). The lint rule does not care which syntax the
+// USING file declares — only that the extension is in the compile
+// set.
+
+syntax = "proto3";
+
+package example;
+
+import "example/audit.proto";
+
+service AuditedService {
+  rpc HighAudit(AuditRequest) returns (AuditResponse) {
+    option (example.audit_level) = HIGH;
+  }
+
+  rpc LowAudit(AuditRequest) returns (AuditResponse) {
+    option (example.audit_level) = LOW;
+  }
+
+  rpc BareAudit(AuditRequest) returns (AuditResponse);
+
+  rpc DisallowedAudit(AuditRequest) returns (AuditResponse) {
+    option (example.audit_level) = NONE;
+  }
+}
+
+message AuditRequest {
+  string subject = 1;
+}
+
+message AuditResponse {
+  bool ok = 1;
+}
