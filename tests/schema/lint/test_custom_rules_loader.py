@@ -507,3 +507,67 @@ class TestProfileIndependence:
             assert len(report.findings) >= 1, (
                 f"synthetic rule did not fire under profile {profile_name!r}"
             )
+
+
+class TestSyntheticRuleSpecRegistryContract:
+    """The umbrella brainstorm R10 source_spec contract lives on the spec.
+
+    R10 (``protokit:custom-annotation`` source_spec) is a rule-spec-
+    level invariant — it lives on ``LintRuleSpec.source_spec``, accessed
+    via ``LintEngine.get_spec(rule_id)`` after config-resolution loads
+    the synthetic module. It is NOT a per-finding JSON field. This test
+    verifies the spec-level contract directly so it survives any future
+    change to the per-finding JSON shape.
+
+    Lives here (not in the CLI worked-example file) because the
+    contract is engine + loader behavior, not CLI surface behavior —
+    matches the sibling specimen-registration tests in
+    :class:`TestModuleStructure` above. Relocated from
+    ``tests/schema/lint/cli/test_d6d_custom_annotation_example.py``
+    per the D6d new-U3 ce:review project-standards finding (PS-02,
+    2026-05-21).
+    """
+
+    def test_synthetic_rule_spec_carries_protokit_namespaced_source_spec(
+        self,
+    ) -> None:
+        """Synthetic specs register with ``source_spec='protokit:custom-annotation'``.
+
+        Builds the synthetic module the same way ``cli.py`` does and
+        inspects each materialized spec's ``source_spec`` field via
+        the public ``engine.get_spec`` accessor. The brainstorm pins
+        this value as the protokit-namespaced identifier so consumers
+        walking specs can distinguish synthetic rules from buf-parity
+        rules (``source_spec`` starts with ``buf:``) and protokit-
+        original rules (other namespaces).
+        """
+        spec = CustomAnnotationRuleSpec(
+            rule_suffix="audit-required",
+            option="example.audit_level",
+            element_kinds=(ElementKind.METHOD,),
+            allowed_values=("LOW", "HIGH", "CRITICAL"),
+            severity=LintSeverity.ERROR,
+        )
+
+        engine = LintEngine()
+        module = build_synthetic_module((spec,), engine)
+        # ``build_synthetic_module`` returns ``None`` only when the
+        # specs sequence is empty; a single-spec input always returns
+        # a module. Assert to narrow the type for mypy and to
+        # fail-loud if the contract regresses.
+        assert module is not None
+        engine.load_rule_pack(module)
+
+        loaded = engine.get_spec("custom/audit-required")
+        assert loaded.source_spec == "protokit:custom-annotation"
+        assert loaded.rule_id == "custom/audit-required"
+        assert loaded.element is ElementKind.METHOD
+        # Severity is dict-shaped per violation_kind (matching D6d U2's
+        # options/field-behavior-consistent multi-arm pattern); the
+        # per-entry pyproject ``severity = "error"`` applies uniformly
+        # to both ``custom-annotation-absent`` and
+        # ``custom-annotation-value-mismatch`` arms.
+        assert loaded.severity == {
+            "custom-annotation-absent": LintSeverity.ERROR,
+            "custom-annotation-value-mismatch": LintSeverity.ERROR,
+        }

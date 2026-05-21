@@ -60,14 +60,23 @@ capture-by-reference footgun. Each synthetic rule has its own state
 (option name, allowed_values, severity, dedup set) bound by the
 factory's argument frame, not by the enclosing loop.
 
-**Dedup of unresolved-extension warnings.** Each synthetic rule has a
-private ``set[(rule_id, file_name)]`` carried in the closure's
-captured state. ``custom_annotation_extension_unresolved`` is emitted
-at most once per (rule_id, file) tuple even though the closure runs
-per descriptor of the configured ElementKind. For the CLI's single-
-shot lifecycle this is sufficient; long-lived engines (D6e+ MCP /
-IDE integrations) MUST rebuild the synthetic module on each
-configuration change to reset the dedup set.
+**Dedup of unresolved-extension warnings.** The
+``custom_annotation_extension_unresolved`` warning emits at most once
+per ``(rule_id, file_name)`` tuple even though the closure runs per
+descriptor of the configured ElementKind. Dedup state lives in the
+module-level :data:`_UNRESOLVED_SEEN` :class:`weakref.WeakKeyDictionary`
+keyed by the active :class:`LintEngine`. The value tracks
+``(id(engine._runtime_warnings), seen_set)``; because
+``engine.run()`` assigns a fresh ``_runtime_warnings`` list on each
+entry, an id-mismatch signals a NEW run and the dedup set resets
+automatically. This mirrors the pattern in
+``protokit.schema.lint.rules.options.field_behavior`` (D6d U2) and
+closes the cross-run dedup leak that the original U1 closure-
+captured-set pattern carried (per learning
+``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``).
+The CLI is unaffected today (one ``engine.run()`` per process), but
+D6e+ long-lived runtimes (MCP / IDE integrations) that recycle
+engines across sessions would otherwise observe silent dedup leakage.
 
 **Synthetic module name.** ``_SYNTHETIC_MODULE_NAME`` is a stable
 identifier; the ``LintEngine.load_rule_pack`` idempotency guard at
@@ -88,6 +97,7 @@ References:
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -114,6 +124,44 @@ if TYPE_CHECKING:
 _SYNTHETIC_MODULE_NAME: str = "protokit_lint_synthetic_custom_annotations"
 
 
+# Per-engine + per-run dedup map for unresolved-extension warnings.
+# Mirrors the pattern in
+# ``protokit.schema.lint.rules.options.field_behavior`` (D6d U2) —
+# keyed by engine via ``WeakKeyDictionary`` so dedup state is collected
+# when the engine is GC'd. Value is ``(id(engine._runtime_warnings),
+# dedup_set)``: the id changes on every ``engine.run()`` entry (the
+# engine assigns a fresh list at ``engine.py``'s run path), so a
+# mismatched id signals a NEW run and the dedup set is reset
+# automatically. This closes the cross-run dedup leak that the U1
+# closure-captured-set pattern carried (per learning
+# ``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``):
+# without the per-run reset, a second ``engine.run()`` on the same
+# engine would silently emit zero warnings even though the unresolved-
+# extension condition still holds. The CLI is unaffected today (one
+# ``engine.run()`` per process), but D6e+ long-lived runtimes (MCP /
+# IDE integrations) that recycle engines across sessions would hit the
+# leak without this discipline.
+_UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _dedup_seen_for_run(engine: LintEngine) -> set[tuple[str, str]]:
+    """Return the dedup set scoped to the engine's current ``run()``.
+
+    Resets the set whenever ``id(engine._runtime_warnings)`` changes
+    (i.e., a fresh ``run()`` started). Same id-tracking discipline as
+    ``options.field_behavior._emit_unresolved_extension``.
+    """
+    current_id = id(engine._runtime_warnings)
+    state = _UNRESOLVED_SEEN.get(engine)
+    if state is None or state[0] != current_id:
+        seen: set[tuple[str, str]] = set()
+        _UNRESOLVED_SEEN[engine] = (current_id, seen)
+        return seen
+    return state[1]
+
+
 #: Per-ElementKind metadata for the synthetic closure body.
 #:
 #: Maps the kind to a ``(ctx_attr, options_full_name)`` pair where
@@ -138,13 +186,12 @@ def _make_synthetic_closure(
     spec: CustomAnnotationRuleSpec,
     kind: ElementKind,
     engine: LintEngine,
-    unresolved_seen: set[tuple[str, str]],
 ) -> Any:
     """Factory: build one synthetic-rule closure for ``(spec, kind)``.
 
-    Per D6d KD-20, the per-entry state (``spec``, ``kind``, dedup set)
-    binds via the factory's argument frame — NOT via the enclosing
-    loop's variable. This avoids the classic Python loop-variable
+    Per D6d KD-20, the per-entry state (``spec``, ``kind``) binds via
+    the factory's argument frame — NOT via the enclosing loop's
+    variable. This avoids the classic Python loop-variable
     capture-by-reference footgun where two distinct entries would
     otherwise share the last entry's bindings.
 
@@ -154,7 +201,11 @@ def _make_synthetic_closure(
        ``ctx.pool.FindExtensionByName(spec.option)``. On ``KeyError``,
        emits a deduplicated
        ``custom_annotation_extension_unresolved`` runtime warning and
-       returns.
+       returns. Dedup state lives in the module-level
+       :data:`_UNRESOLVED_SEEN` :class:`WeakKeyDictionary` keyed by
+       engine + a per-run id, so the warning re-fires on a fresh
+       ``engine.run()`` call (closes the U1 cross-run leak per
+       ``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``).
     2. Resolves the pool-bound options class. On a missing
        ``descriptor.proto`` pool entry (rare; minimal compile sets),
        silently returns (no warning — this is a non-actionable env
@@ -176,9 +227,6 @@ def _make_synthetic_closure(
             warnings to ``engine._runtime_warnings``. The reference
             is captured per-closure; long-lived engines must rebuild
             the synthetic module per config change.
-        unresolved_seen: Shared per-rule dedup set. Closures for the
-            same ``rule_id`` across multiple ElementKinds share this
-            set so the warning fires at most once per (rule_id, file).
 
     Returns:
         A function ``closure(ctx) -> None`` with an attached
@@ -196,9 +244,10 @@ def _make_synthetic_closure(
             ext_desc = pool.FindExtensionByName(option)
         except KeyError:
             file_name = ctx.file.name
+            seen = _dedup_seen_for_run(engine)
             dedup_key = (rule_id, file_name)
-            if dedup_key not in unresolved_seen:
-                unresolved_seen.add(dedup_key)
+            if dedup_key not in seen:
+                seen.add(dedup_key)
                 safe_rule_id = _safe_for_stderr(rule_id)
                 safe_option = _safe_for_stderr(option)
                 safe_file = _safe_for_stderr(file_name)
@@ -376,17 +425,16 @@ def build_synthetic_module(
     module = ModuleType(_SYNTHETIC_MODULE_NAME)
     rules: list[Any] = []
 
-    # Per-rule_id dedup set for the unresolved-extension warning.
-    # Shared across all closures for the same rule_id (which is the
-    # same set of closures across an entry's element_kinds).
+    # Dedup state for the unresolved-extension warning lives in the
+    # module-level :data:`_UNRESOLVED_SEEN` WeakKeyDictionary; keyed by
+    # engine + per-run id, so cross-engine + cross-run isolation is
+    # automatic. No per-spec set allocation needed.
     for spec in specs:
-        unresolved_seen: set[tuple[str, str]] = set()
         for kind_index, kind in enumerate(spec.element_kinds):
             closure = _make_synthetic_closure(
                 spec=spec,
                 kind=kind,
                 engine=engine,
-                unresolved_seen=unresolved_seen,
             )
             # Per KD-19, multi-kind entries register N closures with
             # the same rule_id. The engine's intra-pack dedup keys by

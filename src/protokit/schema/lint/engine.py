@@ -245,6 +245,29 @@ class LintEngine:
         """
         return bool(self._loaded_specs)
 
+    def get_spec(self, rule_id: str) -> LintRuleSpec:
+        """Return the :class:`LintRuleSpec` registered under ``rule_id``.
+
+        Public accessor for callers (tests, agent-native consumers,
+        future plugin APIs) that need to introspect a loaded rule's
+        spec metadata — ``source_spec``, ``severity``, ``element``,
+        ``message_template`` — without reaching into the private
+        ``_loaded_specs`` dict. Aligns with the D6b U4b
+        :func:`get_lint_spec` discipline that eliminated
+        ``# type: ignore[attr-defined]`` suppressions for function-
+        attached specs.
+
+        Raises:
+            KeyError: if ``rule_id`` is not present in
+                ``_loaded_specs``. Callers are expected to check
+                membership via :attr:`has_rules` + the documented
+                profile-filter contract before calling, OR to handle
+                ``KeyError`` explicitly. The accessor deliberately
+                surfaces the absence rather than returning ``None`` so
+                consumers cannot silently no-op on a typo.
+        """
+        return self._loaded_specs[rule_id]
+
     # ------------------------------------------------------------------
     # Pack loading and reset
     # ------------------------------------------------------------------
