@@ -10,14 +10,16 @@ origin: docs/brainstorms/2026-05-22-d6e-buf-basic-closure-philosophy-revision-re
 
 ## Overview
 
-Ship protokit 0.6.0 with the closing headline **"26 of 26 buf v1.69.0 BASIC rules (with one documented divergence on extend-block-required-fields)"** across four implementation units:
+Ship protokit 0.6.0 with the closing headline **"26 of 26 buf v1.69.0 BASIC rules"** across four implementation units.
+
+> **Phase 0 EV-2 falsification (2026-05-22):** The brainstorm's "documented extend-block divergence" premise (D6e KD-10 + R5 EV-2 + originally CONV-F) was empirically falsified during U2 Phase 0. Both buf v1.69.0 AND protokit's own compiler (protoxy) reject `required` extension fields at the parse layer (`Failure: input image: proto: extension field "..." has an invalid cardinality: 2`). The protobuf spec disallows LABEL_REQUIRED for extension fields; the construct cannot be compiled by either tool, so neither tool's lint rule can ever fire on it. The engine-walker gap the brainstorm cited (no iteration of `fd.extensions_by_name` or `Message.extensions_by_name`) is architecturally real but operationally moot. **The divergence does not exist as a real behavioral difference.** This plan revision drops all extend-block divergence framing: no asterisk in the headline, no four-site documentation, no `_PARITY_EXCEPTIONS` entry, no D6f+ walker-extension backlog item. The Phase 0 finding itself becomes the institutional knowledge per the plan's own [[plan-review-verify-prior-art-citations-2026-05-15]] Condition 5 discipline.
 
 - **U1 — UX Philosophy Revision** (atomic with U2): formalize the hard-inverted principle (protokit-UX overrides buf-parity), activate the new `proto2-strict` opt-in profile, demote `file/syntax-specified` from ERROR to WARNING in `recommended` + `default`.
-- **U2 — `field/not-required`**: the deferred D6d-U3 rule. Proto2-only buf-parity rule (`buf:FIELD_NOT_REQUIRED`). Ships in `proto2-strict` profile only at ERROR severity, with a documented extend-block divergence asterisked in three sites.
+- **U2 — `field/not-required`**: the deferred D6d-U3 rule. Proto2-only buf-parity rule (`buf:FIELD_NOT_REQUIRED`). Ships in `proto2-strict` profile only at ERROR severity. Phase 0 falsified the originally-planned extend-block divergence (required extensions are spec-invalid; both buf and protokit reject them at compile layer), so U2 ships clean parity with no asterisk.
 - **U3 — `package/no-import-cycle`**: the 26th buf BASIC rule (`buf:PACKAGE_NO_IMPORT_CYCLE`). Package-level cycle detection via a Tarjan SCC pre-walk accumulator extending D6c's Arch-D pattern; ships in `recommended` + `default` at ERROR (Phase 0 confirms).
 - **U4 — Delivery Boundary (0.6.0)**: pyproject `0.5.0 → 0.6.0`, CHANGELOG fold, README "26 of 26 v1.69.0" numerator refresh, parametrized CLI dedup test consolidation (the third-instance trigger), presence-ratchet, bump-contract ratchet pin (no `_LINT_JSON_SCHEMA_VERSION` bump), stale-text sweep.
 
-Per D6e KD-1, the inverted philosophy is the durable artifact that lets future proto2-specific rules slot into `proto2-strict` without re-debating defaults. The buf-parity arc structurally closes here; D6f+ resumes option-aware deepening (R6 promotion, IDENTIFIER-based field_behavior contradictions, the extend-block engine walker extension that resolves U2's divergence).
+Per D6e KD-1, the inverted philosophy is the durable artifact that lets future proto2-specific rules slot into `proto2-strict` without re-debating defaults. The buf-parity arc structurally closes here; D6f+ resumes option-aware deepening (R6 promotion, IDENTIFIER-based field_behavior contradictions).
 
 ## Problem Frame
 
@@ -36,7 +38,7 @@ Each requirement traces back to the origin brainstorm.
 - **R3** — `proto2-strict` profile activation: name registered downstream when at least one rule declares `profiles=("proto2-strict",)`. No `_coerce_profile` or `_PROFILE_ALIASES` code change required (verified — see "Resolved During Planning"). (U1 + U2)
 - **R4** — Audit pass on D6a–D6c existing rules under the inverted philosophy. No retroactive code changes EXCEPT `file/syntax-specified` (handled in R4b). Other audit findings become D6f+ backlog items with concrete N/M forcing-function triggers. (U1)
 - **R4b** — Demote `file/syntax-specified` from ERROR to WARNING in `recommended` + `default`. 1-line severity change at `src/protokit/schema/lint/rules/file.py:61` + module docstring update + CHANGELOG entry. (U1)
-- **R5** — Implement `field/not-required` per the SUPERSEDED D6d U3 brainstorm's UR-6 rule body. Profile: `proto2-strict` only. Severity: ERROR. EV-1 / EV-3 / EV-4 bound at U2 Phase 0 against buf v1.69.0; EV-2 (extend-block) **IMPLEMENTATION OUT-OF-SCOPE** per U3-KD-7 (engine walker gap at `engine.py:841-916` does not iterate `fd.extensions_by_name` OR `Message.extensions_by_name` — file-level AND nested-message extend blocks are equally invisible to the walker; this is one architectural gap with two surface forms). **DOCUMENTATION IN-SCOPE** — the four-site protocol per [[buf-parity-divergence-documentation-discipline-2026-05-13]] documents the known divergence in U2 as specimen #2 (D6f+ walker extension resolves both surface forms together). (U2)
+- **R5** — Implement `field/not-required` per the SUPERSEDED D6d U3 brainstorm's UR-6 rule body. Profile: `proto2-strict` only. Severity: ERROR. EV-1 / EV-3 / EV-4 bound at U2 Phase 0 against buf v1.69.0. **EV-2 (extend-block) FALSIFIED at Phase 0** (2026-05-22): both buf v1.69.0 and protokit's compiler reject `required` extension fields at parse time per the protobuf spec's cardinality constraint for extensions; the construct cannot be compiled, so no rule-level divergence exists. No divergence documentation, no `_PARITY_EXCEPTIONS` entry, no walker-extension backlog. (U2)
 - **R6** — Implement `package/no-import-cycle` with package-level edge granularity. Cycle = SCC of size ≥ 2. Profile: `recommended` + `default`. Severity: ERROR (subject to Phase 0). Algorithm: Tarjan SCC pre-walk extending D6c's `_build_directory_package_accumulator` pattern (KD-12 direction-of-travel; planning binds). (U3)
 
 Plus standard delivery-boundary trace from the brainstorm's U4 block:
@@ -55,7 +57,7 @@ Plus standard delivery-boundary trace from the brainstorm's U4 block:
 ### Deferred to Separate Tasks
 
 - **R9b — per-rule disable/enable CLI flag (specifically the `[severities] = "off"` value)** — stays in D6f+ backlog. `[severities]` overrides at `"error"` / `"warning"` / `"info"` remain the de-facto demote mechanism; full disable via `"off"` is not yet supported.
-- **Engine walker extension for `fd.extensions_by_name` AND `Message.extensions_by_name`** (file-level + nested-message extend blocks) — resolves U2's documented extend-block divergence at both surface forms. Tracked in TODOS.md with a concrete user-report-driven trigger ("first user report of a missed proto2 extend-block-required field that buf catches → prioritize for the next delivery") per Product-lens F2, NOT a vague "D6f+" timeline. U2's divergence-documentation sites are the forward-pointers.
+- ~~Engine walker extension for `fd.extensions_by_name`~~ — **DROPPED per Phase 0 EV-2 falsification (2026-05-22)**: required extensions cannot be compiled by buf v1.69.0 or protokit's compiler (protoxy), so there is no rule-level divergence to resolve. The engine walker's non-iteration of `extensions_by_name` is architecturally real but operationally moot at the current proto2 spec.
 - **Structured `LintRuleSpec.parity_note: str` field** — `file/syntax-specified` (D6a U6) is divergence specimen #1; `field/not-required` (D6e U2) is specimen #2. Per the [[buf-parity-divergence-documentation-discipline-2026-05-13]] sentinel ("defer until N=3"), planning explicitly evaluates and defers. Recorded in U2's rule docstring + a brief `docs/solutions/best-practices/` ce:compound entry at U2 boundary so the third specimen triggers the promotion.
 
 ## Context & Research
@@ -67,7 +69,7 @@ Plus standard delivery-boundary trace from the brainstorm's U4 block:
 - **`@lint_rule` decorator** at `src/protokit/schema/lint/decorator.py` — attaches `LintRuleSpec` to `fn._lint_spec`. `profiles=("proto2-strict",)` on any rule body makes the profile valid at load time via `LintProfile.from_pack` at `src/protokit/schema/lint/model.py:802-861`.
 - **`file/syntax-specified` rule** at `src/protokit/schema/lint/rules/file.py:59-72` — severity at line 61, the R4b 1-line edit site. Module docstring already documents the descriptor-cannot-distinguish proto2-explicit-vs-implicit divergence.
 - **Pre-walk accumulator (D6c Arch-D)** at `src/protokit/schema/lint/engine.py:707-835` (`_build_directory_package_accumulator`). The model U3's `_build_import_graph_accumulator` mirrors.
-- **Engine per-file walker** at `src/protokit/schema/lint/engine.py:841-916` (`_dispatch_file` / `_dispatch_enum` / `_dispatch_message`) — verified NEVER iterates `fd.extensions_by_name` (file-level extend blocks) OR `Message.extensions_by_name` (nested-message extend blocks). Zero grep matches for any `extensions_by_name` surface in engine.py. `_dispatch_message` at `engine.py:902` iterates `message.fields` only; extends nested inside a message live in `Message.extensions_by_name`, not in `message.fields`. **The architectural gap has two surface forms** — file-level AND nested-message — that share the same root cause (no iteration of any `extensions_by_name` accessor). The D6f+ walker extension that resolves U2's divergence covers both surface forms together. **Note**: the brainstorm KD-10 + R5 EV-2 references `engine.py:818-893` for the walker — that range is inside `_build_directory_package_accumulator`, not the walker. All four U2 documentation sites (module docstring, function docstring, message_template, test method docstrings) must cite the corrected `engine.py:841-916` range AND name both extend surfaces.
+- **Engine per-file walker** at `src/protokit/schema/lint/engine.py:841-916` (`_dispatch_file` / `_dispatch_enum` / `_dispatch_message`) — verified NEVER iterates `fd.extensions_by_name` or `Message.extensions_by_name`. The architectural fact is real but operationally moot per the Phase 0 EV-2 falsification: required extensions cannot be compiled (protobuf spec rejects LABEL_REQUIRED for extensions), so the walker's non-iteration is not load-bearing for any current rule. Recorded here for institutional context; if a future proto edition relaxes the extension-cardinality constraint, the walker gap would become relevant again.
 - **Package pack** at `src/protokit/schema/lint/rules/package.py:1-499` — natural home for U3's cycle rule alongside R8/R8b cross-file siblings. Already imports `posixpath` + uses `_safe_for_stderr` + 500-char cap discipline.
 - **Imports access pattern**: `rules/imports.py:85-91` uses `ctx.file.CopyToProto(fdp)` + `fdp.dependency` (list of import filenames). No direct `fd.dependencies` accessor exists; U3 follows the CopyToProto round-trip pattern.
 - **`BUILTIN_PACKS`** at `src/protokit/schema/lint/rules/__init__.py:164-173` — module-name tuple. Three docstring substrings hard-pinned by `tests/schema/lint/test_builtin_packs.py:121-171`.
@@ -101,7 +103,7 @@ All are repo-local at `docs/solutions/`. Each is summarized with how it applies 
 - **[[builtin-packs-expansion-changelog-migration-recipe-structure-2026-05-18]]** — U4 CHANGELOG recipe. 5 sub-sections: breaking magnitude with worst-case math, demotion paths ranked by SITUATION, pyproject stub, accepted-tradeoff scenarios, upgrade triage walkthrough.
 - **[[stale-forward-looking-text-cli-help-agent-discoverability-2026-05-12]]** — U4 sweep step. Grep + triage rubric. Past-tense historical refs and frozen planning artifacts: LEAVE.
 - **[[lint-rule-message-templates-must-not-recommend-actions-that-trigger-siblings-2026-05-13]]** — U2 + U3 message_template authoring. Audit recommended remediations against sibling rules in active profile.
-- **[[buf-parity-divergence-documentation-discipline-2026-05-13]]** — U2 four-site protocol (module docstring + function docstring + message_template + test method docstrings). Specimen #2 sentinel for structured `parity_note` field — explicitly evaluated and DEFERRED to specimen #3 in this plan.
+- **[[buf-parity-divergence-documentation-discipline-2026-05-13]]** — applied to `file/syntax-specified` (the sole current specimen after Phase 0 falsified U2's planned divergence). U2 ships with clean parity; no new divergence-documentation invocation. The N=3 sentinel for structured `parity_note` field re-arms when a second real divergence emerges.
 - **[[clirunner-catch-exceptions-false-explicit-discipline-2026-05-21]]** — every `CliRunner.invoke(...)` in tests for U2/U3/U4 passes `catch_exceptions=False`.
 - **[[ruff-fix-scope-discipline-pass-diff-files-explicitly-2026-05-21]]** — ce:review follow-ups across all units pass explicit file paths to `ruff check --fix`.
 - **[[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]]** + **[[closed-literal-discriminator-bump-trigger-2026-05-17]]** — U4. No new closed-Literal values in D6e; `_LINT_JSON_SCHEMA_VERSION` stays `"0.5"`. Pre-release intra-cycle renames don't bump.
@@ -120,14 +122,14 @@ Planning-bound additions (PD-*) layered onto the brainstorm's KD-1..KD-14:
 
 - **PD-1 — `_coerce_profile` + `_PROFILE_ALIASES` need no code change for `proto2-strict`**: `_config.py:540-565` accepts any normalized string; downstream validity is enforced by `cli.py:1005-1037` (`if not composed_profile.rule_ids:`). R3 confirmed.
 - **PD-2 — U1+U2 atomic landing is a hard structural requirement, not a soft norm**: between U1 (profile-name documented but no rule populates it) and U2 (rule body declares `profiles=("proto2-strict",)`), `--profile proto2-strict` exits 2 with `error[lint-unknown-profile]:`. Plan U1+U2 as ONE feat commit per CONV-C; ce:review runs once across the combined surface.
-- **PD-3 — Engine walker citation correction + extend surface broadening**: brainstorm KD-10 + R5 EV-2 reference `engine.py:818-893` for the walker — that range is INSIDE `_build_directory_package_accumulator`. Actual walker is `_dispatch_file` / `_dispatch_enum` / `_dispatch_message` at `engine.py:841-916`. All four U2 divergence-documentation sites (module docstring, function docstring, `message_template`, test method docstrings) AND the `_PARITY_EXCEPTIONS` annotation in `tests/parity/conftest.py` use the corrected `engine.py:841-916` citation. The citation must name BOTH extend surfaces — `fd.extensions_by_name` (file-level) AND `Message.extensions_by_name` (nested-message) — because the architectural gap has two surface forms that share one root cause; documenting only the file-level surface would leave a future user with a nested-message extend confused about why their `required` field did not fire.
+- **PD-3 — DROPPED per Phase 0 EV-2 falsification (2026-05-22)**. Original intent was to broaden the engine walker citation across U2's divergence documentation sites. With the divergence falsified, there are no divergence documentation sites to cite. The corrected walker line range (`engine.py:841-916` vs brainstorm's `engine.py:818-893`) is recorded in Context & Research above for future reference, but no longer load-bearing for U2 implementation.
 - **PD-4 — `field/not-required` lives in a NEW `src/protokit/schema/lint/rules/field.py` pack** (resolves OQ-5): mirrors `file.py` shape (single-rule pack); preserves module-per-rule clarity; aligns with SUPERSEDED brainstorm UR-4. The `field` pack name is the namespace anchor for future field-level proto2-strict rules per KD-11 (`field/no-group-syntax`, `field/no-explicit-default`, `field/packed-repeated-primitive`).
 - **PD-5 — U3 algorithm is Tarjan SCC (binds KD-12 direction-of-travel)**: planning binds. DFS back-edge fallback is rejected because Tarjan produces the SCC artifact KD-6 needs directly (size-≥2 SCCs); back-edge detection produces only "is there a cycle" without enumerating membership. Kahn's topological sort is excluded per OQ-4 reasoning (does not enumerate SCCs).
 - **PD-6 — U3 emission shape: per-file via package→root_files fan-out** (binds KD-12 emission decision). Each root file participating in an SCC of size ≥ 2 gets one finding. Matches D6c R8/R8b precedent. Phase 0 verifies buf v1.69.0 actually emits per-file; if buf diverges (per-cycle or per-package), planning re-opens the decision with buf as the anchor (already noted in KD-12).
 - **PD-7 — U3 cycle scope: fire if ANY root file participates in the cycle** (binds KD-12 scope decision). NOT root-files-only (misses cycles routed through vendor packages user could fix); NOT include-transitives (fires on vendor-only cycles user cannot fix). The middle option is the semantically correct fence for a lint rule.
 - **PD-8 — `FileLintContext.import_cycles` shape**: `Mapping[str, frozenset[str]] | None = None` (file_name → set of package names participating with this file in its SCC). Single-view (one rule consumes); does not need dual-view per [[dual-view-prewalk-accumulator-cross-file-rule-dispatch-2026-05-19]] unless a sibling rule surfaces.
 - **PD-9 — Parametrized CLI dedup test FILE consolidation triggered at third near-copy-paste instance** per [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]] Prevention #6. The SHARED HELPER (`compile_sources_to_descriptor_set` at `tests/schema/lint/_cli_dedup_helpers.py:27-82`) was already extracted at D6d new-U4 MAINT-2 (instance #2 — that consolidation was helper-level). U4's consolidation is the test-FILE level: three near-copy-paste test files (`test_cli_rule_pack_dedup_post_d6c.py`, `test_cli_rule_pack_dedup_post_d6d.py`, the never-created `_post_d6e.py`) become one parametrized `tests/schema/lint/test_cli_rule_pack_dedup.py` iterating over every member of `BUILTIN_PACKS`. Per-pack fixture-source overrides as parametrize-case data (`package` pack needs two-package source for R8/R8b coverage; `field` pack needs proto2-required source). Per KD-14, the consolidated file is CREATED at U2 with `field` pack parameters; U3 EXTENDS the parametrized cases to cover the new `package/no-import-cycle` rule's fixtures.
-- **PD-10 — Structured `LintRuleSpec.parity_note: str` field DEFERRED to specimen #3**: U2's extend-block divergence is the second specimen (after D6a U6's `file/syntax-specified` descriptor-cannot-distinguish divergence). Per [[buf-parity-divergence-documentation-discipline-2026-05-13]] sentinel ("evaluate at N=2; defer until N=3"), planning evaluates and defers. Reasoning: (a) the four-site protocol works at N=2 — divergences are findable and properly documented; (b) adding the field now changes `LintRuleSpec` shape + decorator + serialization with broad blast radius; (c) the sentinel is "evaluate" not "implement" — evaluation says wait. Recorded here + in U2's rule docstring + as a brief ce:compound entry at U2 boundary so the third specimen triggers promotion.
+- **PD-10 — Structured `LintRuleSpec.parity_note: str` field RECALIBRATED to N=1 (down from N=2 after Phase 0 EV-2 falsification)**: with the extend-block divergence falsified, `file/syntax-specified` (D6a U6 descriptor-cannot-distinguish-proto2 divergence) remains the SOLE current specimen. We are well below the [[buf-parity-divergence-documentation-discipline-2026-05-13]] N=3 sentinel; structured `parity_note` field stays deferred. The four-site protocol applied to `file/syntax-specified` continues to be the documentation discipline. The sentinel re-arms when a second real divergence emerges.
 - **PD-11 — N/M forcing-function trigger for R4 audit-finding backlog items (resolves brainstorm CONV-A)**: planning-bound defaults of **N=3 reports within M=8 weeks post-D6e-ship** for the generic "if X proto2-related issue reports within Y weeks, pull retroactive demotion into 0.6.1 patch" template. **Caveat on community-size scaling**: at a small user community (e.g., <100 active users with typical 1-5% issue-report rates), N=3 may never fire even when a real regression hits a meaningful fraction of users; M=8 weeks may filter out slow-cycle (quarterly) adopters. Specific backlog items should tighten N/M when the finding has clearly-high blast radius (e.g., a default-severity demotion candidate could use N=1/M=4-weeks; "any credible report with a minimal repro" can override count entirely). Default rationale: 3 reports passes the "not a single anomaly" bar; 8 weeks matches normal beta windows for new behavior; the default is the LOOSE end of the calibration band so future maintainers explicitly opt into tighter triggers per-item. Documented in U4's TODOS.md update alongside the assumed-user-population caveat so the threshold can be re-evaluated as the user base grows.
 - **PD-12 — No `_LINT_JSON_SCHEMA_VERSION` bump in D6e** (binds KD-9): no new closed-Literal `LintRuntimeWarning.category` values added; no `LintLocation` discriminant additions (U3 uses existing `FileLocation`). The bump-contract ratchet substrings at `tests/test_builtin_lint_formatter.py:705-760` do not need editing unless prose around the constant changes.
 - **PD-13 — Static (not programmatic) fixtures for U3** per [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]]: cycle-fixture cardinality is ~6, below the programmatic-builder threshold (~5). Hand-authored multi-file fixtures per the `test_parity_package_directory.py` precedent. If Phase 0 reveals more variants are required (e.g., LEGACY_REQUIRED-with-cycle), revisit at U3 implementation time.
@@ -168,10 +170,11 @@ src/protokit/schema/lint/rules/
 tests/parity/
 ├── conftest.py          (modify — add 2 _PARITY_EXCEPTIONS entries + _D6E_*_INCLUSION family constants; U2 + U3)
 ├── fixtures/field/not-required/
-│   ├── proto2_required.proto             (CREATE)
-│   ├── proto2_optional.proto             (CREATE)
-│   ├── proto3_field.proto                (CREATE)
-│   └── proto2_extend_block_required.proto (CREATE — divergence specimen)
+│   ├── buf.yaml                          (CREATE — restricts to BASIC profile)
+│   ├── good.proto                        (CREATE — proto3 empty baseline)
+│   ├── proto2_required.proto             (CREATE — buf fires FIELD_NOT_REQUIRED)
+│   ├── proto2_optional.proto             (CREATE — no fire)
+│   └── proto3_field.proto                (CREATE — no fire; syntax-skip branch)
 ├── snapshots/field/not-required/         (CREATE — buf v1.69.0 NDJSON snapshots; U2)
 ├── test_parity_field.py                  (CREATE — single-file parity gate; U2)
 └── test_parity_package_no_import_cycle.py (CREATE — multi-file parity gate; U3)
@@ -316,8 +319,7 @@ tests/parity/conftest.py
     ├── _D6E_PACKAGE_NO_IMPORT_CYCLE_RULE_IDS = frozenset({"package/no-import-cycle"})
     ├── _FAMILY_PROTO_TO_BUF |= _D6E_* dicts        (union extension; 1 line each)
     ├── _FAMILY_RULE_IDS |= _D6E_* frozensets       (union extension; 1 line each)
-    └── _PARITY_EXCEPTIONS[("field/not-required", "proto2_extend_block_required")]
-        = ("protokit_looser", "engine walker at engine.py:841-916 does not iterate fd.extensions_by_name; resolves with D6f+ walker extension")
+    └── (no _PARITY_EXCEPTIONS entry — EV-2 falsified at Phase 0; no divergence to register)
 ```
 
 ## Implementation Units
@@ -375,24 +377,26 @@ tests/parity/conftest.py
 
 - [ ] **Unit 2: `field/not-required` rule + new `field` pack + parametrized CLI dedup consolidation**
 
-**Goal:** Implement the deferred `buf:FIELD_NOT_REQUIRED` rule per SUPERSEDED brainstorm UR-6. Proto2-only; `proto2-strict` profile; ERROR severity. Documented extend-block divergence asterisked in three sites per KD-10 + CONV-F. NEW `field` rule pack home per PD-4. The parametrized CLI dedup test consolidation per PD-9 lands here (third-instance trigger).
+**Goal:** Implement the deferred `buf:FIELD_NOT_REQUIRED` rule per SUPERSEDED brainstorm UR-6. Proto2-only; `proto2-strict` profile; ERROR severity. **Ships with clean buf-parity** — Phase 0 falsified the originally-planned extend-block divergence (required extensions are spec-invalid). NEW `field` rule pack home per PD-4. The parametrized CLI dedup test consolidation per PD-9 lands here (third-near-copy-paste-instance trigger).
 
-**Requirements:** R5 (rule body + EV outcomes + extend-block divergence), plus KD-13 + KD-14 (CLI dedup consolidation + landing site).
+**Requirements:** R5 (rule body + EV bindings), plus KD-13 + KD-14 (CLI dedup consolidation + landing site).
 
 **Dependencies:** U1 (must land atomically per PD-2 — same feat commit covers both U1 and U2).
 
 **Files:**
-- Create: `src/protokit/schema/lint/rules/field.py` — new pack; single rule `check_field_not_required` with `RULES = (check_field_not_required,)`; module docstring mirrors `file.py` shape including the four-site divergence documentation per [[buf-parity-divergence-documentation-discipline-2026-05-13]] (sites 1 + 2)
+- Create: `src/protokit/schema/lint/rules/field.py` — new pack; single rule `check_field_not_required` with `RULES = (check_field_not_required,)`; module docstring mirrors `file.py` shape. No divergence-documentation invocation — Phase 0 EV-2 falsified the originally-planned extend-block divergence; the module docstring instead carries a brief note documenting the falsification finding for future readers.
 - Modify: `src/protokit/schema/lint/rules/__init__.py` — add `from protokit.schema.lint.rules import field` import; append `"protokit.schema.lint.rules.field"` to `BUILTIN_PACKS` tuple at `:164-173`; update BUILTIN_PACKS docstring substring ratchets (will be re-touched in U4 for the "26 of 26" headline)
 - Create: `tests/schema/lint/rules/test_field.py` — full rule test class; derive `_ALL_FIELD_RULE_IDS = frozenset(fn._lint_spec.rule_id for fn in RULES)` per [[rule-pack-extension-ssot-rule-ids-and-test-class-naming-2026-05-12]]; use `catch_exceptions=False` on every CliRunner.invoke per [[clirunner-catch-exceptions-false-explicit-discipline-2026-05-21]]
 - Modify: `tests/schema/lint/test_builtin_packs.py` — update membership pin at `:71-104` to include `"protokit.schema.lint.rules.field"`; update presence-ratchet substrings at `:121-171` to include `"FIELD_NOT_REQUIRED"` (will be re-touched in U4 for the headline numerator)
-- Create: `tests/parity/fixtures/field/not-required/proto2_required.proto` — bad fixture (proto2 file with `required` field)
+- Create: `tests/parity/fixtures/field/not-required/buf.yaml` — buf v2 config restricting to BASIC profile (mirrors existing `tests/parity/fixtures/file/syntax-specified/buf.yaml`)
+- Create: `tests/parity/fixtures/field/not-required/good.proto` — proto3 empty stub baseline (no fire)
+- Create: `tests/parity/fixtures/field/not-required/proto2_required.proto` — bad fixture (proto2 file with `required` field). Phase 0 binding: buf v1.69.0 fires `FIELD_NOT_REQUIRED` at line 6 col 18-32 with message `Field named "required_field" should not be required.`
 - Create: `tests/parity/fixtures/field/not-required/proto2_optional.proto` — good fixture (proto2 file with `optional` field; no fire)
-- Create: `tests/parity/fixtures/field/not-required/proto3_field.proto` — proto3 baseline (no fire; syntax-skip branch)
-- Create: `tests/parity/fixtures/field/not-required/proto2_extend_block_required.proto` — divergence specimen (buf fires; protokit does not)
-- Create: `tests/parity/snapshots/field/not-required/{proto2_required,proto2_optional,proto3_field,proto2_extend_block_required}.json` — buf v1.69.0 NDJSON snapshots (commit BEFORE writing protocol logic per [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]])
+- Create: `tests/parity/fixtures/field/not-required/proto3_field.proto` — proto3 baseline with regular/explicit-optional/repeated fields (no fire; syntax-skip branch in rule body)
+- ~~`proto2_extend_block_required.proto`~~ — **DROPPED per Phase 0 EV-2 falsification (2026-05-22)**. Required extensions are spec-invalid; both buf v1.69.0 and protokit's compiler (protoxy) reject them at parse layer. No divergence specimen needed.
+- ~~`tests/parity/snapshots/field/not-required/*.json` (pre-recorded snapshots)~~ — **NOT NEEDED for single-file harness**. The existing `tests/parity/test_parity_file.py` pattern invokes `run_buf_lint(...)` at test time (live buf invocation against the fixture directory); no pre-recorded NDJSON files are committed for the single-file family. (Pre-recorded snapshots are reserved for the multi-file `_buf_smoke/recorded/*.json` harness.)
 - Create: `tests/parity/test_parity_field.py` — single-file parity gate using `assert_parity` (mirrors `tests/parity/test_parity_file.py` pattern)
-- Modify: `tests/parity/conftest.py` — add `_PARITY_EXCEPTIONS` entry `("field/not-required", "proto2_extend_block_required"): ("protokit_looser", "engine walker at engine.py:841-916 does not iterate fd.extensions_by_name; resolves with D6f+ walker extension")`. Family-aware constants added if multi-file path is chosen (Phase 0 decides — single-file is simpler; multi-file only if EV-4 binding forces multi-file fixtures).
+- ~~Modify: `tests/parity/conftest.py` — add `_PARITY_EXCEPTIONS` entry~~ — **NOT NEEDED**. No divergence to register (EV-2 falsified).
 - Create: `tests/schema/lint/test_cli_rule_pack_dedup.py` — parametrized consolidation per PD-9; iterates `BUILTIN_PACKS`; per-pack `param` dict carries `module_name + fixture_sources + expected_exit_code`. Replace files below.
 - Delete: `tests/schema/lint/test_cli_rule_pack_dedup_post_d6c.py`
 - Delete: `tests/schema/lint/test_cli_rule_pack_dedup_post_d6d.py`
@@ -402,12 +406,17 @@ tests/parity/conftest.py
 
 **Approach:**
 
-**Phase 0 of U2** (executed BEFORE writing the rule body):
-1. Run `buf lint --error-format=json <fixture>` against each of the four candidate fixtures + capture NDJSON snapshots. Verify byte-equivalent buf v1.69.0 output for proto2_required, proto2_optional, proto3_field, proto2_extend_block_required.
-2. Bind EV-1 (edition LEGACY_REQUIRED 3-outcome matrix): run buf against an edition file with LEGACY_REQUIRED feature flag; record outcome (fire / no-fire / different rule_id). If buf fires, decide whether protokit's rule body needs an edition-specific branch.
-3. Bind EV-3 (group-typed required): run buf against a proto2 group-typed required field; record buf's output. Per SUPERSEDED brainstorm, buf treats group like message; verify.
-4. Bind EV-4 (multi-file proto2+proto3 mix): run buf against a project with both syntaxes; record that buf fires only on proto2 files (matches PD-4 rule body's `fdp.syntax != ""` early return).
-5. Decide single-file vs multi-file parity test shape based on EV-1/EV-3/EV-4 fixture count. Default to single-file (`test_parity_field.py` mirroring `test_parity_file.py`); promote to multi-file only if EV-4 forces multi-file fixtures.
+**Phase 0 of U2 — completed 2026-05-22, bindings below:**
+
+1. ✅ Baseline buf v1.69.0 emission verified against four candidate fixtures with `lint.use: [BASIC]`:
+   - `proto2_required.proto`: fires `FIELD_NOT_REQUIRED` at line 6 col 18-32 — `Field named "required_field" should not be required.`
+   - `proto2_optional.proto`: no fire ✓
+   - `proto3_field.proto`: no fire (proto3 has no `required` label) ✓
+   - `good.proto` (proto3 empty stub): no fire ✓
+2. ✅ EV-3 binding (group-typed required): buf v1.69.0 fires `FIELD_NOT_REQUIRED` on the implicit lowercased group field (e.g., `required group RequiredGroup` → fire on field name `requiredgroup`). Rule body's `LABEL_REQUIRED` check catches this correctly since the descriptor exposes the group as a regular field with LABEL_REQUIRED.
+3. ✅ EV-2 binding (extend-block required): **FALSIFIED**. Both buf v1.69.0 and protokit's compiler reject `required` extension fields at parse layer ("invalid cardinality: 2"). No divergence exists. Drop fixtures, documentation, and walker-extension backlog.
+4. ⏳ EV-1 (edition LEGACY_REQUIRED) and EV-4 (multi-file proto2+proto3 mix) — verified during implementation against the inline rule-body test cases (lower priority since EV-2's falsification removes the architectural concern; rule body's `fdp.syntax != ""` early-return handles both naturally).
+5. ✅ Single-file parity test shape confirmed (mirrors `tests/parity/test_parity_file.py`); no multi-file harness needed.
 
 **Rule body** (UR-6 from SUPERSEDED brainstorm; bind verbatim):
 ```python
@@ -419,11 +428,10 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
     ctx.emit(violation_kind="field/not-required", params={"field_name": ctx.field.name})
 ```
 
-**Four-site divergence documentation** per [[buf-parity-divergence-documentation-discipline-2026-05-13]]:
-1. **Module docstring** at `src/protokit/schema/lint/rules/field.py:1-N` — `buf:FIELD_NOT_REQUIRED` parity claim + extend-block divergence + corrected `engine.py:841-916` citation + forward-pointer to D6f+ walker extension.
-2. **Function docstring** for `check_field_not_required` — restate divergence + remediation guidance.
-3. **`message_template`** on `@lint_rule` decorator — user-facing template: `"Field {field_name!r} is declared required in a proto2 message. The required label is a known footgun; declare as optional and validate at the application layer."` Per [[lint-rule-message-templates-must-not-recommend-actions-that-trigger-siblings-2026-05-13]] — "declare as optional" does not trigger sibling proto2-strict rules (no `naming/snake-case` collision since field name is unchanged); verify at implementation.
-4. **Test method docstrings** in `tests/schema/lint/rules/test_field.py` — separate test methods for buf-parity branch (`test_proto2_required_fires_byte_equivalent_to_buf`) and protokit divergence branch (`test_extend_block_required_does_not_fire_documented_divergence_engine_py_841_916`).
+**Documentation (no divergence — clean parity):**
+- **Module docstring** at `src/protokit/schema/lint/rules/field.py:1-N` — `buf:FIELD_NOT_REQUIRED` parity claim. Brief note documenting the Phase 0 EV-2 falsification finding (required extensions are spec-invalid; both buf v1.69.0 and protokit's compiler reject them at parse layer; the originally-planned divergence does not exist).
+- **Function docstring** for `check_field_not_required` — describes the proto2-only behavior; no divergence to restate.
+- **`message_template`** on `@lint_rule` decorator — user-facing template: `"Field {field_name!r} is declared required in a proto2 message. The required label is a known footgun; declare as optional and validate at the application layer."` Per [[lint-rule-message-templates-must-not-recommend-actions-that-trigger-siblings-2026-05-13]] — "declare as optional" does not trigger sibling proto2-strict rules; verify at implementation.
 
 **Parametrized CLI dedup consolidation** per PD-9:
 - Read `BUILTIN_PACKS` at test-module import time.
@@ -437,10 +445,9 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 **Execution note:** Test-first: write the four parity-gate test scenarios + the unit test class skeleton, run them red, then write the rule body — surfaces helper bugs at implementation time per [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]].
 
 **Patterns to follow:**
-- `src/protokit/schema/lint/rules/file.py` — single-rule pack shape + module docstring divergence-documentation pattern.
+- `src/protokit/schema/lint/rules/file.py` — single-rule pack shape (and module docstring divergence-documentation pattern if a future divergence emerges; not needed for U2 itself).
 - `tests/parity/test_parity_file.py` — single-file parity gate exemplar.
 - `tests/schema/lint/rules/test_file.py` — rule-pack test class shape.
-- D6a U6 `file/syntax-specified` divergence treatment for the four-site protocol (specimen #1).
 
 **Test scenarios:**
 - **Happy path:** proto2 file with `required` field fires `field/not-required` at ERROR severity under `--profile proto2-strict`. Pin `rule_id`, `severity`, `location_kind`, `params["field_name"]` per [[worked-example-multi-scenario-test-class-template-2026-05-21]].
@@ -454,21 +461,21 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 - **Edge case (EV-3 binding):** proto2 group-typed required field — outcome bound at Phase 0; assert per buf v1.69.0.
 - **Edge case (EV-1 binding):** edition file with LEGACY_REQUIRED feature flag — outcome bound at Phase 0.
 - **Edge case (EV-4 binding):** mixed proto2+proto3 project — rule fires only on proto2 files.
-- **Documented divergence (EV-2 PRE-DECIDED):** proto2 extend-block with required field — protokit does NOT fire; buf v1.69.0 DOES fire. Assert via `_PARITY_EXCEPTIONS` posture `protokit_looser`. Test method docstring cites `engine.py:841-916` + forward-points to D6f+ walker extension.
+- **Phase 0 EV-2 falsification documented (test only):** at least one test method docstring records that the originally-planned extend-block divergence does not exist (required extensions are spec-invalid; both buf and protokit reject at parse layer). No fixture file, no parity-exception entry — just a one-line docstring breadcrumb so future readers searching for "extend-block" in the codebase find the resolution.
 - **Error path:** `--profile nonexistent` exits 2 with `unknown-profile` (verifies the CLI gate at `cli.py:1005-1037`).
 - **Error path:** invalid `[severities]` value `"off"` exits 2 (per [[migration-recipe-severity-aware-template-reuse-2026-05-21]] — `"off"` is invalid; R9b still deferred).
-- **Integration:** parity gate against buf v1.69.0 NDJSON snapshots — byte-equivalent on the three non-divergent fixtures + posture-asserted on the divergence fixture.
+- **Integration:** parity gate against live buf v1.69.0 invocation — byte-equivalent on all four fixtures (good.proto, proto2_required.proto, proto2_optional.proto, proto3_field.proto). No divergence specimens; clean parity.
 - **Integration:** BUILTIN_PACKS membership — `field` pack registered, has 1 rule (`field/not-required`).
 - **Integration:** parametrized CLI dedup test passes for every pack in BUILTIN_PACKS including the new `field` pack. Three deleted files (`test_cli_rule_pack_dedup_post_d6c.py` + `_post_d6d.py` + the never-created `_post_d6e.py`) absent from the working tree.
 - **Integration:** presence-ratchet — BUILTIN_PACKS docstring mentions `"field"` pack + `"FIELD_NOT_REQUIRED"` substring (single-source-line; verified pre-commit).
 
 **Verification:**
 - `git ls-files | grep test_cli_rule_pack_dedup` returns ONE file (`test_cli_rule_pack_dedup.py`), not three.
-- `pytest tests/parity/test_parity_field.py -v` passes (4 fixtures, 4 assertions; 1 divergence posture).
+- `pytest tests/parity/test_parity_field.py -v` passes (4 fixtures, byte-equivalent parity with buf v1.69.0; no `_PARITY_EXCEPTIONS` postures needed).
 - `pytest tests/schema/lint/rules/test_field.py -v` passes (full rule scenarios).
 - `protokit lint --no-config --profile proto2-strict <proto2_required.descset>` exits 1 (ERROR finding emitted).
 - `protokit lint --no-config --profile recommended <proto2_required.descset>` exits 0 (no `field/not-required` finding).
-- Four-site divergence documentation visible: module docstring + function docstring + `message_template` mentions divergence + at least one test method docstring cites `engine.py:841-916`.
+- Module docstring + at least one test docstring document the Phase 0 EV-2 falsification finding for future readers.
 
 ---
 
@@ -583,16 +590,15 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 - Modify: `pyproject.toml` — `version = "0.5.0"` → `version = "0.6.0"`
 - Modify: `CHANGELOG.md` — fold `CHANGELOG-DRAFT.md` content into `### D6e — buf BASIC closure + UX philosophy revision (0.6.0)` section with 5 sub-sections per [[builtin-packs-expansion-changelog-migration-recipe-structure-2026-05-18]]
 - Modify (or Delete + recreate empty): `CHANGELOG-DRAFT.md` — reset to staging-empty per [[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]]
-- Modify: `README.md` — Schema Linting section numerator refresh: `"25 of 26"` → the canonical numerator substring (defined below) + the divergence clause (no "deferred to a future X" timeline framing per Product-lens F2) + the positioning statement (per Product-lens F1) per KD-9. Verify all numerator claim sites at `README.md:484-487`, `:552`, `:586-589`, `:678`, `:686-688`.
+- Modify: `README.md` — Schema Linting section numerator refresh: `"25 of 26"` → the canonical numerator substring (defined below) + the POSITIONING_STATEMENT (per Product-lens F1) per KD-9. No divergence clause (Phase 0 EV-2 falsification). Verify all numerator claim sites at `README.md:484-487`, `:552`, `:586-589`, `:678`, `:686-688`.
 
 **Canonical headline phrasing (byte-identical across README, BUILTIN_PACKS docstring, CHANGELOG, CLI `--help` epilog):**
-- `CANONICAL_NUMERATOR_SUBSTRING = "26 of 26 buf v1.69.0 BASIC rules"` (single source line; presence-ratchet candidate per [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]] rule 5)
-- `DIVERGENCE_CLAUSE = "(with one documented divergence on extend-block-required-fields; protokit's engine walker at engine.py:841-916 does not iterate fd.extensions_by_name or Message.extensions_by_name)"` — NO "deferred to a future X" timeline framing per Product-lens F2 (vague forward-promises erode trust over time when they outlast their stated window). The divergence is documented as a present-tense architectural fact; resolution timing lives in TODOS.md with a concrete user-report-driven trigger ("first user report of a missed proto2 extend-block-required field that buf catches → prioritize for the next delivery"), NOT in the headline copy.
-- `POSITIONING_STATEMENT = "protokit ships buf's 26 BASIC rules; default severities reflect Python-protobuf-developer ergonomics, not buf's defaults (see proto2-strict for opt-in proto2 strictness)."` — single source line; pinned via presence-ratchet alongside the numerator substring. Resolves Product-lens F1 (KD-1-vs-26/26-headline latent tension) by naming the bet explicitly: protokit claims parity at COVERAGE (26 of 26 rules implemented), not at DEFAULTS (severity placements diverge by design). Lives in BUILTIN_PACKS docstring + README Schema Linting section header.
+- `CANONICAL_NUMERATOR_SUBSTRING = "26 of 26 buf v1.69.0 BASIC rules"` (single source line; presence-ratchet candidate per [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]] rule 5). **No divergence clause** — Phase 0 EV-2 falsification dropped the extend-block divergence framing entirely.
+- `POSITIONING_STATEMENT = "protokit ships buf's 26 BASIC rules; default severities reflect Python-protobuf-developer ergonomics, not buf's defaults (see proto2-strict for opt-in proto2 strictness)."` — single source line; pinned via presence-ratchet alongside the numerator substring. Resolves Product-lens F1 (KD-1-vs-26/26-headline latent tension) by naming the bet explicitly: protokit claims parity at COVERAGE (26 of 26 rules implemented), not at DEFAULTS (severity placements diverge by design — R4b WARNING demotion of `file/syntax-specified` is the worked example). Lives in BUILTIN_PACKS docstring + README Schema Linting section header.
 - U4 audit gate: `git grep "26 of 26 buf v1.69.0 BASIC rules"` returns ≥3 matches (one per claim site: README + BUILTIN_PACKS docstring + CHANGELOG); `git grep "protokit ships buf's 26 BASIC rules"` returns ≥2 matches (README + BUILTIN_PACKS docstring); secondary Layer D audit per [[audit-wire-format-before-claiming-sibling-parity-2026-05-03]] separately counts `source_spec="buf:` occurrences in `src/protokit/schema/lint/rules/*.py` and verifies it equals 26.
 - Modify: `src/protokit/schema/lint/rules/__init__.py` — BUILTIN_PACKS docstring numerator update at `:146-150`; verify single-source-line discipline for the new substring; KD-9 v1.69.0 qualifier prominent
 - Modify: `src/protokit/schema/lint/cli.py` — `--help` epilog at `:274-321` — remove any "deferred to D6e" prose; add active framing for `proto2-strict` profile if discoverability prose exists for profiles
-- Modify: `TODOS.md` — remove `PACKAGE_NO_IMPORT_CYCLE` + `FIELD_NOT_REQUIRED` from D6e+ backlog (lines 213-244 area); update headline narrative (lines 93-112) from `"25 of 26"` to the canonical numerator substring `"26 of 26 buf v1.69.0 BASIC rules"`; add D6f+ backlog items: (a) walker extension for both `fd.extensions_by_name` AND `Message.extensions_by_name` (file-level + nested-message extends) resolving U2's divergence at both surface forms; (b) any audit findings from U1's R4 audit pass with concrete N=3/M=8-weeks PD-11 forcing-function defaults; (c) `LintRuleSpec.parity_note` structured field promotion at specimen #3 trigger per PD-10; (d) any tightened per-item N/M values for specific audit findings (per PD-11 caveat — small-community-size or high-blast-radius findings should tighten the default)
+- Modify: `TODOS.md` — remove `PACKAGE_NO_IMPORT_CYCLE` + `FIELD_NOT_REQUIRED` from D6e+ backlog (lines 213-244 area); update headline narrative (lines 93-112) from `"25 of 26"` to the canonical numerator substring `"26 of 26 buf v1.69.0 BASIC rules"`; add D6f+ backlog items: (a) any audit findings from U1's R4 audit pass with concrete N=3/M=8-weeks PD-11 forcing-function defaults; (b) `LintRuleSpec.parity_note` structured field promotion at specimen #3 trigger per PD-10 (still at specimen #1 after Phase 0 EV-2 falsification); (c) any tightened per-item N/M values for specific audit findings (per PD-11 caveat — small-community-size or high-blast-radius findings should tighten the default). The originally-planned engine walker extension for `fd.extensions_by_name` is NOT in the backlog — Phase 0 EV-2 falsification showed required extensions are spec-invalid; the architectural gap is operationally moot.
 - Modify: `tests/test_changelog_delivery_presence_ratchet.py` — add `DeliveryRatchetSpec(delivery="D6e", version="0.6.0")` at `:71-76`
 - Modify: `tests/schema/lint/test_builtin_packs.py` — update three pinned substrings at `:121-171` from D6d era to D6e era: `"26 of 26 buf v1.69.0 BASIC rules"` (or whatever single-source-line phrasing fits), and verify removed `"PACKAGE_NO_IMPORT_CYCLE"` + `"FIELD_NOT_REQUIRED"` from any "deferred to" substrings (they are now landed)
 - Verify (no edit expected): `tests/test_builtin_lint_formatter.py:705-760` — `TestBumpContractDocstring` substrings; per KD-9 NO `_LINT_JSON_SCHEMA_VERSION` bump; no new closed-Literal additions; existing substrings should still pass; verify pre-commit
@@ -608,13 +614,13 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
    - **Added** subsection:
      - D6e KD-1 hard-inverted UX philosophy principle (protokit-UX overrides buf-parity)
      - `proto2-strict` opt-in profile (initial population: 1 rule, `field/not-required`)
-     - `field/not-required` rule (`buf:FIELD_NOT_REQUIRED` parity; proto2-only; ERROR severity in `proto2-strict`; documented extend-block divergence; corrected `engine.py:841-916` walker citation)
+     - `field/not-required` rule (`buf:FIELD_NOT_REQUIRED` parity; proto2-only; ERROR severity in `proto2-strict`; clean parity — Phase 0 EV-2 falsified the originally-planned extend-block divergence)
      - `package/no-import-cycle` rule (`buf:PACKAGE_NO_IMPORT_CYCLE` parity; package-level cycle detection via Tarjan SCC pre-walk; per-file emission; ERROR severity in `recommended` + `default`)
      - Parametrized CLI dedup test consolidation (3 per-flip files → 1 parametrized file per PD-9; third-instance-trigger codification)
      - New `FileLintContext.import_cycles` field (single-view accumulator output)
    - **Changed** subsection (per [[pre-1.0-version-bump-as-communication-contract-2026-05-14]]; no ceremonial `BREAKING:`):
      - `file/syntax-specified` ERROR → WARNING in `recommended` + `default` per R4b (D6e KD-2 pragmatic-not-dogmatic)
-     - Buf-parity headline `"25 of 26 BASIC rules"` → `"26 of 26 buf v1.69.0 BASIC rules (with one documented divergence on extend-block-required-fields)"` per KD-9
+     - Buf-parity headline `"25 of 26 BASIC rules"` → `"26 of 26 buf v1.69.0 BASIC rules"` per the canonical numerator phrasing (no divergence asterisk — Phase 0 EV-2 falsification)
    - **Behavior changes (defaults; demotable)** subsection:
      - `file/syntax-specified` now WARNING in default; users with `--max-warnings 0` will notice; users with `--min-severity error` filtering effectively make invisible
      - No other default-profile behavior changes (U2 rule is opt-in; U3 rule is new at ERROR but lands clean on cycle-free projects)
@@ -642,10 +648,10 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
      - **Accepted-tradeoff scenarios**: proto3-only shops who want strict explicit-syntax declaration → re-promote `file/syntax-specified`; proto2-heavy shops who can't fix all `required` fields immediately → demote `field/not-required` or stay on 0.5.0
      - **Upgrade triage walkthrough**: (1) install 0.6.0 in a branch; (2) run `protokit lint --no-config` against your descriptors; (3) review WARNING vs ERROR distribution; (4) decide on `--profile proto2-strict` opt-in; (5) apply severity overrides per #2 above; (6) merge
    - **Deferred to D6f+** subsection (per [[scope-guardian]] attribution discipline, include ONLY items deferred DURING D6e planning; prior-delivery carry-forwards live in TODOS.md, not in D6e's CHANGELOG):
-     - Engine walker extension for BOTH `fd.extensions_by_name` AND `Message.extensions_by_name` (file-level + nested-message extends) — resolves U2's documented extend-block divergence at both surface forms
-     - `LintRuleSpec.parity_note` structured field promotion at specimen #3 trigger per PD-10
+     - `LintRuleSpec.parity_note` structured field promotion at specimen #3 trigger per PD-10 (still at specimen #1 after Phase 0 EV-2 falsification)
      - R9b `"off"` severity value support (existing `[severities]` overrides at `"error"`/`"warning"`/`"info"` continue to work; `"off"` remains rejected as invalid input)
      - Any R4 audit findings from U1's audit pass (with concrete N=3/M=8-weeks PD-11 forcing-function defaults; per-item N/M may tighten — small-community-size or high-blast-radius findings should tighten by 2-3x per the PD-11 caveat)
+     - Note: the originally-planned engine walker extension for `fd.extensions_by_name` was DROPPED before U4 fold per Phase 0 EV-2 falsification; the architectural gap is operationally moot at the current proto2 spec (required extensions cannot be compiled).
 
 3. **README "26 of 26 v1.69.0" numerator refresh**:
    - Apply Layer D grep audit per [[audit-wire-format-before-claiming-sibling-parity-2026-05-03]]: `grep -rn 'source_spec="buf:' src/protokit/schema/lint/rules/ | wc -l` MUST equal 26 (not 25; not 27) before shipping.
@@ -662,8 +668,8 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 5. **TODOS.md update**:
    - Remove `PACKAGE_NO_IMPORT_CYCLE` and `FIELD_NOT_REQUIRED` from D6e+ backlog (lines ~213-244).
    - Update headline narrative (lines ~93-112) from "25 of 26" to the canonical numerator substring "26 of 26 buf v1.69.0 BASIC rules".
-   - Add D6f+ backlog items per the CHANGELOG "Deferred to D6f+" list above, partitioned into TWO subsections per [[scope-guardian]] attribution discipline: (i) **deferred during D6e planning** — engine walker extension (both extend surfaces), `LintRuleSpec.parity_note` field, R4 audit findings, R9b `"off"` severity; (ii) **carried forward from prior deliveries** — R6 promotion, `strict` profile, LintLocation contract, MessageSet-aware rules, IDENTIFIER-based field_behavior contradictions. The (ii) items are NOT D6e-originated and should not appear in D6e's CHANGELOG "Deferred to D6f+" subsection — they live only in TODOS.md.
-   - **For the engine walker extension item (D6e-originated)**: name a concrete user-report-driven trigger per Product-lens F2 — *"first user report of a missed proto2 extend-block-required field that buf catches → prioritize for the next delivery."* No vague "deferred to a future X" timeline framing; the trigger is the action signal.
+   - Add D6f+ backlog items per the CHANGELOG "Deferred to D6f+" list above, partitioned into TWO subsections per [[scope-guardian]] attribution discipline: (i) **deferred during D6e planning** — `LintRuleSpec.parity_note` field, R4 audit findings, R9b `"off"` severity; (ii) **carried forward from prior deliveries** — R6 promotion, `strict` profile, LintLocation contract, MessageSet-aware rules, IDENTIFIER-based field_behavior contradictions. The (ii) items are NOT D6e-originated and should not appear in D6e's CHANGELOG "Deferred to D6f+" subsection — they live only in TODOS.md.
+   - Note: the originally-planned engine walker extension was DROPPED before U4 fold per Phase 0 EV-2 falsification (2026-05-22); add a brief retrospective note in TODOS.md so future readers understand why the brainstorm/SUPERSEDED-doc references to the walker-extension item resolve to "no action needed."
    - Document the N=3/M=8-weeks PD-11 forcing-function default in a brief subsection so future audit-finding-triggered patches have a deterministic threshold, INCLUDING the community-size caveat (small-community thresholds should tighten by 2-3x) so the threshold can be re-evaluated as the user base grows.
 
 6. **Presence-ratchets**:
@@ -719,10 +725,10 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 - `pyproject.toml`: `version = "0.6.0"`.
 - `_LINT_JSON_SCHEMA_VERSION = "0.5"` (unchanged).
 - `CHANGELOG.md` has `### D6e — buf BASIC closure + UX philosophy revision (0.6.0)` section with 5 sub-sections.
-- README Schema Linting section reads `"26 of 26 buf v1.69.0 BASIC rules (with one documented divergence on extend-block-required-fields)"`.
+- README Schema Linting section reads `"26 of 26 buf v1.69.0 BASIC rules"` (no divergence asterisk — Phase 0 EV-2 falsification).
 - BUILTIN_PACKS includes `field` + new `package/no-import-cycle` rule in `package`. Total: 26 buf-parity rules (Layer D grep verified).
 - Presence-ratchet tests all pass.
-- TODOS.md D6e+ backlog cleared of `PACKAGE_NO_IMPORT_CYCLE` and `FIELD_NOT_REQUIRED`; D6f+ backlog includes engine walker extension, R9b, strict profile, LintLocation, R6 promotion, IDENTIFIER-based contradictions, MessageSet rules, `parity_note` field promotion, and any U1 audit findings with N/M triggers.
+- TODOS.md D6e+ backlog cleared of `PACKAGE_NO_IMPORT_CYCLE` and `FIELD_NOT_REQUIRED`; D6f+ backlog includes R9b, strict profile, LintLocation, R6 promotion, IDENTIFIER-based contradictions, MessageSet rules, `parity_note` field promotion (still at specimen #1), and any U1 audit findings with N/M triggers. The originally-planned engine walker extension was DROPPED before U4 fold (Phase 0 EV-2 falsification).
 - All three new `docs/solutions/best-practices/` files committed (Tarjan SCC, proto2-strict profile activation, third-instance-trigger).
 - Stale-text sweep: zero "deferred to D6e" / "arrives in D6e" hits in active surfaces.
 - Full suite + ruff + mypy clean.
@@ -760,7 +766,7 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 | Phase 0 verification of buf v1.69.0 `PACKAGE_NO_IMPORT_CYCLE` emission shape (OQ-1) reveals per-cycle or per-package emission (not per-file). | Re-open PD-6 with buf's empirical shape as anchor; revise rule body emission logic at U3 implementation time; document the deviation from KD-12 direction-of-travel in U3's ce:compound entry. Cost: 1-2 hours of implementation rework; no architectural debt. |
 | Phase 0 verification of cycle scope (OQ-2) reveals buf includes vendor-only cycles. | Re-open PD-7; if buf fires on vendor-only cycles user can't fix, document a divergence (third specimen — triggers structured `parity_note` promotion per PD-10) and ship protokit's "any-root-participates" as the protokit-stricter / protokit-looser posture. Cost: extra divergence-documentation work + ce:compound entry. |
 | U1+U2 atomic-commit departure from per-unit ce:review pipeline isolation per [[multi-unit-ce-review-stash-pop-coordination-2026-05-21]] | Per PD-2 + brainstorm CONV-C: treat U1+U2 as one unit for ce:review purposes. Single ce:review pass covers both surfaces. Stash-pop discipline still applies for the U2→U3 boundary. |
-| Engine walker citation in brainstorm (`engine.py:818-893`) is wrong; future readers may misdiagnose the divergence ground. | Plan corrects to `engine.py:841-916` per PD-3; U2 documentation sites use the corrected citation; CHANGELOG + rule docstring + `--help` epilog all cite the corrected range. |
+| ~~Engine walker citation in brainstorm (`engine.py:818-893`) is wrong~~ — **RESOLVED moot by Phase 0 EV-2 falsification**: the divergence the citation pointed at does not exist (required extensions are spec-invalid). The corrected walker line range is recorded in Context & Research as architectural context, not as a load-bearing fact. | n/a |
 | Tarjan SCC implementation correctness (no prior art in protokit) | Phase 0 + extensive unit test scenarios for the accumulator (empty pool, single-file, 2-node, 3-node, 4+-node, multiple disjoint, self-import-not-cycle). Mirror well-known Tarjan reference pseudocode; hand-implement ~30 LOC; capture pattern in ce:compound for future maintainers. |
 | New `FileLintContext.import_cycles` field breaks direct-construction tests | Field added with `= None` default per existing `directory_packages` precedent at `model.py:1131`. Verify at U3 implementation that no test file constructs `FileLintContext(...)` positionally; if any do, add `import_cycles=None` explicit kwarg. Grep guard: `grep -rn "FileLintContext(" tests/ | grep -v "import_cycles"`. |
 | BUILTIN_PACKS expansion triggers latent `zip(strict=True)` mismatch | Parametrized CLI dedup consolidation per PD-9 IS the regression test; lands at U2 with new `field` pack and extends at U3 with `package` pack expansion. Test gates pre-commit. |
@@ -786,12 +792,13 @@ if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
 
 - **CHANGELOG.md** — folded at U4 with 5 sub-sections per [[builtin-packs-expansion-changelog-migration-recipe-structure-2026-05-18]].
 - **README.md** — Schema Linting section numerator refresh at U4; profile table `proto2-strict` row added at U1.
-- **BUILTIN_PACKS docstring** at `src/protokit/schema/lint/rules/__init__.py:17-78` — KD-1 principle line added at U1; numerator refresh + divergence asterisk added at U4.
-- **Module + function docstrings** — U1 updates `file.py`; U2 creates `field.py` with 4-site divergence documentation; U3 updates `package.py` module docstring + adds `check_package_no_import_cycle` function docstring.
+- **BUILTIN_PACKS docstring** at `src/protokit/schema/lint/rules/__init__.py:17-78` — KD-1 principle line + POSITIONING_STATEMENT added at U1; numerator refresh added at U4 (no divergence asterisk — Phase 0 EV-2 falsification).
+- **Module + function docstrings** — U1 updates `file.py`; U2 creates `field.py` with brief Phase 0 EV-2 falsification breadcrumb (no divergence framing — falsified); U3 updates `package.py` module docstring + adds `check_package_no_import_cycle` function docstring.
 - **CLI `--help` epilog** at `src/protokit/schema/lint/cli.py:274-321` — stale-text cleanup at U4.
 - **TODOS.md** — D6e+ backlog cleanup + D6f+ items added at U4 with N=3/M=8-weeks PL-4 forcing-function defaults documented.
-- **`docs/solutions/best-practices/` ce:compound entries** — three new files captured at boundaries:
+- **`docs/solutions/best-practices/` ce:compound entries** — four new files captured at boundaries:
   - U1+U2 boundary: `proto2-strict-profile-activation-pattern-2026-05-XX.md` — codifies the per-syntax-version profile pattern + the U1+U2 atomic-commit discipline as a structural requirement (CLI gate `cli.py:1005-1037`).
+  - U1+U2 boundary: `phase-0-empirical-verification-falsifies-brainstorm-assumption-2026-05-22.md` — codifies the Phase 0 EV-2 falsification finding (required extensions are spec-invalid per protobuf cardinality constraint; both buf v1.69.0 and protokit's compiler reject at parse layer; the originally-planned extend-block divergence does not exist as a real behavioral difference). Worked example for [[plan-review-verify-prior-art-citations-2026-05-15]] Condition 5 ("deferred-unit brainstorms carry inherited claims; re-verify at brainstorm refinement"). Key takeaway: brainstorm assumptions about external-tool behavior must be empirically verified before implementation invests in framing the divergence as a known issue.
   - U3 boundary: `tarjan-scc-import-cycle-detection-pre-walk-2026-05-XX.md` — codifies the Tarjan SCC pre-walk pattern as new institutional knowledge (no prior art in protokit); names the package-edge granularity + per-file emission via fan-out as the canonical shape.
   - U4 boundary: `near-copy-paste-third-instance-consolidation-trigger-2026-05-XX.md` — codifies the "third near-copy-paste instance triggers consolidation" rule with two sub-patterns: (a) **helper extraction at N=3 call sites** (the D6d new-U4 MAINT-2 `_cli_dedup_helpers.compile_sources_to_descriptor_set` SSOT was instance #2 at the helper-extraction level) and (b) **test-file parametrization at N=3 near-copy-paste files** (this U4's consolidation is instance #3 at the test-file level). The two sub-patterns share the "N=3 triggers consolidation" heuristic but apply to different artifact types (helpers vs test files vs other duplication); naming the patterns distinctly avoids the discovery hazard where a future maintainer searching for "when do I extract a helper?" finds a learning about test-file parametrization. Resolves the `[[near-copy-paste-third-instance-consolidation-trigger]]` bracketed reference from the brainstorm; names the parametrized CLI dedup consolidation as the worked example for sub-pattern (b).
 - **Operational / Rollout Notes** — none. D6e ships as a normal release; no migration window, no operational coordination required beyond the standard PyPI release + announcement.
