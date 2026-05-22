@@ -2,15 +2,19 @@
 
 Covers the 1 rule registered in :mod:`protokit.schema.lint.rules.file`:
 
-- ``file/syntax-specified`` — fires when the file's resolved
-  syntax is not ``"proto3"``. **Documented buf-parity divergence**:
-  protokit's rule fires on both no-syntax files AND explicit
+- ``file/syntax-specified`` — fires (at **WARNING** as of D6e R4b)
+  when the file's resolved syntax is not ``"proto3"`` or
+  ``"editions"``. **Documented buf-parity divergence**: protokit's
+  rule fires on both no-syntax files AND explicit
   ``syntax = "proto2";`` files, because the protobuf compiler
   emits ``fdp.syntax == ""`` for both cases (the field is only
   set for non-default syntax). Buf's rule, by contrast, is
   source-aware and fires only on the no-syntax case. The tests
   below pin both branches to document the divergence and to keep
-  it CI-enforced.
+  it CI-enforced. D6e R4b demoted the default severity from
+  ERROR to WARNING under the inverted UX philosophy (D6e KD-2:
+  pragmatic-not-dogmatic about proto2); proto3-only shops can
+  re-promote to ERROR via ``[tool.protokit.lint.severities]``.
 """
 
 from __future__ import annotations
@@ -63,7 +67,9 @@ class TestFileRuleSpecs:
     def test_syntax_specified_spec(self) -> None:
         spec = check_syntax_specified._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "file/syntax-specified"
-        assert spec.severity is LintSeverity.ERROR
+        # D6e R4b demotion: ERROR -> WARNING in recommended + default
+        # profiles. Re-promote via [severities] override if needed.
+        assert spec.severity is LintSeverity.WARNING
         assert spec.profiles == ("recommended", "default")
         assert spec.element is ElementKind.FILE
         assert spec.source_spec == "buf:SYNTAX_SPECIFIED"
@@ -240,3 +246,51 @@ class TestFilePackIntegration:
         report = engine.run(result, profile=profile)
         assert len(report.findings) == 1
         assert report.findings[0].rule_id == "file/syntax-specified"
+
+    def test_recommended_profile_emits_warning_not_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """D6e R4b: default severity is WARNING, not ERROR.
+
+        Proto3-only shops who relied on ERROR can re-promote via
+        ``[tool.protokit.lint.severities] "file/syntax-specified"
+        = "error"`` (covered by the sibling re-promotion test).
+        """
+        result = _compile(
+            tmp_path,
+            {"p2.proto": _SYNTAX_EXPLICIT_PROTO2},
+        )
+        engine = LintEngine()
+        engine.load_rule_pack(file_pack)
+        profile = LintProfile.from_pack(file_pack, "recommended")
+        report = engine.run(result, profile=profile)
+        assert len(report.findings) == 1
+        assert report.findings[0].severity is LintSeverity.WARNING
+
+    def test_severities_override_repromotes_to_error(
+        self, tmp_path: Path,
+    ) -> None:
+        """D6e R4b migration recipe: re-promote to ERROR via override.
+
+        Verifies the documented migration path works end-to-end —
+        proto3-only shops who relied on the prior ERROR severity
+        can restore it via ``[tool.protokit.lint.severities]``.
+        """
+        from dataclasses import replace
+
+        result = _compile(
+            tmp_path,
+            {"p2.proto": _SYNTAX_EXPLICIT_PROTO2},
+        )
+        engine = LintEngine()
+        engine.load_rule_pack(file_pack)
+        base_profile = LintProfile.from_pack(file_pack, "recommended")
+        promoted_profile = replace(
+            base_profile,
+            rule_severity_overrides={
+                "file/syntax-specified": LintSeverity.ERROR,
+            },
+        )
+        report = engine.run(result, profile=promoted_profile)
+        assert len(report.findings) == 1
+        assert report.findings[0].severity is LintSeverity.ERROR

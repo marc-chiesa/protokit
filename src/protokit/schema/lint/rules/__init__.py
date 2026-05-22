@@ -76,6 +76,16 @@ materialization contract + the 0.5.0 CHANGELOG entry for the user-
 facing surface. KD-8 invariant: this tuple MUST NEVER contain a
 pack that ships a ``custom/<suffix>`` rule_id; the ``custom/``
 namespace is reserved for user-declared synthetic rules.
+
+D6e KD-1 UX philosophy
+----------------------
+
+D6e KD-1: protokit-UX overrides buf-parity; proto2-specific strict rules ship in proto2-strict.
+
+D6e POSITIONING_STATEMENT
+-------------------------
+
+protokit ships buf's 26 BASIC rules; default severities reflect Python-protobuf-dev ergonomics.
 """
 
 from __future__ import annotations
@@ -84,6 +94,7 @@ from types import ModuleType
 
 from protokit.schema.lint.rules import (
     enum,
+    field,
     file,
     imports,
     naming,
@@ -161,12 +172,31 @@ from protokit.schema.lint.rules.options import (
 #: ``recommended``-profile users see ZERO new findings on D6d
 #: upgrade. The 0.5.0 CHANGELOG entry (D6d) documents the addition
 #: + the demotion paths for ``default``-profile users.
+#:
+#: D6e U1+U2 (0.6.0) ships the ``field`` pack — the deferred
+#: ``buf:FIELD_NOT_REQUIRED`` rule (``field/not-required``) under
+#: the new opt-in ``proto2-strict`` profile only. Proto2-only;
+#: ERROR severity in ``proto2-strict``; ZERO findings in
+#: ``recommended`` + ``default`` profiles. Activates ``proto2-strict``
+#: as a primary profile name (no ``_PROFILE_ALIASES`` entry; primary
+#: names accepted by ``_coerce_profile`` directly). Phase 0 EV-2
+#: falsification (2026-05-22): the originally-planned extend-block
+#: divergence does not exist — both buf v1.69.0 and protokit's
+#: compiler reject ``required`` extension fields at parse layer
+#: per the protobuf cardinality constraint. Ships with clean
+#: buf-parity for proto2-required-field detection. D6e also
+#: demotes ``file/syntax-specified`` from ERROR to WARNING in
+#: ``recommended`` + ``default`` per R4b (KD-2 pragmatic-not-
+#: dogmatic). Numerator stays "25 of 26 buf BASIC rules" until
+#: U3 lands ``package/no-import-cycle`` (the 26th); 0.6.0 release
+#: at U4 flips to "26 of 26 buf v1.69.0 BASIC rules".
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,
     imports,
     package,
     file,
+    field,
     deprecated_replacement,
     field_behavior,
     package_same,

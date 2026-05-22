@@ -1,0 +1,8 @@
+syntax = "proto2";
+
+package parity.field.notrequired;
+
+message Proto2OptionalStub {
+  optional int32 optional_field = 1;
+  repeated int32 repeated_field = 2;
+}

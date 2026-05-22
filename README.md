@@ -479,13 +479,19 @@ walk against a ref where the importer has been updated.
 
 ## Schema Linting
 
+> **D6e positioning**: protokit ships buf's 26 BASIC rules; default severities reflect Python-protobuf-developer ergonomics, not buf's defaults (see proto2-strict for opt-in proto2 strictness).
+
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
 As of `protokit 0.5.0`, `protokit lint` covers **25 of 26 buf BASIC
 rules** (the 26th, `PACKAGE_NO_IMPORT_CYCLE`, defers to D6e+ —
 cross-file cycle detection requires its own architectural design
-pass). The proto2-only buf BASIC rule `FIELD_NOT_REQUIRED` is
-outside the 26-rule baseline and is also scheduled for D6e+. The built-in packs span single-language style +
+pass). The proto2-only buf BASIC rule `FIELD_NOT_REQUIRED` ships
+in the opt-in `proto2-strict` profile as of `protokit 0.6.0` (D6e
+U1+U2) — outside the 26-rule baseline (which is proto-syntax-
+agnostic) but available to proto2 shops via
+`--profile proto2-strict` or pyproject
+`profile = ["default", "proto2-strict"]`. The built-in packs span single-language style +
 cross-language namespace consistency + cross-file directory/package
 layout + AIP-203 well-formedness: `naming` (AIP-122 +
 PascalCase/snake_case/UPPER_SNAKE conventions for messages, enums,
@@ -549,18 +555,24 @@ its target before rule-pack profile-name lookup.
 | Profile | Rules | Purpose |
 |---------|-------|---------|
 | `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.5.0. |
-| `recommended` | 26 | Buf BASIC parity (25 of 26 buf BASIC rules; `PACKAGE_NO_IMPORT_CYCLE` is the 26th, deferred to D6e+). Plus `FIELD_NOT_REQUIRED` — a proto2-only buf BASIC rule outside the 26-rule baseline — scheduled for D6e+. `naming` (9), `enum` (2), `imports` (3), `package` (4), `file` (1), `package_same` (7). |
+| `recommended` | 26 | Buf BASIC parity (25 of 26 buf BASIC rules; `PACKAGE_NO_IMPORT_CYCLE` is the 26th, deferred to D6e+). `naming` (9), `enum` (2), `imports` (3), `package` (4), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 D6e R4b — pragmatic-not-dogmatic about proto2), `package_same` (7). |
 | `default` | 32 | Buf BASIC parity (`recommended`'s 26 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
+| `proto2-strict` (0.6.0 D6e) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Per D6e KD-1, proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
 | `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
 
 The buf-parity rule library ships at the `error` severity floor
-(matching buf's BASIC severity posture per KD-9). The R6
-deprecated-replacement family in `default` ships at `warning` to
-bound the leading-comment-regex heuristic's blast radius. To soften
-the floor without dropping rules: use `--min-severity=warning`
-globally, or `[tool.protokit.lint.severities]` per-rule (see
-below).
+(matching buf's BASIC severity posture per KD-9), with two
+deliberate divergences: (a) the R6 deprecated-replacement family in
+`default` ships at `warning` to bound the leading-comment-regex
+heuristic's blast radius; (b) `file/syntax-specified` is demoted
+to `warning` in `recommended` + `default` as of 0.6.0 (D6e R4b)
+under the inverted UX philosophy — proto3-only shops who relied
+on the prior ERROR enforcement can re-promote via
+`[tool.protokit.lint.severities] "file/syntax-specified" = "error"`.
+To soften the floor without dropping rules: use
+`--min-severity=warning` globally, or
+`[tool.protokit.lint.severities]` per-rule (see below).
 
 ### Upgrade notes (0.4.x → 0.5.0)
 

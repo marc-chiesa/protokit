@@ -243,6 +243,27 @@ deferral chain):**
   to bound the leading-comment-regex heuristic blast radius;
   promotion to `error` pending real-world experience.
 
+**D6e PD-11 forcing-function defaults for future R4-style audit
+findings** (2026-05-22; recorded at U1+U2 atomic landing):
+
+- Default forcing-function trigger for retroactive demotion of a
+  D6a–D6c rule that turns out to conflict with the inverted UX
+  philosophy: **N=3 reports within M=8 weeks post-D6e-ship** →
+  pull demotion into a 0.6.1 patch. This is the LOOSE end of the
+  calibration band; per-item N/M MAY tighten when the finding has
+  clearly-high blast radius (e.g., a default-severity demotion
+  candidate could use N=1/M=4-weeks; "any credible report with a
+  minimal repro" can override count entirely).
+- **Community-size caveat**: at a small user community (<100
+  active users with typical 1-5% issue-report rates), N=3 may
+  never fire even when a real regression hits a meaningful
+  fraction of users; M=8 weeks may filter out slow-cycle
+  (quarterly) adopters. Tighten N/M by 2-3x in that regime.
+  Re-evaluate the default as the user base grows.
+- The `file/syntax-specified` WARNING demotion landed in D6e R4b
+  is the worked example of this discipline applied during
+  planning; future audit findings follow the same template.
+
 ---
 
 ### D7 — Plugin API + `--compat-rule-pack` rename

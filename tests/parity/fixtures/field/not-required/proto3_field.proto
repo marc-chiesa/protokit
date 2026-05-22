@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package parity.field.notrequired;
+
+message Proto3FieldStub {
+  int32 plain_field = 1;
+  optional int32 explicit_optional = 2;
+  repeated int32 repeated_field = 3;
+}

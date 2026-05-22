@@ -496,7 +496,10 @@ def run_buf_lint(
 
 
 def run_protokit_lint(
-    fixture_dir: Path, proto_relpath: str
+    fixture_dir: Path,
+    proto_relpath: str,
+    *,
+    profile: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run ``protokit lint --proto --format json`` against one .proto.
 
@@ -504,6 +507,12 @@ def run_protokit_lint(
     that directory is also the ``-I`` import path so transitive
     imports resolve. Findings come back from the ``lint_json``
     root's ``findings`` array. Empty list = no findings.
+
+    ``profile``: optional ``--profile <name>`` argument. When
+    ``None`` (the default), protokit invokes with its default
+    profile (``"default"``). Pass a profile name (e.g.,
+    ``"proto2-strict"`` for D6e U2's ``field/not-required``
+    parity test) to exercise rules that live in opt-in profiles.
     """
     proto_path = fixture_dir / proto_relpath
     if not proto_path.is_file():
@@ -516,19 +525,22 @@ def run_protokit_lint(
     # ``__main__``; the console_script entry point in pyproject.toml
     # is the only public invocation surface. Using ``sys.executable``
     # ensures the test inherits the venv pytest is running under.
+    argv = [
+        sys.executable,
+        "-c",
+        "from protokit.cli import main; main()",
+        "lint",
+        "--proto",
+        "--format",
+        "json",
+        "-I",
+        str(fixture_dir),
+    ]
+    if profile is not None:
+        argv.extend(["--profile", profile])
+    argv.append(str(proto_path))
     result = run_buf_subprocess(
-        [
-            sys.executable,
-            "-c",
-            "from protokit.cli import main; main()",
-            "lint",
-            "--proto",
-            "--format",
-            "json",
-            "-I",
-            str(fixture_dir),
-            str(proto_path),
-        ],
+        argv,
         cwd=fixture_dir,
         label="protokit lint",
     )
