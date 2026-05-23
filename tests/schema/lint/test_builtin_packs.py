@@ -151,10 +151,25 @@ class TestBuiltinPacksDocstringRatchet:
         from protokit.schema.lint import rules
 
         source = inspect.getsource(rules)
+        # D6e U4 ratchet update (2026-05-22): closing-arc complete
+        # at 26 of 26. The historical "25 of 26" framing is
+        # preserved in the docstring as an audit-trail reference
+        # to D6c (line 157 area) but the LIVE numerator pinned
+        # here is the post-U4 26-of-26 with the v1.69.0 qualifier.
+        # Per [[presence-ratchet-test-pattern-for-prose-substrings-
+        # 2026-05-14]] rule 5: each substring fits on a single
+        # source line. The ``PACKAGE_NO_IMPORT_CYCLE`` and
+        # ``FIELD_NOT_REQUIRED`` substrings remain pinned as
+        # audit-trail references (now landed, no longer deferred).
         ratchet_substrings = (
-            "25 of 26 buf BASIC rules",
-            "``PACKAGE_NO_IMPORT_CYCLE``",
-            "``FIELD_NOT_REQUIRED``",
+            "26 of 26 buf v1.69.0 BASIC rules",
+            # Post-D6e U3 the rule's name appears with the ``buf:``
+            # prefix in the docstring (canonical source_spec form);
+            # match that form to preserve the audit-trail pin.
+            "``buf:PACKAGE_NO_IMPORT_CYCLE``",
+            # Post-D6e U1+U2 the rule's name appears with the
+            # ``buf:`` prefix too; same rationale.
+            "``buf:FIELD_NOT_REQUIRED``",
         )
         for substring in ratchet_substrings:
             assert substring in source, (
@@ -162,11 +177,10 @@ class TestBuiltinPacksDocstringRatchet:
                 f"missing from src/protokit/schema/lint/rules/"
                 f"__init__.py. Either restore the substring OR "
                 f"update `ratchet_substrings` in this test after "
-                f"confirming the buf BASIC parity numerator + the "
-                f"D6d deferral claim are still preserved "
-                f"semantically. See the D6c CHANGELOG "
-                f"`#### Corrected` subsection + "
-                f"[[stale-forward-looking-text-cli-help-agent-"
-                f"discoverability-2026-05-12]] for the discipline "
-                f"this ratchet protects."
+                f"confirming the buf BASIC parity numerator is "
+                f"still preserved semantically. See the D6c "
+                f"CHANGELOG `#### Corrected` subsection + the D6e "
+                f"U4 boundary commit + [[stale-forward-looking-"
+                f"text-cli-help-agent-discoverability-2026-05-12]] "
+                f"for the discipline this ratchet protects."
             )

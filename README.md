@@ -483,15 +483,17 @@ walk against a ref where the importer has been updated.
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
-As of `protokit 0.5.0`, `protokit lint` covers **25 of 26 buf BASIC
-rules** (the 26th, `PACKAGE_NO_IMPORT_CYCLE`, defers to D6e+ —
-cross-file cycle detection requires its own architectural design
-pass). The proto2-only buf BASIC rule `FIELD_NOT_REQUIRED` ships
-in the opt-in `proto2-strict` profile as of `protokit 0.6.0` (D6e
-U1+U2) — outside the 26-rule baseline (which is proto-syntax-
-agnostic) but available to proto2 shops via
-`--profile proto2-strict` or pyproject
-`profile = ["default", "proto2-strict"]`. The built-in packs span single-language style +
+As of `protokit 0.6.0`, `protokit lint` covers **26 of 26 buf
+v1.69.0 BASIC rules** (the closing-arc headline — D6e U3 landed
+the 26th rule, `package/no-import-cycle`, via a Tarjan SCC
+pre-walk accumulator that detects package-level cycles where
+individual file imports are acyclic; file-level cycles are caught
+at the protobuf COMPILE phase by both buf and protokit's compiler).
+The proto2-only buf BASIC rule `FIELD_NOT_REQUIRED` ships in the
+opt-in `proto2-strict` profile as of 0.6.0 (D6e U1+U2) — outside
+the 26-rule baseline (which is proto-syntax-agnostic) but
+available to proto2 shops via `--profile proto2-strict` or
+pyproject `profile = ["default", "proto2-strict"]`. The built-in packs span single-language style +
 cross-language namespace consistency + cross-file directory/package
 layout + AIP-203 well-formedness: `naming` (AIP-122 +
 PascalCase/snake_case/UPPER_SNAKE conventions for messages, enums,
@@ -555,7 +557,7 @@ its target before rule-pack profile-name lookup.
 | Profile | Rules | Purpose |
 |---------|-------|---------|
 | `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.5.0. |
-| `recommended` | 26 | Buf BASIC parity (25 of 26 buf BASIC rules; `PACKAGE_NO_IMPORT_CYCLE` is the 26th, deferred to D6e+). `naming` (9), `enum` (2), `imports` (3), `package` (4), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 D6e R4b — pragmatic-not-dogmatic about proto2), `package_same` (7). |
+| `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.69.0 BASIC rules — closing-arc complete as of 0.6.0 D6e U3). `naming` (9), `enum` (2), `imports` (3), `package` (5; +`package/no-import-cycle` in D6e U3 via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 D6e R4b — pragmatic-not-dogmatic about proto2), `package_same` (7). |
 | `default` | 32 | Buf BASIC parity (`recommended`'s 26 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
 | `proto2-strict` (0.6.0 D6e) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Per D6e KD-1, proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
@@ -595,10 +597,13 @@ Migration impact:
   contradictory pairs. Demote to `info` via `[severities]` or fix
   the schema per AIP-203 guidance.
 
-The buf BASIC parity numerator is unchanged at **25 of 26 + 1
-scheduled** (the +1 scheduled rule is `FIELD_NOT_REQUIRED`,
+The buf BASIC parity numerator at 0.5.0 ship time was **25 of 26 + 1
+scheduled** (the +1 scheduled rule was `FIELD_NOT_REQUIRED`,
 originally scoped for D6d but deferred to D6e+ per the
-2026-05-20 strategic-deferral note).
+2026-05-20 strategic-deferral note). D6e 0.6.0 closes both:
+`FIELD_NOT_REQUIRED` lands in the opt-in `proto2-strict` profile,
+and `PACKAGE_NO_IMPORT_CYCLE` (the 26th) lands in `recommended` +
+`default` — see the 0.5.x → 0.6.0 upgrade notes below.
 
 See `CHANGELOG.md` `### D6d — 0.5.0` section for:
 
@@ -615,6 +620,55 @@ See `CHANGELOG.md` `### D6d — 0.5.0` section for:
 - Consumer migration (Python API audit for `LintRuntimeWarning.
   category` switch tables; `_extension_access` + `_custom_rules`
   + `CustomAnnotationRuleSpec` INTERNAL classifications).
+
+### Upgrade notes (0.5.x → 0.6.0)
+
+D6e closes the buf-parity arc: `protokit lint` now covers
+**26 of 26 buf v1.69.0 BASIC rules** + ships the
+`proto2-strict` opt-in profile + revises the UX philosophy.
+
+**New rules:**
+
+- **`package/no-import-cycle`** (D6e U3 — the 26th buf BASIC
+  rule). ERROR severity in `recommended` + `default` profiles.
+  Detects package-level import cycles where individual file
+  imports are acyclic (file-level cycles are caught at the
+  protobuf COMPILE phase). Emits one finding per cycle-closing
+  `import` statement at the import's line/column.
+- **`field/not-required`** (D6e U1+U2 — the proto2-only
+  `buf:FIELD_NOT_REQUIRED` rule). ERROR severity in the new
+  opt-in `proto2-strict` profile only. Activate via
+  `--profile proto2-strict` or pyproject
+  `profile = ["default", "proto2-strict"]`.
+
+**Behavior changes:**
+
+- **`file/syntax-specified` demoted from ERROR to WARNING** in
+  `recommended` + `default` profiles (D6e R4b per KD-2
+  pragmatic-not-dogmatic about proto2). Re-promote via
+  `[tool.protokit.lint.severities] "file/syntax-specified" =
+  "error"` if your project is proto3-only.
+
+**Migration impact by `--max-warnings` posture:**
+
+| Posture | Pre-0.6.0 | Post-0.6.0 |
+|---|---|---|
+| `--max-warnings` unset | proto2 file: exit 1 (ERROR) | proto2 file: exit 0 (WARNING; not counted) — **silent CI-pass regression risk** |
+| `--max-warnings 0` | proto2 file: exit 1 | proto2 file: exit 1 (counted as warning instead of error) |
+| `--min-severity error` | proto2 file: exit 1 | proto2 file: same (still filtered) |
+
+**Pre-upgrade migration recipe** (full text in `CHANGELOG.md`
+`### D6e — 0.6.0`):
+
+- Want explicit ERROR enforcement of `file/syntax-specified`?
+  `[tool.protokit.lint.severities] "file/syntax-specified" = "error"`
+- Want proto2-strict checks?
+  `[tool.protokit.lint] profile = ["default", "proto2-strict"]`
+- Have package-level import cycles you're not ready to fix?
+  `[tool.protokit.lint.severities] "package/no-import-cycle" = "warning"`
+- Want to demote `field/not-required` after opting in?
+  `[tool.protokit.lint.severities] "field/not-required" = "warning"`
+- Pin to 0.5.0 indefinitely? `pip install protokit==0.5.0`
 
 ### Custom annotation rules
 

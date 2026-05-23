@@ -153,14 +153,14 @@ from protokit.schema.lint.rules.options import (
 #: R8 (``package/same-directory``) + R8b
 #: (``package/directory-same-package``) cross-file rules and corrects
 #: ``naming/snake-case-fields`` ``source_spec`` to
-#: ``buf:FIELD_LOWER_SNAKE_CASE`` (KTD-11). Combined coverage:
-#: ``protokit lint`` now matches **25 of 26 buf BASIC rules** (the
-#: 26th, ``PACKAGE_NO_IMPORT_CYCLE``, defers to D6e+; the proto2-only
-#: ``FIELD_NOT_REQUIRED`` is not counted in protokit's 26-rule
-#: baseline and is the +1 scheduled rule deferred to D6e+ per the
-#: 2026-05-20 strategic deferral). The 0.4.0 CHANGELOG entry (D6c)
-#: documents the rule additions + the 5-path pre-upgrade migration
-#: recipe per the KD-9 communication contract.
+#: ``buf:FIELD_LOWER_SNAKE_CASE`` (KTD-11). Combined coverage at D6c:
+#: ``protokit lint`` matched **25 of 26 buf BASIC rules** (D6e U3
+#: closes this to 26 of 26 buf v1.69.0 BASIC rules — see below;
+#: the proto2-only ``FIELD_NOT_REQUIRED`` ships in opt-in
+#: ``proto2-strict`` per D6e U1+U2, outside the 26-rule baseline).
+#: The 0.4.0 CHANGELOG entry (D6c) documents the rule additions +
+#: the 5-path pre-upgrade migration recipe per the KD-9
+#: communication contract.
 #:
 #: D6d U5 (0.5.0) adds the ``options.field_behavior`` pack — the
 #: AIP-203 well-formedness validator for
@@ -200,9 +200,15 @@ from protokit.schema.lint.rules.options import (
 #: (via SourceCodeInfo.Location reading + PD-12b FileLocation
 #: line/column extension) for byte-equivalent buf parity. The
 #: ``LintEngine._build_import_graph_accumulator`` Tarjan SCC
-#: pre-walk powers the rule. Numerator moves to "26 of 26 buf
-#: v1.69.0 BASIC rules"; U4 boundary flips the README/CHANGELOG
-#: headline + bumps pyproject 0.5.0 → 0.6.0.
+#: pre-walk powers the rule.
+#:
+#: D6e U4 (0.6.0 release): with U3 landed, ``protokit lint`` now
+#: matches **26 of 26 buf v1.69.0 BASIC rules** (the proto2-only
+#: ``FIELD_NOT_REQUIRED`` is outside the 26-rule baseline since
+#: it's proto-syntax-conditional; it ships in the opt-in
+#: ``proto2-strict`` profile alongside U1+U2). The closing-arc
+#: headline ships clean — Phase 0 EV-2 falsification dropped
+#: the originally-planned extend-block divergence asterisk.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,

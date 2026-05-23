@@ -76,7 +76,9 @@ discipline; the U5 boundary flipped the registration with the
 only. ``recommended``-profile users see ZERO new findings on D6d
 upgrade per R6 of the D6d brainstorm — conservative-launch posture
 matching D6b R6's leading-comment family. Promotion to
-``recommended`` deferred to D6e+ pending corpus evidence.
+``recommended`` deferred to D6f+ pending corpus evidence (D6e
+shipped the buf-parity closure but did not promote this rule;
+the conservative-launch posture continues).
 
 **Severity profile dispatch:** the three violation arms share a
 uniform ``WARNING`` severity, implemented as a dict-shaped

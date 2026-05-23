@@ -89,27 +89,35 @@ config + `--exclude`, 2026-05-11/12) landed. **D6a (rule library
 release, 2026-05-18)** landed across U1+U2+U3+U4a+U4b+U5+U6+U7.
 **D6c (cross-file lint dispatch + 25/26 buf BASIC parity, 0.4.0
 release, 2026-05-19)** landed across U1+U2+U3+U4+U5.
+**D6d (option-aware pack expansion + AIP-203 well-formedness,
+0.5.0 release, 2026-05-21)** landed across U1+U2+U3+U4+U5+new-U3
++new-U4.
+**D6e (buf BASIC closure + UX philosophy revision, 0.6.0 release,
+2026-05-22)** landed across U1+U2+U3+U4 with two Phase 0
+falsifications captured as ce:compound learnings.
 
-`protokit lint <inputs>` covers **25 of 26 buf BASIC rules** as of
-0.4.0: 6 packs / 26 rules in the `recommended` profile (`naming` /
-`enum` / `imports` / `package` (4 rules incl. R8 + R8b) / `file` /
-`package_same`), +5 R6 deprecated-replacement rules in `default`.
-The "17 of 18" framing inherited from D6a/D6b was empirically
-corrected at D6c against a verified buf BASIC total of 26 rules;
-see the D6c CHANGELOG `#### Corrected` subsection for the audit
-trail. Per-rule severity overrides + `--no-builtin-rules` + the
-5-path pre-upgrade migration recipe in CHANGELOG provide demotion
-paths (path 5 covers Python API consumers via
+`protokit lint <inputs>` covers **26 of 26 buf v1.69.0 BASIC rules**
+as of 0.6.0 (closing-arc complete): the `package` pack grew to 5
+rules with D6e U3's `package/no-import-cycle` (via Tarjan SCC
+pre-walk accumulator), the `field` pack landed as a new namespace
+for D6e U1+U2's `field/not-required` (proto2-only, opt-in
+`proto2-strict` profile), and `file/syntax-specified` was demoted
+from ERROR to WARNING in `recommended` + `default` per D6e R4b
+(KD-2 pragmatic-not-dogmatic about proto2). The "17 of 18"
+framing inherited from D6a/D6b was empirically corrected at D6c
+against a verified buf BASIC total of 26 rules; see the D6c
+CHANGELOG `#### Corrected` subsection for the audit trail.
+Per-rule severity overrides + `--no-builtin-rules` + the 5-path
+pre-upgrade migration recipe in CHANGELOG provide demotion paths
+(path 5 covers Python API consumers via
 `LintProfile.rule_severity_overrides`); `lint_json` / `lint_sarif`
-carry a `schema_version` wire field at `"0.3"` (unchanged by D6c
-since R8 + R8b are pure rule_id additions). The remaining
-sub-deliveries fill in scope deliberately deferred from D6c:
-**D6d** ships `PACKAGE_NO_IMPORT_CYCLE` (the 26th buf BASIC rule —
-needs cross-file cycle-detection algorithm; not amenable to the
-Arch-D accumulator pattern) + `FIELD_NOT_REQUIRED` (proto2-only,
-not counted in the 26-rule baseline) + the `strict` profile + R9b
-per-rule disable/enable CLI flag + option-aware pack expansion,
-and **D7** closes the plugin-API story.
+carry a `schema_version` wire field at `"0.5"` (unchanged by D6e
+since the FileLocation line/column extension is an open extension
+per [[closed-literal-discriminator-bump-trigger-2026-05-17]],
+not a closed-Literal addition). With the buf-parity arc closed,
+**D6f+** resumes option-aware deepening (R6 promotion to ERROR,
+IDENTIFIER-based field_behavior contradictions, MessageSet-aware
+rules), and **D7** closes the plugin-API story.
 
 ### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(SHIPPED 2026-05-11/12)*
 
@@ -210,38 +218,67 @@ brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
   (the renamed-from-`source_locations` index) landed at U2 and is
   classified INTERNAL in the Public Surface DRAFT.
 
-**D6e+ backlog items (originally scoped for D6d; deferred per the
-2026-05-20 strategic-deferral revision + the 2026-05-19 D6c
-deferral chain):**
+**D6f+ backlog items (post-D6e 0.6.0 release; closing-arc complete
+at 26 of 26 buf v1.69.0 BASIC rules):**
 
-- **`PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule)**: deferred to
-  D6e+ — cross-file cycle-detection algorithm (DAG construction +
-  cycle detection); not amenable to the Arch-D accumulator pattern
-  established in D6c. Originally scoped for D6d but rolled forward
-  per the option-aware-headline strategic-positioning decision in
-  the D6d brainstorm.
-- **`FIELD_NOT_REQUIRED` (proto2-only BASIC rule, not counted in
-  the 26-rule baseline)**: deferred to D6e+ — trivial single-unit
-  add via existing `ElementKind.FIELD` check
-  (`field.label == LABEL_REQUIRED`). Originally scoped for D6d
-  U3; deferred 2026-05-20 per the umbrella brainstorm Strategic
-  Deferral section to keep the D6d 0.5.0 release surface tight.
+- ~~**`PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule)**~~:
+  **LANDED in D6e U3 (0.6.0)** via Tarjan SCC pre-walk
+  accumulator. See `### D6e — 0.6.0` CHANGELOG section + the
+  ce:compound learning at `docs/solutions/best-practices/tarjan-
+  scc-iterative-dfs-package-cycle-detection-2026-05-22.md`.
+- ~~**`FIELD_NOT_REQUIRED` (proto2-only BASIC rule, not counted
+  in the 26-rule baseline)**~~: **LANDED in D6e U1+U2 (0.6.0)**
+  in the opt-in `proto2-strict` profile. Phase 0 EV-2
+  falsification dropped the originally-planned extend-block
+  divergence + walker-extension backlog item — see
+  `docs/solutions/best-practices/phase-0-empirical-verification-
+  falsifies-brainstorm-assumption-2026-05-22.md`.
 - **R9b — per-rule disable/enable CLI flag** (`disabled_rules` /
-  `enabled_rules` pyproject lists): deferred from D6a + D6b per
-  the brainstorms; needs real-demand evidence to design the 4
-  collision-shape precedence semantics against. Note that
-  `[tool.protokit.lint.severities] "rule_id" = "off"` is the
-  current de-facto disable mechanism documented in CHANGELOG.
-- **`strict` profile**: deferred from D6a + D6b until strict-only
-  rules exist (COMMENT_* family, ENUM_ZERO_VALUE_SUFFIX, etc.) —
-  shipping `strict` empty would damage the public surface with a
-  misleading rule count. R7's placement in `recommended` (rather
-  than a future `strict`) was a deliberate D6b decision per KD-10;
-  if PyPI download data shows >70% pin-to-0.2.x adoption pattern,
-  revisit R7 placement in 0.4.0.
-- **R6 severity promotion to `error`**: D6b shipped R6 at `warning`
-  to bound the leading-comment-regex heuristic blast radius;
-  promotion to `error` pending real-world experience.
+  `enabled_rules` pyproject lists, or `[severities] = "off"`
+  support): deferred from D6a + D6b + D6e per the brainstorms;
+  needs real-demand evidence to design the 4 collision-shape
+  precedence semantics against. Note that `[tool.protokit.lint.
+  severities] "rule_id" = "off"` is documented as the de-facto
+  disable mechanism but is NOT yet accepted as a valid value;
+  promote when demand surfaces.
+- **`strict` profile**: deferred from D6a + D6b + D6e until
+  strict-only rules exist (COMMENT_* family, ENUM_ZERO_VALUE_
+  SUFFIX, etc.) — shipping `strict` empty would damage the
+  public surface with a misleading rule count. Distinct from
+  the `proto2-strict` profile activated in D6e (per-syntax-
+  version pattern per D6e KD-11); do NOT consolidate.
+- **R6 severity promotion to `error`**: D6b shipped R6 at
+  `warning` to bound the leading-comment-regex heuristic blast
+  radius; promotion to `error` pending real-world experience.
+- **`LintRuleSpec.parity_note` structured field** at specimen #3
+  trigger per D6e PD-10. After EV-2 falsification dropped the
+  field/not-required divergence, `file/syntax-specified` is the
+  sole current specimen #1; sentinel re-arms when a second real
+  divergence emerges.
+- **R4 audit-pass findings from D6e U1** (with N=3/M=8-weeks
+  PD-11 forcing-function defaults; per-item N/M may tighten for
+  high-blast-radius findings). No findings surfaced during U1's
+  audit but a future user report could open one.
+- **SHA-pinning test for D6e U3's recorded snapshots** (mirroring
+  D6c's `test_buf_smoke_recorded_checksums_package_directory.py`)
+  — defense-in-depth on top of the parity gate; not blocking
+  for D6e ship.
+- **U3 ce:review residual P2/P3 items** (deferred for follow-up):
+  unit tests for `_tarjan_scc` + `_walk_cycle_forward` +
+  `_import_source_position` (covered transitively by parity gate
+  + the line/column Tier 2 assertion but no dedicated unit
+  tests); FileLocation pairing invariant + `__post_init__`
+  enforcement; cycle_path_rendered 500-char truncation for SCC
+  ≥ 34 packages.
+
+**Pre-D6e items already covered by the per-delivery planning in
+recent brainstorms (no D6f+ backlog entry needed):**
+
+- R8 + R8b cross-file directory rules (D6c U2)
+- R7 PACKAGE_SAME_* family (D6b U4)
+- R6 deprecated-replacement family (D6b U3a)
+- field_behavior rule (D6d U5)
+- custom annotation rules (D6d U1)
 
 **D6e PD-11 forcing-function defaults for future R4-style audit
 findings** (2026-05-22; recorded at U1+U2 atomic landing):

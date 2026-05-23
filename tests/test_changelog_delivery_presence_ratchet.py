@@ -73,6 +73,7 @@ DELIVERY_RATCHETS: tuple[DeliveryRatchetSpec, ...] = (
     DeliveryRatchetSpec(delivery="D6b", version="0.3.0"),
     DeliveryRatchetSpec(delivery="D6c", version="0.4.0"),
     DeliveryRatchetSpec(delivery="D6d", version="0.5.0"),
+    DeliveryRatchetSpec(delivery="D6e", version="0.6.0"),
 )
 
 

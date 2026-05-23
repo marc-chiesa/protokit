@@ -432,6 +432,240 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D6e — buf BASIC closure + UX philosophy revision (0.6.0)
+
+D6e closes the buf-parity arc: `protokit lint` now matches
+**26 of 26 buf v1.69.0 BASIC rules**. Three ship surfaces land
+together: a UX philosophy revision (KD-1 inverted: protokit-UX
+overrides buf-parity when they conflict), the deferred
+`field/not-required` rule in a new opt-in `proto2-strict`
+profile, and the 26th buf BASIC rule `package/no-import-cycle`
+via a Tarjan SCC pre-walk accumulator. Two Phase 0 falsifications
+shaped the delivery (EV-2 for `field/not-required`, two-tier
+behavior for `package/no-import-cycle` — both captured as
+ce:compound learnings under `docs/solutions/best-practices/`).
+
+#### Added — UX philosophy + `proto2-strict` profile (U1+U2)
+
+- **D6e KD-1: hard-inverted UX philosophy** — protokit-UX
+  overrides buf-parity when they conflict; proto2-specific strict
+  rules ship in opt-in `proto2-strict` per KD-2 (pragmatic-not-
+  dogmatic about proto2). Pinned via presence ratchet in
+  `BUILTIN_PACKS` docstring + `tests/test_uxd_philosophy_principle_-
+  presence_ratchet.py` so future stale-text edits cannot silently
+  revert the stance.
+- **D6e POSITIONING_STATEMENT** — `protokit targets buf BASIC
+  coverage; defaults reflect Python-protobuf-developer ergonomics,
+  not buf's defaults (see proto2-strict for opt-in proto2
+  strictness).` Pinned in `BUILTIN_PACKS` docstring + README
+  Schema Linting section header. Resolves the KD-1-vs-26/26
+  tension by naming the bet explicitly: parity at COVERAGE,
+  ergonomics at DEFAULTS.
+- **`proto2-strict` opt-in profile** (NEW; D6e KD-3 + KD-11) —
+  carries `field/not-required` initially. Activate via
+  `--profile proto2-strict` or pyproject
+  `profile = ["default", "proto2-strict"]`. Distinct from the
+  deferred `strict` profile (style-strictness rules); do NOT
+  consolidate per KD-3.
+- **`field/not-required` rule** (`buf:FIELD_NOT_REQUIRED` parity;
+  proto2-only) shipping in the new `field` rule pack — the
+  deferred D6d-U3 rule. ERROR severity in `proto2-strict` profile
+  only; ZERO findings in `recommended` + `default` (D6e KD-5).
+  Group-typed required fields fire on the implicit lowercased
+  field name per buf v1.69.0 (Phase 0 EV-3 binding).
+- **NEW `field` rule pack** at `protokit.schema.lint.rules.field`
+  — namespace anchor for future field-level proto2-strict rules
+  per KD-11 (`field/no-group-syntax`, `field/no-explicit-default`,
+  `field/packed-repeated-primitive`; none ship in D6e).
+- **Parametrized CLI dedup test consolidation** at
+  `tests/schema/lint/test_cli_rule_pack_dedup.py` — replaces the
+  two per-flip files (`*_post_d6c.py`, `*_post_d6d.py`) with one
+  parametrized test iterating over every `BUILTIN_PACKS` member.
+  Promoted at the third near-copy-paste instance. ~60 LOC vs ~360
+  LOC across the two prior files.
+
+#### Added — `package/no-import-cycle` (U3, the 26th buf BASIC rule)
+
+- **`package/no-import-cycle` rule** (`buf:PACKAGE_NO_IMPORT_CYCLE`
+  parity). ERROR severity in `recommended` + `default` profiles.
+  Per Phase 0 binding: file-level cyclic imports are caught at
+  the COMPILE phase by both buf and protoxy; this rule fires on
+  the rarer case where individual file imports are acyclic but
+  the package-level import graph cycles. Emits one finding per
+  cycle-closing `import` statement at the import line/column for
+  byte-equivalent buf v1.69.0 parity. See `docs/solutions/best-
+  practices/tarjan-scc-iterative-dfs-package-cycle-detection-
+  2026-05-22.md` for the institutional knowledge captured at U3
+  ce:compound.
+- **`LintEngine._build_import_graph_accumulator`** pre-walk
+  method (`engine.py` Step 3.5c). Iterates `compile_result.
+  root_files`, builds a package-level import graph (collapsing
+  multi-file P→Q edges to one), runs hand-implemented iterative
+  Tarjan SCC, and emits a per-file map of cycle-closing
+  `CycleEdge` entries. Reads `compile_result.source_info_-
+  descriptors` for per-import line/column. Returns `None` for
+  empty `root_files`, empty `MappingProxyType({})` for healthy
+  codebases with no cycles.
+- **`CycleEdge` dataclass** in `model.py` carrying
+  `(imported_file, target_package, cycle_path, line, column)`.
+- **`FileLintContext.import_cycles`** field —
+  `Mapping[str, tuple[CycleEdge, ...]] | None`; populated by the
+  Step 3.5c pre-walk.
+- **`FileLocation` extended with optional `line: int | None` +
+  `column: int | None`** (PD-12b). Open-extension change; JSON
+  formatter renders `location_line` / `location_column`, SARIF
+  formatter populates `physicalLocation.region.startLine` /
+  `startColumn`. NO `_LINT_JSON_SCHEMA_VERSION` bump per
+  [[closed-literal-discriminator-bump-trigger-2026-05-17]]
+  (open extension, not a closed-Literal addition).
+- **`_LintContextEmitMixin.emit()` extended with optional
+  `location` kwarg** so U3's rule can emit per-import-edge with
+  explicit `FileLocation(file, line, column)` rather than the
+  default whole-file context location.
+- **Iterative Tarjan SCC + iterative forward cycle walk**
+  (~80 LOC at engine.py module level). Iterative posture
+  (explicit work stack, not recursion) guards against
+  `RecursionError` on SCCs ≥ ~999 packages. ce:review confirmed
+  the discipline must apply to ALL DFS helpers on the same
+  graph, not just Tarjan.
+
+### Changed — behavior delta
+
+- **`file/syntax-specified` demoted ERROR → WARNING** in
+  `recommended` + `default` profiles (D6e R4b per KD-2
+  pragmatic-not-dogmatic). The rule still surfaces the signal
+  but does NOT fail CI on proto2 files by default.
+- **Buf-parity headline** `"25 of 26 BASIC rules"` →
+  `"26 of 26 buf v1.69.0 BASIC rules"` per KD-9. Closing-arc
+  complete; the v1.69.0 qualifier is load-bearing for future
+  drift detection if buf ships a new BASIC rule in a later
+  version.
+
+#### Behavior changes (defaults; demotable)
+
+**`file/syntax-specified` WARNING demotion — exit-code impact by
+`--max-warnings` posture:**
+
+| Posture | Pre-0.6.0 | Post-0.6.0 |
+|---|---|---|
+| `--max-warnings` unset | proto2 file: exit 1 (ERROR) | proto2 file: exit 0 (WARNING; not counted) — **silent CI-pass regression risk** |
+| `--max-warnings 0` | proto2 file: exit 1 | proto2 file: exit 1 (counted as warning instead of error) |
+| `--min-severity error` | proto2 file: exit 1 | proto2 file: same (still filtered) |
+
+`package/no-import-cycle` at ERROR in `recommended` + `default`
+fires on package-level cycles where individual file imports are
+acyclic. Codebases with such cycles (rare in healthy projects;
+file-level cycles are caught at COMPILE phase) flip CI from
+green to red on upgrade. Demote per the migration recipe.
+
+### Pre-upgrade migration recipe
+
+- **Want explicit ERROR enforcement of `file/syntax-specified`?**
+  ```toml
+  [tool.protokit.lint.severities]
+  "file/syntax-specified" = "error"
+  ```
+- **Want proto2-strict checks?**
+  ```toml
+  [tool.protokit.lint]
+  profile = ["default", "proto2-strict"]
+  ```
+- **Want to demote `field/not-required` after opting in?**
+  ```toml
+  [tool.protokit.lint.severities]
+  "field/not-required" = "warning"
+  ```
+- **Have package-level import cycles you're not ready to fix?**
+  ```toml
+  [tool.protokit.lint.severities]
+  "package/no-import-cycle" = "warning"
+  ```
+  Or demote to INFO for filtering out of `--min-severity warning`:
+  ```toml
+  [tool.protokit.lint.severities]
+  "package/no-import-cycle" = "info"
+  ```
+  **Note**: file-level cyclic imports are caught at the protobuf
+  COMPILE phase by both buf and protokit's compiler and are NOT
+  affected by this rule.
+- **Pin to 0.5.0 indefinitely?** `pip install protokit==0.5.0`
+
+### Phase 0 falsifications (audit-trail)
+
+Two Phase 0 empirical verifications during D6e revealed
+brainstorm-inherited claims that didn't survive contact with
+real buf v1.69.0 behavior:
+
+**EV-2 falsification (U2, 2026-05-22)**: the brainstorm framed
+a "documented extend-block divergence" where buf would fire
+`FIELD_NOT_REQUIRED` on extend-block `required` fields while
+protokit (whose engine walker does not iterate
+`fd.extensions_by_name` or `Message.extensions_by_name`) would
+not. Both buf v1.69.0 AND protokit's compiler reject `required`
+extension fields at parse layer (`invalid cardinality: 2`); the
+construct cannot be compiled so no rule-level divergence exists.
+`field/not-required` ships with clean buf-parity — no asterisk,
+no four-site documentation, no `_PARITY_EXCEPTIONS` entry, no
+walker-extension backlog. Captured at
+`docs/solutions/best-practices/phase-0-empirical-verification-
+falsifies-brainstorm-assumption-2026-05-22.md`.
+
+**Two-tier behavior discovery (U3, 2026-05-22)**: the brainstorm
+framed `package/no-import-cycle` as generic cross-file cycle
+detection. Phase 0 revealed file-level cycles are caught at
+COMPILE phase by both buf and protoxy; the rule's actual
+operational ground is package-level cycles where individual
+file imports are acyclic. Also: emission shape is per-import-
+edge (not per-root-file fan-out as PD-6 originally bound). Plan
+PD-6/PD-7/PD-8 revised before implementation. Captured at
+`docs/solutions/best-practices/phase-0-narrowing-rule-reachable-
+but-narrower-than-brainstorm-assumed-2026-05-22.md` (sibling to
+EV-2 falsification with a different failure mode).
+
+### Test coverage
+
+- **U2 parity gate** at `tests/parity/test_parity_field.py` —
+  4 fixtures (good, proto2_required, proto2_optional,
+  proto3_field) PASS byte-equivalent vs buf v1.69.0.
+- **U3 parity gate** at `tests/parity/test_parity_package_no_-
+  import_cycle.py` — 5 multi-file fixtures + 3 collection-time
+  invariants. All PASS against committed buf v1.69.0 NDJSON
+  snapshots at `tests/schema/lint/rules/fixtures/package_no_-
+  import_cycle/_buf_smoke/recorded/*.json`.
+- **`leaf_files_in_cyclic_pkg` fixture** explicitly verifies
+  that sibling leaf files in cyclic packages do NOT emit
+  findings — pins the over-emission UX concern as a regression
+  guard (per Option B design + ce:review user concern).
+- **Two-tier parity assertion** (ce:review U3 follow-up): the
+  U3 parity test asserts both finding-set parity (Tier 1 via
+  shared helper) AND per-finding line/column byte-equivalence
+  (Tier 2 against buf's `start_line`/`start_column`). Without
+  Tier 2, the Option B "byte-equivalent buf parity" design claim
+  would have been documentation-only. Captured at
+  `docs/solutions/best-practices/parity-gate-must-assert-at-
+  design-claim-granularity-2026-05-22.md`.
+- **R4b CLI exit-code regression test** at
+  `tests/schema/lint/cli/test_cli_ci_gating.py::TestMaxWarnings-
+  ExitLadder::test_proto2_file_under_default_profile_exits_0_-
+  post_r4b_demotion` — pins the post-R4b exit-0 behavior on
+  proto2 files end-to-end via CliRunner.
+- **EV-1 (editions) + EV-4 (multi-file proto2+proto3 mix)
+  coverage** at `tests/schema/lint/rules/test_field.py`.
+
+### Deferred to D6f+
+
+- **R6 (`options/deprecated-replacement`) severity promotion to
+  ERROR.**
+- **R9b `"off"` severity value support** (existing `[severities]`
+  overrides at `"error"`/`"warning"`/`"info"` continue to work).
+- **`LintRuleSpec.parity_note` structured field** at specimen #3
+  trigger per PD-10. With EV-2 falsification dropping the
+  field/not-required divergence, `file/syntax-specified`
+  remains the sole specimen #1; sentinel re-arms at #3.
+- **Any R4 audit-pass findings from U1's audit of D6a-D6c rules**
+  (with N=3/M=8-weeks PD-11 forcing-function defaults; per-item
+  N/M may tighten for high-blast-radius findings).
+
 ### D6d — option-aware pack expansion + AIP-203 well-formedness (0.5.0)
 
 D6d ships the strategic-differentiator headline as the
