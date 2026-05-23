@@ -479,7 +479,7 @@ walk against a ref where the importer has been updated.
 
 ## Schema Linting
 
-> **D6e positioning**: protokit ships buf's 26 BASIC rules; default severities reflect Python-protobuf-developer ergonomics, not buf's defaults (see proto2-strict for opt-in proto2 strictness).
+> **D6e positioning**: protokit targets buf BASIC coverage; defaults reflect Python-protobuf-developer ergonomics, not buf's defaults (see `proto2-strict` for opt-in proto2 strictness).
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).

@@ -297,11 +297,15 @@ class TestR25Provenance:
         )
         assert result.exit_code == 0, result.output
         assert "protokit lint: profile 'default' from" in result.stderr
-        # All five built-in packs listed with at least one
-        # contributing rule_id each. A future rename or accidental
-        # drop of any rule fails the assertion; per-pack coverage
-        # also catches a future BUILTIN_PACKS entry that loads but
-        # contributes no rules in the default profile.
+        # Pin specific D6a-era contributing rules across the 5 packs
+        # that were in BUILTIN_PACKS at this test's introduction
+        # (naming, enum, imports, package, file). BUILTIN_PACKS has
+        # grown since (D6b U7 added package_same, D6b U3a + D6d U5
+        # added the options namespace, D6e U1+U2 added field). The
+        # assertions below pin specific rule names — not pack count
+        # — so they remain valid as the BUILTIN_PACKS tuple grows.
+        # ce:review P2 #9 (agent-native Obs 1, 2026-05-22) updated
+        # this comment to reflect current BUILTIN_PACKS size.
         assert "protokit.schema.lint.rules.naming=" in result.stderr
         assert "naming/snake-case-fields" in result.stderr
         assert "protokit.schema.lint.rules.enum=" in result.stderr
@@ -320,13 +324,18 @@ class TestR25Provenance:
     def test_multi_pack_emits_provenance_line(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """Multi-pack (5 built-in + 1 user pack) triggers R25 line.
+        """Multi-pack (built-in + 1 user pack) triggers R25 line.
 
-        After D6a Unit 6 the built-in default loads 5 packs, so this
-        case exercises 6-pack composition with one user pack on top.
-        The companion test above pins the 5-pack built-in-default
-        case; this test additionally pins that user packs append
-        cleanly to the provenance line in the same wire format.
+        BUILTIN_PACKS has grown since this test was introduced
+        (D6a U6: 5 packs; D6b U7: +1 = 6; D6b U3a: +1 = 7; D6d U5:
+        +1 = 8; D6e U1+U2: +1 = 9). The companion test above pins
+        specific built-in rule names; this test additionally pins
+        that user packs append cleanly to the provenance line in
+        the same wire format. The R25 line fires whenever
+        ``len(loaded_packs_tuple) >= 2``, which has been true
+        since D6a U6. ce:review P2 #9 (agent-native Obs 1,
+        2026-05-22) updated this docstring to reflect current
+        BUILTIN_PACKS size.
         """
         result = CliRunner().invoke(
             lint_main,

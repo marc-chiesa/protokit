@@ -214,10 +214,16 @@ class TestFieldNotRequired:
         ``docs/solutions/best-practices/phase-0-empirical-verification-falsifies-brainstorm-assumption-2026-05-22.md``
         for the institutional lesson.
         """
-        # No assertion — the test method body is the assertion. The
-        # docstring documents the finding; the test passes
-        # trivially. Co-located here because grep'ing the test
-        # suite for "extend-block" should surface this breadcrumb.
+        # Explicit pass per ce:review P2 #5 (kieran-python KP-1 +
+        # testing T-5, 2026-05-22): the docstring IS the assertion,
+        # but tooling that scans for empty-body tests needs an
+        # explicit statement to distinguish "deliberately empty"
+        # from "left incomplete". The CopyToProto round-trip would
+        # crash if the construct were valid; protoc/protoxy reject
+        # it at parse layer; no runtime assertion is possible at
+        # the test layer. The breadcrumb exists for grep
+        # discoverability ("extend-block" / "extensions_by_name").
+        pass
 
 
 # ---------------------------------------------------------------------------

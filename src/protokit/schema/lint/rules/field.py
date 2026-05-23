@@ -88,8 +88,20 @@ def check_field_not_required(ctx: FieldLintContext) -> None:
     protobuf compiler emits ``""`` for proto2 (both no-statement
     and explicit ``syntax = "proto2";``) and a non-empty string
     (``"proto3"`` or ``"editions"``) for the post-proto2 syntaxes.
-    The early-return on non-proto2 syntax keeps the rule's blast
-    radius bounded to the targeted population.
+
+    **Cheap-check-first ordering (ce:review ADV-1 + Correctness#2):**
+    LABEL_REQUIRED check runs BEFORE the syntax probe. proto3 has
+    no ``required`` label, so proto3 fields exit immediately
+    without a per-field ``CopyToProto`` allocation. proto2 fields
+    that aren't ``required`` also exit immediately. The expensive
+    ``CopyToProto`` round-trip (needed because
+    ``FileDescriptor.syntax`` isn't exposed on the upb backend per
+    [[copytoproto-round-trip-for-proto-form-only-descriptor-fields-2026-05-13]])
+    is paid only when a field has LABEL_REQUIRED, which is at most
+    once per required-field per run rather than once per field.
+    For a typical proto2 codebase this turns an O(fields) cost
+    into O(required-fields), and for proto3 codebases the cost is
+    O(0).
 
     Group-typed required fields (EV-3 binding): proto2 groups
     surface in the descriptor as a regular field with LABEL_REQUIRED
@@ -107,16 +119,24 @@ def check_field_not_required(ctx: FieldLintContext) -> None:
     a valid descriptor set. See module docstring for the full
     falsification story.
     """
+    # Cheap-check-first: skip non-required fields immediately. proto3
+    # has no LABEL_REQUIRED label so proto3 fields exit here without
+    # paying for CopyToProto. proto2 fields that aren't required
+    # also exit here.
+    if ctx.field.label != proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
+        return
+    # Field is required; verify it's a proto2 file (proto3/editions
+    # cannot legally have LABEL_REQUIRED, but a hand-crafted
+    # descriptor or future proto-edition might). The CopyToProto
+    # round-trip is bounded to once per required-field invocation.
     fdp = descriptor_pb2.FileDescriptorProto()
     ctx.file.CopyToProto(fdp)
-    # Skip non-proto2 (proto3 emits "proto3"; editions emits "editions"):
     if fdp.syntax != "":
         return
-    if ctx.field.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED:
-        ctx.emit(
-            violation_kind="field/not-required",
-            params={"field_name": ctx.field.name},
-        )
+    ctx.emit(
+        violation_kind="field/not-required",
+        params={"field_name": ctx.field.name},
+    )
 
 
 # Module-level RULES tuple read by ``LintEngine.load_rule_pack``.

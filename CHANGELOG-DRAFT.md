@@ -23,13 +23,16 @@ New D6e+ content begins below.
   ratchet in `BUILTIN_PACKS` docstring +
   `tests/test_uxd_philosophy_principle_presence_ratchet.py` so
   future stale-text edits cannot silently revert the stance.
-- **D6e POSITIONING_STATEMENT** — `protokit ships buf's 26 BASIC
-  rules; default severities reflect Python-protobuf-developer
+- **D6e POSITIONING_STATEMENT** — `protokit targets buf BASIC
+  coverage; defaults reflect Python-protobuf-developer
   ergonomics, not buf's defaults (see proto2-strict for opt-in
-  proto2 strictness).` Pinned in `BUILTIN_PACKS` docstring + README
-  Schema Linting section header. Resolves the KD-1-vs-26/26-
-  headline latent tension by naming the bet explicitly: parity at
-  COVERAGE, ergonomics at DEFAULTS.
+  proto2 strictness).` Pinned in `BUILTIN_PACKS` docstring +
+  README Schema Linting section header. Resolves the KD-1-vs-
+  26/26-headline latent tension by naming the bet explicitly:
+  parity at COVERAGE, ergonomics at DEFAULTS. Per ce:review P1
+  #2 (2026-05-22), avoids pinning a specific rule count — the
+  prior "26 BASIC rules" phrasing was factually incorrect at
+  U1+U2 when only 25 rules had shipped.
 - **`proto2-strict` opt-in profile** (NEW; D6e KD-3 + KD-11)
   carrying ONE rule initially: `field/not-required`. Activate via
   `--profile proto2-strict` or pyproject

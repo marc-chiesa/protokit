@@ -13,12 +13,28 @@ third near-copy-paste instance triggers promotion to a single
 parametrized SSOT — this file replaces the two per-flip files +
 the never-created post-D6e file.
 
-The contract under test (same as the prior per-flip files):
-``--rule-pack=<module>`` for any pack already in ``BUILTIN_PACKS``
-must NOT raise ``ValueError`` at the R25 multi-pack provenance
-line in ``cli.py`` (``zip(strict=True)`` mismatch between the
-``loaded_packs`` list and the deduped ``_active_rule_ids_per_pack``
-dict). The dedup is guarded by THREE coupled mechanisms:
+The contract under test has two complementary halves:
+
+1. **No-ValueError contract** (parametrized over every BUILTIN_PACKS
+   member): ``--rule-pack=<module>`` for any pack already in
+   ``BUILTIN_PACKS`` must NOT raise ``ValueError`` at the R25
+   multi-pack provenance line in ``cli.py`` (``zip(strict=True)``
+   mismatch between the ``loaded_packs`` list and the deduped
+   ``_active_rule_ids_per_pack`` dict). Uses a clean fixture that
+   produces ZERO findings on every pack — exit_code==0 +
+   exception is None is the assertion shape.
+
+2. **Inflation-detection contract** (dedicated case for the
+   ``package`` pack): re-introduced per ce:review P1 #1
+   (2026-05-22). The original D6c per-flip test asserted
+   ``len(r8_findings) == 2`` against a deliberately-dirty fixture
+   to detect duplicate-pack-load finding INFLATION. Without an
+   inflation assertion, a regression that double-emits findings
+   (without raising ValueError) would slip through the no-error
+   assertion. The dedicated test method below restores this
+   coverage using :data:`_PROTO_PKG_DIRTY_SOURCES`.
+
+The dedup is guarded by THREE coupled mechanisms:
 
 1. **CLI-level dedup** at ``cli.py`` (around line 870, pre-R25
    provenance).
@@ -27,12 +43,12 @@ dict). The dedup is guarded by THREE coupled mechanisms:
 3. **Profile-level frozenset union** at ``model.py`` in
    ``LintProfile.compose``.
 
-The test PARAMETRIZES over every BUILTIN_PACKS member at test-
-module import time, so adding a new pack to BUILTIN_PACKS
-automatically exercises this regression without a new test file.
-Per-pack fixture overrides (``package`` needs multi-package
-source for R8/R8b coverage; ``field`` needs proto2-required for
-``field/not-required``) are encoded as per-case parametrize data.
+The no-ValueError contract PARAMETRIZES over every BUILTIN_PACKS
+member at test-module import time, so adding a new pack to
+BUILTIN_PACKS automatically exercises this regression without a
+new test file. Per-pack profile overrides (``field`` ships under
+``proto2-strict`` opt-in only) live in
+:data:`_PER_PACK_PROFILE_OVERRIDES`.
 
 Per [[clirunner-catch-exceptions-false-explicit-discipline-2026-05-21]]
 every ``CliRunner.invoke`` passes ``catch_exceptions=False`` so
@@ -42,8 +58,9 @@ rather than masking as ``exit_code=1`` + empty stdout.
 
 from __future__ import annotations
 
+import json
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,8 +81,8 @@ from tests.schema.lint._cli_dedup_helpers import (
 #: lives at ``acme/dedup/sample.proto`` matching package
 #: ``acme.dedup``, so ``package/directory-match`` passes). Designed
 #: to produce ZERO findings across every BUILTIN_PACKS member —
-#: the dedup test is about ``ValueError`` prevention, not rule
-#: firing, so a clean fixture is the cleanest signal.
+#: the ValueError-prevention contract is the cleanest signal when
+#: the fixture is hermetic.
 _PROTO_TRIVIAL_PATH = "acme/dedup/sample.proto"
 _PROTO_TRIVIAL_SOURCE = textwrap.dedent(
     """\
@@ -86,6 +103,33 @@ _PROTO_TRIVIAL_SOURCE = textwrap.dedent(
     """
 )
 
+#: Dirty multi-package fixture for the inflation-guard test case
+#: (D6c U2 R8 + R8b coverage). ce:review P1 #1 (2026-05-22): the
+#: original D6c per-flip test asserted ``len(r8_findings) == 2``
+#: against this fixture to detect duplicate-pack-load finding
+#: INFLATION. The clean-fixture-only consolidation lost that
+#: signal — a regression that double-emits R8/R8b findings without
+#: raising ValueError would slip through ``exit_code == 0``
+#: assertions. The fixture below re-introduces the inflation
+#: detector for the ``package`` pack as a second dedicated case.
+_PROTO_PKG_FOO = textwrap.dedent(
+    """\
+    syntax = "proto3";
+    package acme.foo;
+    """
+)
+_PROTO_PKG_BAR = textwrap.dedent(
+    """\
+    syntax = "proto3";
+    package acme.bar;
+    """
+)
+_PROTO_PKG_DIRTY_SOURCES: dict[str, str] = {
+    "pkg/a.proto": _PROTO_PKG_FOO,
+    "pkg/b.proto": _PROTO_PKG_BAR,
+    "other_dir/c.proto": _PROTO_PKG_FOO,
+}
+
 
 # ---------------------------------------------------------------------------
 # Per-pack parametrize-case configuration
@@ -101,11 +145,13 @@ class _PackDedupCase:
             ``"protokit.schema.lint.rules.package"``).
         profile: ``--profile`` value passed to ``protokit lint``.
 
-    The fixture sources are shared across every pack (one clean
-    proto3 file at a path matching its package), so individual
-    cases only vary by module + profile. Adding a new pack to
-    BUILTIN_PACKS automatically lands a parametrize case via
-    :func:`_build_cases`.
+    The fixture sources for the always-on cases are shared across
+    every pack (one clean proto3 file at a path matching its
+    package), so individual cases only vary by module + profile.
+    Adding a new pack to BUILTIN_PACKS automatically lands a
+    parametrize case via :func:`_build_cases`. The R8/R8b
+    inflation-guard test (per ce:review P1 #1) is a separate
+    dedicated test method that uses :data:`_PROTO_PKG_DIRTY_SOURCES`.
     """
 
     module_name: str
@@ -115,13 +161,15 @@ class _PackDedupCase:
 #: Per-pack profile overrides. Packs NOT listed here use ``default``.
 #: ``field`` ships only in ``proto2-strict`` opt-in (D6e KD-5), so
 #: the dedup test exercises that profile to verify the explicit-load
-#: path is also idempotent for opt-in profiles.
-_PER_PACK_PROFILE_OVERRIDES: dict[str, str] = {
+#: path is also idempotent for opt-in profiles. Annotated as
+#: ``Mapping`` (not ``dict``) per ce:review P2 #11 (kieran-python
+#: KP-3): the lookup table is read-only by contract.
+_PER_PACK_PROFILE_OVERRIDES: Mapping[str, str] = {
     "protokit.schema.lint.rules.field": "proto2-strict",
 }
 
 
-def _build_cases() -> Sequence[_PackDedupCase]:
+def _build_cases() -> tuple[_PackDedupCase, ...]:
     """Walk BUILTIN_PACKS + apply per-pack profile overrides.
 
     Adding a new pack to BUILTIN_PACKS automatically lands a
@@ -138,7 +186,7 @@ def _build_cases() -> Sequence[_PackDedupCase]:
     return tuple(cases)
 
 
-_CASES: Sequence[_PackDedupCase] = _build_cases()
+_CASES: tuple[_PackDedupCase, ...] = _build_cases()
 
 
 # ---------------------------------------------------------------------------
@@ -216,4 +264,85 @@ class TestRulePackDedupAcrossBuiltinPacks:
             f"{case.profile!r}: expected clean exit 0, "
             f"got {result.exit_code}.\n"
             f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        )
+
+    def test_package_pack_r8_r8b_inflation_guard(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """R8/R8b finding counts do NOT inflate under explicit redundant load.
+
+        ce:review P1 #1 (2026-05-22): restores the inflation-
+        detection coverage from the deleted
+        ``test_cli_rule_pack_dedup_post_d6c.py``. The clean-fixture-
+        only parametrized cases assert ``exit_code == 0`` and
+        ``exception is None`` — a regression that double-loads
+        the package pack and double-emits R8/R8b findings (without
+        raising ValueError) would slip through those assertions on
+        a zero-findings fixture.
+
+        This test uses a deliberately-dirty multi-package fixture
+        that triggers BOTH R8 (``package/same-directory``: acme.foo
+        split across ``pkg/`` and ``other_dir/``) and R8b
+        (``package/directory-same-package``: ``pkg/`` contains both
+        acme.foo and acme.bar). Each rule fires exactly one finding
+        per root file. A duplicate-pack-load regression would
+        inflate either count visibly.
+        """
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            _PROTO_PKG_DIRTY_SOURCES,
+            out_filename="package_inflation_guard.descriptor_set",
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--rule-pack=protokit.schema.lint.rules.package",
+                "--profile",
+                "recommended",
+                "--format",
+                "json",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        # Exit 1 because R8 + R8b severities are ERROR; catch the
+        # SystemExit(1) that CliRunner captures (catch_exceptions=
+        # False propagates other exceptions but SystemExit is the
+        # CLI's normal exit path).
+        from click.exceptions import Exit as ClickExit
+        assert isinstance(result.exception, (SystemExit, ClickExit)) or (
+            result.exception is None
+        ), (
+            f"unexpected exception: {result.exception!r}\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        )
+        assert result.exit_code == 1, (
+            f"expected exit 1 (R8/R8b ERROR findings); "
+            f"got {result.exit_code}.\nstdout={result.stdout!r}"
+        )
+        payload = json.loads(result.stdout)
+        r8_findings = [
+            f for f in payload["findings"]
+            if f["rule_id"] == "package/same-directory"
+        ]
+        r8b_findings = [
+            f for f in payload["findings"]
+            if f["rule_id"] == "package/directory-same-package"
+        ]
+        # R8: acme.foo split between pkg/ + other_dir/ → 2 findings
+        # (one per acme.foo root file). A duplicate-pack-load
+        # would inflate to 4.
+        assert len(r8_findings) == 2, (
+            f"expected 2 R8 findings (one per acme.foo root file), "
+            f"got {len(r8_findings)} — duplicate-pack-load would "
+            f"inflate. findings={r8_findings!r}"
+        )
+        # R8b: pkg/ contains 2 packages → 2 findings (one per
+        # file in pkg/). A duplicate-pack-load would inflate to 4.
+        assert len(r8b_findings) == 2, (
+            f"expected 2 R8b findings (one per pkg/ root file), "
+            f"got {len(r8b_findings)} — duplicate-pack-load would "
+            f"inflate. findings={r8b_findings!r}"
         )

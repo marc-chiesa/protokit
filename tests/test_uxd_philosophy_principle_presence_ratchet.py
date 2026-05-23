@@ -61,9 +61,16 @@ def test_positioning_statement_pinned_in_builtin_packs_docstring() -> None:
     from protokit.schema.lint import rules
 
     source = inspect.getsource(rules)
+    # Rephrased ce:review P1 #2 (2026-05-22): the prior substring
+    # claimed "26 BASIC rules" at U1+U2 when only 25 had shipped
+    # (PACKAGE_NO_IMPORT_CYCLE lands at U3). The current phrasing
+    # is accurate at every commit on the D6e branch (U1+U2 with
+    # 25 rules, U3 with 26 rules, U4 with the 0.6.0 release) AND
+    # fits on a single source line per the
+    # [[presence-ratchet-test-pattern-for-prose-substrings]] rule 5.
     substring = (
-        "protokit ships buf's 26 BASIC rules; default severities "
-        "reflect Python-protobuf-dev ergonomics."
+        "protokit targets buf BASIC coverage; defaults reflect "
+        "Python-protobuf-dev ergonomics."
     )
     assert substring in source, (
         "D6e POSITIONING_STATEMENT substring missing from "

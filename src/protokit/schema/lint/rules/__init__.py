@@ -85,7 +85,7 @@ D6e KD-1: protokit-UX overrides buf-parity; proto2-specific strict rules ship in
 D6e POSITIONING_STATEMENT
 -------------------------
 
-protokit ships buf's 26 BASIC rules; default severities reflect Python-protobuf-dev ergonomics.
+protokit targets buf BASIC coverage; defaults reflect Python-protobuf-dev ergonomics.
 """
 
 from __future__ import annotations
