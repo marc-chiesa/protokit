@@ -85,7 +85,18 @@ D6e KD-1: protokit-UX overrides buf-parity; proto2-specific strict rules ship in
 D6e POSITIONING_STATEMENT
 -------------------------
 
-protokit targets buf BASIC coverage; defaults reflect Python-protobuf-dev ergonomics.
+protokit targets buf BASIC coverage; defaults reflect
+Python-protobuf-developer ergonomics, not buf's defaults
+(see proto2-strict for opt-in proto2 strictness).
+
+Both the KD-1 line above and the 3-line POSITIONING_STATEMENT
+block are protected by
+``tests/test_uxd_philosophy_principle_presence_ratchet.py``.
+KD-1 is pinned by a single substring; POSITIONING_STATEMENT is
+pinned by TWO substrings ("not buf's defaults" + "see proto2-
+strict") — reformatting either content line may break the
+two-substring ratchet. Update the test substrings alongside any
+canonical rewording.
 """
 
 from __future__ import annotations

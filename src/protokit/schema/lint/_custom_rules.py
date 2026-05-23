@@ -75,16 +75,17 @@ closes the cross-run dedup leak that the original U1 closure-
 captured-set pattern carried (per learning
 ``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``).
 The CLI is unaffected today (one ``engine.run()`` per process), but
-D6e+ long-lived runtimes (MCP / IDE integrations) that recycle
-engines across sessions would otherwise observe silent dedup leakage.
+long-lived runtimes (MCP / IDE integrations) that recycle
+engines across sessions would otherwise observe silent dedup leakage
+(tracked for D6f+ in TODOS.md backlog).
 
 **Synthetic module name.** ``_SYNTHETIC_MODULE_NAME`` is a stable
 identifier; the ``LintEngine.load_rule_pack`` idempotency guard at
 ``engine.py:303`` short-circuits a second load on the same engine
 instance. The CLI creates a fresh engine per invocation so this is
 correct. Long-lived engines would observe stale rule registration on
-config changes — a known D6e+ concern documented in the parent
-plan's KD-21.
+config changes — a known long-lived-runtime concern documented in the
+D6d plan's KD-21 (tracked for D6f+ in TODOS.md backlog).
 
 References:
 
@@ -138,9 +139,9 @@ _SYNTHETIC_MODULE_NAME: str = "protokit_lint_synthetic_custom_annotations"
 # without the per-run reset, a second ``engine.run()`` on the same
 # engine would silently emit zero warnings even though the unresolved-
 # extension condition still holds. The CLI is unaffected today (one
-# ``engine.run()`` per process), but D6e+ long-lived runtimes (MCP /
-# IDE integrations) that recycle engines across sessions would hit the
-# leak without this discipline.
+# ``engine.run()`` per process), but long-lived runtimes (MCP / IDE
+# integrations) that recycle engines across sessions would hit the
+# leak without this discipline (tracked for D6f+ in TODOS.md backlog).
 _UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
     weakref.WeakKeyDictionary()
 )

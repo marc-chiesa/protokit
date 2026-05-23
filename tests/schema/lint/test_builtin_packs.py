@@ -120,27 +120,33 @@ class TestCanaryPack:
 
 
 class TestBuiltinPacksDocstringRatchet:
-    """Presence ratchet for the buf BASIC parity numerator in the
-    ``BUILTIN_PACKS`` module docstring.
+    """Presence ratchet for the buf BASIC parity numerator + the
+    two D6e rules newly cited in the ``BUILTIN_PACKS`` docstring.
 
-    The module docstring at
-    ``src/protokit/schema/lint/rules/__init__.py:106-135`` uses
-    ``#:`` Sphinx-style continuation prefixes (NOT a Python
-    ``__doc__`` attribute), so the test reads source via
-    ``inspect.getsource`` (Pattern B per
+    The module docstring uses ``#:`` Sphinx-style continuation
+    prefixes (NOT a Python ``__doc__`` attribute), so the test
+    reads source via ``inspect.getsource`` (Pattern B per
     [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]]).
 
-    The ``"25 of 26 buf BASIC rules"`` substring is a load-bearing
-    audit-trail claim landed at D6c U5 that resolves the
-    inherited-stale-numerator drift from D6a + D6b CHANGELOG
-    sections (see the D6c CHANGELOG ``#### Corrected`` subsection).
-    Without this ratchet a future stale-text edit could silently
-    revert the numerator to "17 of 18" or otherwise drift the
-    public audit-trail claim.
+    Live pins (D6e U4, 2026-05-22 — closing-arc complete at 0.6.0):
 
-    Per the 5th discipline rule of the presence-ratchet pattern,
-    each substring fits on a single source line — no Sphinx
-    ``#:`` continuation interrupts the assertion.
+    1. ``"26 of 26 buf v1.69.0 BASIC rules"`` — load-bearing
+       audit-trail numerator. Replaces the historical D6c-era
+       ``"25 of 26 buf BASIC rules"`` claim (still present in the
+       docstring as an audit-trail reference but no longer the
+       live pin). The ``v1.69.0`` qualifier is load-bearing for
+       future drift detection if buf ships a new BASIC rule.
+    2. ``"``buf:PACKAGE_NO_IMPORT_CYCLE``"`` — the 26th buf BASIC
+       rule landed at D6e U3 (canonical ``buf:``-prefixed form).
+    3. ``"``buf:FIELD_NOT_REQUIRED``"`` — the proto2-only rule
+       landed at D6e U1+U2 in opt-in ``proto2-strict``.
+
+    Without this ratchet a future stale-text edit could silently
+    revert the numerator or drop the audit-trail references to
+    the two D6e additions. Per the 5th discipline rule of the
+    presence-ratchet pattern, each substring fits on a single
+    source line — no Sphinx ``#:`` continuation interrupts the
+    assertion.
     """
 
     def test_builtin_packs_docstring_pins_buf_basic_numerator(

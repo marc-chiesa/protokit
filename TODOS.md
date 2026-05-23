@@ -237,10 +237,14 @@ at 26 of 26 buf v1.69.0 BASIC rules):**
   `enabled_rules` pyproject lists, or `[severities] = "off"`
   support): deferred from D6a + D6b + D6e per the brainstorms;
   needs real-demand evidence to design the 4 collision-shape
-  precedence semantics against. Note that `[tool.protokit.lint.
-  severities] "rule_id" = "off"` is documented as the de-facto
-  disable mechanism but is NOT yet accepted as a valid value;
-  promote when demand surfaces.
+  precedence semantics against. Note that `"off"` is NOT
+  currently a valid severity value — `LintSeverity` accepts only
+  `"error"` / `"warning"` / `"info"`; passing `"off"` exits with
+  `error[lint-pyproject-config-invalid]`. The current workaround
+  for suppressing a rule without removing the entry is to demote
+  to `"info"` (and use `--min-severity warning` to drop the
+  finding from the surface). R9b would add `"off"` as a first-
+  class disable sentinel.
 - **`strict` profile**: deferred from D6a + D6b + D6e until
   strict-only rules exist (COMMENT_* family, ENUM_ZERO_VALUE_
   SUFFIX, etc.) — shipping `strict` empty would damage the
@@ -263,6 +267,17 @@ at 26 of 26 buf v1.69.0 BASIC rules):**
   D6c's `test_buf_smoke_recorded_checksums_package_directory.py`)
   — defense-in-depth on top of the parity gate; not blocking
   for D6e ship.
+- **Long-lived-runtime engine-recycle rebuild contract** (MCP /
+  IDE integrations that reuse a `LintEngine` across sessions):
+  documented as a known concern in
+  `src/protokit/schema/lint/_custom_rules.py` module docstring and
+  D6d KD-21. The CLI is unaffected today (one `engine.run()` per
+  process). Deferred to D6f+ (originally on D6d's "Deferred to
+  D6e+" list; D6e shipped the buf-parity closure but did not
+  address the engine-lifecycle contract); needs a real long-lived
+  consumer to design against before shipping (rule re-registration
+  on config change, dedup state lifecycle, descriptor pool reuse
+  boundaries).
 - **U3 ce:review residual P2/P3 items** (deferred for follow-up):
   unit tests for `_tarjan_scc` + `_walk_cycle_forward` +
   `_import_source_position` (covered transitively by parity gate

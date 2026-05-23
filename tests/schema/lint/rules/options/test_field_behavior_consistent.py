@@ -719,8 +719,8 @@ class TestCrossRunDedupReset:
     a second engine.run() on the same engine would silently emit zero
     extension_unresolved warnings even though the unresolved-extension
     condition still holds. The CLI is not affected today (one
-    engine.run() per process), but MCP/IDE D6e+ runtimes that recycle
-    engines across sessions would hit the leak.
+    engine.run() per process), but MCP/IDE long-lived runtimes that
+    recycle engines across sessions would hit the leak.
     """
 
     def test_second_run_reemits_warning_on_same_engine(

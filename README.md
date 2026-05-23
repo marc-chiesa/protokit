@@ -500,12 +500,13 @@ PascalCase/snake_case/UPPER_SNAKE conventions for messages, enums,
 services, RPCs, oneofs, files, and packages), `enum`
 (`no-allow-alias`, `first-value-zero`), `imports` (`no-public`,
 `no-weak`, `unused`), `package` (`defined`, `directory-match`,
-`same-directory`, `directory-same-package`), `file`
+`same-directory`, `directory-same-package`, `no-import-cycle`), `file`
 (`syntax-specified`), `package_same` (`go-package`,
 `java-package`, `csharp-namespace`, `php-namespace`, `ruby-package`,
-`swift-prefix`, `java-multiple-files`), and (new in 0.5.0)
-`options/field-behavior-consistent` (AIP-203 well-formedness).
-**26 rules across 6 packs** in the `recommended` profile, **32
+`swift-prefix`, `java-multiple-files`), (new in 0.5.0)
+`options/field-behavior-consistent` (AIP-203 well-formedness), and
+(new in 0.6.0) `package/no-import-cycle` (Tarjan SCC pre-walk).
+**27 rules across 6 packs** in the `recommended` profile, **33
 rules** in `default` (+R6 deprecated-replacement 5-rule family +
 `options/field-behavior-consistent`). Plus, as of 0.5.0, users may
 declare **`custom/<user-suffix>`** synthetic rules in
@@ -556,9 +557,9 @@ its target before rule-pack profile-name lookup.
 
 | Profile | Rules | Purpose |
 |---------|-------|---------|
-| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.5.0. |
+| `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.6.0. |
 | `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.69.0 BASIC rules — closing-arc complete as of 0.6.0 D6e U3). `naming` (9), `enum` (2), `imports` (3), `package` (5; +`package/no-import-cycle` in D6e U3 via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 D6e R4b — pragmatic-not-dogmatic about proto2), `package_same` (7). |
-| `default` | 32 | Buf BASIC parity (`recommended`'s 26 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
+| `default` | 33 | Buf BASIC parity (`recommended`'s 27 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
 | `proto2-strict` (0.6.0 D6e) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Per D6e KD-1, proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
 | `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
@@ -655,7 +656,7 @@ D6e closes the buf-parity arc: `protokit lint` now covers
 |---|---|---|
 | `--max-warnings` unset | proto2 file: exit 1 (ERROR) | proto2 file: exit 0 (WARNING; not counted) — **silent CI-pass regression risk** |
 | `--max-warnings 0` | proto2 file: exit 1 | proto2 file: exit 1 (counted as warning instead of error) |
-| `--min-severity error` | proto2 file: exit 1 | proto2 file: same (still filtered) |
+| `--min-severity error` | proto2 file: exit 1 (ERROR passes severity floor) | proto2 file: exit 0 (WARNING filtered by severity floor) |
 
 **Pre-upgrade migration recipe** (full text in `CHANGELOG.md`
 `### D6e — 0.6.0`):
@@ -712,7 +713,7 @@ Fields:
   and mixed-type lists are rejected at config-load.
 - `severity` (optional) — `"error"` / `"warning"` / `"info"`;
   defaults to `"warning"`. Note: `"off"` is NOT currently a valid
-  severity (R9b per-rule disable is scheduled for D6e+); demote to
+  severity (R9b per-rule disable is scheduled for D6f+); demote to
   `"info"` to suppress without removing the entry.
 
 Behavior:

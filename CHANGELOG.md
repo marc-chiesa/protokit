@@ -529,7 +529,7 @@ ce:compound learnings under `docs/solutions/best-practices/`).
   the discipline must apply to ALL DFS helpers on the same
   graph, not just Tarjan.
 
-### Changed — behavior delta
+#### Changed — behavior delta
 
 - **`file/syntax-specified` demoted ERROR → WARNING** in
   `recommended` + `default` profiles (D6e R4b per KD-2
@@ -550,7 +550,7 @@ ce:compound learnings under `docs/solutions/best-practices/`).
 |---|---|---|
 | `--max-warnings` unset | proto2 file: exit 1 (ERROR) | proto2 file: exit 0 (WARNING; not counted) — **silent CI-pass regression risk** |
 | `--max-warnings 0` | proto2 file: exit 1 | proto2 file: exit 1 (counted as warning instead of error) |
-| `--min-severity error` | proto2 file: exit 1 | proto2 file: same (still filtered) |
+| `--min-severity error` | proto2 file: exit 1 (ERROR passes severity floor) | proto2 file: exit 0 (WARNING filtered by severity floor) |
 
 `package/no-import-cycle` at ERROR in `recommended` + `default`
 fires on package-level cycles where individual file imports are
@@ -558,7 +558,7 @@ acyclic. Codebases with such cycles (rare in healthy projects;
 file-level cycles are caught at COMPILE phase) flip CI from
 green to red on upgrade. Demote per the migration recipe.
 
-### Pre-upgrade migration recipe
+#### Pre-upgrade migration recipe
 
 - **Want explicit ERROR enforcement of `file/syntax-specified`?**
   ```toml
@@ -590,7 +590,7 @@ green to red on upgrade. Demote per the migration recipe.
   affected by this rule.
 - **Pin to 0.5.0 indefinitely?** `pip install protokit==0.5.0`
 
-### Phase 0 falsifications (audit-trail)
+#### Phase 0 falsifications (audit-trail)
 
 Two Phase 0 empirical verifications during D6e revealed
 brainstorm-inherited claims that didn't survive contact with
@@ -622,7 +622,7 @@ PD-6/PD-7/PD-8 revised before implementation. Captured at
 but-narrower-than-brainstorm-assumed-2026-05-22.md` (sibling to
 EV-2 falsification with a different failure mode).
 
-### Test coverage
+#### Test coverage
 
 - **U2 parity gate** at `tests/parity/test_parity_field.py` —
   4 fixtures (good, proto2_required, proto2_optional,
@@ -652,7 +652,7 @@ EV-2 falsification with a different failure mode).
 - **EV-1 (editions) + EV-4 (multi-file proto2+proto3 mix)
   coverage** at `tests/schema/lint/rules/test_field.py`.
 
-### Deferred to D6f+
+#### Deferred to D6f+
 
 - **R6 (`options/deprecated-replacement`) severity promotion to
   ERROR.**

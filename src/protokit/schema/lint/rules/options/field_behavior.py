@@ -36,7 +36,7 @@ message text (see
   are deliberately excluded from the curated set: AIP-203 says
   IDENTIFIER "conveys OUTPUT_ONLY in create contexts and IMMUTABLE
   in mutation contexts" — the contextual semantics make a hard
-  contradiction claim harder to defend. Deferred to D6e+ pending
+  contradiction claim harder to defend. Deferred to D6f+ pending
   evidence.
 
 **Phase 0a (D6d U2) finding:** protoxy compile-FAILS on unknown enum
