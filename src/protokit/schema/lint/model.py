@@ -132,12 +132,32 @@ class FileLocation:
     Attributes:
         file: Proto file name as recorded in the descriptor pool
             (e.g., ``"acme/user.proto"``).
+        line: Optional 1-indexed source line. Populated by rules
+            that read ``SourceCodeInfo.Location`` to point at a
+            specific source position (e.g., D6e U3
+            ``package/no-import-cycle`` points at the offending
+            ``import`` statement). ``None`` for rules that emit at
+            whole-file scope or when ``include_source_info=False``
+            at compile time. Open extension per
+            [[closed-literal-discriminator-bump-trigger-2026-05-17]]
+            (no ``_LINT_JSON_SCHEMA_VERSION`` bump).
+        column: Optional 1-indexed source column. Paired with
+            ``line``; both are present or both are None.
     """
 
     file: str
+    line: int | None = None
+    column: int | None = None
 
     def __str__(self) -> str:
-        """Render as ``file`` (e.g., ``"acme/user.proto"``)."""
+        """Render as ``file`` or ``file:line:column`` when known.
+
+        Examples:
+            ``acme/user.proto`` (whole-file finding)
+            ``acme/user.proto:3:1`` (D6e U3 import-statement scope)
+        """
+        if self.line is not None and self.column is not None:
+            return f"{self.file}:{self.line}:{self.column}"
         return self.file
 
 
@@ -1000,14 +1020,17 @@ class _LintContextEmitMixin:
         *,
         violation_kind: str,
         params: dict[str, Any] | None = None,
+        location: LintLocation | None = None,
     ) -> None:
         """Record a lint finding at this context's location.
 
         Builds a ``LintFinding`` from this context's ``_rule_id``,
         the resolved severity for ``violation_kind`` (via
-        ``_effective_severity``), this context's ``location()``, and
-        the caller-supplied ``violation_kind`` / ``params``, then
-        dispatches it to the engine's ``_emit_fn``.
+        ``_effective_severity``), the explicitly-supplied
+        ``location`` (or this context's ``location()`` when
+        omitted), and the caller-supplied ``violation_kind`` /
+        ``params``, then dispatches it to the engine's
+        ``_emit_fn``.
 
         Args:
             violation_kind: Sub-type discriminator. For single-kind
@@ -1015,11 +1038,22 @@ class _LintContextEmitMixin:
             params: Free-form interpolation values for the rule's
                 ``message_template``. Defaults to an empty dict if
                 ``None``.
+            location: Optional override of the default
+                context-derived location. Used by D6e U3's
+                ``package/no-import-cycle`` to emit at the
+                offending ``import`` statement's
+                ``FileLocation(file, line, column)`` rather than
+                the default whole-file
+                ``FileLocation(file=ctx.file.name)``. When
+                ``None`` (the default), falls back to
+                ``self.location()`` — preserves the
+                pre-D6e behavior for every rule that does not
+                pass this kwarg.
         """
         finding = LintFinding(
             rule_id=self._rule_id,  # type: ignore[attr-defined]
             severity=self._effective_severity(violation_kind),  # type: ignore[attr-defined]
-            location=self.location(),
+            location=location if location is not None else self.location(),
             violation_kind=violation_kind,
             params=params or {},
         )
@@ -1040,6 +1074,44 @@ class _LintContextEmitMixin:
         raise NotImplementedError(
             "lint context subclasses must override location()"
         )
+
+
+@dataclass(frozen=True)
+class CycleEdge:
+    """One cycle-closing ``import`` edge in a package-import cycle.
+
+    Returned by ``LintEngine._build_import_graph_accumulator`` (D6e
+    U3 PD-8 revision) as the per-file payload of
+    ``FileLintContext.import_cycles``. Each edge describes ONE
+    ``import "..."`` statement that closes a package-level cycle:
+    the source file (the FileLintContext's own file) imports
+    ``imported_file`` whose package is in the same SCC as the
+    source file's package.
+
+    Attributes:
+        imported_file: The ``.proto`` filename in the ``import``
+            statement (e.g., ``"pkg_b/b1.proto"``).
+        target_package: The package declared by ``imported_file``
+            (e.g., ``"acme.b"``). Distinct from the source file's
+            package; both are members of the same SCC.
+        cycle_path: The full SCC traversal, rotated so the source
+            file's package leads (e.g., ``("acme.a", "acme.b",
+            "acme.a")``). Renders to buf v1.69.0's message format:
+            ``"Package import cycle: acme.a -> acme.b -> acme.a"``.
+        line: 1-indexed source line of the ``import`` statement when
+            ``include_source_info=True`` at compile time; ``None``
+            otherwise (e.g., descriptor-set input without source
+            info). Used to populate ``FileLocation.line``.
+        column: 1-indexed source column of the ``import`` statement;
+            paired with ``line``. Used to populate
+            ``FileLocation.column``.
+    """
+
+    imported_file: str
+    target_package: str
+    cycle_path: tuple[str, ...]
+    line: int | None = None
+    column: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1132,6 +1204,19 @@ class FileLintContext(_LintContextEmitMixin):
     directory_packages_by_dir: (
         Mapping[str, Mapping[str, frozenset[str]]] | None
     ) = None
+    # D6e U3 / PACKAGE_NO_IMPORT_CYCLE accumulator. Same sibling-
+    # pattern rationale as directory_packages (default `= None`).
+    # Maps each root file name to the tuple of cycle-closing
+    # CycleEdge entries for that file. A root file with no cycle-
+    # closing imports is absent from the mapping; an empty pool or
+    # no SCCs of size >= 2 produces an empty (but non-None)
+    # mapping. Per the U3 Phase 0 revision (PD-6 + PD-8), this
+    # replaces the originally-planned per-root-file fan-out with
+    # per-import-edge precision matching buf v1.69.0's behavior.
+    # Single-view (the only consumer is check_package_no_import_-
+    # cycle); does not need a dual-view per
+    # [[dual-view-prewalk-accumulator-cross-file-rule-dispatch-2026-05-19]].
+    import_cycles: Mapping[str, tuple[CycleEdge, ...]] | None = None
 
     def location(self) -> LintLocation:
         """Return ``FileLocation(file=self.file.name)``."""

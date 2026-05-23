@@ -114,9 +114,98 @@ ce:compound entry at
 `docs/solutions/best-practices/phase-0-empirical-verification-falsifies-brainstorm-assumption-2026-05-22.md`
 for the institutional lesson.
 
-### Deferred to U3 + U4 (within D6e)
+### Added (U3, 2026-05-22)
 
-- **`package/no-import-cycle`** (26th buf BASIC rule) — U3.
+- **`package/no-import-cycle` rule** (`buf:PACKAGE_NO_IMPORT_CYCLE`
+  parity; the 26th buf BASIC rule). ERROR severity in
+  `recommended` + `default` profiles. Per Phase 0 binding:
+  file-level cyclic imports are caught at the COMPILE phase by
+  both buf and protoxy; this rule fires on the rarer case where
+  individual file imports are acyclic but the package-level
+  import graph cycles. Emits one finding per cycle-closing
+  `import` statement at the import line/column for byte-
+  equivalent buf v1.69.0 parity.
+- **`LintEngine._build_import_graph_accumulator`** pre-walk
+  method (engine.py Step 3.5c). Iterates `compile_result.
+  root_files`, builds a package-level import graph (collapsing
+  multi-file P→Q edges to one), runs hand-implemented Tarjan
+  SCC, and emits a per-file map of cycle-closing `CycleEdge`
+  entries. Reads `compile_result.source_info_descriptors` for
+  per-import line/column. Returns `None` for empty `root_files`,
+  empty `MappingProxyType({})` for healthy codebases with no
+  cycles.
+- **`CycleEdge` dataclass** in `model.py` carrying
+  `(imported_file, target_package, cycle_path, line, column)`.
+- **`FileLintContext.import_cycles`** field —
+  `Mapping[str, tuple[CycleEdge, ...]] | None`; populated by the
+  Step 3.5c pre-walk.
+- **`FileLocation` extended with optional `line: int | None` +
+  `column: int | None`** (PD-12b). Open-extension change;
+  JSON formatter renders `location_line` / `location_column`,
+  SARIF formatter populates `physicalLocation.region.startLine`
+  / `startColumn`. NO `_LINT_JSON_SCHEMA_VERSION` bump per
+  [[closed-literal-discriminator-bump-trigger-2026-05-17]]
+  (open extension, not a closed-Literal addition).
+- **`_LintContextEmitMixin.emit()` extended with optional
+  `location` kwarg** so U3's rule can emit per-import-edge
+  with explicit `FileLocation(file, line, column)` rather than
+  the default whole-file context location.
+- **Tarjan SCC algorithm** (hand-implemented iterative DFS,
+  ~80 LOC at engine.py module level). graphlib has only DAG
+  topological sort, no SCC enumeration; Tarjan produces the
+  size-≥2 SCC artifact KD-6 requires directly.
+- **Forward-direction cycle path traversal**
+  (`_walk_cycle_forward` helper). DFS within the SCC following
+  actual import edges starting at the source file's package,
+  closing back at the source. Matches buf's message rendering
+  (`"acme.a -> acme.b -> acme.c -> acme.a"`) — distinct from
+  Tarjan's lexicographic SCC member order.
+
+### Phase 0 binding (audit-trail; U3 2026-05-22)
+
+The brainstorm framed U3 as "cross-file cycle detection algorithm
+that doesn't reuse D6c's Arch-D pattern". Phase 0 revealed two
+substantial deviations from the original PD-6/PD-7/PD-8 design:
+
+1. **File-level cycles are operationally unreachable** for any
+   lint rule. Both buf v1.69.0 AND protoxy reject them at the
+   parse layer with `"detected cyclic import while importing
+   X"`. PACKAGE_NO_IMPORT_CYCLE's actual operational ground
+   is package-level cycles with file-level acyclic imports
+   (PD-14 new).
+2. **Emission shape is per-import-edge** (not per-root-file
+   fan-out as PD-6 originally bound). One finding per cycle-
+   closing `import` statement; sibling leaf files in cyclic
+   packages that don't have cycle-closing imports themselves
+   do NOT emit findings. This eliminated the over-emission
+   concern raised at ce:review session 2026-05-22 (PD-6 +
+   PD-7 + PD-8 revised).
+
+The PD-12b FileLocation extension (open-extension line/column
+fields) was added to enable byte-equivalent buf parity per the
+user's Option B selection during ce:review (over Option A
+FileLocation-without-line/column, Option D
+FileLocation-with-params-line/column, and Option C drop-U3).
+
+### Test coverage (U3, 2026-05-22)
+
+- 8 new parity tests at
+  `tests/parity/test_parity_package_no_import_cycle.py` (5
+  multi-file fixtures + 3 collection-time invariants). All
+  PASS against committed buf v1.69.0 NDJSON snapshots at
+  `tests/schema/lint/rules/fixtures/package_no_import_cycle/
+  _buf_smoke/recorded/*.json`.
+- `leaf_files_in_cyclic_pkg` fixture explicitly verifies that
+  sibling leaf files in cyclic packages do NOT emit findings —
+  pins the over-emission UX concern as a regression guard.
+
+### Deferred to U4 (within D6e)
+
 - **Delivery boundary 0.5.0 → 0.6.0** including CHANGELOG fold,
   README "26 of 26 v1.69.0" numerator refresh, presence-ratchet
-  additions, stale-text sweep — U4.
+  additions, stale-text sweep.
+- The dedicated SHA-pinning test for U3's recorded snapshots
+  (mirroring D6c's
+  `test_buf_smoke_recorded_checksums_package_directory.py`)
+  is deferred to U4 — defense-in-depth on top of the parity
+  gate, not required for shippability.

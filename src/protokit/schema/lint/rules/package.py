@@ -65,7 +65,7 @@ from typing import TYPE_CHECKING
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint.decorator import lint_rule
-from protokit.schema.lint.model import ElementKind, LintSeverity
+from protokit.schema.lint.model import ElementKind, FileLocation, LintSeverity
 
 if TYPE_CHECKING:
     from protokit.schema.lint.model import FileLintContext
@@ -476,6 +476,82 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
         )
 
 
+@lint_rule(
+    rule_id="package/no-import-cycle",
+    severity=LintSeverity.ERROR,
+    profiles=("recommended", "default"),
+    element=ElementKind.FILE,
+    message_template=(
+        "Package import cycle: {cycle_path_rendered}"
+    ),
+    source_spec="buf:PACKAGE_NO_IMPORT_CYCLE",
+)
+def check_package_no_import_cycle(ctx: FileLintContext) -> None:
+    """Fire on package-level import cycles (D6e U3 / 26th buf BASIC rule).
+
+    Consumes the per-file cycle-closing-import map built by
+    :meth:`LintEngine._build_import_graph_accumulator` (Step 3.5c
+    pre-walk). Each entry in ``ctx.import_cycles[ctx.file.name]``
+    is a :class:`CycleEdge` describing one ``import`` statement
+    whose target package is in the same package-level SCC as the
+    source file's package. Emits ONE finding per cycle-closing
+    edge, pointing at the import statement's line/column when
+    ``include_source_info=True`` is in effect (the lint CLI's
+    ``--proto`` mode default per D6b U3a; descriptor-set input
+    without source_info emits at whole-file FileLocation).
+
+    **Phase 0 binding** (2026-05-22, see plan PD-6 + PD-14):
+    file-level import cycles are caught at the COMPILE phase
+    (both buf v1.69.0 and protoxy reject them at parse layer).
+    This rule's actual operational ground is the rarer PACKAGE-
+    LEVEL cycle case where individual file imports are acyclic
+    but the package graph cycles. Example: ``pkg_a/a1.proto``
+    imports ``pkg_b/b1.proto`` AND ``pkg_b/b2.proto`` imports
+    ``pkg_a/a2.proto`` — file graph acyclic, package graph
+    cyclic.
+
+    **Emission shape** matches buf v1.69.0 per Phase 0:
+    per-import-edge (one finding per cycle-closing ``import``
+    statement). Sibling "leaf" files in cyclic packages that
+    don't have cycle-closing imports themselves do NOT emit
+    findings (this addresses the UX over-emission concern raised
+    at ce:review session 2026-05-22).
+
+    **Message format** matches buf v1.69.0:
+    ``"Package import cycle: <self_pkg> -> <pkg_2> -> ... ->
+    <self_pkg>"`` (cycle path rotated so self's package leads).
+    """
+    if ctx.import_cycles is None:
+        return  # accumulator skipped (empty root_files)
+    edges = ctx.import_cycles.get(ctx.file.name)
+    if not edges:
+        return
+    safe_file = _safe_for_stderr(ctx.file.name)[:_PARAM_CAP]
+    for edge in edges:
+        # Render the cycle path for the message template.
+        # ``cycle_path`` is already rotated so the source
+        # package leads + closes the loop (e.g., ``("acme.a",
+        # "acme.b", "acme.a")``).
+        cycle_rendered = " -> ".join(edge.cycle_path)
+        safe_imported = _safe_for_stderr(edge.imported_file)[:_PARAM_CAP]
+        safe_target_pkg = _safe_for_stderr(edge.target_package)[:_PARAM_CAP]
+        safe_cycle_rendered = _safe_for_stderr(cycle_rendered)[:_PARAM_CAP]
+        ctx.emit(
+            violation_kind="package/no-import-cycle",
+            params={
+                "file": safe_file,
+                "imported_file": safe_imported,
+                "target_package": safe_target_pkg,
+                "cycle_path_rendered": safe_cycle_rendered,
+            },
+            location=FileLocation(
+                file=ctx.file.name,
+                line=edge.line,
+                column=edge.column,
+            ),
+        )
+
+
 # Module-level RULES tuple read by ``LintEngine.load_rule_pack``.
 #
 # **R8b before R8 ordering is LOAD-BEARING for buf v1.69.0 parity.** The
@@ -491,9 +567,18 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
 # pins this contract. A future engine refactor that adds per-file
 # alphabetic sorting would make this ordering incidental rather than
 # load-bearing; until that refactor lands, do not reorder this tuple.
+#
+# **D6e U3 placement**: ``check_package_no_import_cycle`` slots
+# alphabetically between PACKAGE_DIRECTORY_MATCH and PACKAGE_SAME_DIRECTORY
+# (alphabetical co-fire ordering by buf rule_id places
+# PACKAGE_NO_IMPORT_CYCLE between them). Insertion order in this tuple
+# matches that alphabetical position when co-fire occurs — though Phase 0
+# did not surface a multi-rule co-fire fixture so the empirical pinning
+# happens at U3's parity gate, not here.
 RULES: tuple[Callable[..., None], ...] = (
     check_package_defined,
     check_package_directory_match,
     check_directory_same_package,
+    check_package_no_import_cycle,
     check_package_same_directory,
 )

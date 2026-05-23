@@ -1,0 +1,4 @@
+syntax = "proto3";
+package acme.vendor;
+import "pkg_a/a_leaf.proto";
+message V2 { acme.a.ALeaf a = 1; }

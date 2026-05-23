@@ -67,12 +67,14 @@ from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
+from google.protobuf import descriptor_pb2
 from google.protobuf.message import DecodeError
 
 from protokit._cli_utils import _scrub_exc_message
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint.model import (
     SEVERITY_RANK,
+    CycleEdge,
     DuplicateRuleError,
     ElementKind,
     EnumLintContext,
@@ -99,6 +101,224 @@ if TYPE_CHECKING:
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
 
     from protokit.schema.compile import CompileResult
+
+
+# ---------------------------------------------------------------------------
+# D6e U3 / PACKAGE_NO_IMPORT_CYCLE helpers
+# ---------------------------------------------------------------------------
+
+
+def _tarjan_scc(
+    graph: Mapping[str, set[str]],
+) -> list[list[str]]:
+    """Tarjan strongly-connected-components on a directed graph.
+
+    Hand-implemented per D6e U3 PD-5 — graphlib's
+    ``TopologicalSorter`` detects DAG-ness but does not enumerate
+    SCCs. Returns a list of SCCs in reverse-topological order;
+    each SCC is a list of node identifiers (package names). SCCs
+    of size 1 are non-cyclic; SCCs of size >= 2 indicate package-
+    level cycles.
+
+    Iterative implementation (rather than recursive) to avoid
+    Python's recursion-limit failure mode on pathologically-large
+    package graphs. Standard Tarjan with index/lowlink tracking
+    and an explicit stack.
+
+    Nodes referenced as edge targets but absent from the graph's
+    key set are auto-added as zero-out-degree nodes (a package
+    that is imported but does not itself import anything else
+    still participates in the graph and may be in an SCC).
+    """
+    # Auto-extend the graph with target nodes that have no outgoing
+    # edges. Tarjan needs every node visited, including leaves.
+    all_nodes = set(graph.keys())
+    for targets in graph.values():
+        all_nodes.update(targets)
+
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    sccs: list[list[str]] = []
+    counter = [0]  # boxed for closure mutation
+
+    def strongconnect(start: str) -> None:
+        # Iterative DFS: each frame is (node, iter-over-children).
+        from collections.abc import Iterator as _Iterator
+        work: list[tuple[str, _Iterator[str]]] = [
+            (start, iter(sorted(graph.get(start, set())))),
+        ]
+        index[start] = counter[0]
+        lowlink[start] = counter[0]
+        counter[0] += 1
+        stack.append(start)
+        on_stack.add(start)
+        while work:
+            node, children = work[-1]
+            try:
+                child: str = next(children)
+            except StopIteration:
+                # Finished processing node's children; compute
+                # lowlink + maybe pop SCC.
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    lowlink[parent] = min(
+                        lowlink[parent], lowlink[node],
+                    )
+                if lowlink[node] == index[node]:
+                    scc: list[str] = []
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        scc.append(member)
+                        if member == node:
+                            break
+                    sccs.append(scc)
+                continue
+            if child not in index:
+                index[child] = counter[0]
+                lowlink[child] = counter[0]
+                counter[0] += 1
+                stack.append(child)
+                on_stack.add(child)
+                work.append(
+                    (child, iter(sorted(graph.get(child, set())))),
+                )
+            elif child in on_stack:
+                lowlink[node] = min(lowlink[node], index[child])
+
+    for node in sorted(all_nodes):
+        if node not in index:
+            strongconnect(node)
+    return sccs
+
+
+def _import_source_position(
+    fdp: FileDescriptorProto | None,
+    dep_index: int,
+) -> tuple[int | None, int | None]:
+    """Read the source line/column of an ``import`` statement.
+
+    The protobuf source_code_info layout encodes each import's
+    position as a ``SourceCodeInfo.Location`` whose ``path`` is
+    ``[3, dep_index]`` (3 is the field number of
+    ``FileDescriptorProto.dependency``). The ``span`` field is a
+    list of ints — typically ``[start_line, start_column,
+    end_column]`` for single-line spans or ``[start_line,
+    start_column, end_line, end_column]`` for multi-line. Both
+    line/column are 0-indexed in protobuf's internal
+    representation; this function converts to 1-indexed for
+    presentation parity with buf v1.69.0.
+
+    Returns ``(None, None)`` when:
+    - ``fdp`` is None (caller didn't pass the source_info bag)
+    - source_code_info is empty (compiled with
+      ``include_source_info=False``)
+    - No Location for path ``[3, dep_index]`` exists
+    - The Location's span is malformed (missing line/column)
+    """
+    if fdp is None:
+        return (None, None)
+    sci = fdp.source_code_info
+    if not sci or not sci.location:
+        return (None, None)
+    for loc in sci.location:
+        path = list(loc.path)
+        if path == [3, dep_index]:
+            span = list(loc.span)
+            if len(span) >= 2:
+                # span = [start_line, start_column, ...] (0-indexed)
+                return (span[0] + 1, span[1] + 1)
+            return (None, None)
+    return (None, None)
+
+
+def _walk_cycle_forward(
+    package_edges: Mapping[str, set[str]],
+    scc_member_set: set[str],
+    source_pkg: str,
+) -> tuple[str, ...]:
+    """Walk one forward cycle path starting at ``source_pkg``.
+
+    Returns the cycle as it traverses the actual import edges,
+    starting at ``source_pkg`` and ending at ``source_pkg`` again
+    (cycle closure). Matches buf v1.69.0's message rendering
+    (``"acme.a -> acme.b -> acme.c -> acme.a"``), which follows
+    the import chain forward rather than emitting an unordered
+    SCC member list.
+
+    DFS within the SCC: visit ``source_pkg`` -> follow one
+    outgoing edge to another SCC member -> recurse until we
+    return to ``source_pkg``. Edge selection is deterministic
+    (sorted by target name) so the rendered path is reproducible
+    across runs.
+
+    Fallback: if no cycle path can be constructed (defensive —
+    shouldn't happen if the caller verified SCC membership),
+    return a single-element tuple containing source_pkg.
+    """
+    # DFS within the SCC. Track path; when we revisit source_pkg,
+    # that's the closing edge.
+    visited: set[str] = set()
+    path: list[str] = [source_pkg]
+    visited.add(source_pkg)
+
+    def dfs(node: str) -> bool:
+        # Try each outgoing edge to an SCC member in sorted order.
+        # When an edge returns to source_pkg, we've closed a cycle.
+        for target in sorted(package_edges.get(node, set())):
+            if target not in scc_member_set:
+                continue
+            if target == source_pkg and len(path) > 1:
+                # Cycle closed.
+                path.append(target)
+                return True
+            if target in visited:
+                continue
+            visited.add(target)
+            path.append(target)
+            if dfs(target):
+                return True
+            path.pop()
+            visited.discard(target)
+        return False
+
+    if not dfs(source_pkg):
+        # Defensive fallback: source_pkg has no path back to
+        # itself within the SCC (impossible if SCC analysis was
+        # correct, but guards against caller mismatches).
+        return (source_pkg,)
+    return tuple(path)
+
+
+def _rotate_cycle_for_source(
+    scc_members: tuple[str, ...],
+    source_pkg: str,
+) -> tuple[str, ...]:
+    """Rotate an SCC member tuple so ``source_pkg`` leads.
+
+    buf v1.69.0 renders the cycle path starting at the file's own
+    package, with the cycle traversal appended and the starting
+    package repeated at the end to close the loop:
+
+        "Package import cycle: acme.a -> acme.b -> acme.c -> acme.a"
+
+    Given an SCC like ``("acme.b", "acme.c", "acme.a")`` and a
+    source package of ``"acme.a"``, returns ``("acme.a", "acme.b",
+    "acme.c", "acme.a")`` (rotated to start with source_pkg + the
+    repeated closing token).
+
+    If ``source_pkg`` is not in ``scc_members`` (shouldn't happen
+    if the caller verified SCC membership), returns the original
+    tuple unrotated for defensive correctness.
+    """
+    if source_pkg not in scc_members:
+        return scc_members
+    idx = scc_members.index(source_pkg)
+    rotated = scc_members[idx:] + scc_members[:idx]
+    return rotated + (source_pkg,)
 
 
 # Engine-stage exception tuple. Catching ``SystemExit`` is a deliberate
@@ -230,6 +450,27 @@ class LintEngine:
         ) = None
         self._current_directory_packages_by_dir: (
             Mapping[str, Mapping[str, frozenset[str]]] | None
+        ) = None
+        # D6e U3 / PACKAGE_NO_IMPORT_CYCLE accumulator. Per-run
+        # snapshot of the Step 3.5c pre-walk's import-graph SCC
+        # analysis. Maps root file name to the tuple of
+        # cycle-closing CycleEdge entries for that file. A file
+        # with no cycle-closing imports is absent from the
+        # mapping; ``None`` when the pre-walk early-returned
+        # (root_files was empty or no SCCs of size >= 2 exist).
+        # Set in ``run()`` after Step 3.5b + cleared in the
+        # ``finally`` block alongside the directory_packages
+        # accumulators.
+        #
+        # Per the U3 Phase 0 revision (PD-6 + PD-8 + PD-14):
+        # buf v1.69.0 detects file-level cycles at the COMPILE
+        # phase, so this accumulator only catches the rarer
+        # case where file-level imports are acyclic but
+        # package-level imports cycle. Emission is per-import-
+        # edge to match buf's behavior + avoid over-emitting on
+        # sibling leaf files in cyclic packages.
+        self._current_import_cycles: (
+            Mapping[str, tuple[CycleEdge, ...]] | None
         ) = None
 
     # ------------------------------------------------------------------
@@ -543,6 +784,19 @@ class LintEngine:
                 self._current_directory_packages_by_dir,
             ) = self._build_directory_package_accumulator(compile_result)
 
+            # Step 3.5c: D6e U3 / PACKAGE_NO_IMPORT_CYCLE pre-walk.
+            # Build the package-level import graph from root_files'
+            # dependencies, run Tarjan SCC, and produce a per-file
+            # map of cycle-closing import edges. Empty when no
+            # cycles exist (the common case). Per the U3 Phase 0
+            # revision (PD-14): file-level cycles are caught at
+            # the COMPILE phase before this point; this pre-walk
+            # only encounters package-level cycles where individual
+            # file imports are acyclic.
+            self._current_import_cycles = (
+                self._build_import_graph_accumulator(compile_result)
+            )
+
             # Step 4: walk root_files (sorted by basename for cross-platform
             # stability; tie-break by full path for absolute determinism).
             for fname in sorted(
@@ -592,6 +846,11 @@ class LintEngine:
             # (per-package + per-directory-inverted) reset together.
             self._current_directory_packages = None
             self._current_directory_packages_by_dir = None
+            # D6e U3 / PACKAGE_NO_IMPORT_CYCLE — reset the
+            # per-run import-cycle map. Same rationale as the
+            # directory_packages reset above (prevent cross-run
+            # state leak).
+            self._current_import_cycles = None
 
     # ------------------------------------------------------------------
     # Pre-walk accumulator (R7 PACKAGE_SAME_* infrastructure)
@@ -835,6 +1094,180 @@ class LintEngine:
         )
 
     # ------------------------------------------------------------------
+    # Pre-walk accumulator (D6e U3 / PACKAGE_NO_IMPORT_CYCLE)
+    # ------------------------------------------------------------------
+
+    def _build_import_graph_accumulator(
+        self, compile_result: CompileResult,
+    ) -> Mapping[str, tuple[CycleEdge, ...]] | None:
+        """Build the per-file cycle-closing-import map for U3.
+
+        Per the U3 Phase 0 revision (PD-6 + PD-8 + PD-14):
+
+        - File-level cycles are caught at the COMPILE phase (both
+          buf v1.69.0 and protoxy reject them at parse layer). By
+          the time this pre-walk runs, any cycles present in the
+          input are necessarily PACKAGE-level cycles where the
+          file-level import graph is acyclic.
+        - The per-file payload is the tuple of cycle-closing
+          ``import`` edges in that file (an edge is "cycle-closing"
+          if both its source-file's package and the imported
+          file's package are in the same package-level SCC of
+          size >= 2). Matches buf v1.69.0's per-import-edge
+          emission shape.
+        - Line/column for each edge derive from
+          ``SourceCodeInfo.Location`` keyed on
+          ``path=[3, dependency_index]`` (``3`` is
+          ``FileDescriptorProto.dependency``'s field number).
+          When ``include_source_info=True`` is in effect, these
+          are populated; descriptor-set input without source-info
+          leaves line/column as ``None``.
+
+        Returns ``None`` when ``root_files`` is empty (mirrors
+        ``_build_directory_package_accumulator``'s contract);
+        returns an empty ``MappingProxyType`` when there are no
+        cyclic SCCs (the common case for healthy codebases).
+        Rule callables early-return on either signal.
+
+        **Iteration scope rationale**: scoped to ``root_files`` per
+        the same KTD-4 (d) module-isolation rationale as
+        ``_build_directory_package_accumulator``. Transitive non-
+        root dependencies contribute to the package graph (as
+        target nodes for edges originating in root files) but the
+        accumulator does NOT recurse into their own dependencies.
+        Vendor-internal cycles (a cycle entirely inside transitive
+        deps) cannot be reached by the rule unless a root file
+        imports into the cycle, in which case the root file's
+        edge IS cycle-closing and emits a finding.
+
+        Defensive ``try/except KeyError: continue`` for
+        ``FindFileByName`` lookups — partial-pool-state tolerance
+        for compile-failure paths.
+        """
+        if not compile_result.root_files:
+            return None
+
+        # Step 1: build per-file dependency list keyed on the
+        # importing file's package. Edges are package -> package,
+        # collapsing multi-file imports between the same package
+        # pair into one logical edge.
+        # We need: for each root file, its package + its
+        # dependencies' packages + each dependency's source-info
+        # line/column (when available).
+        package_edges: dict[str, set[str]] = {}
+        # per_file_edges maps file_name -> list of (imported_file,
+        # target_pkg, dep_index_in_source_info).
+        per_file_edges: dict[
+            str, list[tuple[str, str, int]]
+        ] = {}
+        file_packages: dict[str, str] = {}
+        # ``source_info_descriptors`` is the separate per-file
+        # FileDescriptorProto bag populated by
+        # ``compile_protos_to_result(include_source_info=True)``
+        # (D6b R6b). It's the only path to ``source_code_info`` —
+        # the runtime DescriptorPool drops source positions for
+        # memory reasons, so ``fd.CopyToProto(fdp)`` after
+        # ``pool.Add()`` returns an fdp with empty
+        # ``source_code_info``. When ``include_source_info=False``
+        # at compile time (e.g., descriptor-set input), this is
+        # ``None`` and line/column degrade to ``None`` per the
+        # PD-8 contract.
+        source_info_descriptors = (
+            compile_result.source_info_descriptors or {}
+        )
+        for fname in compile_result.root_files:
+            try:
+                fd = compile_result.pool.FindFileByName(fname)
+            except KeyError:
+                continue
+            src_pkg = fd.package
+            file_packages[fname] = src_pkg
+            # Round-trip via CopyToProto to access fdp.dependency
+            # (the upb backend doesn't expose dependencies as a
+            # direct attribute on the runtime descriptor). The
+            # source_code_info bag for source-position lookups
+            # lives in compile_result.source_info_descriptors,
+            # NOT in this fdp (the pool stripped it).
+            fdp = descriptor_pb2.FileDescriptorProto()
+            fd.CopyToProto(fdp)
+            for dep_index, dep_name in enumerate(fdp.dependency):
+                try:
+                    dep_fd = compile_result.pool.FindFileByName(
+                        dep_name,
+                    )
+                except KeyError:
+                    continue
+                dep_pkg = dep_fd.package
+                if dep_pkg == src_pkg:
+                    # Intra-package import — not an edge in the
+                    # package graph; ignore.
+                    continue
+                package_edges.setdefault(src_pkg, set()).add(dep_pkg)
+                per_file_edges.setdefault(fname, []).append(
+                    (dep_name, dep_pkg, dep_index),
+                )
+
+        if not package_edges:
+            return MappingProxyType({})
+
+        # Step 2: Tarjan SCC on the package-level digraph. Returns
+        # a list of SCCs (each SCC is a list of package names).
+        # SCCs of size 1 are non-cyclic; size >= 2 indicates a
+        # cycle. Self-loops in the package graph are impossible
+        # because we filtered intra-package imports above.
+        sccs = _tarjan_scc(package_edges)
+        cyclic_sccs = [scc for scc in sccs if len(scc) >= 2]
+        if not cyclic_sccs:
+            return MappingProxyType({})
+
+        # Step 3: build per-package -> SCC-membership lookup.
+        pkg_to_scc: dict[str, tuple[str, ...]] = {}
+        for scc in cyclic_sccs:
+            scc_tuple = tuple(scc)
+            for pkg in scc:
+                pkg_to_scc[pkg] = scc_tuple
+
+        # Step 4: build per-file cycle-closing-edge view. For each
+        # root file in a cyclic package, walk its outgoing import
+        # edges; an edge is cycle-closing iff its target package
+        # is in the same SCC as the source file's package.
+        result: dict[str, tuple[CycleEdge, ...]] = {}
+        for fname, src_pkg in file_packages.items():
+            if src_pkg not in pkg_to_scc:
+                continue
+            scc_members = pkg_to_scc[src_pkg]
+            scc_member_set = set(scc_members)
+            edges: list[CycleEdge] = []
+            for imported_file, target_pkg, dep_index in (
+                per_file_edges.get(fname, [])
+            ):
+                if target_pkg not in scc_member_set:
+                    continue
+                line, column = _import_source_position(
+                    source_info_descriptors.get(fname),
+                    dep_index,
+                )
+                # Rotate the cycle path so the source file's
+                # package leads (matches buf v1.69.0's message
+                # rendering).
+                cycle_path = _walk_cycle_forward(
+                    package_edges, scc_member_set, src_pkg,
+                )
+                edges.append(
+                    CycleEdge(
+                        imported_file=imported_file,
+                        target_package=target_pkg,
+                        cycle_path=cycle_path,
+                        line=line,
+                        column=column,
+                    ),
+                )
+            if edges:
+                result[fname] = tuple(edges)
+
+        return MappingProxyType(result)
+
+    # ------------------------------------------------------------------
     # Dispatch helpers — one per ElementKind
     # ------------------------------------------------------------------
 
@@ -1050,6 +1483,11 @@ class LintEngine:
             # O(N²) scan over the per-package view.
             directory_packages=self._current_directory_packages,
             directory_packages_by_dir=self._current_directory_packages_by_dir,
+            # D6e U3 / PACKAGE_NO_IMPORT_CYCLE — populated by
+            # _build_import_graph_accumulator at Step 3.5c. Maps
+            # root file name to cycle-closing CycleEdge entries.
+            # None when root_files was empty or no SCCs of size >= 2.
+            import_cycles=self._current_import_cycles,
             _emit_fn=self._emit,
             _rule_id=spec.rule_id,
             _effective_severity=self._make_effective_severity(spec, profile),

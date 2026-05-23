@@ -1,0 +1,4 @@
+syntax = "proto3";
+package acme.a;
+import "vendor/v1.proto";
+message A { acme.vendor.V1 v = 1; }

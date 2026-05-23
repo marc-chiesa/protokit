@@ -1,0 +1,2 @@
+{"path":"pkg_a/a.proto","start_line":3,"start_column":1,"end_line":3,"end_column":26,"type":"PACKAGE_NO_IMPORT_CYCLE","message":"Package import cycle: acme.a -\u003e acme.vendor -\u003e acme.a"}
+{"path":"vendor/v2.proto","start_line":3,"start_column":1,"end_line":3,"end_column":29,"type":"PACKAGE_NO_IMPORT_CYCLE","message":"Package import cycle: acme.vendor -\u003e acme.a -\u003e acme.vendor"}

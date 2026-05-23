@@ -187,9 +187,22 @@ from protokit.schema.lint.rules.options import (
 #: buf-parity for proto2-required-field detection. D6e also
 #: demotes ``file/syntax-specified`` from ERROR to WARNING in
 #: ``recommended`` + ``default`` per R4b (KD-2 pragmatic-not-
-#: dogmatic). Numerator stays "25 of 26 buf BASIC rules" until
-#: U3 lands ``package/no-import-cycle`` (the 26th); 0.6.0 release
-#: at U4 flips to "26 of 26 buf v1.69.0 BASIC rules".
+#: dogmatic).
+#:
+#: D6e U3 (0.6.0) lands the 26th buf BASIC rule:
+#: ``package/no-import-cycle`` (``buf:PACKAGE_NO_IMPORT_CYCLE``).
+#: ERROR severity in ``recommended`` + ``default`` profiles.
+#: Per Phase 0 binding (2026-05-22): file-level cyclic imports
+#: are caught at the COMPILE phase by both buf and protoxy; this
+#: rule's actual operational ground is package-level cycles where
+#: individual file imports are acyclic. Emits one finding per
+#: cycle-closing ``import`` statement at the import line/column
+#: (via SourceCodeInfo.Location reading + PD-12b FileLocation
+#: line/column extension) for byte-equivalent buf parity. The
+#: ``LintEngine._build_import_graph_accumulator`` Tarjan SCC
+#: pre-walk powers the rule. Numerator moves to "26 of 26 buf
+#: v1.69.0 BASIC rules"; U4 boundary flips the README/CHANGELOG
+#: headline + bumps pyproject 0.5.0 → 0.6.0.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,

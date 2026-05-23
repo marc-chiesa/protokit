@@ -407,6 +407,20 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
                 .removesuffix("Location")
                 .lower()
             ),
+            # D6e PD-12b: open-extension line/column fields on
+            # FileLocation. Only emitted by D6e U3
+            # ``package/no-import-cycle`` (which reads
+            # ``SourceCodeInfo.Location`` for the offending
+            # ``import`` statement); other FileLocation-emitting
+            # rules leave these as None. Pre-existing consumers
+            # ignore the extra keys; new agent-aware consumers
+            # (LSP, IDE click-through) read them for byte-equivalent
+            # buf parity. No ``_LINT_JSON_SCHEMA_VERSION`` bump
+            # per the open-vs-closed contract.
+            "location_line": getattr(finding.location, "line", None),
+            "location_column": (
+                getattr(finding.location, "column", None)
+            ),
             "violation_kind": finding.violation_kind,
             "message": _render_message(
                 finding, report.specs.get(finding.rule_id),
@@ -621,15 +635,35 @@ def _lint_result_for_finding(
     in :func:`lint_sarif` uses ``default=str`` so they degrade to
     repr rather than failing the whole document.
     """
+    location_entry: dict[str, Any] = {
+        "logicalLocations": [{
+            "fullyQualifiedName": str(finding.location),
+        }],
+    }
+    # D6e PD-12b: FileLocation with optional line/column (e.g.,
+    # D6e U3 package/no-import-cycle pointing at an offending
+    # `import` statement) populates SARIF physicalLocation.region.
+    # SARIF consumers (IDE LSP integrations, GitHub Code Scanning,
+    # CodeQL viewers) use region.startLine/startColumn to render
+    # in-editor squigglies + click-through. Without this, agent
+    # IDE tooling has to string-parse `finding.location` (which
+    # __str__ renders as `file:line:column` when known).
+    line = getattr(finding.location, "line", None)
+    column = getattr(finding.location, "column", None)
+    file_name = getattr(finding.location, "file", None)
+    if file_name is not None and line is not None:
+        region: dict[str, Any] = {"startLine": line}
+        if column is not None:
+            region["startColumn"] = column
+        location_entry["physicalLocation"] = {
+            "artifactLocation": {"uri": file_name},
+            "region": region,
+        }
     return {
         "ruleId": finding.rule_id,
         "level": _lint_severity_to_sarif_level(finding.severity),
         "message": {"text": message},
-        "locations": [{
-            "logicalLocations": [{
-                "fullyQualifiedName": str(finding.location),
-            }],
-        }],
+        "locations": [location_entry],
         "properties": {
             "params": dict(finding.params),
         },

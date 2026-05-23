@@ -1,0 +1,3 @@
+syntax = "proto3";
+package acme.a;
+message A2 { int32 v = 1; }

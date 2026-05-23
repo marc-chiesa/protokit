@@ -270,3 +270,48 @@ def package_directory_smoke_root() -> Path:
         / "package_directory"
         / "_buf_smoke"
     )
+
+
+# D6e U3 / PACKAGE_NO_IMPORT_CYCLE buf-smoke fixtures. Parallel to
+# PACKAGE_DIRECTORY_SMOKE_FIXTURES per the same per-family SSOT
+# rationale (independent fixture list, independent recorded snapshots,
+# independent assumption-pinning). Each fixture has a directory at
+# tests/schema/lint/rules/fixtures/package_no_import_cycle/_buf_smoke/
+# <name>/ and a SHA-pinned recorded snapshot at _buf_smoke/recorded/
+# <name>.json.
+#
+# Composition per U3 Phase 0 (2026-05-22):
+#   - two_pkg_cycle: 2-package cycle (file-level acyclic, package-level
+#     cyclic) — the canonical case the rule targets
+#   - three_pkg_cycle: 3-package cycle (3 files emit, one per cycle-
+#     closing import edge)
+#   - no_cycle_baseline: linear chain, no cycle (zero findings)
+#   - leaf_files_in_cyclic_pkg: sibling leaf files in cyclic packages
+#     must NOT emit (over-emission guard per ce:review session
+#     2026-05-22 user concern)
+#   - root_vendor_pkg_cycle: cycle that loops through a vendor package
+#     (still per-import-edge emission)
+PACKAGE_NO_IMPORT_CYCLE_SMOKE_FIXTURES: tuple[str, ...] = (
+    "two_pkg_cycle",
+    "three_pkg_cycle",
+    "no_cycle_baseline",
+    "leaf_files_in_cyclic_pkg",
+    "root_vendor_pkg_cycle",
+)
+
+
+def package_no_import_cycle_smoke_root() -> Path:
+    """Return the absolute path to the D6e U3 ``_buf_smoke/`` root.
+
+    Parallel to :func:`package_directory_smoke_root` for the D6e U3
+    package-import-cycle family.
+    """
+    return (
+        Path(__file__).resolve().parent
+        / "schema"
+        / "lint"
+        / "rules"
+        / "fixtures"
+        / "package_no_import_cycle"
+        / "_buf_smoke"
+    )

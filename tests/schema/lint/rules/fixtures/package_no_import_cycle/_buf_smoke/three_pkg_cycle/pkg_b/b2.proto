@@ -1,0 +1,4 @@
+syntax = "proto3";
+package acme.b;
+import "pkg_c/c1.proto";
+message B2 { acme.c.C1 c = 1; }

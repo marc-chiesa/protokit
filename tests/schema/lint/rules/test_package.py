@@ -56,9 +56,14 @@ class TestPackagePackShape:
     across both deliveries.
     """
 
-    def test_rules_tuple_contains_four_callables(self) -> None:
+    def test_rules_tuple_contains_five_callables(self) -> None:
+        # D6e U3 (2026-05-22) added check_package_no_import_cycle
+        # as the 5th rule in the package pack (the 26th buf BASIC
+        # rule). Original count was 2 (D6a U6 package/defined +
+        # package/directory-match), grown to 4 by D6c U2's
+        # cross-file R8/R8b additions, now 5 with U3.
         assert isinstance(RULES, tuple)
-        assert len(RULES) == 4
+        assert len(RULES) == 5
         for fn in RULES:
             assert hasattr(fn, "_lint_spec")
 

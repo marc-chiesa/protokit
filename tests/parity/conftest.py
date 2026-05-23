@@ -250,20 +250,62 @@ _PACKAGE_DIRECTORY_RULE_IDS: frozenset[str] = frozenset(
     _PACKAGE_DIRECTORY_PROTO_TO_BUF.keys()
 )
 
-#: Union of R7 + R8/R8b mappings — consumed by
+#: D6e U3 / PACKAGE_NO_IMPORT_CYCLE family. The rule is the only
+#: member of this family but is included in the family-aware partition
+#: machinery so the parity gate at
+#: ``tests/parity/test_parity_package_no_import_cycle.py`` reuses
+#: ``assert_parity_multi_file`` without harness changes. The inclusion
+#: set pattern keeps R8/R8b's family-aware partition decoupled from
+#: U3's (separate inclusion sets, separate SSOT mappings).
+_D6E_PACKAGE_NO_IMPORT_CYCLE_RULE_IDS: frozenset[str] = frozenset({
+    "package/no-import-cycle",
+})
+
+
+def _build_package_no_import_cycle_proto_to_buf() -> Mapping[str, str]:
+    """Walk ``package.RULES`` filtered to U3 and return ``{protokit_id: buf_id}``.
+
+    Sibling of :func:`_build_package_directory_proto_to_buf` for the
+    D6e U3 PACKAGE_NO_IMPORT_CYCLE family. Filters to the
+    :data:`_D6E_PACKAGE_NO_IMPORT_CYCLE_RULE_IDS` inclusion set (size 1).
+    """
+    from protokit.schema.lint.rules import package as _package_mod
+    mapping: dict[str, str] = {}
+    for fn in _package_mod.RULES:
+        spec = get_lint_spec(fn)
+        if spec.rule_id not in _D6E_PACKAGE_NO_IMPORT_CYCLE_RULE_IDS:
+            continue
+        buf_id = _extract_buf_rule_id(spec.source_spec)
+        if buf_id is not None:
+            mapping[spec.rule_id] = buf_id
+    return mapping
+
+
+#: ``protokit_rule_id -> buf_rule_id`` for U3. Built once at module
+#: import; consumed by :func:`assert_parity_multi_file`'s family-aware
+#: partition arm for PACKAGE_NO_IMPORT_CYCLE.
+_D6E_PACKAGE_NO_IMPORT_CYCLE_PROTO_TO_BUF: Mapping[str, str] = (
+    _build_package_no_import_cycle_proto_to_buf()
+)
+
+
+#: Union of R7 + R8/R8b + U3 mappings — consumed by
 #: :func:`assert_parity_multi_file`'s family-aware partition logic.
 #: Computed once at module import rather than per-call (~31 invocations
 #: across parametrized parity tests). A future family addition (e.g.,
-#: D6d's option-aware family) appends a third constituent dict.
+#: D6d's option-aware family) appends another constituent dict.
 _FAMILY_PROTO_TO_BUF: Mapping[str, str] = {
     **_PACKAGE_SAME_PROTO_TO_BUF,
     **_PACKAGE_DIRECTORY_PROTO_TO_BUF,
+    **_D6E_PACKAGE_NO_IMPORT_CYCLE_PROTO_TO_BUF,
 }
 
-#: Union of R7 + R8/R8b protokit rule_ids — consumed by the same
+#: Union of R7 + R8/R8b + U3 protokit rule_ids — consumed by the same
 #: family-aware partition. Same per-call computation rationale.
 _FAMILY_RULE_IDS: frozenset[str] = (
-    _PACKAGE_SAME_RULE_IDS | _PACKAGE_DIRECTORY_RULE_IDS
+    _PACKAGE_SAME_RULE_IDS
+    | _PACKAGE_DIRECTORY_RULE_IDS
+    | _D6E_PACKAGE_NO_IMPORT_CYCLE_RULE_IDS
 )
 
 
@@ -981,7 +1023,17 @@ def assert_parity_multi_file(
     protokit_unknown: list[tuple[str, str, str]] = []   # (rule_id, path, msg)
     for f in protokit_findings:
         rule_id = str(f.get("rule_id", ""))
-        path = _normalize_buf_path(str(f.get("location", "")))
+        # Use ``location_file`` (the structured file path) rather
+        # than ``str(location)`` because D6e PD-12b extended
+        # FileLocation with optional line/column fields that
+        # ``__str__`` now renders as ``file:line:column``. The
+        # parity-gate comparison is finding-set parity at file
+        # granularity; per-rule line/column assertions are the
+        # caller's responsibility (e.g., U3's parity test adds a
+        # separate line/column check on top of this gate).
+        path = _normalize_buf_path(str(
+            f.get("location_file", f.get("location", "")),
+        ))
         message = str(f.get("message", ""))
         if rule_id in protokit_rule_ids:
             protokit_in_scope.append(

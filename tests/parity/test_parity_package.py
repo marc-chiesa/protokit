@@ -69,18 +69,22 @@ class TestParityPackage:
         # R8b cross-file family (`package/same-directory` +
         # `package/directory-same-package`) gets its own multi-file
         # parity gate at `tests/parity/test_parity_package_directory.py`
-        # (D6c U3); both families are excluded from this single-file
+        # (D6c U3). D6e U3's `package/no-import-cycle` rule gets its
+        # own multi-file parity gate at
+        # `tests/parity/test_parity_package_no_import_cycle.py`. All
+        # three cross-file families are excluded from this single-file
         # parity audit to avoid duplicate coverage.
-        d6c_cross_file_rules = frozenset({
+        cross_file_rules = frozenset({
             "package/same-directory",
             "package/directory-same-package",
+            "package/no-import-cycle",
         })
         package_parity_rules = {
             rule_id
             for rule_id in RULE_ID_MAP
             if rule_id.startswith("package/")
             and not rule_id.startswith("package/same-")
-            and rule_id not in d6c_cross_file_rules
+            and rule_id not in cross_file_rules
         }
         missing = package_parity_rules - case_rule_ids
         assert not missing, (
