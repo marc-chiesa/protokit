@@ -418,9 +418,7 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
             # buf parity. No ``_LINT_JSON_SCHEMA_VERSION`` bump
             # per the open-vs-closed contract.
             "location_line": getattr(finding.location, "line", None),
-            "location_column": (
-                getattr(finding.location, "column", None)
-            ),
+            "location_column": getattr(finding.location, "column", None),
             "violation_kind": finding.violation_kind,
             "message": _render_message(
                 finding, report.specs.get(finding.rule_id),
@@ -736,10 +734,20 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     2. **Rules catalog** draws from ``LintReport.specs`` (live spec
        dict) instead of compat's static ``BUILTIN_RULE_DESCRIPTIONS``
        map. Lint's catalog grows dynamically as new rule packs load.
-    3. **No physicalLocation** on ``result.locations`` — lint findings
-       carry only logical locations (``str(finding.location)``),
-       since the descriptor-set input doesn't carry per-finding
-       source-file URIs the way compat's git-mode runs do.
+    3. **Conditional physicalLocation** on ``result.locations`` —
+       most lint findings carry only logical locations
+       (``str(finding.location)``) since the descriptor-set input
+       doesn't carry per-finding source-file URIs the way compat's
+       git-mode runs do. D6e PD-12b added optional ``line`` /
+       ``column`` fields to ``FileLocation``; when a rule populates
+       them (currently ``package/no-import-cycle``, which reads
+       ``SourceCodeInfo.Location``), this formatter emits a
+       sibling ``physicalLocation.region.startLine`` /
+       ``startColumn`` block alongside the logical location so
+       SARIF consumers (IDE LSP integrations, GitHub Code
+       Scanning, CodeQL viewers) can render in-editor squigglies
+       + click-through. The logical location remains canonical;
+       physical location is additive.
 
     Stable schema (within ``runs[0]``):
 

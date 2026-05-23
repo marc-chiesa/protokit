@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import os
 import posixpath
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -145,8 +145,7 @@ def _tarjan_scc(
 
     def strongconnect(start: str) -> None:
         # Iterative DFS: each frame is (node, iter-over-children).
-        from collections.abc import Iterator as _Iterator
-        work: list[tuple[str, _Iterator[str]]] = [
+        work: list[tuple[str, Iterator[str]]] = [
             (start, iter(sorted(graph.get(start, set())))),
         ]
         index[start] = counter[0]
@@ -224,13 +223,22 @@ def _import_source_position(
     sci = fdp.source_code_info
     if not sci or not sci.location:
         return (None, None)
+    # ce:review U3 PERF-2 (2026-05-22): avoid list() allocation per
+    # iteration. Each SourceCodeInfo.Location's path + span are
+    # protobuf RepeatedScalarFieldContainer instances supporting
+    # direct indexed access; list() materializes a fresh Python list
+    # only to throw it away for non-matching entries. For a 200-line
+    # proto with ~300 locations and 3 cycle-closing imports the
+    # original form allocated ~900 list objects per lint run.
     for loc in sci.location:
-        path = list(loc.path)
-        if path == [3, dep_index]:
-            span = list(loc.span)
-            if len(span) >= 2:
+        if (
+            len(loc.path) == 2
+            and loc.path[0] == 3
+            and loc.path[1] == dep_index
+        ):
+            if len(loc.span) >= 2:
                 # span = [start_line, start_column, ...] (0-indexed)
-                return (span[0] + 1, span[1] + 1)
+                return (loc.span[0] + 1, loc.span[1] + 1)
             return (None, None)
     return (None, None)
 
@@ -258,67 +266,61 @@ def _walk_cycle_forward(
     Fallback: if no cycle path can be constructed (defensive —
     shouldn't happen if the caller verified SCC membership),
     return a single-element tuple containing source_pkg.
+
+    **Iterative implementation** (ce:review U3 KP-3/COR-2/ADV-001,
+    2026-05-22): mirrors the iterative posture of
+    :func:`_tarjan_scc` for the same recursion-limit safety on
+    pathologically large SCCs. The prior recursive form raised
+    ``RecursionError`` for SCCs ≥ ~999 packages (empirically
+    confirmed at ce:review session); RecursionError is a subclass
+    of ``RuntimeError`` and is not in
+    :data:`_RULE_EXCEPTION_TUPLE`, so it would propagate out of
+    :func:`_build_import_graph_accumulator` and crash
+    :meth:`LintEngine.run`. Iterative DFS uses an explicit work
+    stack to bound memory cost to the same O(SCC size) as the
+    recursive form without consuming Python frames.
     """
-    # DFS within the SCC. Track path; when we revisit source_pkg,
-    # that's the closing edge.
-    visited: set[str] = set()
+    # Iterative DFS within the SCC. Each work-stack frame is
+    # (node, sorted-iterator-over-children). Track the current
+    # path + visited set; when an edge returns to source_pkg,
+    # we've closed a cycle. Backtracking pops both the work-stack
+    # frame AND the path/visited entries together so the cycle
+    # path stays consistent.
+    visited: set[str] = {source_pkg}
     path: list[str] = [source_pkg]
-    visited.add(source_pkg)
-
-    def dfs(node: str) -> bool:
-        # Try each outgoing edge to an SCC member in sorted order.
-        # When an edge returns to source_pkg, we've closed a cycle.
-        for target in sorted(package_edges.get(node, set())):
-            if target not in scc_member_set:
+    work: list[tuple[str, Iterator[str]]] = [
+        (source_pkg, iter(sorted(package_edges.get(source_pkg, set())))),
+    ]
+    while work:
+        _node, children = work[-1]
+        target: str | None = None
+        for candidate in children:
+            if candidate not in scc_member_set:
                 continue
-            if target == source_pkg and len(path) > 1:
+            if candidate == source_pkg and len(path) > 1:
                 # Cycle closed.
-                path.append(target)
-                return True
-            if target in visited:
+                path.append(candidate)
+                return tuple(path)
+            if candidate in visited:
                 continue
-            visited.add(target)
-            path.append(target)
-            if dfs(target):
-                return True
-            path.pop()
-            visited.discard(target)
-        return False
-
-    if not dfs(source_pkg):
-        # Defensive fallback: source_pkg has no path back to
-        # itself within the SCC (impossible if SCC analysis was
-        # correct, but guards against caller mismatches).
-        return (source_pkg,)
-    return tuple(path)
-
-
-def _rotate_cycle_for_source(
-    scc_members: tuple[str, ...],
-    source_pkg: str,
-) -> tuple[str, ...]:
-    """Rotate an SCC member tuple so ``source_pkg`` leads.
-
-    buf v1.69.0 renders the cycle path starting at the file's own
-    package, with the cycle traversal appended and the starting
-    package repeated at the end to close the loop:
-
-        "Package import cycle: acme.a -> acme.b -> acme.c -> acme.a"
-
-    Given an SCC like ``("acme.b", "acme.c", "acme.a")`` and a
-    source package of ``"acme.a"``, returns ``("acme.a", "acme.b",
-    "acme.c", "acme.a")`` (rotated to start with source_pkg + the
-    repeated closing token).
-
-    If ``source_pkg`` is not in ``scc_members`` (shouldn't happen
-    if the caller verified SCC membership), returns the original
-    tuple unrotated for defensive correctness.
-    """
-    if source_pkg not in scc_members:
-        return scc_members
-    idx = scc_members.index(source_pkg)
-    rotated = scc_members[idx:] + scc_members[:idx]
-    return rotated + (source_pkg,)
+            target = candidate
+            break
+        if target is None:
+            # Exhausted this node's children — backtrack.
+            work.pop()
+            popped = path.pop()
+            visited.discard(popped)
+            continue
+        # Descend into target.
+        visited.add(target)
+        path.append(target)
+        work.append(
+            (target, iter(sorted(package_edges.get(target, set())))),
+        )
+    # Defensive fallback: source_pkg has no path back to itself
+    # within the SCC (impossible if SCC analysis was correct, but
+    # guards against caller mismatches).
+    return (source_pkg,)
 
 
 # Engine-stage exception tuple. Catching ``SystemExit`` is a deliberate
@@ -1188,8 +1190,23 @@ class LintEngine:
             # source_code_info bag for source-position lookups
             # lives in compile_result.source_info_descriptors,
             # NOT in this fdp (the pool stripped it).
+            #
+            # ce:review U3 REL-1 (2026-05-22): catch DecodeError
+            # from CopyToProto. fd.CopyToProto() delegates to
+            # ParseFromString(self.serialized_pb), which raises
+            # google.protobuf.message.DecodeError on malformed
+            # serialized bytes (e.g., a descriptor-set input with
+            # a truncated file entry). Without this guard the
+            # exception propagates uncaught through the
+            # accumulator and crashes engine.run() with no
+            # LintReport. Skip the file; partial-pool-state
+            # tolerance matches the FindFileByName(KeyError)
+            # discipline above.
             fdp = descriptor_pb2.FileDescriptorProto()
-            fd.CopyToProto(fdp)
+            try:
+                fd.CopyToProto(fdp)
+            except DecodeError:
+                continue
             for dep_index, dep_name in enumerate(fdp.dependency):
                 try:
                     dep_fd = compile_result.pool.FindFileByName(
@@ -1232,11 +1249,31 @@ class LintEngine:
         # edges; an edge is cycle-closing iff its target package
         # is in the same SCC as the source file's package.
         result: dict[str, tuple[CycleEdge, ...]] = {}
+        # ce:review U3 KP-4/PERF-1/ADV-006 (2026-05-22): cache
+        # scc_member_set + cycle_path per src_pkg. The DFS in
+        # _walk_cycle_forward depends only on (package_edges,
+        # scc_member_set, src_pkg) — all loop-invariant for the
+        # inner per-edge loop. The prior form re-ran the DFS
+        # once per cycle-closing edge with identical arguments.
+        # For a file with K cycle-closing imports into the same
+        # SCC: K identical DFS calls. Cache amortizes the cost
+        # to O(packages-in-SCC) per (fname, src_pkg) pair.
+        scc_cache: dict[
+            str, tuple[set[str], tuple[str, ...]]
+        ] = {}
         for fname, src_pkg in file_packages.items():
             if src_pkg not in pkg_to_scc:
                 continue
-            scc_members = pkg_to_scc[src_pkg]
-            scc_member_set = set(scc_members)
+            cached = scc_cache.get(src_pkg)
+            if cached is None:
+                scc_members = pkg_to_scc[src_pkg]
+                scc_member_set = set(scc_members)
+                cycle_path = _walk_cycle_forward(
+                    package_edges, scc_member_set, src_pkg,
+                )
+                cached = (scc_member_set, cycle_path)
+                scc_cache[src_pkg] = cached
+            scc_member_set, cycle_path = cached
             edges: list[CycleEdge] = []
             for imported_file, target_pkg, dep_index in (
                 per_file_edges.get(fname, [])
@@ -1246,12 +1283,6 @@ class LintEngine:
                 line, column = _import_source_position(
                     source_info_descriptors.get(fname),
                     dep_index,
-                )
-                # Rotate the cycle path so the source file's
-                # package leads (matches buf v1.69.0's message
-                # rendering).
-                cycle_path = _walk_cycle_forward(
-                    package_edges, scc_member_set, src_pkg,
                 )
                 edges.append(
                     CycleEdge(

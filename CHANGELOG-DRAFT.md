@@ -94,6 +94,26 @@ New D6e+ content begins below.
   [tool.protokit.lint.severities]
   "field/not-required" = "warning"
   ```
+- Have package-level import cycles you're not ready to fix? Demote
+  `package/no-import-cycle` (ce:review U3 ACF-2 migration path,
+  2026-05-22 — without this opt-out, CI flips from green to red on
+  upgrade for codebases with package-level cyclic imports):
+  ```toml
+  [tool.protokit.lint.severities]
+  "package/no-import-cycle" = "warning"
+  ```
+  Or demote to INFO if you want it filtered out of standard
+  `--min-severity warning` output:
+  ```toml
+  [tool.protokit.lint.severities]
+  "package/no-import-cycle" = "info"
+  ```
+  **Note**: file-level cyclic imports (file A imports file B; file B
+  imports file A) are caught at the protobuf COMPILE phase by both
+  buf and protokit's compiler and are NOT affected by this rule.
+  This rule fires only on package-level cycles where individual
+  file imports happen to be acyclic (e.g., `pkg_a/a1.proto` imports
+  `pkg_b/b1.proto` AND `pkg_b/b2.proto` imports `pkg_a/a2.proto`).
 - Pin to 0.5.0 indefinitely? `pip install protokit==0.5.0`.
 
 ### Phase 0 EV-2 falsification (audit-trail note)
