@@ -378,6 +378,89 @@ class TestMaxWarningsExitLadder:
         assert result.exit_code == 1, result.output
         assert "error-pack/always-error" in result.stdout
 
+    def test_proto2_file_under_default_profile_exits_0_post_r4b_demotion(
+        self, tmp_path: Path,
+    ) -> None:
+        """ce:review P2 #6 (2026-05-22): pin the R4b exit-code change.
+
+        Post-D6e R4b, ``file/syntax-specified`` is WARNING in
+        recommended + default profiles (was ERROR). For a proto2
+        file invoked WITHOUT ``--max-warnings``, the rule still
+        fires but no longer pushes the exit code to 1 — the new
+        contract is exit 0 + WARNING finding present in the JSON
+        output. This regression test pins the behavioral change as
+        intentional and catches a future inadvertent re-promotion
+        of ``file/syntax-specified`` back to ERROR.
+
+        The test also doubles as the missing end-to-end CLI test
+        for the proto2-strict + default profile interaction: it
+        asserts no field/not-required finding fires (the rule is
+        in proto2-strict opt-in only, not default).
+        """
+        import json
+        import textwrap
+
+        from tests.schema.lint._cli_dedup_helpers import (
+            compile_sources_to_descriptor_set,
+        )
+
+        proto2_source = textwrap.dedent(
+            """\
+            syntax = "proto2";
+            package acme.r4b;
+            message P2 {
+              optional int32 ok = 1;
+              required int32 also_required = 2;
+            }
+            """
+        )
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            {"acme/r4b/p2.proto": proto2_source},
+            out_filename="r4b_regression.descriptor_set",
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--format",
+                "json",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        # Post-R4b: WARNING-only findings exit 0 without
+        # --max-warnings (pre-R4b would have been exit 1 from the
+        # file/syntax-specified ERROR path).
+        assert result.exit_code == 0, (
+            f"expected exit 0 post-R4b demotion; got "
+            f"{result.exit_code}.\nstdout={result.stdout!r}"
+        )
+        payload = json.loads(result.stdout)
+        syntax_findings = [
+            f for f in payload["findings"]
+            if f["rule_id"] == "file/syntax-specified"
+        ]
+        assert len(syntax_findings) == 1, (
+            f"expected 1 file/syntax-specified finding; got "
+            f"{len(syntax_findings)}.\nfindings={payload['findings']!r}"
+        )
+        assert syntax_findings[0]["severity"] == "warning", (
+            f"R4b demotion: file/syntax-specified must emit at "
+            f"WARNING; got {syntax_findings[0]['severity']!r}"
+        )
+        # field/not-required is proto2-strict opt-in only; MUST
+        # NOT fire under default profile per D6e KD-5.
+        field_findings = [
+            f for f in payload["findings"]
+            if f["rule_id"] == "field/not-required"
+        ]
+        assert field_findings == [], (
+            f"D6e KD-5: field/not-required ships in proto2-strict "
+            f"opt-in only; MUST NOT fire under default. Got "
+            f"{field_findings!r}"
+        )
+
     def test_max_warnings_negative_is_click_validation_error(
         self, clean_descriptor_set: Path,
     ) -> None:
