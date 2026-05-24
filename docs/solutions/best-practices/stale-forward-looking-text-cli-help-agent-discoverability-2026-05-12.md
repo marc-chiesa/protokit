@@ -1,7 +1,7 @@
 ---
 title: "Forward-looking CLI help text becomes a P1 agent-discoverability defect the moment the referenced feature ships"
 date: 2026-05-12
-last_updated: 2026-05-19
+last_updated: 2026-05-23
 category: docs/solutions/best-practices
 module: protokit.schema.lint
 problem_type: best_practice
@@ -52,16 +52,34 @@ If a feature is not yet implemented, **omit the text entirely** rather than desc
 
 ### Sweep for stale forward references at every ce:review follow-up commit
 
-The natural checklist step at the end of each unit's ce:review follow-up commit is a grep for the *previous* unit's forward-pointing phrasing:
+The natural checklist step at the end of each unit's ce:review follow-up commit is a grep for the *previous* unit's forward-pointing phrasing. Run TWO greps — one for verb-pattern forward-references, one for bare delivery-label citations — across the full surface that user-facing prose can live in:
 
 ```bash
-# Adapt to your domain's delivery naming.
+# Pass 1 — verb-pattern forward-references (the original sweep).
+# Adapt the delivery-naming alternation to your domain.
 grep -rn \
   "until D[0-9]\|will land\|arrives in U\|currently exit 2\|forthcoming\|once U[0-9] ships" \
-  src/ docs/ CHANGELOG.md
+  src/ tests/ docs/ README.md CHANGELOG.md
+
+# Pass 2 — bare delivery-label citations (added 2026-05-23, D6e U4).
+# Catches "scheduled for D6e+", "Deferred to D6e+ pending", "MCP/IDE D6e+
+# runtimes" — labels used as nouns, not verbs. These miss Pass 1's
+# verb-pattern regex entirely. The "+" suffix is the give-away that the
+# reference is delivery-conditional ("at or after D6e") rather than a
+# historical past-tense citation. Once the named delivery has shipped, the
+# label needs to advance to the next deferral target or be dropped.
+grep -rnE \
+  "D[0-9][a-z]\+" \
+  src/ tests/ docs/ README.md CHANGELOG.md
 ```
 
-When a unit ships, the previous unit's "until X" references are the lowest-cost time to fix — the next ce:review will surface them otherwise, but as P1/P2 findings rather than as a 30-second maintenance task.
+**Two extensions to the original recipe (added 2026-05-23, D6e U4):**
+
+1. **Include `tests/` in the search path.** The original recipe targeted `src/ docs/ CHANGELOG.md` only. The D6e U4 boundary sweep missed a `D6e+` reference in `tests/schema/lint/rules/options/test_field_behavior_consistent.py:722` (a test class docstring describing the engine-recycle concern) because `tests/` was outside the grep scope. The triage-rubric prose at this learning's table (line 91: `"src/, tests/, CHANGELOG.md, README.md → verb tense decides"`) had always named `tests/` as in-scope, but the executable grep command in the recipe omitted it — a contributor running the canonical recipe verbatim would never check `tests/`. Test files routinely carry delivery-conditional language in docstrings (describing what a deferred feature will look like, why a fixture is shaped a certain way for a future test layout) and need the same sweep treatment as `src/`.
+
+2. **Add the bare delivery-label pattern (`D[0-9][a-z]+`).** The verb-pattern regex matches `"until D[0-9]"` but only when a verb precedes the label. It misses bare-label noun uses like `"scheduled for D6e+"`, `"Deferred to D6e+ pending evidence"`, `"D6e+ long-lived runtimes"`. The D6e U4 boundary sweep missed 6 such references (1 in README, 4 in `src/`, 1 in `tests/`) because no verb appeared before the label. Pass 2's regex catches the `D[delivery]+` pattern directly — the `+` suffix is the discriminator that distinguishes a delivery-conditional forward reference ("at or after D6e") from a past-tense historical citation ("shipped in D6e", which has no `+`). Past-tense historical references without the `+` suffix are correctly out of scope per the triage rubric and should not be rewritten.
+
+When a unit ships, the previous unit's "until X" references AND any `"D6{previous-letter}+"` bare-label references are the lowest-cost time to fix — the next ce:review will surface them otherwise, but as P1/P2 findings rather than as a 30-second maintenance task. The D6e U4 ce:review surfaced 6 such P2 findings precisely because Pass 2 had not been run at the boundary commit.
 
 ### Triage rubric for grep hits — not every match is stale (added 2026-05-14)
 

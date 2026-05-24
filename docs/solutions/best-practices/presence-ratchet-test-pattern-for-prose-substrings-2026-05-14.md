@@ -1,7 +1,7 @@
 ---
 title: "Presence-ratchet test pattern: pin prose substrings in docs/source against silent reversion when static analysis can't read them"
 date: 2026-05-14
-last_updated: 2026-05-19
+last_updated: 2026-05-23
 category: docs/solutions/best-practices
 module: testing_framework
 problem_type: best_practice
@@ -489,3 +489,22 @@ zero — the tests are self-explanatory at first read.
   reviewers all read them. The ratchet is the mechanical guard
   that prevents the shared-source misreading from arising in
   the first place.
+- [[presence-ratchet-pin-canonical-not-local-form-2026-05-23]] —
+  **cross-document-sourcing companion (D6e U4, 2026-05-23).**
+  Rules 1–6 of this learning govern HOW to construct a ratchet
+  within one artifact (single-source-line truncation, shortest
+  uniquely-identifying substring, line-anchored per-section
+  regex, etc.). The companion covers the upstream question this
+  learning does not address: WHICH form of the phrase to pin
+  against, when the phrase appears in multiple documents
+  (docstring + README + CHANGELOG) with potential micro-
+  divergence between them. Anchor to the canonical authoritative
+  source (typically the user-facing surface) rather than the
+  nearest local copy; otherwise the ratchet creates a
+  unidirectional drift vulnerability where the canonical clause
+  can be silently shortened to match the local form with no CI
+  signal. The companion supplies a 5-rule discipline (identify
+  canonical first, pin load-bearing not wording, split multi-
+  line forms per rule 5, fix truncated local copies rather than
+  accommodating them, record canonical source in the test
+  comment).
