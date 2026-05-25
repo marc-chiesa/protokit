@@ -498,6 +498,32 @@ message User {
     string old_field = 1 [deprecated = true];
 }
 """
+
+
+_PROTO_R6_MULTI_ELEMENT_NO_REPLACEMENT = """\
+syntax = "proto3";
+package demo.r6.multi;
+
+// No replacement available.
+enum LegacyTier {
+    LEGACY_TIER_UNKNOWN = 0;
+    // No replacement.
+    LEGACY_TIER_BRONZE = 1 [deprecated = true];
+}
+
+message User {
+    // No replacement.
+    string legacy_name = 1 [deprecated = true];
+}
+"""
+"""Inline proto fixture exercising TWO ElementKinds (FIELD +
+ENUM_VALUE) simultaneously. Used by the multi-ElementKind exit-
+code regression test below to verify that BOTH findings fire at
+ERROR and the exit code reflects the cumulative ERROR-presence,
+not just the first finding. The D6f plan U1 *Edge cases* test
+scenario explicitly names this case (`Multi-ElementKind hit
+(e.g., deprecated field + deprecated enum value in same file)`).
+"""
 """Proto fixture with a deprecated field whose leading comment does
 NOT match the R6 replacement-heuristic regex. Post-D6f, the
 ``options/deprecated-field-must-have-replacement-comment`` rule fires
@@ -679,6 +705,67 @@ class TestR6PromotionExitCodeRegression:
             f"output={result.output!r}"
         )
 
+    def test_multi_element_kinds_each_fire_at_error_post_promotion(
+        self, tmp_path: Path,
+    ) -> None:
+        """D6f U1 plan Edge cases: multi-ElementKind in one proto.
+
+        The plan's Test scenarios section enumerates:
+            "Multi-ElementKind hit (e.g., deprecated field + deprecated
+             enum value in same file) → 2 R6 findings (one per
+             ElementKind), each at ERROR severity."
+
+        Pinning this scenario catches a regression that selectively
+        promoted only the FIELD rule (leaving the other 4 ElementKind
+        rules at WARNING) — that bug would pass the per-rule severity
+        pin tests because the spec is read directly, but it would
+        leak through here because the engine would emit 1 ERROR +
+        1 WARNING instead of 2 ERRORs. The ce:review testing reviewer
+        flagged the absence of this coverage (run 20260524-232840-29bb63be).
+        """
+        import json
+
+        proto = tmp_path / "multi_element.proto"
+        proto.write_text(_PROTO_R6_MULTI_ELEMENT_NO_REPLACEMENT)
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto", str(proto),
+                "-I", str(tmp_path),
+                "--profile", "default",
+                "--format", "json",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 1, (
+            f"Multi-ElementKind R6 hits must exit 1 (has_error fires "
+            f"on either finding). Got exit={result.exit_code}; "
+            f"output={result.output!r}"
+        )
+        payload = json.loads(result.stdout)
+        r6 = [
+            f for f in payload["findings"]
+            if f["rule_id"].startswith("options/deprecated-")
+        ]
+        assert len(r6) == 2, (
+            f"Multi-ElementKind fixture must produce exactly 2 R6 "
+            f"findings (one FIELD + one ENUM_VALUE). Got: {r6!r}"
+        )
+        rule_ids = {f["rule_id"] for f in r6}
+        assert rule_ids == {
+            "options/deprecated-field-must-have-replacement-comment",
+            "options/deprecated-enum-value-must-have-replacement-comment",
+        }, (
+            f"Multi-ElementKind fixture must trigger exactly the FIELD "
+            f"and ENUM_VALUE rules. Got: {rule_ids!r}"
+        )
+        severities = {f["severity"] for f in r6}
+        assert severities == {"error"}, (
+            f"Multi-ElementKind: BOTH findings must be ERROR post-D6f "
+            f"(catches partial-promotion regression). Got: "
+            f"{[(f['rule_id'], f['severity']) for f in r6]!r}"
+        )
+
     def test_demote_to_warning_severities_restores_exit_0_default(
         self, tmp_path: Path,
     ) -> None:
@@ -686,14 +773,18 @@ class TestR6PromotionExitCodeRegression:
 
         Post-D6f: the user demotes a single R6 rule back to ``warning``
         via a ``[severities]`` pyproject entry. The R6 finding still
-        fires (still useful for human review) but no longer fails CI
-        without ``--max-warnings``.
+        fires (still useful for human review) AT WARNING severity but
+        no longer fails CI without ``--max-warnings``.
 
-        Uses ``--severity`` via a tmp pyproject fixture would require
-        more setup; instead we use ``--no-config`` + the proto-only
-        invocation to establish the baseline, then verify the
-        ``[severities]`` override path via a tmp pyproject.
+        Verifies both halves of the contract: exit 0 AND a WARNING-
+        severity R6 finding is present. Asserting only on exit_code
+        would silently pass if the rule had been unloaded entirely
+        instead of demoted — the ce:review correctness reviewer
+        flagged that gap (run 20260524-232840-29bb63be), and this
+        version pins both surfaces.
         """
+        import json
+
         proto = self._write_proto(tmp_path)
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
@@ -709,6 +800,7 @@ class TestR6PromotionExitCodeRegression:
                 "--proto", str(proto),
                 "-I", str(tmp_path),
                 "--config", str(pyproject),
+                "--format", "json",
             ],
             catch_exceptions=False,
         )
@@ -717,6 +809,19 @@ class TestR6PromotionExitCodeRegression:
             f"'warning' via [severities] must restore exit 0 in the "
             f"absence of --max-warnings. Got exit={result.exit_code}; "
             f"output={result.output!r}"
+        )
+        payload = json.loads(result.stdout)
+        r6 = [
+            f for f in payload["findings"]
+            if f["rule_id"].startswith("options/deprecated-")
+        ]
+        assert len(r6) == 1, (
+            f"D6f migration recipe #2: demoted rule must STILL FIRE "
+            f"(at warning), not be silently unloaded. Got: {r6!r}"
+        )
+        assert r6[0]["severity"] == "warning", (
+            f"D6f migration recipe #2: demoted finding must carry "
+            f"severity='warning'; got {r6[0]['severity']!r}"
         )
 
 

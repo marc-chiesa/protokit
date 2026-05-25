@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package demo.d6f.r6;
+
+// Multi-ElementKind variant of `sad.proto` — carries deprecated
+// elements of all 5 ElementKinds (FIELD, ENUM_VALUE, METHOD,
+// MESSAGE, ENUM) so a regression that silently drops 4 of the 5
+// rule_ids in `disabled_rules` (or that disables only the FIELD
+// rule and not the rest) shows up as residual R6 findings.
+//
+// Used by `test_path4_disabled_rules_family_unloads_all_five` to
+// strengthen the family-list parser regression guard. The original
+// single-ElementKind `sad.proto` is preserved for paths 2/3 and
+// the negative control where the FIELD-only signal is sufficient.
+
+// No replacement.
+message LegacyUser {
+    option deprecated = true;
+
+    string id = 1;
+
+    // No longer used.
+    string legacy_id = 2 [deprecated = true];
+}
+
+// Replaced informally (see notes elsewhere).
+enum LegacyStatus {
+    option deprecated = true;
+
+    LEGACY_STATUS_UNKNOWN = 0;
+
+    // No replacement.
+    LEGACY_STATUS_INACTIVE = 1 [deprecated = true];
+}
+
+service LegacyService {
+    // Old endpoint with no replacement.
+    rpc LegacyLookup(LegacyUser) returns (LegacyUser) {
+        option deprecated = true;
+    }
+}

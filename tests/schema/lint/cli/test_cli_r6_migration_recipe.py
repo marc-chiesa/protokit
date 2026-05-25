@@ -30,9 +30,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from protokit.schema.lint.cli import main as lint_main
 
@@ -64,7 +63,7 @@ def _invoke_lint(
     proto: Path,
     *extra_args: str,
     pyproject: Path | None = None,
-) -> Any:
+) -> Result:
     """Invoke ``protokit lint --proto <proto>`` with optional --config."""
     argv = [
         "--proto", str(proto),
@@ -82,7 +81,7 @@ def _invoke_lint(
     return CliRunner().invoke(lint_main, argv, catch_exceptions=False)
 
 
-def _r6_findings(stdout: str) -> list[dict[str, Any]]:
+def _r6_findings(stdout: str) -> list[dict[str, object]]:
     """Extract R6 findings from a JSON lint report."""
     payload = json.loads(stdout)
     return [
@@ -156,9 +155,10 @@ class TestD6fR6MigrationRecipe:
             f"does not load). Got exit={result.exit_code}; "
             f"output={result.output!r}"
         )
-        assert _r6_findings(result.stdout) == [], (
+        findings = _r6_findings(result.stdout)
+        assert findings == [], (
             f"path #3 must produce ZERO R6 findings (rule unloaded "
-            f"via KD-1 sentinel). Got: {_r6_findings(result.stdout)!r}"
+            f"via KD-1 sentinel). Got: {findings!r}"
         )
 
     def test_path4_disabled_rules_family_unloads_all_five(self) -> None:
@@ -169,14 +169,17 @@ class TestD6fR6MigrationRecipe:
         that listing all 5 R6 rule_ids in ``disabled_rules`` unloads
         the entire family — no R6 findings of any ElementKind.
 
-        Uses the SAD proto whose ``legacy_id`` field is FIELD-kind;
-        the assertion that ZERO R6 findings fire — not just the
-        FIELD one — verifies the family-list parser handled all 5
-        entries (a regression that silently dropped the last N rule
-        ids from the list would show as a non-zero FIELD finding).
+        Uses ``sad_multi_element.proto`` which carries deprecated
+        elements of all 5 ElementKinds (FIELD, ENUM_VALUE, METHOD,
+        MESSAGE, ENUM). The pre-disable baseline is 5 R6 findings;
+        a regression that silently drops 4 of the 5 rule_ids in
+        ``disabled_rules`` would leave 4 residual findings. ce:review
+        correctness + testing + maintainability reviewers all
+        flagged the original FIELD-only fixture as insufficient for
+        this regression class (run 20260524-232840-29bb63be).
         """
         result = _invoke_lint(
-            _SAD_PROTO,
+            _FIXTURE_DIR / "sad_multi_element.proto",
             pyproject=_FIXTURE_DIR / "path4_disabled_rules_family.toml",
         )
         assert result.exit_code == 0, (
@@ -215,3 +218,47 @@ def test_sad_proto_without_suppression_exits_1_post_promotion() -> None:
     findings = _r6_findings(result.stdout)
     assert len(findings) == 1, findings
     assert findings[0]["severity"] == "error", findings[0]
+
+
+def test_sad_multi_element_proto_fires_five_r6_findings_without_suppression() -> None:
+    """Baseline pin for ``sad_multi_element.proto`` (D6f U1 ce:review
+    follow-up).
+
+    Verifies the multi-element fixture used by
+    ``test_path4_disabled_rules_family_unloads_all_five`` actually
+    triggers all 5 R6 rule_ids (one per ElementKind: FIELD,
+    ENUM_VALUE, METHOD, MESSAGE, ENUM). Without this baseline, a
+    regression that broke the fixture (e.g., a syntax error or an
+    accidental `deprecated = false` flip) would silently weaken the
+    path4 regression guard — path4 would still pass with zero
+    findings because the suppression is "doing its job" on a
+    no-trigger input.
+
+    This is the multi-element analogue of
+    ``test_sad_proto_without_suppression_exits_1_post_promotion``.
+    """
+    result = _invoke_lint(
+        _FIXTURE_DIR / "sad_multi_element.proto",
+        "--profile", "default",
+    )
+    assert result.exit_code == 1, (
+        f"sad_multi_element baseline: post-D6f must exit 1. Got "
+        f"exit={result.exit_code}; output={result.output!r}"
+    )
+    findings = _r6_findings(result.stdout)
+    rule_ids = {f["rule_id"] for f in findings}
+    assert rule_ids == {
+        "options/deprecated-field-must-have-replacement-comment",
+        "options/deprecated-enum-value-must-have-replacement-comment",
+        "options/deprecated-method-must-have-replacement-comment",
+        "options/deprecated-message-must-have-replacement-comment",
+        "options/deprecated-enum-must-have-replacement-comment",
+    }, (
+        f"sad_multi_element baseline: fixture must trigger all 5 R6 "
+        f"rule_ids (one per ElementKind). Got rule_ids: {rule_ids!r}"
+    )
+    assert all(f["severity"] == "error" for f in findings), (
+        f"sad_multi_element baseline: every R6 finding must carry "
+        f"severity='error' post-D6f. Got: "
+        f"{[(f['rule_id'], f['severity']) for f in findings]!r}"
+    )

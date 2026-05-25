@@ -262,3 +262,54 @@ class TestDescriptorSetModeR6:
             if f["rule_id"].startswith("options/deprecated-")
         ]
         assert len(r6_findings) == 0
+
+    def test_descriptor_set_fires_r6_at_error_without_max_warnings_post_promotion(
+        self, tmp_path: Path,
+    ) -> None:
+        """D6f U1 — descriptor-set mode mirrors proto-mode exit-code regression.
+
+        Mirrors ``test_cli_ci_gating.py::TestR6PromotionExitCodeRegression
+        ::test_max_warnings_unset_post_promotion_exits_1`` but exercises
+        the descriptor-set input path instead of ``--proto`` mode. The
+        proto-mode posture-1 test pinned the silent-CI-pass regression
+        risk at one entry point; this companion pins the same contract
+        at the other.
+
+        Without this test, a regression that broke the has_error short-
+        circuit ONLY along the descriptor-set code path (e.g., a future
+        refactor of the loader-to-engine handoff) would slip past
+        proto-mode coverage. The ce:review testing reviewer flagged the
+        gap (run 20260524-232840-29bb63be).
+        """
+        proto = _make_proto(tmp_path, _PROTO_DEPRECATED_SAD)
+        pbset = tmp_path / "demo.pbset"
+        pbset.write_bytes(
+            _build_descriptor_set_with_source_info(proto, tmp_path),
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                str(pbset),
+                "--profile",
+                "default",
+                "--format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 1, (
+            f"D6f R6 promotion (descriptor-set mode): --max-warnings-"
+            f"unset with an R6 finding must exit 1 post-promotion "
+            f"(was 0 pre-D6f). Got exit={result.exit_code}; "
+            f"output={result.output!r}"
+        )
+        payload = json.loads(result.stdout)
+        r6 = [
+            f for f in payload["findings"]
+            if f["rule_id"].startswith("options/deprecated-")
+        ]
+        assert len(r6) == 1, r6
+        assert r6[0]["severity"] == "error", (
+            f"D6f R6 promotion: descriptor-set-mode finding severity "
+            f"must be 'error'; got {r6[0]['severity']!r}"
+        )

@@ -48,6 +48,7 @@ from protokit.formatters._registry import (
 )
 from protokit.schema.compile import LintCompileDiagnostic
 from protokit.schema.lint.model import (
+    SEVERITY_RANK,
     LintFinding,
     LintReport,
     LintRuleSpec,
@@ -706,11 +707,37 @@ def _lint_rules_catalog(
             # Multi-kind rule: dict template. Join all values to
             # surface every kind's prose in the SARIF rule panel.
             description = "; ".join(spec.message_template.values())
-        out.append({
+        entry: dict[str, Any] = {
             "id": rule_id,
             "name": rule_id,
             "shortDescription": {"text": description},
-        })
+        }
+        # SARIF 2.1.0 §3.49.3: emit defaultConfiguration.level so
+        # IDE integrations (VS Code SARIF viewer, GitHub Advanced
+        # Security, etc.) can render rule severities in the rule
+        # panel without inspecting any individual finding. Skipped
+        # when spec is None (stub case) since the rule's declared
+        # severity is unrecoverable.
+        #
+        # Multi-kind rules carry a ``dict[str, LintSeverity]`` keyed
+        # by violation_kind; SARIF emits one rule entry per rule_id
+        # so the catalog gets the STRICTEST severity across kinds.
+        # In practice multi-kind rules ship with uniform severities
+        # (mixed severity across kinds is uncommon and architecturally
+        # discouraged), so this is usually a no-op picking the single
+        # shared value.
+        if spec is not None:
+            if isinstance(spec.severity, dict):
+                catalog_severity = max(
+                    spec.severity.values(),
+                    key=lambda s: SEVERITY_RANK[s],
+                )
+            else:
+                catalog_severity = spec.severity
+            entry["defaultConfiguration"] = {
+                "level": _lint_severity_to_sarif_level(catalog_severity),
+            }
+        out.append(entry)
     return out
 
 
