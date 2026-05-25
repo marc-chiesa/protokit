@@ -47,9 +47,9 @@ from protokit.schema.lint.model import LintRuntimeWarning
 
 
 class TestCategoryLiteral:
-    def test_literal_lists_all_seven_categories(self) -> None:
-        """The Literal annotation must enumerate exactly 7 category
-        names. A drift to 6 or 8 indicates an accidental break in the
+    def test_literal_lists_all_nine_categories(self) -> None:
+        """The Literal annotation must enumerate exactly 9 category
+        names. A drift to 8 or 10 indicates an accidental break in the
         category contract that this test catches at import time.
 
         D6d U1 added the sixth category
@@ -65,9 +65,17 @@ class TestCategoryLiteral:
         don't include ``google/api/field_behavior.proto``); bumped
         ``_LINT_JSON_SCHEMA_VERSION`` ``"0.4"`` → ``"0.5"`` per the
         closed-Literal-discriminator bump contract at
-        ``_builtin_lint.py:227-312``. Both D6d category additions
-        are closed-Literal extensions that require consumer
-        exhaustive-switch updates; each bumps the schema version.
+        ``_builtin_lint.py:227-312``.
+
+        D6f U2 added the eighth and ninth categories
+        ``contradictory_disable_config`` (CLI-emitted from
+        ``ResolvedLintConfig.from_dict`` when R9b directives across
+        disable + enable mechanisms collide per the R8 polarity-first
+        / tier-second resolution) + ``unknown_rule_id`` (CLI-emitted
+        when a rule_id named in ``disabled_rules`` / ``enabled_rules``
+        / ``--disable-rule`` / ``--enable-rule`` does not match any
+        loaded rule); bumped ``_LINT_JSON_SCHEMA_VERSION`` ``"0.5"``
+        → ``"0.6"`` (one bump covers both additions per KD-7).
         """
         type_hints = typing.get_type_hints(LintRuntimeWarning)
         category_type = type_hints["category"]
@@ -80,10 +88,12 @@ class TestCategoryLiteral:
             "all_files_excluded",
             "custom_annotation_extension_unresolved",
             "extension_unresolved",
+            "contradictory_disable_config",
+            "unknown_rule_id",
         }
-        # And exactly 7 — not "a superset" — so adding an eighth without
+        # And exactly 9 — not "a superset" — so adding a tenth without
         # a corresponding test update will fail this assertion.
-        assert len(literal_args) == 7
+        assert len(literal_args) == 9
 
     def test_test_helper_mirror_stays_in_sync_with_model(self) -> None:
         """``LINT_RUNTIME_WARNING_CATEGORIES`` in ``tests/schema/lint/cli/_helpers.py``
@@ -189,6 +199,8 @@ class TestFrozen:
             ("all_files_excluded", None),
             ("custom_annotation_extension_unresolved", "custom/x"),
             ("extension_unresolved", "options/x"),
+            ("contradictory_disable_config", "naming/x"),
+            ("unknown_rule_id", "naming/x"),
         ],
     )
     def test_assignment_raises_for_every_category(

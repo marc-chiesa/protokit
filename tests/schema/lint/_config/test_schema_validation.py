@@ -20,9 +20,13 @@ the U1 loader, not U2's validator.
 
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
+
 import pytest
 
-from protokit.schema.lint._config import ResolvedLintConfig
+from protokit.schema.lint._config import _ALLOWED_KEYS, ResolvedLintConfig
 from protokit.schema.lint.model import LintSeverity
 
 from .conftest import expect_invalid
@@ -278,3 +282,56 @@ class TestR3aFormatTypeMismatches:
         # downstream format-registry lookup sees the canonical form.
         resolved = ResolvedLintConfig.from_dict({"format": "  JSON  "}, {})
         assert resolved.format == "json"
+
+
+# ---------------------------------------------------------------------------
+# GAP 5: _ALLOWED_KEYS vs from_dict dispatch drift guard
+# ---------------------------------------------------------------------------
+
+
+class TestAllowedKeysDriftGuard:
+    """GAP 5: ``_ALLOWED_KEYS`` must stay in sync with the set of keys
+    that ``from_dict``'s dispatch branches actually process.
+
+    Regression: a contributor who adds a key to ``_ALLOWED_KEYS``
+    without implementing the ``from_dict`` branch would produce a
+    silent-drop (the key passes the allowlist check but is never
+    read). The reverse — an orphan branch with no matching
+    ``_ALLOWED_KEYS`` entry — means the key can never be reached.
+    Both drift directions are caught here.
+    """
+
+    def test_allowed_keys_match_from_dict_dispatch_branches(self) -> None:
+        """Drift guard: ``_ALLOWED_KEYS`` must match the set of keys that
+        ``from_dict``'s dispatch branches process.
+
+        Uses AST analysis of ``from_dict``'s source to extract the
+        string literals compared via ``key == "X"`` in the dispatch
+        chain, then asserts symmetry with ``_ALLOWED_KEYS``.
+        """
+        # ``inspect.getsource`` of a method returns the source with
+        # its in-class indentation preserved; ``ast.parse`` rejects
+        # indented top-level code, so dedent before parsing.
+        source = textwrap.dedent(
+            inspect.getsource(ResolvedLintConfig.from_dict),
+        )
+        tree = ast.parse(source)
+        # Find all string literals in ``key == "X"`` comparisons.
+        dispatched_keys: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Compare)
+                and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.Eq)
+                and isinstance(node.left, ast.Name)
+                and node.left.id == "key"
+                and len(node.comparators) == 1
+                and isinstance(node.comparators[0], ast.Constant)
+                and isinstance(node.comparators[0].value, str)
+            ):
+                dispatched_keys.add(node.comparators[0].value)
+        assert dispatched_keys == _ALLOWED_KEYS, (
+            f"_ALLOWED_KEYS and from_dict dispatch branches drifted. "
+            f"_ALLOWED_KEYS - dispatched: {sorted(_ALLOWED_KEYS - dispatched_keys)!r}; "
+            f"dispatched - _ALLOWED_KEYS: {sorted(dispatched_keys - _ALLOWED_KEYS)!r}"
+        )

@@ -344,7 +344,7 @@ class TestLintSarifRuntimeWarningProperties:
         assert "runtime_warnings" not in properties, properties
         # Schema version is unconditional (R9d cross-format-enum-string-parity
         # with lint_json).
-        assert properties["lint_schema_version"] == "0.5"
+        assert properties["lint_schema_version"] == "0.6"
 
     def test_runtime_warnings_and_schema_version_coexist(
         self, sarif_validator: jsonschema.Draft7Validator,
@@ -374,7 +374,7 @@ class TestLintSarifRuntimeWarningProperties:
         assert "runtime_warnings" in properties, properties
         assert "lint_schema_version" in properties, properties
         assert len(properties["runtime_warnings"]) == 1
-        assert properties["lint_schema_version"] == "0.5"
+        assert properties["lint_schema_version"] == "0.6"
 
     def test_empty_message_field_still_emits_one_entry(
         self, sarif_validator: jsonschema.Draft7Validator,
@@ -435,3 +435,71 @@ class TestLintSarifRuntimeWarningProperties:
         # notifications channel.
         notification_texts = [n["message"]["text"] for n in notifications]
         assert warning.message not in notification_texts
+
+
+class TestLintSarifD6fRuleIdInPropertyBag:
+    """D6f AN-W1: the two new D6f categories
+    (``contradictory_disable_config`` and ``unknown_rule_id``) carry
+    a ``rule_id`` key in their SARIF propertyBag for wire-format
+    parity with the JSON formatter. Pre-existing categories do NOT
+    carry ``rule_id`` in their propertyBag (user-accepted consistency
+    gap / out-of-scope follow-up).
+    """
+
+    def test_contradictory_disable_config_has_rule_id_in_properties(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """A ``contradictory_disable_config`` warning must carry
+        ``properties.rule_id`` in the SARIF propertyBag."""
+        warning = _warning_for_category("contradictory_disable_config")
+        report = LintReport(runtime_warnings=(warning,))
+        doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
+        rw = doc["runs"][0]["properties"]["runtime_warnings"]
+        assert len(rw) == 1
+        props = rw[0]["properties"]
+        assert props["category"] == "contradictory_disable_config"
+        assert props["subcategory"] == "runtime"
+        assert "rule_id" in props, (
+            "D6f AN-W1: contradictory_disable_config warning must carry "
+            f"rule_id in SARIF propertyBag; got: {props!r}"
+        )
+        assert props["rule_id"] == warning.rule_id
+
+    def test_unknown_rule_id_has_rule_id_in_properties(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """An ``unknown_rule_id`` warning must carry
+        ``properties.rule_id`` in the SARIF propertyBag."""
+        warning = _warning_for_category("unknown_rule_id")
+        report = LintReport(runtime_warnings=(warning,))
+        doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
+        rw = doc["runs"][0]["properties"]["runtime_warnings"]
+        assert len(rw) == 1
+        props = rw[0]["properties"]
+        assert props["category"] == "unknown_rule_id"
+        assert props["subcategory"] == "runtime"
+        assert "rule_id" in props, (
+            "D6f AN-W1: unknown_rule_id warning must carry "
+            f"rule_id in SARIF propertyBag; got: {props!r}"
+        )
+        assert props["rule_id"] == warning.rule_id
+
+    def test_pre_existing_rule_exception_has_no_rule_id_in_properties(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """Pre-existing ``rule_exception`` category does NOT carry
+        ``rule_id`` in propertyBag (out-of-scope consistency gap
+        accepted by the user)."""
+        warning = _warning_for_category("rule_exception")
+        report = LintReport(runtime_warnings=(warning,))
+        doc = json.loads(lint_sarif(report, _ctx()))
+        sarif_validator.validate(doc)
+        rw = doc["runs"][0]["properties"]["runtime_warnings"]
+        props = rw[0]["properties"]
+        assert props["category"] == "rule_exception"
+        assert "rule_id" not in props, (
+            "Pre-existing rule_exception must NOT carry rule_id in "
+            f"SARIF propertyBag (out-of-scope follow-up); got: {props!r}"
+        )

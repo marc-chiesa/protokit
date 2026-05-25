@@ -253,3 +253,127 @@ class TestSeveritiesErrors:
             capsys,
             substring="severities key must be a string rule_id",
         )
+
+
+# ---------------------------------------------------------------------------
+# D6f R4 — "off" sentinel interception (KD-1)
+# ---------------------------------------------------------------------------
+
+
+class TestOffSentinelInterception:
+    """``"off"`` is accepted as a severity value and intercepted at
+    the coercion layer per KD-1.
+
+    The matching rule_id is NOT written into the severities dict
+    (so ``LintSeverity`` stays a closed 3-member enum and the SARIF
+    formatter ``assert_never`` wire-safety invariant holds); instead
+    it is propagated to ``ResolvedLintConfig.disabled_rules`` per
+    the KD-1 sentinel propagation contract.
+    """
+
+    def test_off_value_does_not_appear_in_severities_dict(self) -> None:
+        """The intercepted ``off`` entry is removed from severities
+        — ``LintSeverity`` enum stays closed at 3 members."""
+        resolved = ResolvedLintConfig.from_dict(
+            {"severities": {"naming/snake-case-fields": "off"}}, {},
+        )
+        assert resolved.severities == {}
+
+    def test_off_value_surfaces_in_unified_disabled_rules(self) -> None:
+        """KD-1 propagation contract: off-severity rule_ids land in
+        the unified ``ResolvedLintConfig.disabled_rules`` frozenset."""
+        resolved = ResolvedLintConfig.from_dict(
+            {"severities": {"naming/snake-case-fields": "off"}}, {},
+        )
+        assert resolved.disabled_rules == frozenset(
+            {"naming/snake-case-fields"},
+        )
+
+    def test_off_value_case_insensitive(self) -> None:
+        """``"OFF"`` / ``"Off"`` are normalized to the sentinel just
+        like other severity strings."""
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "severities": {
+                    "naming/a": "OFF",
+                    "naming/b": "Off",
+                },
+            },
+            {},
+        )
+        assert resolved.severities == {}
+        assert resolved.disabled_rules == frozenset(
+            {"naming/a", "naming/b"},
+        )
+
+    def test_off_value_whitespace_tolerated(self) -> None:
+        resolved = ResolvedLintConfig.from_dict(
+            {"severities": {"naming/foo": "  off  "}}, {},
+        )
+        assert resolved.disabled_rules == frozenset({"naming/foo"})
+
+    def test_off_mixed_with_non_off_severities(self) -> None:
+        """Off-severity rules go to disabled_rules; non-off entries
+        stay in severities."""
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "severities": {
+                    "naming/snake-case-fields": "off",
+                    "imports/unused": "warning",
+                    "package/no-import-cycle": "off",
+                },
+            },
+            {},
+        )
+        assert resolved.disabled_rules == frozenset(
+            {"naming/snake-case-fields", "package/no-import-cycle"},
+        )
+        assert dict(resolved.severities) == {
+            "imports/unused": LintSeverity.WARNING,
+        }
+
+    def test_off_rule_id_normalized_at_boundary(self) -> None:
+        """Per KD-6, off-rule_id keys are normalized to lowercase
+        before being added to the disabled set."""
+        resolved = ResolvedLintConfig.from_dict(
+            {"severities": {"Naming/Snake-Case-Fields": "off"}}, {},
+        )
+        assert resolved.disabled_rules == frozenset(
+            {"naming/snake-case-fields"},
+        )
+
+    def test_off_value_omitted_resolves_to_empty(self) -> None:
+        """No ``[severities]`` table → empty disabled_rules from this
+        source. Other R9b mechanisms unaffected."""
+        resolved = ResolvedLintConfig.from_dict({}, {})
+        assert resolved.disabled_rules == frozenset()
+
+
+class TestCoercedSeveritiesNamedTuple:
+    """The new ``_CoercedSeverities`` return shape exposes off ids
+    distinctly from non-off severities."""
+
+    def test_coerce_severities_returns_named_tuple(self) -> None:
+        """Direct unit test of ``_coerce_severities`` — verifies the
+        return shape regardless of from_dict's downstream merging."""
+        from protokit.schema.lint._config import _coerce_severities
+
+        result = _coerce_severities(
+            {
+                "naming/a": "off",
+                "naming/b": "warning",
+            },
+        )
+        assert result.severities == {"naming/b": LintSeverity.WARNING}
+        assert result.off_rule_ids == frozenset({"naming/a"})
+
+    def test_coerce_severities_unpacking(self) -> None:
+        """``_CoercedSeverities`` is a NamedTuple — supports both
+        attribute access and tuple unpacking."""
+        from protokit.schema.lint._config import _coerce_severities
+
+        severities, off_ids = _coerce_severities(
+            {"naming/a": "off", "naming/b": "info"},
+        )
+        assert severities == {"naming/b": LintSeverity.INFO}
+        assert off_ids == frozenset({"naming/a"})

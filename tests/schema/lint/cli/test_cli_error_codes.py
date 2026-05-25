@@ -44,22 +44,33 @@ _EXPECTED_D5_CODES: tuple[str, ...] = (
     "exclude-pattern-invalid",
 )
 
+#: D6f U2 extends the constant with two new codes:
+#: - `no-rules-after-disable`: R9b directives disabled every rule
+#:   in the resolved profile (COR-1).
+#: - `cli-option-invalid`: a CLI --disable-rule / --enable-rule option
+#:   value failed format validation (CLR-01).
+_EXPECTED_D6F_CODES: tuple[str, ...] = (
+    *_EXPECTED_D5_CODES,
+    "no-rules-after-disable",
+    "cli-option-invalid",
+)
+
 
 class TestLintErrorCodesConstant:
     def test_constant_has_exactly_the_d5_set(self) -> None:
-        """Closed set check: no rogue codes, no missing codes (D5 inventory)."""
-        assert set(_LINT_ERROR_CODES) == set(_EXPECTED_D5_CODES)
+        """Closed set check: no rogue codes, no missing codes (D6f inventory)."""
+        assert set(_LINT_ERROR_CODES) == set(_EXPECTED_D6F_CODES)
 
     def test_constant_size_is_thirteen(self) -> None:
-        """D5 R20a-extended says we ship D3's 10 codes + D5's 3 new codes."""
-        assert len(_LINT_ERROR_CODES) == 13
+        """D6f R20a-extended: D3's 10 codes + D5's 3 + D6f's 2 = 15."""
+        assert len(_LINT_ERROR_CODES) == 15
 
     def test_constant_order_matches_r20a(self) -> None:
         """Plan locks the tuple order so docs and CI greps stay stable."""
-        assert _LINT_ERROR_CODES == _EXPECTED_D5_CODES
+        assert _LINT_ERROR_CODES == _EXPECTED_D6F_CODES
 
     def test_d3_codes_still_present(self) -> None:
-        """D3 codes must not be reordered or removed by D5's additions."""
+        """D3 codes must not be reordered or removed by D5's/D6f's additions."""
         assert _LINT_ERROR_CODES[: len(_EXPECTED_D3_CODES)] == _EXPECTED_D3_CODES
 
     def test_format_unavailable_present(self) -> None:

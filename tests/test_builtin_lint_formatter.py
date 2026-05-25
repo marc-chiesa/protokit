@@ -745,6 +745,8 @@ class TestBumpContractDocstring:
             '"severities_unloaded_rule"',
             '"custom_annotation_extension_unresolved"',
             '"extension_unresolved"',
+            '"contradictory_disable_config"',
+            '"unknown_rule_id"',
         )
         for substring in ratchet_substrings:
             assert substring in source, (

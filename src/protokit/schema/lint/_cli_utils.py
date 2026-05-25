@@ -104,6 +104,19 @@ _LINT_ERROR_CODES: tuple[str, ...] = (
     # Wired in D5 U3 (pathspec compilation); declared here for the same
     # reason as `pyproject-config-invalid` above.
     "exclude-pattern-invalid",
+    # D6f U2 COR-1: R9b directives disabled every rule in the
+    # resolved profile. The profile WAS declared (otherwise the
+    # `unknown-profile` code would fire); the user has disabled all
+    # its rules via `disabled_rules` / `[severities] = "off"` /
+    # `--disable-rule`. Fires BEFORE `unknown-profile` so the more
+    # specific error wins. Alphabetically inserted.
+    "no-rules-after-disable",
+    # D6f U2 CLR-01: a CLI `--disable-rule` / `--enable-rule` option
+    # value failed format validation. Distinct from
+    # `pyproject-config-invalid` (which attributes pyproject-sourced
+    # coercion failures) so CI scripts can distinguish a bad CLI flag
+    # value from a bad pyproject entry without parsing freeform text.
+    "cli-option-invalid",
 )
 
 

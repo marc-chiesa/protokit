@@ -51,6 +51,7 @@ from protokit.schema.lint.model import (
     LintFinding,
     LintReport,
     LintRuleSpec,
+    LintRuntimeWarning,
     LintSeverity,
 )
 
@@ -309,7 +310,20 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     mypy-strict narrowing pattern documented on
 #:     :class:`LintRuntimeWarning`) must extend their match
 #:     construct to handle BOTH new cases.
-_LINT_JSON_SCHEMA_VERSION: str = "0.5"
+#:   - **D6f 0.7.0 bump**: ``"0.5"`` → ``"0.6"`` for the eighth and
+#:     ninth ``LintRuntimeWarning.category`` Literal values
+#:     (``"contradictory_disable_config"`` from Req-R8b +
+#:     ``"unknown_rule_id"`` from Req-R8c), both surfaced by D6f U2's
+#:     R9b per-rule disable infrastructure. One bump covers both
+#:     additions per [[closed-literal-discriminator-bump-trigger-
+#:     2026-05-17]] (the bump triggers ON the closed-Literal change,
+#:     not at the delivery boundary — the schema bump lands atomic
+#:     with the model.py Literal additions in U2, NOT deferred to
+#:     U3's package version bump). The pyproject ``[project] version``
+#:     bump (``0.6.0`` → ``0.7.0``) is a distinct surface that lands
+#:     in U3 alongside the CHANGELOG fold per
+#:     [[pre-1.0-version-bump-as-communication-contract-2026-05-14]].
+_LINT_JSON_SCHEMA_VERSION: str = "0.6"
 
 
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
@@ -326,14 +340,15 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       ``--min-severity`` filtering).
     - ``runtime_warnings``: list of warning dicts (category,
       rule_id, message, exception_type, descriptor_path). The
-      ``rule_id`` field is populated for the five rule-scoped
+      ``rule_id`` field is populated for the seven rule-scoped
       categories (``rule_exception``, ``unloaded_rule``,
       ``severities_unloaded_rule``,
       ``custom_annotation_extension_unresolved``,
-      ``extension_unresolved``) and ``null`` for the two
-      non-rule-scoped categories (``min_severity_relaxed``,
-      ``all_files_excluded``). See :class:`LintRuntimeWarning` for
-      the full per-category field-population contract. For rules
+      ``extension_unresolved``, ``contradictory_disable_config``,
+      ``unknown_rule_id``) and ``null`` for the two non-rule-scoped
+      categories (``min_severity_relaxed``, ``all_files_excluded``).
+      See :class:`LintRuntimeWarning` for the full per-category
+      field-population contract. For rules
       with dict-shaped ``message_template`` (multi-arm — e.g.,
       ``package/directory-same-package`` with three arms or
       ``options/field-behavior-consistent`` with three arms), the
@@ -712,6 +727,49 @@ def _protokit_version() -> str:
     return _get_protokit_version()
 
 
+#: D6f AN-W1: categories whose SARIF propertyBag includes a ``rule_id``
+#: field for wire-format parity with the JSON formatter. Only the two
+#: new D6f categories are listed here; pre-existing rule-scoped
+#: categories (``rule_exception``, ``unloaded_rule``, etc.) keep their
+#: existing behavior (no ``rule_id`` in propertyBag) per the user-
+#: accepted consistency gap / out-of-scope follow-up.
+_SARIF_RULE_ID_PROPERTY_CATEGORIES: frozenset[str] = frozenset({
+    "contradictory_disable_config",
+    "unknown_rule_id",
+})
+
+
+def _sarif_runtime_warning_entry(w: LintRuntimeWarning) -> dict[str, Any]:
+    """Build one SARIF ``propertyBag`` entry for a runtime warning.
+
+    The base shape (``level``, ``message.text``,
+    ``properties.{category, subcategory: "runtime"}``) is emitted for
+    every category. For the two D6f categories in
+    :data:`_SARIF_RULE_ID_PROPERTY_CATEGORIES`, a ``rule_id`` key is
+    additionally emitted in the ``properties`` bag so SARIF consumers
+    can correlate warnings back to rule_ids without parsing the message
+    text.
+
+    Args:
+        w: The ``LintRuntimeWarning`` to serialize.
+
+    Returns:
+        A dict suitable for inclusion in
+        ``runs[0].properties.runtime_warnings``.
+    """
+    props: dict[str, Any] = {
+        "category": w.category,
+        "subcategory": "runtime",
+    }
+    if w.category in _SARIF_RULE_ID_PROPERTY_CATEGORIES and w.rule_id is not None:
+        props["rule_id"] = w.rule_id
+    return {
+        "level": "warning",
+        "message": {"text": w.message},
+        "properties": props,
+    }
+
+
 def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     """Render a LintReport as SARIF 2.1.0 JSON.
 
@@ -843,14 +901,7 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     run_props: dict[str, Any] = run.setdefault("properties", {})
     if report.runtime_warnings:
         run_props["runtime_warnings"] = [
-            {
-                "level": "warning",
-                "message": {"text": w.message},
-                "properties": {
-                    "category": w.category,
-                    "subcategory": "runtime",
-                },
-            }
+            _sarif_runtime_warning_entry(w)
             for w in report.runtime_warnings
         ]
 

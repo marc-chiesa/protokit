@@ -488,6 +488,17 @@ class LintEngine:
         """
         return bool(self._loaded_specs)
 
+    @property
+    def loaded_rule_ids(self) -> frozenset[str]:
+        """Frozen snapshot of every rule_id loaded into the engine.
+
+        Public accessor over the internal ``_loaded_specs`` dict.
+        Used by CLI-orchestration code (D6f R8c unknown_rule_id
+        synthesis) to diff R9b directives against the loaded
+        registry without reaching into engine internals.
+        """
+        return frozenset(self._loaded_specs.keys())
+
     def get_spec(self, rule_id: str) -> LintRuleSpec:
         """Return the :class:`LintRuleSpec` registered under ``rule_id``.
 

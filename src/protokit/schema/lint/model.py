@@ -373,7 +373,7 @@ class LintFinding:
 class LintRuntimeWarning:
     """Engine- or CLI-stage warning recorded during a lint run.
 
-    Six structurally distinct events share this type via the
+    Nine structurally distinct events share this type via the
     ``category`` discriminator (mirrors ``LintCompileDiagnostic``'s
     ``category: Literal[...]`` pattern in
     ``protokit.schema.compile``):
@@ -459,19 +459,47 @@ class LintRuntimeWarning:
        set is missing the well-known proto a built-in rule depends
        on. Consumers can discriminate via the ``category`` field
        without text parsing.
+    8. ``"contradictory_disable_config"`` (D6f U2, CLI-emitted via
+       ``ResolvedLintConfig.from_dict``) — a rule_id appears in BOTH
+       a disable directive AND an enable directive across the R9b
+       precedence table, so the polarity-first / tier-second
+       resolution silently overrode one of the two. Categories of
+       contradiction (per the R8 resolution table): (a) pyproject
+       ``disabled_rules`` ⊃ R AND ``enabled_rules`` ⊃ R; (b) CLI
+       ``--disable-rule R`` AND ``--enable-rule R``; (c) CLI
+       ``--enable-rule R`` AND pyproject ``disabled_rules`` ⊃ R
+       (cross-tier disable wins); (d) pyproject ``disabled_rules``
+       ⊃ R AND ``[severities] R = <non-off>`` (severity override is
+       moot under polarity-first); (e) ``[severities] R = "off"``
+       AND ``enabled_rules`` ⊃ R. The idempotent case
+       (``[severities] R = "off"`` AND ``disabled_rules`` ⊃ R —
+       both are disables) does NOT warn. Carries ``rule_id``
+       populated; the message names the involved directives.
+    9. ``"unknown_rule_id"`` (D6f U2, CLI-emitted) — a rule_id named
+       in pyproject ``disabled_rules`` / ``enabled_rules`` or CLI
+       ``--disable-rule`` / ``--enable-rule`` does not correspond to
+       any loaded rule in the engine's ``_loaded_specs`` registry
+       after rule-pack loading. Lenient-with-warning per Req-R8c:
+       the unknown id is dropped from the effective disabled /
+       enabled set and a warning fires so the user sees the typo or
+       removed-rule reference without their lint pass exiting 2.
+       Carries ``rule_id`` populated with the normalized form
+       (``.strip().lower()`` per KD-6) so the user sees what was
+       actually compared against the registry.
 
     **BREAKING (D5 U3)**: ``rule_id`` was widened from ``str`` to
-    ``str | None``. The three rule-scoped categories
-    (``rule_exception``, ``unloaded_rule``, ``severities_unloaded_rule``)
-    continue to populate ``rule_id`` with a non-``None`` value at every
-    emit site; the type widening only allows the two non-rule-scoped
-    CLI-emitted categories (``min_severity_relaxed``,
-    ``all_files_excluded``) to populate ``None``. Consumers iterating
-    ``w.rule_id`` (e.g., ``w.rule_id.upper()``) on the non-rule-scoped
-    categories will raise ``AttributeError`` — migrate to
-    ``str | None``-aware narrowing per the mypy-strict pattern below.
-    See the CHANGELOG D5 entry for the BREAKING marker and migration
-    recipes.
+    ``str | None``. The rule-scoped categories
+    (``rule_exception``, ``unloaded_rule``, ``severities_unloaded_rule``,
+    ``custom_annotation_extension_unresolved``, ``extension_unresolved``,
+    ``contradictory_disable_config``, ``unknown_rule_id``) continue to
+    populate ``rule_id`` with a non-``None`` value at every emit site;
+    the type widening only allows the two non-rule-scoped CLI-emitted
+    categories (``min_severity_relaxed``, ``all_files_excluded``) to
+    populate ``None``. Consumers iterating ``w.rule_id`` (e.g.,
+    ``w.rule_id.upper()``) on the non-rule-scoped categories will
+    raise ``AttributeError`` — migrate to ``str | None``-aware
+    narrowing per the mypy-strict pattern below. See the CHANGELOG
+    D5 entry for the BREAKING marker and migration recipes.
 
     **Field-population per category** (enforced by tests, not by the
     type system):
@@ -527,6 +555,26 @@ class LintRuntimeWarning:
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
+    ``"contradictory_disable_config"`` (CLI-emitted via
+    ``from_dict``, D6f U2):
+        - ``rule_id``: populated (``str``) — the contradicted
+          rule_id (normalized to lowercase per KD-6)
+        - ``message``: human-readable text naming both directives
+          (e.g., "rule <rid> appears in both
+          [tool.protokit.lint] disabled_rules and enabled_rules;
+          disable wins per R8 polarity-first precedence")
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
+    ``"unknown_rule_id"`` (CLI-emitted, D6f U2):
+        - ``rule_id``: populated (``str``) — the unknown rule_id
+          named in disabled_rules / enabled_rules /
+          --disable-rule / --enable-rule (post-normalization)
+        - ``message``: human-readable "rule <rid> is named in
+          <mechanism> but does not match any loaded rule"
+        - ``exception_type``: ``None``
+        - ``descriptor_path``: ``None``
+
     For ``category="rule_exception"``, ``descriptor_path`` mirrors
     D1's ``LintLocation.__str__`` shapes per ``ElementKind``:
 
@@ -560,12 +608,13 @@ class LintRuntimeWarning:
     ``severities_unloaded_rule`` to the rule-scoped set.
 
     Attributes:
-        category: Discriminator for the seven event shapes. Four
+        category: Discriminator for the nine event shapes. Four
             engine-emitted (``rule_exception``, ``unloaded_rule``,
             ``custom_annotation_extension_unresolved``,
-            ``extension_unresolved``) and three CLI-emitted
+            ``extension_unresolved``) and five CLI-emitted
             (``severities_unloaded_rule``, ``min_severity_relaxed``,
-            ``all_files_excluded``).
+            ``all_files_excluded``, ``contradictory_disable_config``,
+            ``unknown_rule_id``).
         rule_id: The id of the rule the warning is about. For
             ``"rule_exception"`` this is the rule that raised; for
             ``"unloaded_rule"`` this is the missing id named in the
@@ -575,8 +624,12 @@ class LintRuntimeWarning:
             synthetic ``custom/<suffix>`` rule that was skipped; for
             ``"extension_unresolved"`` this is the built-in rule_id
             that was skipped because a depended-on extension was not
-            in the compile pool; for the two non-rule-scoped
-            CLI-emitted categories this is ``None``.
+            in the compile pool; for ``"contradictory_disable_config"``
+            this is the contradicted rule_id (normalized lowercase);
+            for ``"unknown_rule_id"`` this is the unknown rule_id
+            named in a disable/enable directive (post-normalization);
+            for the two non-rule-scoped CLI-emitted categories this
+            is ``None``.
         message: Human-readable description. For
             ``"rule_exception"`` typically ``str(exc)``; for the two
             ``*unloaded_rule`` categories an explanation of the
@@ -598,6 +651,8 @@ class LintRuntimeWarning:
         "all_files_excluded",
         "custom_annotation_extension_unresolved",
         "extension_unresolved",
+        "contradictory_disable_config",
+        "unknown_rule_id",
     ]
     rule_id: str | None
     message: str

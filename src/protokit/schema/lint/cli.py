@@ -311,6 +311,16 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
         "  Bypass pyproject discovery (containerized CI without "
         ".git boundary):\n\n"
         "    protokit lint --no-config schema.descriptor_set\n\n"
+        "  Disable a single rule for this invocation (R9b per-rule disable):\n\n"
+        "    protokit lint --disable-rule naming/snake-case-fields "
+        "schema.descriptor_set\n\n"
+        "  Opt into a single rule with --no-builtin-rules "
+        "(pure opt-in workflow):\n\n"
+        "    protokit lint --no-builtin-rules --enable-rule "
+        "naming/snake-case-fields schema.descriptor_set\n\n"
+        "  Inspect R9b runtime_warnings (unknown rule id / contradiction):\n\n"
+        "    protokit lint --format=json --disable-rule custom/audit-required "
+        "schema.descriptor_set\n\n"
         "EXIT CODES (R20 ladder):\n\n"
         "  0 = clean run (no findings, or only INFO findings, or "
         "WARNINGs with --max-warnings unset / not exceeded).\n\n"
@@ -543,6 +553,65 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
          "'error[lint-no-rules]:' rather than emitting zero findings.",
 )
 @click.option(
+    "--disable-rule",
+    "disable_rules",
+    multiple=True,
+    metavar="RULE_ID",
+    envvar="PROTOKIT_DISABLE_RULE",
+    show_envvar=True,
+    help="Disable a specific rule_id for this invocation (D6f R6, "
+         "repeatable). Accepts canonical 'pack/rule-suffix' "
+         "(e.g., 'naming/snake-case-fields') and custom forms "
+         "('custom/<suffix>' for all-kinds disable; "
+         "'custom/<suffix>__<kind>' for per-kind disable). The "
+         "rule is removed from the composed profile's rule_ids "
+         "BEFORE the engine walks any descriptors, so it never "
+         "fires. Pyproject equivalent: [tool.protokit.lint] "
+         "disabled_rules = [...]. R8 precedence: any disable from "
+         "any tier wins (polarity-first); within polarity, CLI > "
+         "pyproject. Cross-tier --enable-rule R + pyproject "
+         "disabled_rules ⊃ R emits a "
+         "'contradictory_disable_config' runtime warning. The "
+         "alternative '[tool.protokit.lint.severities] R = \"off\"' "
+         "produces the same effect (D6f R4 sentinel). "
+         "Env-var: PROTOKIT_DISABLE_RULE accepts space-separated "
+         "rule_ids (e.g., PROTOKIT_DISABLE_RULE=\"naming/snake-case-fields "
+         "imports/unused\"); comma-separation is NOT supported. "
+         "Use --format=json to inspect runtime_warnings for "
+         "'unknown_rule_id' (typo / removed-rule signal) and "
+         "'contradictory_disable_config' (R8 polarity conflict) "
+         "diagnostics.",
+)
+@click.option(
+    "--enable-rule",
+    "enable_rules",
+    multiple=True,
+    metavar="RULE_ID",
+    envvar="PROTOKIT_ENABLE_RULE",
+    show_envvar=True,
+    help="Prevent an R9b disable directive from suppressing the named "
+         "rule (D6f R6, repeatable). Accepts the same rule_id shapes "
+         "as --disable-rule. Pyproject equivalent: "
+         "[tool.protokit.lint] enabled_rules = [...]. Does NOT add "
+         "rules to the profile — use --profile to select a profile "
+         "that includes the rule, OR --rule-pack to load a rule pack. "
+         "With --no-builtin-rules, the rule must come from a "
+         "--rule-pack module; otherwise it remains unloaded and emits "
+         "an 'unknown_rule_id' warning. R8 polarity-first means any "
+         "disable (from any tier) wins — --enable-rule does NOT "
+         "override a pyproject 'disabled_rules' or '[severities] = "
+         "\"off\"' disable. To bypass pyproject entirely, use "
+         "--no-config (WARNING: --no-config drops ALL pyproject "
+         "configuration, not just disabled_rules). To partially "
+         "override, edit your pyproject directly. "
+         "Env-var: PROTOKIT_ENABLE_RULE accepts space-separated "
+         "rule_ids; comma-separation is NOT supported. "
+         "Use --format=json to inspect runtime_warnings for "
+         "'unknown_rule_id' (typo / removed-rule signal) and "
+         "'contradictory_disable_config' (R8 polarity conflict) "
+         "diagnostics.",
+)
+@click.option(
     "--version",
     is_flag=True,
     is_eager=True,
@@ -572,6 +641,8 @@ def main(
     exclude_patterns: tuple[str, ...],
     no_exclude: bool,
     no_builtin_rules: bool,
+    disable_rules: tuple[str, ...],
+    enable_rules: tuple[str, ...],
 ) -> None:
     """Lint INPUTS for style and policy violations.
 
@@ -665,6 +736,17 @@ def main(
     no_builtin_rules_explicit = (
         ctx.get_parameter_source("no_builtin_rules") in explicit_sources
     )
+    # D6f KD-5: click multiple=True natural empty-tuple sentinel
+    # (no ParameterSource needed). The user cannot produce `()` by
+    # typing the flag — Click requires a value with each
+    # ``--disable-rule`` invocation — so `not disable_rules` is a
+    # clean "user did not pass this flag" test. Passing the literal
+    # empty tuple to ResolvedLintConfig.from_dict would behave
+    # identically (the unified disable set unions in an empty
+    # frozenset); the ``None`` sentinel is preferred for symmetry
+    # with the other CLI overrides.
+    cli_disable_value = tuple(disable_rules) if disable_rules else None
+    cli_enable_value = tuple(enable_rules) if enable_rules else None
     cli_overrides: dict[str, Any] = {
         "profile": (
             (profile_name.strip().lower(),) if profile_explicit else None
@@ -682,6 +764,8 @@ def main(
         "no_builtin_rules": (
             no_builtin_rules if no_builtin_rules_explicit else None
         ),
+        "disabled_rules": cli_disable_value,
+        "enabled_rules": cli_enable_value,
     }
     resolved = ResolvedLintConfig.from_dict(pyproject_config, cli_overrides)
     # quiet + non-human-format mutex applies to the RESOLVED format so
@@ -959,15 +1043,55 @@ def _main_impl(
                 **resolved.severities,
             },
         )
+    # Snapshot the profile's loaded rule_ids BEFORE R9b disable
+    # subtraction, so the severities_unloaded_rule diagnostic below
+    # only flags severities keys that don't match ANY rule in the
+    # composed profile — not rule_ids that exist but the user has
+    # explicitly disabled. Without this snapshot, a user who sets
+    # both ``disabled_rules = ["R"]`` AND ``[severities] R = "warning"``
+    # would receive TWO warnings (the R8b contradictory_disable_config
+    # from from_dict AND a spurious severities_unloaded_rule from
+    # below); the snapshot ensures the latter only fires for
+    # genuinely unknown rule_ids.
+    pre_disable_rule_ids = composed_profile.rule_ids
+    # D6f KD-1 — load-bearing R9b profile-augmentation step.
+    # Subtract the unified disabled_rules set (severity-"off"
+    # sentinel + pyproject disabled_rules + CLI --disable-rule, with
+    # custom-prefix expansion already applied per KD-2) from the
+    # composed profile's rule_ids BEFORE handing the profile to the
+    # engine. This is the actuation of the KD-1 sentinel
+    # propagation contract: from_dict produced the unified set, and
+    # this is where the engine's profile filter loses the disabled
+    # rule_ids. Without this step the from_dict bookkeeping silently
+    # no-ops at runtime — caught by
+    # ``tests/schema/lint/cli/test_cli_r9b_profile_augmentation.py``.
+    if resolved.disabled_rules:
+        composed_profile = dataclasses.replace(
+            composed_profile,
+            rule_ids=composed_profile.rule_ids - resolved.disabled_rules,
+        )
     # Collect unknown keys for the post-engine.run advisory
-    # emission. Comparing against composed_profile.rule_ids (the
-    # union of all loaded packs' rule_ids in the active profile)
-    # rather than RULE_ID_MAP keys, because rule_severity_overrides
-    # only takes effect when the rule is actually in the profile's
-    # run-set. Empty severities → empty tuple (no extra branch).
+    # emission. Two guards apply:
+    # 1. Subtract ``pre_disable_rule_ids`` (the union of all loaded
+    #    packs' rule_ids in the active profile BEFORE R9b disable
+    #    subtraction): prevents a spurious severities_unloaded_rule
+    #    for a rule the user explicitly disabled AND overrode in
+    #    [severities] — the from_dict R8b warning already attributes
+    #    the contradiction.
+    # 2. Also subtract ``resolved.disabled_rules``: when a rule_id
+    #    appears in BOTH disabled_rules AND [severities] with a
+    #    non-off value, the rule is genuinely unknown (not in the
+    #    composed profile at all). Without this second guard, such a
+    #    rule fires BOTH R8b (contradictory_disable_config) AND
+    #    severities_unloaded_rule, which is redundant — R8b is the
+    #    canonical attribution. The subtraction ensures zero
+    #    severities_unloaded_rule warnings for rule_ids that are
+    #    already covered by R8b.
+    # Empty severities → empty tuple (no extra branch).
     severities_unloaded_rule_ids: tuple[str, ...] = tuple(
         sorted(
-            set(resolved.severities) - composed_profile.rule_ids,
+            (set(resolved.severities) - pre_disable_rule_ids)
+            - resolved.disabled_rules,
         ),
     )
 
@@ -1001,6 +1125,27 @@ def _main_impl(
             "no lint rules loaded — supply --rule-pack with a pack "
             "exposing RULES, or rely on the built-in BUILTIN_PACKS "
             "(see protokit.schema.lint.rules.BUILTIN_PACKS).",
+        )
+    # D6f COR-1: R9b directives disabled every rule in the resolved
+    # profile. This guard fires BEFORE the unknown-profile guard so
+    # the more specific error wins — the profile WAS declared, the
+    # user just disabled all its rules.
+    if pre_disable_rule_ids and not composed_profile.rule_ids:
+        n = len(pre_disable_rule_ids)
+        profile_display = _safe_for_stderr(
+            resolved.profile[0]
+            if len(resolved.profile) == 1
+            else "+".join(resolved.profile)
+        )
+        error_exit_with_code(
+            "no-rules-after-disable",
+            (
+                f"profile {profile_display!r} had {n} rule(s) but R9b "
+                f"directives (disabled_rules / [severities]='off' / "
+                f"--disable-rule) disabled all of them; no rules remain "
+                f"to run. Review your disable directives or use "
+                f"--no-config to bypass pyproject."
+            ),
         )
     if not composed_profile.rule_ids:
         # Emit per-pack introspection as parseable info lines, then the
@@ -1174,6 +1319,76 @@ def _main_impl(
         report = dataclasses.replace(
             report,
             runtime_warnings=report.runtime_warnings + new_warnings,
+        )
+
+    # D6f R8b — append the contradictory_disable_config warnings that
+    # ``ResolvedLintConfig.from_dict`` accumulated during R9b
+    # precedence resolution. They live on ``resolved.runtime_warnings``
+    # (a frozen-dataclass-safe tuple snapshot per __post_init__) so
+    # they reach the formatter pipeline like any engine-emitted
+    # warning. Empty tuple in the common no-contradictions case.
+    if resolved.runtime_warnings:
+        report = dataclasses.replace(
+            report,
+            runtime_warnings=(
+                report.runtime_warnings + resolved.runtime_warnings
+            ),
+        )
+
+    # D6f R8c — synthesize ``unknown_rule_id`` warnings for any R9b
+    # directive (disabled_rules / enabled_rules from pyproject OR
+    # --disable-rule / --enable-rule from CLI, post-normalization
+    # and post-custom-prefix-expansion) naming a rule_id that does
+    # not exist in the engine's ``_loaded_specs`` registry after
+    # all rule-pack loading. Mirrors the existing
+    # ``severities_unloaded_rule`` pattern above: the orchestration
+    # layer has the full loaded-rule universe and is the natural
+    # site for the diff. Lenient-with-warning per the spec — the
+    # unknown id has already been silently dropped from the
+    # effective set by from_dict's R8 resolution, so no behavior
+    # change beyond the diagnostic.
+    loaded_rule_ids = engine.loaded_rule_ids
+    unknown_r9b_rule_ids: tuple[str, ...] = tuple(
+        sorted(
+            (resolved.disabled_rules | resolved.enabled_rules)
+            - loaded_rule_ids,
+        ),
+    )
+    if unknown_r9b_rule_ids:
+        def _r8c_message(rid: str) -> str:
+            # Detect mangled-custom-form misuse: first-kind synthetic rules
+            # register under the BARE form ("custom/X"), not "custom/X__<first_kind>".
+            # A user writing the mangled form expecting per-kind disable on the first
+            # kind silently fails; the R8c diagnostic should mention the convention.
+            safe_rid = _safe_for_stderr(rid)
+            if "__" in rid and rid.startswith("custom/"):
+                return (
+                    f"rule {safe_rid!r} is named in an R9b directive "
+                    f"(disabled_rules / enabled_rules / --disable-rule / --enable-rule) "
+                    f"but does not match any loaded rule. Note: first-kind custom rules "
+                    f"register under the bare 'custom/<suffix>' form; the '__<kind>' "
+                    f"mangled form addresses only subsequent kinds. Verify the kind name "
+                    f"OR use the bare form to disable all kinds at once."
+                )
+            return (
+                f"rule {safe_rid!r} is named in an R9b directive "
+                f"(disabled_rules / enabled_rules / "
+                f"--disable-rule / --enable-rule) but does not "
+                f"match any loaded rule — the directive has no "
+                f"effect"
+            )
+
+        unknown_warnings = tuple(
+            LintRuntimeWarning(
+                category="unknown_rule_id",
+                rule_id=_safe_for_stderr(rid),
+                message=_r8c_message(rid),
+            )
+            for rid in unknown_r9b_rule_ids
+        )
+        report = dataclasses.replace(
+            report,
+            runtime_warnings=report.runtime_warnings + unknown_warnings,
         )
 
     try:

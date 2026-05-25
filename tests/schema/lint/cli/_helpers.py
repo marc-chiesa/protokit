@@ -10,10 +10,11 @@ D5 U5 added the cross-formatter render contract. The
 ``LINT_RUNTIME_WARNING_CATEGORIES`` tuple + ``warning_for_category``
 factory live here so the formatter test (``tests/test_builtin_lint_runtime_warnings.py``)
 and the CLI human-stderr test (``test_human_stderr_render.py``)
-share one definition — an 8th category lands by editing this file
+share one definition — a new category lands by editing this file
 alone (D6b U5 added the 5th, ``severities_unloaded_rule``; D6d U1
 added the 6th, ``custom_annotation_extension_unresolved``; D6d U2
-added the 7th, ``extension_unresolved``).
+added the 7th, ``extension_unresolved``; D6f U2 added the 8th and
+9th, ``contradictory_disable_config`` + ``unknown_rule_id``).
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ from typing import Any
 
 from protokit.schema.lint.model import LintRuntimeWarning
 
-#: The seven ``LintRuntimeWarning`` categories that exist as of D6d
+#: The nine ``LintRuntimeWarning`` categories that exist as of D6f
 #: U2. Keep this tuple in sync with ``LintRuntimeWarning.category``'s
-#: ``Literal[...]`` in ``protokit.schema.lint.model``. Adding an 8th
+#: ``Literal[...]`` in ``protokit.schema.lint.model``. Adding a new
 #: category is a deliberate act that requires updating both the
 #: model Literal AND this tuple — the cross-formatter parametrized
 #: matrix tests will then fail until every formatter render site is
@@ -38,6 +39,8 @@ LINT_RUNTIME_WARNING_CATEGORIES: tuple[str, ...] = (
     "all_files_excluded",
     "custom_annotation_extension_unresolved",
     "extension_unresolved",
+    "contradictory_disable_config",
+    "unknown_rule_id",
 )
 
 
@@ -146,6 +149,27 @@ def warning_for_category(
                 f"'acme/example_{index}.proto': extension "
                 f"'google.api.field_behavior' is not registered in "
                 f"the compile pool"
+            ),
+        )
+    if category == "contradictory_disable_config":
+        return LintRuntimeWarning(
+            category="contradictory_disable_config",
+            rule_id=f"naming/snake-case-fields-{index}",
+            message=(
+                f"rule 'naming/snake-case-fields-{index}' appears in "
+                f"both [tool.protokit.lint] disabled_rules and "
+                f"enabled_rules; disable wins per R8 polarity-first "
+                f"precedence"
+            ),
+        )
+    if category == "unknown_rule_id":
+        return LintRuntimeWarning(
+            category="unknown_rule_id",
+            rule_id=f"naming/never-registered-{index}",
+            message=(
+                f"rule 'naming/never-registered-{index}' is named in "
+                f"[tool.protokit.lint] disabled_rules but does not "
+                f"match any loaded rule"
             ),
         )
     raise AssertionError(f"unrecognized category: {category}")

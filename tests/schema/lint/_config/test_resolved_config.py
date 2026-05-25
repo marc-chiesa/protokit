@@ -428,3 +428,103 @@ class TestAllFilesExcludedMessage:
         assert "\n" not in msg
         # Forged-prefix text survives but no longer at line start:
         assert "forged" in msg
+
+
+# ---------------------------------------------------------------------------
+# D6f GAP 4: __post_init__ paired-field invariant for R8b warnings
+# ---------------------------------------------------------------------------
+
+
+class TestR8bPairedFieldInvariant:
+    """D6f GAP 4: every R8b contradictory_disable_config warning's
+    rule_id must be present in ``disabled_rules`` or ``enabled_rules``.
+    Catches ``dataclasses.replace()`` callers who mutate the disable/
+    enable sets without refreshing ``runtime_warnings``.
+    """
+
+    def test_valid_r8b_warning_with_matching_disabled_rule_passes(
+        self,
+    ) -> None:
+        """A contradictory_disable_config warning whose rule_id is in
+        ``disabled_rules`` is valid — no ValueError raised."""
+        from protokit.schema.lint.model import LintRuntimeWarning
+        resolved = ResolvedLintConfig(
+            disabled_rules=frozenset({"naming/snake-case-fields"}),
+            enabled_rules=frozenset(),
+            runtime_warnings=(
+                LintRuntimeWarning(
+                    category="contradictory_disable_config",
+                    rule_id="naming/snake-case-fields",
+                    message="disabled by X; enabled by Y; disable wins.",
+                ),
+            ),
+        )
+        # Should not raise
+        assert resolved.disabled_rules == frozenset({"naming/snake-case-fields"})
+
+    def test_stale_r8b_warning_after_replace_raises_value_error(
+        self,
+    ) -> None:
+        """Using ``dataclasses.replace(resolved, disabled_rules=frozenset())``
+        to clear disabled_rules while keeping a stale R8b warning raises
+        ValueError per the GAP 4 invariant guard."""
+        from protokit.schema.lint.model import LintRuntimeWarning
+        # Construct a valid resolved config (R8b warning + matching disabled).
+        resolved = ResolvedLintConfig(
+            disabled_rules=frozenset({"naming/snake-case-fields"}),
+            enabled_rules=frozenset(),
+            runtime_warnings=(
+                LintRuntimeWarning(
+                    category="contradictory_disable_config",
+                    rule_id="naming/snake-case-fields",
+                    message="disabled by X; enabled by Y; disable wins.",
+                ),
+            ),
+        )
+        # Now clear disabled_rules via dataclasses.replace WITHOUT
+        # refreshing runtime_warnings — this leaves a stale R8b warning.
+        with pytest.raises(ValueError, match="contradictory_disable_config"):
+            dataclasses.replace(resolved, disabled_rules=frozenset())
+
+    def test_r8b_warning_with_matching_enabled_rule_passes(
+        self,
+    ) -> None:
+        """A contradictory_disable_config warning whose rule_id appears
+        in ``enabled_rules`` (not disabled_rules) is also valid."""
+        from protokit.schema.lint.model import LintRuntimeWarning
+        # R8b fires when enabled_rules and disabled_rules overlap;
+        # the rule_id is in BOTH sets. After resolution disabled_rules
+        # wins (polarity-first), but enabled_rules still records the
+        # intent — the warning's rule_id must be in at least one.
+        resolved = ResolvedLintConfig(
+            disabled_rules=frozenset({"naming/snake-case-fields"}),
+            enabled_rules=frozenset({"naming/snake-case-fields"}),
+            runtime_warnings=(
+                LintRuntimeWarning(
+                    category="contradictory_disable_config",
+                    rule_id="naming/snake-case-fields",
+                    message="disabled by X; enabled by Y; disable wins.",
+                ),
+            ),
+        )
+        # Should not raise — rule_id is in both sets
+        assert "naming/snake-case-fields" in resolved.disabled_rules
+
+    def test_non_r8b_warning_with_any_rule_id_passes(
+        self,
+    ) -> None:
+        """Non-contradictory_disable_config categories are not subject
+        to the paired-field invariant check."""
+        from protokit.schema.lint.model import LintRuntimeWarning
+        # An unloaded_rule warning with no disabled/enabled rules — valid.
+        resolved = ResolvedLintConfig(
+            runtime_warnings=(
+                LintRuntimeWarning(
+                    category="unloaded_rule",
+                    rule_id="naming/never-registered",
+                    message="rule not loaded",
+                ),
+            ),
+        )
+        # Should not raise
+        assert len(resolved.runtime_warnings) == 1

@@ -48,7 +48,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple, cast
 
 import pathspec
 
@@ -58,7 +58,13 @@ else:
     import tomli as tomllib
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr, error_exit_with_code
-from protokit.schema.lint.model import SEVERITY_RANK, ElementKind, LintSeverity
+from protokit.schema.lint._custom_rules import synthetic_rule_ids
+from protokit.schema.lint.model import (
+    SEVERITY_RANK,
+    ElementKind,
+    LintRuntimeWarning,
+    LintSeverity,
+)
 
 # Per-key source attribution for ResolvedLintConfig (R20 message branches).
 # Used for `min_severity_source`: cli vs pyproject is mutually exclusive
@@ -454,6 +460,13 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "severities",
         "no_builtin_rules",
         "custom_annotation_rules",
+        # D6f R5: ``disabled_rules`` / ``enabled_rules`` lists drive
+        # the R9b per-rule disable surface. Both accept the same R9b
+        # rule_id format (``_R9B_RULE_ID_REGEX``); cross-list and
+        # cross-tier interactions resolve via R8 polarity-first /
+        # tier-second precedence in ``ResolvedLintConfig.from_dict``.
+        "disabled_rules",
+        "enabled_rules",
     },
 )
 
@@ -466,6 +479,33 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
 #: shape).
 _CUSTOM_RULE_SUFFIX_REGEX: re.Pattern[str] = re.compile(
     r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+)
+
+#: D6f R9b: regex contract for entries in ``disabled_rules`` /
+#: ``enabled_rules`` (and their CLI overrides ``--disable-rule`` /
+#: ``--enable-rule``). Three shapes accepted:
+#:
+#: - Canonical ``pack/rule-suffix`` (e.g., ``naming/snake-case-fields``,
+#:   ``options/deprecated-field-must-have-replacement-comment``).
+#: - Bare custom ``custom/<suffix>`` (e.g., ``custom/audit-required``)
+#:   — triggers KD-2 multi-kind prefix expansion at config-resolution
+#:   layer when the suffix matches a declared custom annotation rule.
+#: - Mangled custom ``custom/<suffix>__<kind>`` (e.g.,
+#:   ``custom/audit-required__method``,
+#:   ``custom/audit-required__enum_value``) — per-kind disable bypasses
+#:   the bare-prefix expansion.
+#:
+#: Distinct from :data:`_CUSTOM_RULE_SUFFIX_REGEX` (which rejects
+#: underscores per the kebab-case rule_suffix contract): R9b directive
+#: entries MUST accept the ``__`` separator + underscore-bearing kind
+#: names (``enum_value``) emitted by ``synthetic_rule_ids()`` at
+#: ``_custom_rules.py:507-511``. Mixing the two regexes would cause
+#: ``disabled_rules = ["custom/audit-required__enum_value"]`` to
+#: silently reject a legitimate per-kind disable.
+_R9B_RULE_ID_REGEX: re.Pattern[str] = re.compile(
+    r"^[a-z][a-z0-9]*(-[a-z0-9]+)*\/"
+    r"[a-z][a-z0-9]*(-[a-z0-9]+)*"
+    r"(__[a-z]+(_[a-z]+)*)?$",
 )
 
 #: D6d R8: allowed lowercase ElementKind values for the
@@ -692,8 +732,33 @@ def _coerce_format(value: Any) -> str:
     return value.strip().lower()
 
 
-def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
-    """Coerce ``severities`` to ``dict[str, LintSeverity]`` per R9a.
+class _CoercedSeverities(NamedTuple):
+    """Two-part return shape for :func:`_coerce_severities` (D6f U2 KD-1).
+
+    The ``"off"`` value is intercepted at the coercion layer BEFORE
+    ``LintSeverity(normalized)`` construction (per KD-1 + the
+    ``semantic-category-conflation-accepted-tradeoff-literal-widening``
+    learning). ``LintSeverity`` stays a closed 3-member enum; the
+    sentinel is propagated to the disable layer via the second tuple
+    member.
+
+    Attributes:
+        severities: The non-``off`` per-rule severity overrides as
+            ``dict[str, LintSeverity]``. Keys normalized to lowercase
+            per KD-6. Mirrors the pre-D6f return shape.
+        off_rule_ids: Frozen set of normalized (lowercase) rule_ids
+            whose ``[severities]`` value was the sentinel ``"off"``.
+            Merged into the unified ``ResolvedLintConfig.disabled_rules``
+            by ``from_dict`` per the KD-1 sentinel propagation contract
+            (see Risks & Dependencies in the D6f U2 plan).
+    """
+
+    severities: Mapping[str, LintSeverity]
+    off_rule_ids: frozenset[str]
+
+
+def _coerce_severities(value: Any) -> _CoercedSeverities:
+    """Coerce ``severities`` to ``_CoercedSeverities`` per R9a + R4 (D6f).
 
     The ``[tool.protokit.lint.severities]`` table is a flat
     rule_id-to-severity mapping (no nested rules-pack grouping in
@@ -706,7 +771,12 @@ def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
       lookups and are flagged here as a typo signal).
     - Each value coerces to ``LintSeverity`` via the same
       severity-string semantics as :func:`_coerce_min_severity`
-      (case-insensitive, whitespace-stripped at the boundary).
+      (case-insensitive, whitespace-stripped at the boundary). The
+      D6f-added ``"off"`` value is intercepted before
+      ``LintSeverity()`` construction per KD-1; matching rule_ids
+      accumulate in ``off_rule_ids`` and are NOT written to the
+      ``severities`` dict (so ``LintSeverity`` stays a closed
+      3-member enum).
 
     Empty table (``severities = {}``) is valid — explicit empty is
     indistinguishable from omitting the key, but the coercion
@@ -736,6 +806,7 @@ def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
             ),
         )
     result: dict[str, LintSeverity] = {}
+    off_rule_ids: set[str] = set()
     for rule_id, sev_value in value.items():
         # TOML guarantees keys are strings, but defensive isinstance
         # check covers the case where someone constructs the dict
@@ -777,19 +848,33 @@ def _coerce_severities(value: Any) -> dict[str, LintSeverity]:
         # Mirrors ``_coerce_profile``'s normalize-then-resolve order.
         normalized_rule_id = rule_id.strip().lower()
         normalized = sev_value.strip().lower()
+        # D6f R4 / KD-1: intercept ``"off"`` BEFORE constructing
+        # LintSeverity. The matching rule_id is propagated to the
+        # disable layer via ``off_rule_ids`` and NOT written into the
+        # severities dict — preserving the closed 3-member enum and
+        # the SARIF formatter ``assert_never`` wire-safety invariant.
+        if normalized == "off":
+            off_rule_ids.add(normalized_rule_id)
+            continue
         try:
             result[normalized_rule_id] = LintSeverity(normalized)
         except ValueError:
             valid = ", ".join(repr(s.value) for s in LintSeverity)
+            # D6f R4: the "valid values" message advertises the
+            # closed enum names PLUS the ``"off"`` sentinel so the
+            # user discovers the disable mechanism from the error
+            # without needing to read the CHANGELOG.
             error_exit_with_code(
                 "pyproject-config-invalid",
                 (
                     f"[tool.protokit.lint] severities[{rule_id!r}] must "
-                    f"be one of {valid}; got a severity name outside "
-                    f"the closed set."
+                    f"be one of {valid} or 'off' to disable the rule; "
+                    f"got a severity name outside the closed set."
                 ),
             )
-    return result
+    return _CoercedSeverities(
+        severities=result, off_rule_ids=frozenset(off_rule_ids),
+    )
 
 
 def _empty_severities() -> dict[str, LintSeverity]:
@@ -803,6 +888,323 @@ def _empty_severities() -> dict[str, LintSeverity]:
     ``Mapping[str, LintSeverity]``).
     """
     return {}
+
+
+def _empty_rule_id_set() -> frozenset[str]:
+    """Typed factory for the R9b ``disabled_rules`` / ``enabled_rules`` defaults.
+
+    Used as ``dataclasses.field(default_factory=_empty_rule_id_set)``
+    on ``ResolvedLintConfig.disabled_rules`` and ``enabled_rules`` so
+    mypy narrows the field type to ``frozenset[str]`` rather than the
+    bare ``frozenset`` callable's inferred ``frozenset[Any]``. Mirrors
+    the :func:`_empty_severities` pattern.
+    """
+    return frozenset()
+
+
+def _empty_runtime_warnings() -> tuple[LintRuntimeWarning, ...]:
+    """Typed factory for ``ResolvedLintConfig.runtime_warnings`` default.
+
+    R8b (``contradictory_disable_config``) warnings produced inside
+    ``from_dict`` are accumulated on the resolved config so the CLI
+    can append them to the final ``LintReport.runtime_warnings``
+    tuple. The empty-tuple default keeps the "no contradictions /
+    nothing to emit" path zero-allocation.
+    """
+    return ()
+
+
+def _coerce_r9b_rule_id_list(
+    value: Any,
+    *,
+    error_label: str,
+    error_code: str = "pyproject-config-invalid",
+) -> frozenset[str]:
+    """Coerce an R9b rule_id list (pyproject ``disabled_rules`` /
+    ``enabled_rules`` OR CLI ``--disable-rule`` / ``--enable-rule``
+    tuple-of-strings) into a frozen set of normalized canonical ids.
+
+    Shared implementation for both pyproject keys AND their CLI
+    overrides per [[symmetric-coercion-strictness-multi-source-field-
+    resolver-2026-05-12]]: same strictness on both sides so the CLI
+    cannot smuggle in a malformed rule_id that pyproject would
+    reject.
+
+    Validation:
+
+    - List-only (no scalar coercion); mirrors :func:`_coerce_exclude`
+      at 575-607.
+    - Per-element ``isinstance(str)``.
+    - Per-element ``.strip().lower()`` normalization per
+      [[normalize-at-input-boundary-2026-05-07]].
+    - Per-element non-empty (after strip) check.
+    - Per-element format validation against
+      :data:`_R9B_RULE_ID_REGEX` — accepts canonical
+      ``pack/rule-suffix``, bare ``custom/<suffix>``, AND mangled
+      ``custom/<suffix>__<kind>``.
+
+    Returns a frozenset (deduplicated, immutable). The deduplication
+    is intentional — an entry repeated in the list is a no-op rather
+    than an error so users can stitch lists together programmatically
+    without pre-deduplicating.
+
+    Args:
+        value: Raw value to validate. Expected shape:
+            ``list[str]`` / ``tuple[str, ...]``.
+        error_label: Source-attributed prefix interpolated into
+            error messages (e.g.,
+            ``"[tool.protokit.lint] disabled_rules"`` for pyproject,
+            ``"--disable-rule"`` for CLI overrides). Pre-formatted so
+            the helper does not need to know which source called it.
+        error_code: The stable error-prefix code to use when emitting
+            validation failures. Defaults to ``"pyproject-config-invalid"``
+            for the pyproject path; CLI callers pass
+            ``"cli-option-invalid"`` so CI scripts can distinguish a
+            bad CLI flag value from a bad pyproject entry without
+            parsing freeform text.
+
+    Returns:
+        Frozen set of normalized rule_ids.
+
+    Raises:
+        SystemExit: Exit code 2 via :func:`error_exit_with_code`
+            using ``error_code`` for any validation failure.
+    """
+    if not isinstance(value, (list, tuple)):
+        error_exit_with_code(
+            error_code,
+            (
+                f"{error_label} must be a list of strings; "
+                f"got {type(value).__name__}."
+            ),
+        )
+    normalized: set[str] = set()
+    for index, elem in enumerate(value):
+        if not isinstance(elem, str):
+            error_exit_with_code(
+                error_code,
+                (
+                    f"{error_label}[{index}] must be a string rule_id; "
+                    f"got {type(elem).__name__}."
+                ),
+            )
+        # Normalize FIRST (whitespace + case) so format validation
+        # matches the canonical form the engine compares against, and
+        # so error messages cite the form that would have been looked
+        # up. Mirrors ``_coerce_severities`` key normalization.
+        stripped_lower = elem.strip().lower()
+        if not stripped_lower:
+            error_exit_with_code(
+                error_code,
+                (
+                    f"{error_label}[{index}] must be a non-empty "
+                    f"rule_id."
+                ),
+            )
+        if not _R9B_RULE_ID_REGEX.match(stripped_lower):
+            error_exit_with_code(
+                error_code,
+                (
+                    f"{error_label}[{index}] {stripped_lower!r} is not a "
+                    f"valid rule_id: expected the canonical form "
+                    f"'pack/rule-suffix' (e.g., 'naming/snake-case-fields') "
+                    f"or the custom forms 'custom/<suffix>' / "
+                    f"'custom/<suffix>__<kind>'."
+                ),
+            )
+        normalized.add(stripped_lower)
+    return frozenset(normalized)
+
+
+def _coerce_disabled_rules(value: Any) -> frozenset[str]:
+    """Coerce ``disabled_rules`` to ``frozenset[str]`` per D6f R5."""
+    return _coerce_r9b_rule_id_list(
+        value, error_label="[tool.protokit.lint] disabled_rules",
+    )
+
+
+def _coerce_enabled_rules(value: Any) -> frozenset[str]:
+    """Coerce ``enabled_rules`` to ``frozenset[str]`` per D6f R5."""
+    return _coerce_r9b_rule_id_list(
+        value, error_label="[tool.protokit.lint] enabled_rules",
+    )
+
+
+def _expand_custom_prefix(
+    rule_ids: frozenset[str],
+    specs: tuple[CustomAnnotationRuleSpec, ...],
+) -> frozenset[str]:
+    """Expand bare ``custom/<suffix>`` entries to all mangled forms (D6f KD-2).
+
+    Multi-kind custom rule prefix expansion. For each entry in
+    ``rule_ids`` matching the bare ``custom/<suffix>`` shape (no
+    ``__<kind>`` mangling), look up the spec by **suffix equality**
+    (NOT substring match — ``"custom/foo"`` must NOT match
+    ``"custom/foobar"``) and replace the bare entry with the full
+    set of mangled rule_ids returned by ``synthetic_rule_ids()``
+    for that spec.
+
+    Per-kind disable via the explicit mangled form
+    (e.g., ``"custom/audit-required__method"``) bypasses expansion —
+    the mangled form already addresses one specific kind, and the
+    regex permits it through ``_R9B_RULE_ID_REGEX``.
+
+    If no spec matches a bare ``custom/<suffix>`` entry, the entry
+    is preserved as-is (it may match a future-shipped or external
+    rule; the unknown-rule_id warning per Req-R8c fires from the
+    CLI orchestration layer later).
+
+    Args:
+        rule_ids: Validated, normalized rule_ids to expand
+            (typically from ``_coerce_disabled_rules`` /
+            ``_coerce_enabled_rules`` output).
+        specs: Resolved ``CustomAnnotationRuleSpec`` entries from
+            ``_coerce_custom_annotation_rules``. Empty tuple is
+            permitted — expansion is a no-op (bare entries flow
+            through unchanged for R8c diagnosis).
+
+    Returns:
+        New frozenset with bare-prefix entries expanded.
+    """
+    if not rule_ids:
+        return rule_ids
+    spec_by_suffix = {spec.rule_suffix: spec for spec in specs}
+    result: set[str] = set()
+    for rid in rule_ids:
+        if rid.startswith("custom/") and "__" not in rid:
+            suffix = rid[len("custom/"):]
+            matching_spec = spec_by_suffix.get(suffix)
+            if matching_spec is not None:
+                # Materialize every kind-mangled rule_id for this
+                # spec (single-kind specs return just the bare form;
+                # multi-kind specs return bare + N-1 mangled forms).
+                result.update(synthetic_rule_ids((matching_spec,)))
+                continue
+        result.add(rid)
+    return frozenset(result)
+
+
+def _compute_r8b_contradiction_warnings(
+    *,
+    off_severity_ids: frozenset[str],
+    pyproject_disabled: frozenset[str],
+    cli_disabled: frozenset[str],
+    pyproject_enabled: frozenset[str],
+    cli_enabled: frozenset[str],
+    non_off_severity_overrides: frozenset[str],
+) -> tuple[LintRuntimeWarning, ...]:
+    """Compute R8b ``contradictory_disable_config`` warnings (D6f R8b).
+
+    Detects collisions where R8 polarity-first / tier-second
+    resolution silently overrides a user-supplied directive at a
+    lower tier. Per the plan's "R8 precedence resolution" section,
+    the five contradiction patterns are:
+
+    1. ``disabled_rules ⊃ R AND enabled_rules ⊃ R`` (within-pyproject)
+    2. ``--disable-rule R AND --enable-rule R`` (within-CLI)
+    3. ``--enable-rule R AND pyproject disabled_rules ⊃ R``
+       (cross-tier disable wins; ``--no-config`` is the escape hatch
+       but drops ALL pyproject config — message names this caveat)
+    4. ``disabled_rules ⊃ R AND [severities] R = <non-off>``
+       (severity override is moot under polarity-first)
+    5. ``[severities] R = "off" AND enabled_rules ⊃ R``
+
+    Idempotent disables (D_off ⊃ R AND D_pyp ⊃ R; D_pyp ⊃ R AND
+    D_cli ⊃ R; etc.) are NOT contradictions — both directives have
+    the same polarity, so neither overrides the other.
+
+    One warning per contradicted rule_id (deterministic sorted order
+    so test fixtures pin a stable sequence). The message names
+    every involved mechanism so the user sees both sides of the
+    collision in a single line.
+
+    Args:
+        off_severity_ids: rule_ids extracted from
+            ``[severities] X = "off"`` (KD-1 sentinel).
+        pyproject_disabled: rule_ids from pyproject
+            ``disabled_rules``.
+        cli_disabled: rule_ids from CLI ``--disable-rule``.
+        pyproject_enabled: rule_ids from pyproject ``enabled_rules``.
+        cli_enabled: rule_ids from CLI ``--enable-rule``.
+        non_off_severity_overrides: rule_ids from
+            ``[severities] X = <non-off>`` (the surviving severities
+            after off-interception). Used to detect pattern 4.
+
+    Returns:
+        Tuple of one warning per contradicted rule_id, sorted by
+        rule_id for deterministic output.
+    """
+    all_disable_sources = (
+        off_severity_ids | pyproject_disabled | cli_disabled
+    )
+    all_enable_sources = pyproject_enabled | cli_enabled
+    warnings: list[LintRuntimeWarning] = []
+    for rid in sorted(all_disable_sources | all_enable_sources):
+        disable_mechs: list[str] = []
+        if rid in off_severity_ids:
+            disable_mechs.append("[severities] = 'off'")
+        if rid in pyproject_disabled:
+            disable_mechs.append("[tool.protokit.lint] disabled_rules")
+        if rid in cli_disabled:
+            disable_mechs.append("--disable-rule")
+        enable_mechs: list[str] = []
+        if rid in pyproject_enabled:
+            enable_mechs.append("[tool.protokit.lint] enabled_rules")
+        if rid in cli_enabled:
+            enable_mechs.append("--enable-rule")
+        severity_moot = (
+            rid in non_off_severity_overrides
+            and bool(disable_mechs)
+        )
+        polarity_clash = bool(disable_mechs) and bool(enable_mechs)
+        if not (polarity_clash or severity_moot):
+            continue
+        message_parts: list[str] = [
+            f"rule {rid!r} appears in conflicting R9b directives:",
+        ]
+        if disable_mechs:
+            message_parts.append(f"disabled by {', '.join(disable_mechs)}")
+        if enable_mechs:
+            message_parts.append(f"enabled by {', '.join(enable_mechs)}")
+        if polarity_clash:
+            message_parts.append(
+                "disable wins per R8 polarity-first precedence",
+            )
+        # Note: non_off_severity_overrides is a key-only set; the specific
+        # severity value (e.g., "warning") that conflicts is not available at
+        # this layer, so the message says "non-'off' [severities] override has
+        # no effect" without echoing the value. This is intentional —
+        # _coerce_severities returns only key→value pairs, and the values
+        # aren't plumbed to from_dict's contradiction-detection step.
+        if severity_moot:
+            message_parts.append(
+                "non-'off' [severities] override has no effect "
+                "(disable wins per R8 polarity-first precedence)",
+            )
+        # The cross-tier --enable-rule + pyproject disabled_rules
+        # case is the one most likely to surprise users; surface the
+        # --no-config escape hatch + the caveat that it drops ALL
+        # pyproject config (not just disabled_rules) inline so users
+        # do not misuse it. Other clash patterns can be resolved by
+        # editing pyproject directly.
+        cross_tier_cli_enable = (
+            rid in cli_enabled
+            and (rid in pyproject_disabled or rid in off_severity_ids)
+        )
+        if cross_tier_cli_enable:
+            message_parts.append(
+                "to override, edit pyproject directly OR pass "
+                "--no-config (note: --no-config drops ALL pyproject "
+                "configuration, not just disabled_rules)",
+            )
+        warnings.append(
+            LintRuntimeWarning(
+                category="contradictory_disable_config",
+                rule_id=rid,
+                message="; ".join(message_parts) + ".",
+            ),
+        )
+    return tuple(warnings)
 
 
 @dataclass(frozen=True)
@@ -1341,6 +1743,52 @@ class ResolvedLintConfig:
     custom_annotation_rules: tuple[CustomAnnotationRuleSpec, ...] = (
         dataclasses.field(default_factory=_empty_custom_annotation_rules)
     )
+    #: D6f R5 + KD-1 — UNIFIED disabled-rule set merging three sources:
+    #: ``[severities] X = "off"`` sentinel ids (intercepted at the
+    #: coercion layer per KD-1), pyproject ``disabled_rules`` list,
+    #: and CLI ``--disable-rule`` overrides. Merging happens inside
+    #: ``from_dict`` BEFORE returning, so callers see ONE
+    #: ``frozenset[str]`` — no separate ``disabled_via_off_severity``
+    #: field leaks past the boundary. ``cli.py`` subtracts this set
+    #: from ``composed_profile.rule_ids`` to actuate the disable per
+    #: the KD-1 sentinel propagation contract. Custom-prefix expansion
+    #: (KD-2) materializes any ``custom/<suffix>`` bare entry into the
+    #: full set of mangled rule_ids for the matching spec before merge.
+    disabled_rules: frozenset[str] = dataclasses.field(
+        default_factory=_empty_rule_id_set,
+    )
+    #: D6f R5 — pyproject ``enabled_rules`` ∪ CLI ``--enable-rule``
+    #: directives. Kept distinct from :attr:`disabled_rules` (NOT
+    #: merged into a single "effective" set) because R8b contradiction
+    #: warnings need both sides attributable: knowing only that R is
+    #: disabled would lose the information needed to emit
+    #: "rule R appears in both disabled_rules and enabled_rules;
+    #: disable wins per R8 polarity-first". Custom-prefix expansion
+    #: (KD-2) applies symmetrically. ``cli.py`` does NOT consume this
+    #: field to actuate disables — R8 precedence is already resolved
+    #: in ``from_dict``, so the surviving set is informational from
+    #: the engine's perspective (the engine sees an effective rule_ids
+    #: set with disables already removed). It IS read by the R8c
+    #: ``unknown_rule_id`` check in ``cli.py`` to detect rule_ids
+    #: named in enable directives that match no loaded rule (the diff
+    #: ``(resolved.disabled_rules | resolved.enabled_rules) - loaded_rule_ids``
+    #: covers both sets).
+    enabled_rules: frozenset[str] = dataclasses.field(
+        default_factory=_empty_rule_id_set,
+    )
+    #: D6f R8b — ``contradictory_disable_config`` warnings produced
+    #: inside ``from_dict`` when R9b directives across disable + enable
+    #: mechanisms collide per the R8 precedence table. The CLI appends
+    #: this tuple to ``LintReport.runtime_warnings`` so the warnings
+    #: surface in every formatter alongside engine-emitted warnings.
+    #: Empty tuple in the common case (no contradictions). R8c
+    #: (``unknown_rule_id``) warnings are NOT carried here — they fire
+    #: at CLI orchestration time when the full loaded-rule registry is
+    #: available, mirroring the existing ``severities_unloaded_rule``
+    #: emission pattern at ``cli.py:1160-1177``.
+    runtime_warnings: tuple[LintRuntimeWarning, ...] = dataclasses.field(
+        default_factory=_empty_runtime_warnings,
+    )
 
     def __post_init__(self) -> None:
         # Tuple-snapshot list inputs per the
@@ -1369,6 +1817,21 @@ class ResolvedLintConfig:
             "severities",
             MappingProxyType(dict(self.severities)),
         )
+        # D6f R5: frozenset-snapshot the two R9b rule_id sets.
+        # ``from_dict`` produces frozensets already; programmatic
+        # callers (tests, R9b smoke fixtures) may pass list/tuple/set
+        # which we normalize here so the frozen-dataclass invariant
+        # holds regardless of construction site.
+        object.__setattr__(self, "disabled_rules", frozenset(self.disabled_rules))
+        object.__setattr__(self, "enabled_rules", frozenset(self.enabled_rules))
+        # D6f R8b: tuple-snapshot accumulated R8b warnings so a caller
+        # passing a list does not leak mutations into the frozen
+        # ResolvedLintConfig (R8b warnings are appended to
+        # ``LintReport.runtime_warnings`` in ``cli.py``; a mutated
+        # source list would silently corrupt the report).
+        object.__setattr__(
+            self, "runtime_warnings", tuple(self.runtime_warnings),
+        )
         # Construction-time invariant: when ``exclude`` is non-empty,
         # ``exclude_source`` MUST be one of "cli" / "pyproject" / "both"
         # so ``all_files_excluded_message`` can attribute the patterns.
@@ -1385,6 +1848,29 @@ class ResolvedLintConfig:
                 "ResolvedLintConfig.exclude_source must be set to "
                 "'cli', 'pyproject', or 'both' when exclude is "
                 "non-empty (got 'default').",
+            )
+        # D6f GAP 4 — paired-field invariant for R8b warnings.
+        # Every contradictory_disable_config warning's rule_id must be
+        # present in disabled_rules or enabled_rules. Catches programmatic
+        # dataclasses.replace() callers who mutate the disable/enable sets
+        # without updating runtime_warnings, which would leave stale
+        # R8b warnings naming rule_ids no longer in conflict.
+        r8b_rule_ids = {
+            w.rule_id
+            for w in self.runtime_warnings
+            if w.category == "contradictory_disable_config"
+            and w.rule_id is not None
+        }
+        directive_rule_ids = self.disabled_rules | self.enabled_rules
+        stale_warnings = r8b_rule_ids - directive_rule_ids
+        if stale_warnings:
+            raise ValueError(
+                f"ResolvedLintConfig invariant violation: "
+                f"contradictory_disable_config warnings reference "
+                f"rule_id(s) {sorted(stale_warnings)!r} not present in "
+                f"disabled_rules or enabled_rules. This usually means "
+                f"dataclasses.replace() was called to mutate the disable "
+                f"sets without refreshing runtime_warnings."
             )
 
     def relaxation_message(
@@ -1588,11 +2074,19 @@ class ResolvedLintConfig:
                 elif key == "format":
                     validated[key] = _coerce_format(value)
                 elif key == "severities":
+                    # D6f KD-1: _coerce_severities now returns a
+                    # _CoercedSeverities NamedTuple carrying the
+                    # non-"off" severities dict + the off_rule_ids
+                    # frozenset (intercepted "off" sentinel).
                     validated[key] = _coerce_severities(value)
                 elif key == "no_builtin_rules":
                     validated[key] = _coerce_no_builtin_rules(value)
                 elif key == "custom_annotation_rules":
                     validated[key] = _coerce_custom_annotation_rules(value)
+                elif key == "disabled_rules":
+                    validated[key] = _coerce_disabled_rules(value)
+                elif key == "enabled_rules":
+                    validated[key] = _coerce_enabled_rules(value)
                 # Unreachable: `_validate_table_keys` already exited
                 # on any key not in `_ALLOWED_KEYS`. The else-branch
                 # is omitted intentionally.
@@ -1688,9 +2182,17 @@ class ResolvedLintConfig:
                 "parsing only. Add the precedence branch here before "
                 "exposing a CLI severities override.",
             )
-        resolved_severities: Mapping[str, LintSeverity] = validated.get(
-            "severities", {},
-        )
+        # D6f KD-1: unpack the _CoercedSeverities NamedTuple. The
+        # off_rule_ids set is merged into the unified disabled_rules
+        # field BELOW (after the R8 precedence + R8b warning step).
+        validated_severities_raw = validated.get("severities")
+        if validated_severities_raw is None:
+            resolved_severities: Mapping[str, LintSeverity] = {}
+            off_severity_rule_ids: frozenset[str] = frozenset()
+        else:
+            coerced = cast(_CoercedSeverities, validated_severities_raw)
+            resolved_severities = coerced.severities
+            off_severity_rule_ids = coerced.off_rule_ids
 
         # no_builtin_rules (R9c): CLI replaces pyproject. The CLI flag's
         # ``ParameterSource`` detection happens in cli.py — by the time
@@ -1738,6 +2240,95 @@ class ResolvedLintConfig:
             CustomAnnotationRuleSpec, ...
         ] = validated.get("custom_annotation_rules", ())
 
+        # D6f R5 + R6 + R7 + R8 + R8b: R9b per-rule disable dispatch.
+        # Per KD-2 ordering: (1) custom_annotation_rules already
+        # resolved above, (2) coerce pyproject disabled/enabled
+        # lists, (3) coerce CLI overrides with the SAME strictness
+        # per [[symmetric-coercion-strictness-multi-source-field-
+        # resolver-2026-05-12]], (4) expand custom/<suffix> bare
+        # entries via synthetic_rule_ids((spec,)) using
+        # suffix-equality matching, (5) compute R8b warnings BEFORE
+        # the disable-set merge (warnings need attribution), (6) merge
+        # off_severity_rule_ids into the final unified disabled_rules
+        # frozenset that cli.py subtracts from composed_profile.rule_ids.
+        #
+        # KD-4: NO NotImplementedError trip-wires. U2 ships pyproject
+        # parsing AND CLI flags atomically — no inter-unit window.
+        cli_disabled_raw = cli_overrides.get("disabled_rules")
+        cli_disabled_rules: frozenset[str]
+        if cli_disabled_raw is None:
+            cli_disabled_rules = frozenset()
+        else:
+            cli_disabled_rules = _coerce_r9b_rule_id_list(
+                cli_disabled_raw,
+                error_label="--disable-rule",
+                error_code="cli-option-invalid",
+            )
+        cli_enabled_raw = cli_overrides.get("enabled_rules")
+        cli_enabled_rules: frozenset[str]
+        if cli_enabled_raw is None:
+            cli_enabled_rules = frozenset()
+        else:
+            cli_enabled_rules = _coerce_r9b_rule_id_list(
+                cli_enabled_raw,
+                error_label="--enable-rule",
+                error_code="cli-option-invalid",
+            )
+        pyproject_disabled_rules: frozenset[str] = validated.get(
+            "disabled_rules", frozenset(),
+        )
+        pyproject_enabled_rules: frozenset[str] = validated.get(
+            "enabled_rules", frozenset(),
+        )
+        # CONTRACT: every R9b input source must have a corresponding
+        # _expand_custom_prefix call BEFORE _compute_r8b_contradiction_warnings
+        # runs. Adding a sixth source (e.g., env-var-only directive) requires
+        # extending this block. The R8b warning emission compares post-expansion
+        # sets — partial expansion produces incorrect contradiction detection.
+        #
+        # Custom prefix expansion (KD-2): apply to every R9b set that
+        # may contain bare ``custom/<suffix>`` entries. The off-severity
+        # set is also subject to expansion because [severities] keys
+        # can name custom rules too.
+        expanded_off = _expand_custom_prefix(
+            off_severity_rule_ids, resolved_custom_annotation_rules,
+        )
+        expanded_pyp_disabled = _expand_custom_prefix(
+            pyproject_disabled_rules, resolved_custom_annotation_rules,
+        )
+        expanded_cli_disabled = _expand_custom_prefix(
+            cli_disabled_rules, resolved_custom_annotation_rules,
+        )
+        expanded_pyp_enabled = _expand_custom_prefix(
+            pyproject_enabled_rules, resolved_custom_annotation_rules,
+        )
+        expanded_cli_enabled = _expand_custom_prefix(
+            cli_enabled_rules, resolved_custom_annotation_rules,
+        )
+        # R8b warnings: contradictory R9b directives. Computed BEFORE
+        # the unified-disable merge so the warning text can name BOTH
+        # the disable and enable mechanisms (post-merge, both lists
+        # would be flattened and attribution would be lost).
+        r8b_warnings = _compute_r8b_contradiction_warnings(
+            off_severity_ids=expanded_off,
+            pyproject_disabled=expanded_pyp_disabled,
+            cli_disabled=expanded_cli_disabled,
+            pyproject_enabled=expanded_pyp_enabled,
+            cli_enabled=expanded_cli_enabled,
+            non_off_severity_overrides=frozenset(resolved_severities.keys()),
+        )
+        # Unified disabled_rules: merge ALL disable sources per KD-1
+        # sentinel propagation contract. cli.py subtracts this single
+        # set from composed_profile.rule_ids to actuate the suppression
+        # without exposing the three-source provenance externally.
+        unified_disabled_rules = (
+            expanded_off | expanded_pyp_disabled | expanded_cli_disabled
+        )
+        # enabled_rules: union of pyproject + CLI; kept distinct from
+        # disabled_rules (NOT merged into one effective set) so R8b
+        # warnings have the both-sides attribution they need.
+        unified_enabled_rules = expanded_pyp_enabled | expanded_cli_enabled
+
         return cls(
             profile=resolved_profile,
             exclude=resolved_exclude,
@@ -1750,6 +2341,9 @@ class ResolvedLintConfig:
             severities=resolved_severities,
             no_builtin_rules=resolved_no_builtin,
             custom_annotation_rules=resolved_custom_annotation_rules,
+            disabled_rules=unified_disabled_rules,
+            enabled_rules=unified_enabled_rules,
+            runtime_warnings=r8b_warnings,
         )
 
 
