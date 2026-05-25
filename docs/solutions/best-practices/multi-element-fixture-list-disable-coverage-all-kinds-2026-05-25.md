@@ -131,6 +131,7 @@ The path4 test now consumes `sad_multi_element.proto`. The baseline test asserts
 
 ## Related
 
+- [[test-proxy-signal-suppressed-by-mechanism-under-test-2026-05-25]] — generalized sibling at the OBSERVABLE-independence layer (same day, same module). That learning addresses the case where the chosen proxy signal is structurally absorbed by the suppression mechanism (e.g., "no findings" passes vacuously because the rule never had a way to fire). THIS doc addresses the case where the fixture fails to TRIGGER all N suppressed signals in the first place. The two checks are complementary — apply both for multi-rule suppression tests. Together they form the canonical two-layer audit: (1) does the fixture exercise all N targets? (this doc), (2) is each observable signal in the suppression's blast radius? (the sibling doc).
 - [[fixture-precondition-assertion-surfaces-silent-test-2026-05-17]] — sibling fixture-silence class: that doc covers vacuous-pass from empty output; this doc covers incomplete N-of-N path coverage. Both are "fixture inadequacy causes false test confidence."
 - [[parametrized-matrix-tests-inherit-schema-validators-2026-05-12]] — sibling test-coverage completeness discipline.
 - [[family-aware-partition-pattern-multi-family-parity-harness-2026-05-19]] — runtime context where family-list disable coverage matters; a fixture that only triggers one family kind can't validate the partition.

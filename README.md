@@ -559,23 +559,90 @@ its target before rule-pack profile-name lookup.
 |---------|-------|---------|
 | `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.6.0. |
 | `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.69.0 BASIC rules — closing-arc complete as of 0.6.0 D6e U3). `naming` (9), `enum` (2), `imports` (3), `package` (5; +`package/no-import-cycle` in D6e U3 via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 D6e R4b — pragmatic-not-dogmatic about proto2), `package_same` (7). |
-| `default` | 33 | Buf BASIC parity (`recommended`'s 27 rules) + R6 deprecated-replacement family (5 warning-severity option-aware rules in `options/deprecated_replacement`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
+| `default` | 33 | Buf BASIC parity (`recommended`'s 27 rules) + R6 deprecated-replacement family (5 **error-severity** option-aware rules in `options/deprecated_replacement` — promoted from WARNING in 0.7.0 D6f as a KD-1 demonstration; demotable via `[severities]` / `disabled_rules` / `--disable-rule`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
 | `proto2-strict` (0.6.0 D6e) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Per D6e KD-1, proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
 | `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
 
 The buf-parity rule library ships at the `error` severity floor
-(matching buf's BASIC severity posture per KD-9), with two
-deliberate divergences: (a) the R6 deprecated-replacement family in
-`default` ships at `warning` to bound the leading-comment-regex
-heuristic's blast radius; (b) `file/syntax-specified` is demoted
-to `warning` in `recommended` + `default` as of 0.6.0 (D6e R4b)
+(matching buf's BASIC severity posture per KD-9), with one
+deliberate divergence: `file/syntax-specified` is demoted to
+`warning` in `recommended` + `default` as of 0.6.0 (D6e R4b)
 under the inverted UX philosophy — proto3-only shops who relied
 on the prior ERROR enforcement can re-promote via
 `[tool.protokit.lint.severities] "file/syntax-specified" = "error"`.
-To soften the floor without dropping rules: use
-`--min-severity=warning` globally, or
-`[tool.protokit.lint.severities]` per-rule (see below).
+The R6 deprecated-replacement family in `default` originally
+shipped at `warning` to bound the leading-comment-regex
+heuristic's blast radius; the 0.7.0 D6f release flips it to
+`error` after Phase 0 empirical validation confirmed a 0.0%
+noisy hit-rate on a googleapis sample (see the
+`### D6f — 0.7.0` CHANGELOG entry). To soften the floor without
+dropping rules: use `--min-severity=warning` globally, or
+`[tool.protokit.lint.severities]` per-rule (see below). To
+suppress one or more rules entirely, see the new
+[Disabling and re-enabling rules](#disabling-and-re-enabling-rules)
+section.
+
+### Disabling and re-enabling rules
+
+As of 0.7.0 (D6f R9b), `protokit lint` exposes a full per-rule
+disable / enable surface across three interfaces — pyproject,
+CLI, and programmatic `from_dict`. Five mechanisms total; all
+unified at the config-resolution layer so the engine hot path
+sees only an effective rule set.
+
+**Disable mechanisms:**
+
+| Mechanism | Where | Example |
+|-----------|-------|---------|
+| `"off"` severity (sentinel) | `[tool.protokit.lint.severities]` | `"naming/snake-case-fields" = "off"` |
+| `disabled_rules` list | `[tool.protokit.lint]` | `disabled_rules = ["naming/snake-case-fields"]` |
+| `--disable-rule` flag | CLI (repeatable; env-var `PROTOKIT_DISABLE_RULE`) | `--disable-rule naming/snake-case-fields` |
+
+**Enable mechanisms:**
+
+| Mechanism | Where | Example |
+|-----------|-------|---------|
+| `enabled_rules` list | `[tool.protokit.lint]` | `enabled_rules = ["package/no-import-cycle"]` |
+| `--enable-rule` flag | CLI (repeatable; env-var `PROTOKIT_ENABLE_RULE`) | `--enable-rule package/no-import-cycle` |
+
+**Composition (R8 precedence — polarity-first / tier-second):**
+
+1. Any disable at any tier wins over any enable (polarity-first).
+   `--enable-rule R` does NOT override pyproject
+   `disabled_rules ⊇ R` — a `LintRuntimeWarning(category="contradictory_disable_config")`
+   fires on the contradiction.
+2. Within the same polarity, CLI overrides pyproject
+   (tier-second). `--disable-rule R` wins over pyproject
+   `enabled_rules ⊇ R`.
+
+**Custom-rule prefix expansion**: for user-declared
+`[[custom_annotation_rules]]` entries, the bare form
+`disabled_rules = ["custom/<suffix>"]` suppresses every kind
+of `<suffix>` (multi-kind expansion at config-resolution).
+Per-kind disable still works via the explicit mangled form:
+`disabled_rules = ["custom/<suffix>__method"]`.
+
+**Escape hatch**: `--no-config` bypasses the entire pyproject
+table (profile, exclude, severities, custom_annotation_rules,
+AND `disabled_rules` / `enabled_rules`). Users who want to
+override ONE disabled rule without losing the rest of their
+pyproject config MUST edit the pyproject directly. The
+`contradictory_disable_config` warning text names `--no-config`
+as the blunt-instrument escape hatch with this caveat.
+
+**Severity filtering interaction**: `--min-severity` is a
+display filter, NOT a disable mechanism. A rule at
+`--min-severity warning` still LOADS and runs, but its INFO
+findings are dropped post-`engine.run`. Use one of the disable
+mechanisms above to skip loading the rule entirely.
+
+**Unknown rule_ids**: entries in `disabled_rules` /
+`enabled_rules` that don't match any loaded rule_id fire one
+`LintRuntimeWarning(category="unknown_rule_id")` per id
+(lenient-with-warning; the rest of the config still applies).
+Carries the normalized rule_id so case-sensitivity / typo
+issues are visible.
 
 ### Upgrade notes (0.4.x → 0.5.0)
 
@@ -671,6 +738,71 @@ D6e closes the buf-parity arc: `protokit lint` now covers
   `[tool.protokit.lint.severities] "field/not-required" = "warning"`
 - Pin to 0.5.0 indefinitely? `pip install protokit==0.5.0`
 
+### Upgrade notes (0.6.x → 0.7.0)
+
+D6f ships two paired changes as a D6e KD-1 demonstration
+delivery: **R6 promotion** flips all 5 rules in
+`options/deprecated_replacement` from WARNING to ERROR in the
+`default` profile only, and **R9b** adds a full per-rule
+disable surface (see the new
+[Disabling and re-enabling rules](#disabling-and-re-enabling-rules)
+section above). R9b shipped first as the safety net so the
+migration recipe is real on day one.
+
+**Behavior change — R6 promotion:**
+
+All 5 rules in `options/deprecated_replacement` now fire at
+`error` severity in the `default` profile. Deprecated elements
+MUST carry a replacement reference in their leading comment
+OR be explicitly suppressed via one of the R9b mechanisms.
+The heuristic regex is UNCHANGED — only the severity flips.
+`recommended` is unaffected (R6 has no buf BASIC analogue and
+ships `default`-only).
+
+**Migration impact by `--max-warnings` posture:**
+
+| Posture | Pre-0.7.0 | Post-0.7.0 |
+|---|---|---|
+| `--max-warnings` unset | R6 finding: exit 0 (WARNING; not counted) | R6 finding: exit 1 (ERROR; `has_error` short-circuits) — **silent CI-pass regression risk** |
+| `--max-warnings 0` | R6 finding: exit 1 (counted as warning) | R6 finding: exit 1 (ERROR; `has_error` short-circuits before `max_warnings` gate) |
+| `--min-severity error` | R6 finding: exit 0 (WARNING filtered by floor) | R6 finding: exit 1 (ERROR passes floor) |
+
+The posture-1 row is the dominant concern: projects that
+previously ignored R6 WARNINGs will see CI flip from green to
+red on upgrade.
+
+**Phase 0 empirical validation (KD-8 hard gate)**: 200 random
+`.proto` files from googleapis (`random.seed(42)`) returned
+19 R6 findings; manual classification per the KD-8 rubric
+returned 0 noisy hits (0.0%). Gate threshold was >10% OR >5
+absolute noisy hits → STOP. Result: gate passed with
+substantial margin. Full audit trail in the U1 commit message
+body + the `### D6f — 0.7.0` CHANGELOG entry.
+
+**Pre-upgrade migration recipe** (full text in `CHANGELOG.md`
+`### D6f — 0.7.0`):
+
+1. **Fix the schema** (recommended). Add a replacement
+   reference to the leading comment of every deprecated
+   element.
+2. **Demote one rule back to WARNING**:
+   `[tool.protokit.lint.severities] "options/deprecated-field-must-have-replacement-comment" = "warning"`
+3. **Disable one rule via `"off"`** (new in D6f):
+   `[tool.protokit.lint.severities] "options/deprecated-field-must-have-replacement-comment" = "off"`
+4. **Disable the whole R6 family via `disabled_rules`** (new
+   in D6f): `[tool.protokit.lint] disabled_rules = [...]`
+   with the 5 R6 rule_ids. See the CHANGELOG for the full
+   5-rule family-list form.
+5. **Pin to 0.6.0 indefinitely**: `pip install protokit==0.6.0`.
+
+**Wire-format change**: `_LINT_JSON_SCHEMA_VERSION` bumps
+`"0.5"` → `"0.6"` for the two new `LintRuntimeWarning.category`
+Literal values (`"contradictory_disable_config"` +
+`"unknown_rule_id"`). Consumers parsing the schema against
+`"0.5"` MUST update. The pyproject `[project] version`
+bumps `0.6.0` → `0.7.0` independently per the version-bump
+communication contract.
+
 ### Custom annotation rules
 
 Declare option-aware annotation requirements in `pyproject.toml`
@@ -712,9 +844,12 @@ Fields:
   both on presence absence AND on values outside the set. Floats
   and mixed-type lists are rejected at config-load.
 - `severity` (optional) — `"error"` / `"warning"` / `"info"`;
-  defaults to `"warning"`. Note: `"off"` is NOT currently a valid
-  severity (R9b per-rule disable is scheduled for D6f+); demote to
-  `"info"` to suppress without removing the entry.
+  defaults to `"warning"`. As of 0.7.0 (D6f R9b), `"off"` is
+  also accepted at `[tool.protokit.lint.severities]` and
+  unloads the rule entirely; equivalent to
+  `disabled_rules = ["custom/<rule_suffix>"]`. See the
+  [Disabling and re-enabling rules](#disabling-and-re-enabling-rules)
+  section for multi-kind prefix-expansion semantics.
 
 Behavior:
 
@@ -864,7 +999,9 @@ Recognized keys (every key is optional):
 | `max_warnings` | integer | Non-error exit threshold for warning-level findings. |
 | `format` | string | Default output formatter (`"human"`, `"json"`, `"junit"`, `"sarif"`, or a `--formatter-module` name). |
 | `no_builtin_rules` | boolean | When `true`, skip loading `BUILTIN_PACKS` (the auto-loaded `naming` / `enum` / `imports` / `package` / `file` packs). User packs supplied via `--rule-pack MODULE` become load-bearing; an empty rule set exits 2 via the `no-rules` error code. |
-| `[tool.protokit.lint.severities]` | table (rule_id → severity string) | Per-rule severity overrides applied AFTER profile composition. User overrides always win on collision via post-compose dict-spread. Unknown rule_ids fire a `severities_unloaded_rule` runtime warning (typo surfacing without blocking the run). |
+| `disabled_rules` (0.7.0+) | list of strings | Per-rule disable directives. Accepts canonical `pack/rule-suffix`, bare `custom/<suffix>`, or mangled `custom/<suffix>__<kind>` forms. Bare custom suffixes prefix-expand to every kind of the matching rule. See [Disabling and re-enabling rules](#disabling-and-re-enabling-rules). |
+| `enabled_rules` (0.7.0+) | list of strings | Per-rule enable directives. Same accepted formats as `disabled_rules`. Disable wins across all tiers per R8 polarity-first; a contradictory disable+enable fires a `contradictory_disable_config` runtime warning. |
+| `[tool.protokit.lint.severities]` | table (rule_id → severity string) | Per-rule severity overrides applied AFTER profile composition. Accepted values: `"error"`, `"warning"`, `"info"`, and (0.7.0+) `"off"` (unloads the rule, equivalent to `disabled_rules`). User overrides always win on collision via post-compose dict-spread. Unknown rule_ids fire a `severities_unloaded_rule` runtime warning (typo surfacing without blocking the run). |
 
 Unknown keys and type mismatches produce a hard error (exit 2)
 that names the recognized keys and offending field. List-valued
@@ -887,6 +1024,8 @@ In addition to the pyproject keys, the CLI carries:
 | `--format NAME` | Override the pyproject `format` key for one run. Also reads `PROTOKIT_FORMAT` envvar. |
 | `--rule-pack MODULE` | Load a user rule pack on top of the built-ins (repeatable). |
 | `--no-builtin-rules` | Skip `BUILTIN_PACKS` for this run. Pair with `--rule-pack MODULE` to supply a custom rule set; empty rule sets exit 2 via the `no-rules` error code. Mirrors `[tool.protokit.lint] no_builtin_rules = true`. |
+| `--disable-rule RULE_ID` (0.7.0+) | Per-rule disable directive (repeatable; env-var `PROTOKIT_DISABLE_RULE` uses space-separated values per Click `multiple=True` semantics — `PROTOKIT_DISABLE_RULE="naming/snake-case-fields imports/unused"` — comma-separation is NOT supported). Wins over pyproject `enabled_rules` within polarity (CLI > pyproject); always wins over any enable (polarity-first). Bad values exit 2 via `lint-cli-option-invalid`. |
+| `--enable-rule RULE_ID` (0.7.0+) | Per-rule enable directive (repeatable; env-var `PROTOKIT_ENABLE_RULE` uses space-separated values; comma-separation is NOT supported). Same precedence rules apply — `--enable-rule R` does NOT override pyproject `disabled_rules ⊇ R`; a `contradictory_disable_config` warning fires on the contradiction. Use `--no-config` to bypass the entire pyproject (with the caveat that this drops every other pyproject key too). |
 | `--version` | Print `protokit <version> (parity: buf <pin>)` and exit. The pinned buf version is `_BUF_PARITY_PIN` in `src/protokit/schema/lint/cli.py`; the parity CI job uses the same pin. |
 | `--proto` | Treat inputs as `.proto` source files instead of pre-built descriptor sets; invokes the in-process compile path. |
 | `--proto-path DIR` / `-I DIR` | Add an include directory to the `--proto` compile path (repeatable). |
@@ -904,10 +1043,10 @@ and agents. Top-level keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `schema_version` | string | Wire-format version (currently `"0.5"`). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
+| `schema_version` | string | Wire-format version (currently `"0.6"` as of 0.7.0 D6f; bumped from `"0.5"` for two new `LintRuntimeWarning.category` Literal values per [[closed-literal-discriminator-bump-trigger-2026-05-17]]). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
-| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"`), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
+| `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"` / `"contradictory_disable_config"` (0.7.0+) / `"unknown_rule_id"` (0.7.0+)), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`, `contradictory_disable_config`, `unknown_rule_id` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
 | `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty for `--input` descriptor-set mode. |
 | `summary` | object | Aggregate counts. Keys: `errors`, `warnings`, `info`, `total`, `filtered_count`, `runtime_warning_count`. |
 
@@ -994,7 +1133,7 @@ accumulation.
 | Surface | Element | Status |
 |---------|---------|--------|
 | Python dataclass | `LintReport` (fields, ordering, frozen-ness) | IN |
-| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-312`. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
+| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved", "contradictory_disable_config", "unknown_rule_id"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-312`. Last two values added in 0.7.0 D6f. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
 | Python module | `BUILTIN_PACKS` (auto-loaded rule packs; includes `package_same` as of 0.3.0 → 7 R7 PACKAGE_SAME_* rules default-on under `recommended` + `default` profiles) | IN |
 | Python function | `leading_comment(source_info_descriptors, file_name, path)` (free function in `protokit.schema.lint.rules.options._comments`; reads `[replaced-by: <X>]` and similar leading-comment annotations from the indexed source-info descriptors) | IN |
 | Python class field | `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] \| None` (D6b U2 R6b — the source-locations index built from `FileDescriptorSet` before `pool.Add()` discards `source_code_info`; consumed by leading-comment introspection) | INTERNAL |
@@ -1009,16 +1148,17 @@ accumulation.
 | Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
 | Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
 | JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
-| JSON wire | `lint_json["schema_version"]: "0.5"` (top-level wire-format version; absence → implicit "0.1") | IN |
-| SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory) | IN |
+| JSON wire | `lint_json["schema_version"]: "0.6"` (top-level wire-format version; absence → implicit "0.1"; bumped from `"0.5"` in 0.7.0 D6f for two new `LintRuntimeWarning.category` Literal values) | IN |
+| SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory; D6f adds `properties.rule_id` for `contradictory_disable_config` + `unknown_rule_id` categories only — pre-existing rule-scoped categories (`rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`) do NOT carry `rule_id` in the SARIF propertyBag despite being rule-scoped; SARIF consumers needing complete rule_id attribution should use `--format=json` where `rule_id` is populated uniformly) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
-| SARIF wire | `runs[].properties.lint_schema_version: "0.5"` (parity with `lint_json["schema_version"]`) | IN |
+| SARIF wire | `runs[].properties.lint_schema_version: "0.6"` (parity with `lint_json["schema_version"]`) | IN |
+| SARIF wire | `tool.driver.rules[].defaultConfiguration.level` (D6f-added; pre-flight rule severity for IDE consumers) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
-| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with R6 deprecated-replacement family (5 warning-severity option-aware rules as of 0.3.0)) | IN |
+| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with R6 deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 D6f — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
-| CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--version` | IN |
+| CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--disable-rule` (0.7.0+), `--enable-rule` (0.7.0+), `--version` | IN |
 | Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
-| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid` (full set in `_LINT_ERROR_CODES`) | IN |
+| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+) (full set in `_LINT_ERROR_CODES`) | IN |
 | Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
 | Internal module | `protokit.schema.lint._cli_utils` | INTERNAL |

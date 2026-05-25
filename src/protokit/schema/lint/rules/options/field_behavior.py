@@ -36,8 +36,10 @@ message text (see
   are deliberately excluded from the curated set: AIP-203 says
   IDENTIFIER "conveys OUTPUT_ONLY in create contexts and IMMUTABLE
   in mutation contexts" — the contextual semantics make a hard
-  contradiction claim harder to defend. Deferred to D6f+ pending
-  evidence.
+  contradiction claim harder to defend. Deferred to D6g+ pending
+  evidence (D6f shipped R6 promotion + R9b per-rule disable but
+  did not expand the curated contradiction set; listed explicitly
+  in the D6f plan's Scope Boundaries).
 
 **Phase 0a (D6d U2) finding:** protoxy compile-FAILS on unknown enum
 identifiers (``= REQURIED``) and on out-of-enum numeric literals
@@ -76,9 +78,10 @@ discipline; the U5 boundary flipped the registration with the
 only. ``recommended``-profile users see ZERO new findings on D6d
 upgrade per R6 of the D6d brainstorm — conservative-launch posture
 matching D6b R6's leading-comment family. Promotion to
-``recommended`` deferred to D6f+ pending corpus evidence (D6e
-shipped the buf-parity closure but did not promote this rule;
-the conservative-launch posture continues).
+``recommended`` deferred to D6g+ pending corpus evidence (D6e
+shipped the buf-parity closure and D6f shipped the R6 promotion
++ R9b per-rule disable surface; neither promoted this rule to
+``recommended``; the conservative-launch posture continues).
 
 **Severity profile dispatch:** the three violation arms share a
 uniform ``WARNING`` severity, implemented as a dict-shaped

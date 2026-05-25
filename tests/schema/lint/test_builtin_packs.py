@@ -128,7 +128,8 @@ class TestBuiltinPacksDocstringRatchet:
     reads source via ``inspect.getsource`` (Pattern B per
     [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]]).
 
-    Live pins (D6e U4, 2026-05-22 — closing-arc complete at 0.6.0):
+    Live pins (D6f U3, 2026-05-25 — KD-1 demonstration shipped
+    at 0.7.0):
 
     1. ``"26 of 26 buf v1.69.0 BASIC rules"`` — load-bearing
        audit-trail numerator. Replaces the historical D6c-era
@@ -140,13 +141,24 @@ class TestBuiltinPacksDocstringRatchet:
        rule landed at D6e U3 (canonical ``buf:``-prefixed form).
     3. ``"``buf:FIELD_NOT_REQUIRED``"`` — the proto2-only rule
        landed at D6e U1+U2 in opt-in ``proto2-strict``.
+    4. ``"R9b per-rule disable surface"`` — D6f U2 shipped the
+       full per-rule disable surface (``"off"`` severity sentinel,
+       ``disabled_rules`` / ``enabled_rules`` pyproject lists,
+       ``--disable-rule`` / ``--enable-rule`` CLI flags). The
+       canonical phrase mirrors CHANGELOG ``#### Added — R9b
+       per-rule disable (full surface)`` per
+       [[presence-ratchet-pin-canonical-not-local-form-2026-05-23]]
+       — pinned to the CHANGELOG/docstring canonical form, NOT
+       the README's user-facing ``Disabling and re-enabling
+       rules`` section heading (the section heading is verified
+       separately by the README-anchored stale-text discipline).
 
     Without this ratchet a future stale-text edit could silently
     revert the numerator or drop the audit-trail references to
-    the two D6e additions. Per the 5th discipline rule of the
-    presence-ratchet pattern, each substring fits on a single
-    source line — no Sphinx ``#:`` continuation interrupts the
-    assertion.
+    the two D6e additions or the D6f R9b addition. Per the 5th
+    discipline rule of the presence-ratchet pattern, each
+    substring fits on a single source line — no Sphinx ``#:``
+    continuation interrupts the assertion.
     """
 
     def test_builtin_packs_docstring_pins_buf_basic_numerator(
@@ -176,6 +188,16 @@ class TestBuiltinPacksDocstringRatchet:
             # Post-D6e U1+U2 the rule's name appears with the
             # ``buf:`` prefix too; same rationale.
             "``buf:FIELD_NOT_REQUIRED``",
+            # D6f U2 (0.7.0) R9b per-rule disable surface. Pinned
+            # canonical phrase from CHANGELOG ``#### Added — R9b
+            # per-rule disable (full surface)`` per
+            # [[presence-ratchet-pin-canonical-not-local-form-2026-05-23]].
+            # NOT pinned to the README's user-facing section heading
+            # ``Disabling and re-enabling rules`` since that lives
+            # outside the docstring; per the canonical-pin rule the
+            # substring must appear in BOTH source surfaces (here,
+            # the BUILTIN_PACKS docstring AND the CHANGELOG entry).
+            "R9b per-rule disable surface",
         )
         for substring in ratchet_substrings:
             assert substring in source, (

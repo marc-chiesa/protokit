@@ -1,0 +1,12 @@
+# D6f R9b — Disable ONE rule via `disabled_rules` list.
+#
+# Source: README.md `### Disabling and re-enabling rules` →
+# "Disable mechanisms" table → `disabled_rules` row.
+# Byte-equivalent to the published snippet per
+# [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]].
+#
+# Equivalent to `[severities] "<rule_id>" = "off"`. The list form
+# is preferable when disabling 2+ rules (less typo-prone than 2+
+# severities table keys).
+[tool.protokit.lint]
+disabled_rules = ["naming/snake-case-fields"]

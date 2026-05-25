@@ -77,7 +77,7 @@ captured-set pattern carried (per learning
 The CLI is unaffected today (one ``engine.run()`` per process), but
 long-lived runtimes (MCP / IDE integrations) that recycle
 engines across sessions would otherwise observe silent dedup leakage
-(tracked for D6f+ in TODOS.md backlog).
+(tracked for D6g+ in TODOS.md backlog).
 
 **Synthetic module name.** ``_SYNTHETIC_MODULE_NAME`` is a stable
 identifier; the ``LintEngine.load_rule_pack`` idempotency guard at
@@ -85,7 +85,7 @@ identifier; the ``LintEngine.load_rule_pack`` idempotency guard at
 instance. The CLI creates a fresh engine per invocation so this is
 correct. Long-lived engines would observe stale rule registration on
 config changes — a known long-lived-runtime concern documented in the
-D6d plan's KD-21 (tracked for D6f+ in TODOS.md backlog).
+D6d plan's KD-21 (tracked for D6g+ in TODOS.md backlog).
 
 References:
 
@@ -141,7 +141,7 @@ _SYNTHETIC_MODULE_NAME: str = "protokit_lint_synthetic_custom_annotations"
 # extension condition still holds. The CLI is unaffected today (one
 # ``engine.run()`` per process), but long-lived runtimes (MCP / IDE
 # integrations) that recycle engines across sessions would hit the
-# leak without this discipline (tracked for D6f+ in TODOS.md backlog).
+# leak without this discipline (tracked for D6g+ in TODOS.md backlog).
 _UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
     weakref.WeakKeyDictionary()
 )

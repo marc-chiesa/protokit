@@ -346,3 +346,409 @@ class TestRulePackDedupAcrossBuiltinPacks:
             f"got {len(r8b_findings)} — duplicate-pack-load would "
             f"inflate. findings={r8b_findings!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# D6f R14b: R9b flag interaction with CLI dedup machinery
+# ---------------------------------------------------------------------------
+
+#: Cross-pack dirty fixture for R14b: triggers ``naming/snake-case-fields``
+#: (naming pack — ``BadField`` violates snake_case) AND ``package/defined``
+#: (package pack — missing package declaration). Two findings from two
+#: distinct packs gives R14b the cross-pack signal needed to verify
+#: that a ``--disable-rule`` targeting one pack does NOT silently
+#: suppress findings from the OTHER pack.
+_PROTO_R14B_CROSS_PACK_PATH = "no_pkg.proto"
+_PROTO_R14B_CROSS_PACK_SOURCE = textwrap.dedent(
+    """\
+    syntax = "proto3";
+    // Intentionally no `package` declaration → package/defined fires.
+
+    message Bad {
+      string BadField = 1;  // naming/snake-case-fields fires
+    }
+    """
+)
+
+
+class TestR9bCliInteractionRegression:
+    """D6f R14b — R9b flags interact cleanly with CLI dedup machinery.
+
+    Separate from :class:`TestRulePackDedupAcrossBuiltinPacks` so a
+    failing R14b case signals "R9b-specific issue", not "``--rule-pack``
+    dedup". The parametrized-over-BUILTIN_PACKS scope of the sibling
+    class is conceptually distinct from R9b-specific non-parametrized
+    regression cases (per the D6f plan's scope-guardian F8 note).
+
+    Coverage (5 cases):
+        1. ``--disable-rule`` filters from BUILTIN_PACKS (the auto-
+           loaded surface) — rule does not appear in findings.
+        2. ``--enable-rule`` adds without duplication when the rule
+           is already auto-loaded via BUILTIN_PACKS — rule fires
+           exactly once per violation.
+        3. Cross-pack-and-disable-rule interaction — ``--disable-rule``
+           targeting pack A does NOT filter pack B's findings.
+        4. Idempotent repeated ``--disable-rule R --disable-rule R``
+           — no ``contradictory_disable_config`` warning (same
+           polarity, no contradiction); rule disabled exactly once.
+        5. Multi-kind ``custom/<suffix>`` prefix expansion via CLI
+           — bare-prefix ``--disable-rule custom/<X>`` suppresses
+           every materialized kind without duplication when the
+           pyproject declares a multi-kind ``custom_annotation_rule``.
+    """
+
+    def test_disable_rule_filters_from_builtin_packs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Case 1: ``--disable-rule R`` filters R from BUILTIN_PACKS."""
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            {_PROTO_R14B_CROSS_PACK_PATH: _PROTO_R14B_CROSS_PACK_SOURCE},
+            out_filename="r14b_case1.descriptor_set",
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--profile", "default",
+                "--format", "json",
+                "--disable-rule", "naming/snake-case-fields",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        # SystemExit is the CLI's normal exit signal; the fixture
+        # triggers package/defined (ERROR) so exit 1 is expected.
+        # The R14b signal is the absence of naming/snake-case-fields
+        # in the findings — independent of exit code.
+        payload = json.loads(result.stdout)
+        rule_ids = {f["rule_id"] for f in payload["findings"]}
+        assert "naming/snake-case-fields" not in rule_ids, (
+            "--disable-rule failed to filter naming/snake-case-fields "
+            "from BUILTIN_PACKS — disable-rule directive did not "
+            f"reach engine setup. findings={payload['findings']!r}"
+        )
+
+    def test_enable_rule_no_duplication_when_already_auto_loaded(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Case 2: ``--enable-rule R`` on an already-auto-loaded R fires once.
+
+        The rule is already in the default profile via BUILTIN_PACKS.
+        ``--enable-rule`` is an additional enable directive on the
+        same rule_id — the dedup machinery must NOT cause a
+        double-emit. Exactly one ``naming/snake-case-fields`` finding
+        is expected per ``BadField`` violation in the fixture.
+        """
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            {_PROTO_R14B_CROSS_PACK_PATH: _PROTO_R14B_CROSS_PACK_SOURCE},
+            out_filename="r14b_case2.descriptor_set",
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--profile", "default",
+                "--format", "json",
+                "--enable-rule", "naming/snake-case-fields",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        # Exit 1 expected (package/defined ERROR + naming finding);
+        # SystemExit is CLI's normal exit. The R14b signal is the
+        # finding count for naming/snake-case-fields = exactly 1.
+        payload = json.loads(result.stdout)
+        naming_findings = [
+            f
+            for f in payload["findings"]
+            if f["rule_id"] == "naming/snake-case-fields"
+        ]
+        # Exactly ONE naming finding (BadField). A duplicate-load
+        # regression would inflate to 2.
+        assert len(naming_findings) == 1, (
+            f"expected 1 naming/snake-case-fields finding (BadField), "
+            f"got {len(naming_findings)} — --enable-rule on an "
+            f"already-auto-loaded rule must not duplicate. "
+            f"findings={naming_findings!r}"
+        )
+
+    def test_cross_pack_disable_does_not_filter_other_pack_findings(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Case 3: ``--disable-rule`` targeting pack A leaves pack B intact.
+
+        Disabling ``naming/snake-case-fields`` (naming pack) must NOT
+        suppress ``package/defined`` (package pack). The fixture
+        triggers both rules; only the naming finding should drop.
+        """
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            {_PROTO_R14B_CROSS_PACK_PATH: _PROTO_R14B_CROSS_PACK_SOURCE},
+            out_filename="r14b_case3.descriptor_set",
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--profile", "default",
+                "--format", "json",
+                "--disable-rule", "naming/snake-case-fields",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        # Exit 1 expected (package/defined ERROR survives the
+        # naming-only disable). SystemExit is CLI's normal exit.
+        payload = json.loads(result.stdout)
+        rule_ids = {f["rule_id"] for f in payload["findings"]}
+        assert "naming/snake-case-fields" not in rule_ids, (
+            "disable-rule did not filter naming/snake-case-fields"
+        )
+        # The package/defined finding from the OTHER pack must still
+        # appear — disable must not leak across pack boundaries.
+        assert "package/defined" in rule_ids, (
+            "disable-rule on naming pack incorrectly suppressed "
+            "package/defined (a different pack's finding). "
+            f"findings={payload['findings']!r}"
+        )
+
+    def test_repeated_disable_rule_is_idempotent_no_contradiction(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Case 4: ``--disable-rule R --disable-rule R`` is idempotent.
+
+        Same polarity (both disable), same rule_id → no contradiction.
+        Must NOT emit a ``contradictory_disable_config`` runtime
+        warning (which would falsely signal a user error on a
+        legitimate, idempotent duplicate directive). Rule disabled
+        exactly once.
+        """
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            {_PROTO_R14B_CROSS_PACK_PATH: _PROTO_R14B_CROSS_PACK_SOURCE},
+            out_filename="r14b_case4.descriptor_set",
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--profile", "default",
+                "--format", "json",
+                "--disable-rule", "naming/snake-case-fields",
+                "--disable-rule", "naming/snake-case-fields",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        # Exit 1 expected (package/defined ERROR). SystemExit is
+        # CLI's normal exit. The R14b signal is the absence of
+        # contradictory_disable_config (idempotent dedup) AND the
+        # rule_id missing from findings.
+        payload = json.loads(result.stdout)
+        # Disable wins; rule_id absent from findings.
+        rule_ids = {f["rule_id"] for f in payload["findings"]}
+        assert "naming/snake-case-fields" not in rule_ids
+        # No false-positive contradiction warning. Disable + disable
+        # on the same rule_id is idempotent (same polarity).
+        contradictory = [
+            w
+            for w in payload["runtime_warnings"]
+            if w["category"] == "contradictory_disable_config"
+        ]
+        assert contradictory == [], (
+            "repeated --disable-rule on the same rule_id is "
+            "idempotent (same polarity); no "
+            "contradictory_disable_config warning should fire. "
+            f"got: {contradictory!r}"
+        )
+
+    def test_multi_kind_custom_prefix_expansion_via_cli_no_duplication(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Case 5: bare ``custom/<suffix>`` disable suppresses ALL materialized kinds.
+
+        Two-part verification (ce:review F#4 rewrite, 2026-05-25):
+
+        Part 1 — **unit-level prefix-expansion pin** via
+        ``ResolvedLintConfig.from_dict``. A multi-kind spec
+        (``element_kinds = ["method", "field"]``) produces two
+        materialized rule_ids: ``custom/dual-thing`` (first kind,
+        bare) + ``custom/dual-thing__field`` (subsequent kind,
+        mangled per ``synthetic_rule_ids``). Bare-prefix
+        ``disabled_rules = ["custom/dual-thing"]`` MUST expand at
+        the config-resolution layer to suppress BOTH. This is the
+        load-bearing prefix-expansion assertion.
+
+        Part 2 — **CLI baseline-vs-disable comparison** using a real
+        extension defined on ``MethodOptions``. Without disable,
+        the ``METHOD`` closure fires a finding (annotation absent)
+        AND the ``FIELD`` closure emits ``rule_exception`` warnings
+        (``HasExtension`` raises ``KeyError`` because
+        ``example.dual_thing`` extends ``MethodOptions``, not
+        ``FieldOptions``). With bare-prefix
+        ``--disable-rule custom/dual-thing``, BOTH closures are
+        unloaded — the finding disappears AND the rule_exception
+        warnings for ``custom/dual-thing__field`` disappear.
+        Comparing both observables before/after rules out the prior
+        false-confidence design where the test passed regardless of
+        whether the second kind was actually suppressed.
+        """
+        # Part 1 — unit-level prefix-expansion pin.
+        from protokit.schema.lint._config import ResolvedLintConfig
+
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "custom_annotation_rules": [
+                    {
+                        "rule_suffix": "dual-thing",
+                        "option": "example.dual_thing",
+                        "element_kinds": ["method", "field"],
+                        "severity": "warning",
+                    },
+                ],
+                "disabled_rules": ["custom/dual-thing"],
+            },
+            {},
+        )
+        assert "custom/dual-thing" in resolved.disabled_rules, (
+            "bare-prefix custom/dual-thing did not survive config "
+            f"resolution: {resolved.disabled_rules!r}"
+        )
+        assert "custom/dual-thing__field" in resolved.disabled_rules, (
+            "bare-prefix custom/dual-thing did not expand to the "
+            "subsequent-kind mangled form custom/dual-thing__field. "
+            f"resolved disabled_rules: {resolved.disabled_rules!r}"
+        )
+
+        # Part 2 — CLI baseline-vs-disable comparison.
+        # Extension declared on MethodOptions only — the METHOD
+        # closure resolves and fires; the FIELD closure hits KeyError
+        # and emits custom_annotation_extension_unresolved. Both
+        # observables drop to zero under the bare-prefix disable.
+        ext_proto = textwrap.dedent(
+            """\
+            syntax = "proto2";
+            package example;
+            import "google/protobuf/descriptor.proto";
+            extend google.protobuf.MethodOptions {
+              optional string dual_thing = 50001;
+            }
+            """
+        )
+        svc_proto = textwrap.dedent(
+            """\
+            syntax = "proto3";
+            package r14b.dual;
+            message Carrier { string id = 1; }
+            service Carriers {
+              rpc Get(Carrier) returns (Carrier);
+            }
+            """
+        )
+        descriptor_set = compile_sources_to_descriptor_set(
+            tmp_path,
+            {
+                "example/dual_thing.proto": ext_proto,
+                "r14b/dual/carrier.proto": svc_proto,
+            },
+            out_filename="r14b_case5.descriptor_set",
+        )
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            textwrap.dedent(
+                """\
+                [tool.protokit.lint]
+                profile = "default"
+
+                [[tool.protokit.lint.custom_annotation_rules]]
+                rule_suffix    = "dual-thing"
+                option         = "example.dual_thing"
+                element_kinds  = ["method", "field"]
+                severity       = "warning"
+                """,
+            ),
+            encoding="utf-8",
+        )
+
+        # Baseline: NO --disable-rule. Verify both closures registered:
+        # METHOD fires a finding; FIELD fires an unresolved warning.
+        baseline = CliRunner().invoke(
+            lint_main,
+            [
+                f"--config={pyproject}",
+                "--format", "json",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        baseline_payload = json.loads(baseline.stdout)
+        baseline_method_findings = [
+            f
+            for f in baseline_payload["findings"]
+            if f["rule_id"] == "custom/dual-thing"
+        ]
+        baseline_field_rule_exceptions = [
+            w
+            for w in baseline_payload["runtime_warnings"]
+            if w["category"] == "rule_exception"
+            and w["rule_id"] == "custom/dual-thing__field"
+        ]
+        assert len(baseline_method_findings) >= 1, (
+            "baseline must fire at least one custom/dual-thing finding "
+            "(absent annotation on Carriers.Get method); without this "
+            "signal the disable assertion below is vacuous. "
+            f"findings={baseline_payload['findings']!r}"
+        )
+        assert len(baseline_field_rule_exceptions) >= 1, (
+            "baseline must fire at least one rule_exception warning for "
+            "custom/dual-thing__field (FIELD kind closure raises KeyError "
+            "because example.dual_thing extends MethodOptions, not "
+            "FieldOptions); without this signal the disable assertion "
+            f"below is vacuous. warnings={baseline_payload['runtime_warnings']!r}"
+        )
+
+        # Disable: --disable-rule custom/dual-thing (bare). Both
+        # materialized rule_ids should be unloaded → method finding
+        # disappears AND field unresolved warning disappears.
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                f"--config={pyproject}",
+                "--format", "json",
+                "--disable-rule", "custom/dual-thing",
+                str(descriptor_set),
+            ],
+            catch_exceptions=False,
+        )
+        payload = json.loads(result.stdout)
+        surviving_custom_findings = [
+            f
+            for f in payload["findings"]
+            if f["rule_id"].startswith("custom/")
+        ]
+        surviving_custom_warnings = [
+            w
+            for w in payload["runtime_warnings"]
+            if w["category"] == "rule_exception"
+            and (w["rule_id"] or "").startswith("custom/")
+        ]
+        assert surviving_custom_findings == [], (
+            "bare-prefix --disable-rule custom/dual-thing failed to "
+            "suppress the METHOD closure (rule_id custom/dual-thing). "
+            f"Surviving findings: {surviving_custom_findings!r}"
+        )
+        assert surviving_custom_warnings == [], (
+            "bare-prefix --disable-rule custom/dual-thing failed to "
+            "suppress the FIELD closure (rule_id custom/dual-thing__field) "
+            "— the field-kind closure still ran and emitted rule_exception "
+            "warnings. This is exactly the regression scenario the prior "
+            f"test design could not catch. Surviving warnings: "
+            f"{surviving_custom_warnings!r}"
+        )

@@ -1,0 +1,10 @@
+# D6f migration recipe path #2 — Demote ONE R6 rule back to WARNING.
+#
+# Source: CHANGELOG.md `### D6f — 0.7.0` → `#### Pre-upgrade migration
+# recipe` → path 2. Byte-equivalent to the published snippet per
+# [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]].
+#
+# Use this when a project wants R6 to keep emitting findings but
+# not flip CI from green to red on the WARNING → ERROR promotion.
+[tool.protokit.lint.severities]
+"options/deprecated-field-must-have-replacement-comment" = "warning"

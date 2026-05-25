@@ -111,13 +111,16 @@ Per-rule severity overrides + `--no-builtin-rules` + the 5-path
 pre-upgrade migration recipe in CHANGELOG provide demotion paths
 (path 5 covers Python API consumers via
 `LintProfile.rule_severity_overrides`); `lint_json` / `lint_sarif`
-carry a `schema_version` wire field at `"0.5"` (unchanged by D6e
-since the FileLocation line/column extension is an open extension
-per [[closed-literal-discriminator-bump-trigger-2026-05-17]],
-not a closed-Literal addition). With the buf-parity arc closed,
-**D6f+** resumes option-aware deepening (R6 promotion to ERROR,
-IDENTIFIER-based field_behavior contradictions, MessageSet-aware
-rules), and **D7** closes the plugin-API story.
+carry a `schema_version` wire field at `"0.6"` (bumped from `"0.5"`
+by D6f U2 for the two new `LintRuntimeWarning.category` Literal
+values per [[closed-literal-discriminator-bump-trigger-2026-05-17]];
+unchanged by D6e since the FileLocation line/column extension is an
+open extension, not a closed-Literal addition). With the buf-parity
+arc closed, **D6f (0.7.0)** shipped the first KD-1 demonstration
+(R6 promotion to ERROR + R9b per-rule disable surface). **D6g+**
+resumes option-aware deepening (IDENTIFIER-based field_behavior
+contradictions, MessageSet-aware rules), and **D7** closes the
+plugin-API story.
 
 ### D5 — pyproject `[tool.protokit.lint]` config + `--exclude` *(SHIPPED 2026-05-11/12)*
 
@@ -218,8 +221,58 @@ brainstorm steps 7–8; parity sub-discipline added 2026-05-09.
   (the renamed-from-`source_locations` index) landed at U2 and is
   classified INTERNAL in the Public Surface DRAFT.
 
-**D6f+ backlog items (post-D6e 0.6.0 release; closing-arc complete
-at 26 of 26 buf v1.69.0 BASIC rules):**
+**Post-ship monitoring (0.7.0) — TIME-SENSITIVE OPERATIONAL TASK**
+
+Per [[post-ship-adoption-monitoring-pre-1.0-breaking-default-change-2026-05-19]]
+and D6f plan KD-8: R6 promotion is a pre-1.0 breaking-default-change
+with silent-pinning as the dominant user response (5-path migration
+recipe in CHANGELOG explicitly documents the pin path). Without
+multi-signal monitoring the promotion is unfalsifiable post-ship.
+
+**Release date:** YYYY-MM-DD *(fill in at PyPI publish time)*
+**Breaking-default-change:** 5 R6 rules in
+`options/deprecated_replacement` flipped WARNING → ERROR in `default`
+profile (`options/deprecated-field-must-have-replacement-comment`,
+`options/deprecated-enum-value-must-have-replacement-comment`,
+`options/deprecated-method-must-have-replacement-comment`,
+`options/deprecated-message-must-have-replacement-comment`,
+`options/deprecated-enum-must-have-replacement-comment`).
+**Window:** week 4 = YYYY-MM-DD; week 6 = YYYY-MM-DD *(fill in)*
+
+**Positive-signal channels (any one = "adoption attempted"):**
+- [ ] PyPI download stats bookmarked:
+      `https://pypistats.org/packages/protokit` (or equivalent)
+- [ ] Outreach targets identified at release time (≥2 real users of
+      protokit-lint, NOT internal contributors — post-hoc selection
+      biases toward favorable respondents):
+  - User A (contact: TBD)
+  - User B (contact: TBD)
+- [ ] GitHub issue search saved:
+      `is:issue R6 OR deprecated-replacement OR "deprecated-field-must-have"`
+
+**Calendar reminders set:**
+- [ ] Week 4 check (PyPI + outreach + issue scan)
+- [ ] Week 6 check (PyPI + outreach + issue scan)
+
+**Negative-signal triggers (any one → cut 0.7.1 demotion patch within 1 week):**
+- ≥1 GitHub issue reports R6 breakage without a usable demote-path
+  in the published 5-path migration recipe.
+- PyPI 0.7.x/0.6.x download ratio stays inverted past week 6.
+- Outreach surfaces undocumented R6 migration pain.
+
+**Escalation readiness (0.7.1 demotion patch pre-staged):**
+- Demotion target: flip the 5 R6 rule_ids back to
+  `severity=LintSeverity.WARNING` in
+  `src/protokit/schema/lint/rules/options/deprecated_replacement.py`
+  (the inverse of the D6f U1 flip; commit `b74762c` shows the exact 5
+  decorator sites). ERROR severity remains available via explicit
+  `[severities] "<rule_id>" = "error"` opt-in.
+
+---
+
+**D6g+ backlog items (post-D6f 0.7.0 release; closing-arc complete
+at 26 of 26 buf v1.69.0 BASIC rules; first KD-1 demonstration
+delivery (R6 promotion + R9b per-rule disable) shipped at D6f):**
 
 - ~~**`PACKAGE_NO_IMPORT_CYCLE` (26th buf BASIC rule)**~~:
   **LANDED in D6e U3 (0.6.0)** via Tarjan SCC pre-walk
@@ -233,7 +286,7 @@ at 26 of 26 buf v1.69.0 BASIC rules):**
   divergence + walker-extension backlog item — see
   `docs/solutions/best-practices/phase-0-empirical-verification-
   falsifies-brainstorm-assumption-2026-05-22.md`.
-- **R9b — per-rule disable/enable CLI flag** (`disabled_rules` /
+- ~~**R9b — per-rule disable/enable CLI flag** (`disabled_rules` /
   `enabled_rules` pyproject lists, or `[severities] = "off"`
   support): deferred from D6a + D6b + D6e per the brainstorms;
   needs real-demand evidence to design the 4 collision-shape
@@ -244,16 +297,40 @@ at 26 of 26 buf v1.69.0 BASIC rules):**
   for suppressing a rule without removing the entry is to demote
   to `"info"` (and use `--min-severity warning` to drop the
   finding from the surface). R9b would add `"off"` as a first-
-  class disable sentinel.
+  class disable sentinel.~~ **LANDED in D6f (0.7.0)** as the
+  safety net before R6 promotion (U2 ships R9b first; U1
+  promotes R6 second). Full surface: `"off"` severity sentinel
+  (intercepted at `_coerce_severities` per KD-1; `LintSeverity`
+  enum stays closed), `disabled_rules` / `enabled_rules`
+  pyproject lists, `--disable-rule` / `--enable-rule` CLI flags
+  (repeatable; env-var override), multi-kind `custom/<suffix>`
+  prefix expansion at config-resolution layer. R8 precedence:
+  polarity-first (any disable wins) / tier-second (CLI >
+  pyproject). Two new `LintRuntimeWarning.category` values
+  (`"contradictory_disable_config"`, `"unknown_rule_id"`)
+  trigger `_LINT_JSON_SCHEMA_VERSION` `"0.5"` → `"0.6"`. See
+  `### D6f — 0.7.0` CHANGELOG section + README
+  `### Disabling and re-enabling rules` for the user-facing
+  surface.
 - **`strict` profile**: deferred from D6a + D6b + D6e until
   strict-only rules exist (COMMENT_* family, ENUM_ZERO_VALUE_
   SUFFIX, etc.) — shipping `strict` empty would damage the
   public surface with a misleading rule count. Distinct from
   the `proto2-strict` profile activated in D6e (per-syntax-
   version pattern per D6e KD-11); do NOT consolidate.
-- **R6 severity promotion to `error`**: D6b shipped R6 at
+- ~~**R6 severity promotion to `error`**: D6b shipped R6 at
   `warning` to bound the leading-comment-regex heuristic blast
-  radius; promotion to `error` pending real-world experience.
+  radius; promotion to `error` pending real-world experience.~~
+  **LANDED in D6f (0.7.0)** as a D6e KD-1 demonstration
+  delivery (after R9b U2 shipped as the safety net). All 5
+  rules in `options/deprecated_replacement` now fire at
+  `error` severity in the `default` profile only
+  (`recommended` is unaffected; R6 has no buf BASIC analogue).
+  Phase 0 empirical validation against googleapis (200 random
+  `.proto` files; `random.seed(42)`) returned 0.0% noisy
+  classification on 19 R6 hits, well under the >10% KD-8 hard
+  gate. See `### D6f — 0.7.0` CHANGELOG section + the U1
+  commit body for the full Phase 0 audit trail.
 - **`LintRuleSpec.parity_note` structured field** at specimen #3
   trigger per D6e PD-10. After EV-2 falsification dropped the
   field/not-required divergence, `file/syntax-specified` is the
@@ -272,12 +349,14 @@ at 26 of 26 buf v1.69.0 BASIC rules):**
   documented as a known concern in
   `src/protokit/schema/lint/_custom_rules.py` module docstring and
   D6d KD-21. The CLI is unaffected today (one `engine.run()` per
-  process). Deferred to D6f+ (originally on D6d's "Deferred to
+  process). Deferred to D6g+ (originally on D6d's "Deferred to
   D6e+" list; D6e shipped the buf-parity closure but did not
-  address the engine-lifecycle contract); needs a real long-lived
-  consumer to design against before shipping (rule re-registration
-  on config change, dedup state lifecycle, descriptor pool reuse
-  boundaries).
+  address the engine-lifecycle contract; D6f shipped R6 + R9b
+  but the engine-lifecycle contract remains unaddressed — listed
+  explicitly in the D6f plan's Scope Boundaries); needs a real
+  long-lived consumer to design against before shipping (rule
+  re-registration on config change, dedup state lifecycle,
+  descriptor pool reuse boundaries).
 - **U3 ce:review residual P2/P3 items** (deferred for follow-up):
   unit tests for `_tarjan_scc` + `_walk_cycle_forward` +
   `_import_source_position` (covered transitively by parity gate
@@ -287,7 +366,7 @@ at 26 of 26 buf v1.69.0 BASIC rules):**
   ≥ 34 packages.
 
 **Pre-D6e items already covered by the per-delivery planning in
-recent brainstorms (no D6f+ backlog entry needed):**
+recent brainstorms (no D6g+ backlog entry needed):**
 
 - R8 + R8b cross-file directory rules (D6c U2)
 - R7 PACKAGE_SAME_* family (D6b U4)

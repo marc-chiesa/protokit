@@ -220,6 +220,38 @@ from protokit.schema.lint.rules.options import (
 #: ``proto2-strict`` profile alongside U1+U2). The closing-arc
 #: headline ships clean — Phase 0 EV-2 falsification dropped
 #: the originally-planned extend-block divergence asterisk.
+#:
+#: D6f (0.7.0) — first post-closing-arc release; KD-1
+#: demonstration delivery. Two paired changes ship together:
+#: (1) **R6 promotion** — all 5 rules in
+#: ``options/deprecated_replacement`` flip ``severity=WARNING``
+#: → ``severity=ERROR`` in the ``default`` profile only (no
+#: change to ``recommended`` — R6 has no buf BASIC analogue).
+#: Phase 0 empirical validation against googleapis (200 random
+#: ``.proto`` files) returned 19 R6 hits with 0.0% noisy
+#: classification, well under the >10% KD-8 hard gate; the
+#: promotion is empirically safe. (2) The **R9b per-rule disable surface** —
+#: ``"off"`` severity sentinel +
+#: ``disabled_rules`` / ``enabled_rules`` pyproject lists +
+#: ``--disable-rule`` / ``--enable-rule`` CLI flags +
+#: multi-kind ``custom/<suffix>`` prefix expansion at the
+#: config-resolution layer. R9b shipped FIRST (U2 before U1)
+#: as the safety net so the R6 migration recipe is real on day
+#: one. The ``LintSeverity`` enum stays CLOSED at 3 members
+#: per KD-1's sentinel pattern (``"off"`` intercepted at
+#: ``_coerce_severities`` BEFORE ``LintSeverity()``
+#: construction); ``_LINT_JSON_SCHEMA_VERSION`` bumped
+#: ``"0.5"`` → ``"0.6"`` atomic with the two new
+#: ``LintRuntimeWarning.category`` Literal values
+#: (``"contradictory_disable_config"`` +
+#: ``"unknown_rule_id"``). Engine hot path is unchanged —
+#: R9b filtering happens at config resolution; the engine
+#: sees only a pre-filtered profile. ``BUILTIN_PACKS``
+#: membership and rule count are UNCHANGED (D6f adds no new
+#: rules — only severity changes + new disable surface).
+#: See README ``### Disabling and re-enabling rules`` for the
+#: user-facing surface and CHANGELOG ``### D6f — 0.7.0`` for
+#: the migration recipe and Phase 0 audit trail.
 BUILTIN_PACKS: tuple[ModuleType, ...] = (
     naming,
     enum,

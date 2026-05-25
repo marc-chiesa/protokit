@@ -1,0 +1,20 @@
+# D6f migration recipe path #4 — Disable the entire R6 family
+# (5-rule family-list form per KD-4).
+#
+# Source: CHANGELOG.md `### D6f — 0.7.0` → `#### Pre-upgrade migration
+# recipe` → path 4. Byte-equivalent to the published snippet per
+# [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]].
+#
+# The 5-rule enumeration is LOAD-BEARING per KD-4: users who want
+# to suppress R6 wholesale need a single declaration covering every
+# ElementKind in the deprecated_replacement family. Writing 5
+# separate `[severities]` entries is the alternative; this list
+# form is more compact.
+[tool.protokit.lint]
+disabled_rules = [
+  "options/deprecated-field-must-have-replacement-comment",
+  "options/deprecated-enum-value-must-have-replacement-comment",
+  "options/deprecated-method-must-have-replacement-comment",
+  "options/deprecated-message-must-have-replacement-comment",
+  "options/deprecated-enum-must-have-replacement-comment",
+]

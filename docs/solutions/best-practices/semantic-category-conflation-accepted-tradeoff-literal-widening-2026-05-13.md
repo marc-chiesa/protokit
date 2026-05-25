@@ -1,7 +1,7 @@
 ---
 title: "Accept semantic category conflation when reuse avoids a wire-format Literal widening — document at three sites"
 date: 2026-05-13
-last_updated: 2026-05-17
+last_updated: 2026-05-25
 category: docs/solutions/best-practices
 module: src/protokit/schema/lint/model.py
 problem_type: best_practice
@@ -36,6 +36,21 @@ tags:
 **The value-migration semantics surfaced during U5** are captured in [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] — when a reuse-then-split decision eventually resolves, the result is value-MIGRATION (not pure value-addition), which has narrower consumer-side protection from forward-compatibility tolerance.
 
 **The bump-contract refinement triggered by U5** is captured in [[closed-literal-discriminator-bump-trigger-2026-05-17]] — the closed-Literal-discriminator vs open-severity-ladder distinction extends the bump contract documented in [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]].
+
+## Exercises of the pattern (as of 2026-05-25)
+
+The widen-vs-reuse-vs-sentinel decision tree has been exercised four times in protokit-lint. Each exercise informs the framework's evolution:
+
+1. **D6a U9 KTD-2 (2026-05-13) — REUSE chosen.** The CLI-synthesized `severities_unloaded_rule` warning shipped under the existing `"unloaded_rule"` category value. Conflation accepted; three-site documentation discipline established (Literal docstring + emit-site comment + TODOS.md backlog).
+2. **D6b U5 (2026-05-17) — RESOLVED via WIDENING.** The deferred split landed: `"severities_unloaded_rule"` added to the `LintRuntimeWarning.category` Literal. Wire-format `_LINT_JSON_SCHEMA_VERSION` bumped `"0.2"` → `"0.3"`. This was the first closed-Literal-discriminator widening under the bump contract; the experience produced [[closed-literal-discriminator-bump-trigger-2026-05-17]] (the closed-vs-open refinement) and [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] (the migration-vs-addition framing).
+3. **D6d U1+U2 (2026-05-20, 0.5.0) — WIDEN chosen directly.** Two new categories added without intermediate reuse: U1 introduced `"custom_annotation_extension_unresolved"` (synthetic `custom/<suffix>` rule unresolved-extension); U2 introduced `"extension_unresolved"` (built-in option-aware rule unresolved-extension). Distinct categories because consumers should programmatically distinguish "user mis-configured pyproject" from "user did not include googleapis" without parsing message text. Two-step bump `"0.3"` → `"0.4"` → `"0.5"`. No conflation was attempted — the two error conditions had genuinely different remediation flows, failing sub-rule 4 (don't conflate across user-facing routing boundaries).
+4. **D6f U2 (2026-05-25, 0.7.0) — SENTINEL chosen (third branch).** The R9b per-rule disable surface needed an `"off"` value at `[severities] "<rule>" = "off"`. The naive widen would add `LintSeverity.OFF` to the 3-member severity enum — but `"off"` is semantically a DISABLE signal, NOT a severity level. Adding it to the enum would cascade through every consumer of severity (`SEVERITY_RANK` lookup, `_emit()` filter, SARIF formatter `assert_never`, JSON wire-format string, severity-coloring in `human` formatter). The sentinel pattern intercepts `"off"` at the coercion layer BEFORE constructing the enum value, propagates via a separate field on the return type, and merges into a unified `disabled_rules` set at the resolution layer. The enum stays closed at 3 members; downstream consumers are unchanged. See [[sentinel-at-coercion-layer-not-enum-widening-2026-05-24]] for the full pattern. This exercise extended the decision tree from two options (widen / reuse) to three (widen / reuse / sentinel). The discriminating question for the new branch: does the new value belong to the same conceptual category as the existing values, or does it represent a semantically different signal that happens to be expressed at the same surface? If the latter, the sentinel branch is the correct answer.
+
+The framework's three branches now compose the canonical decision tree:
+
+- **Widen** — when the new value belongs to the same conceptual category AND consumers need to discriminate (closed-Literal addition).
+- **Reuse** — when the new value belongs to the same conceptual category AND consumers do not need to discriminate (message-text-substring sufficient; three-site documentation captures the deferred split).
+- **Sentinel** — when the new value does NOT belong to the same conceptual category but is expressed at the same surface (intercept at the coercion layer; keep the enum closed).
 
 ## Context
 
@@ -82,14 +97,24 @@ document the resolution path so the deferred design isn't lost.
 
 ## Guidance
 
-**When a new emission site needs a signal that semantically fits
+**When a new emission site needs a signal that overlaps with an existing ``Literal`` category value, the decision tree has THREE branches (extended from the original two by D6f U2 KD-1):**
+
+| Branch | When to choose | Cost |
+|---|---|---|
+| **Widen** the Literal | The new value belongs to the same conceptual category AND consumers need to discriminate programmatically (closed-Literal addition) | Wire-format change; bump `_LINT_JSON_SCHEMA_VERSION`; every consumer that switches on the Literal must extend its match construct |
+| **Reuse** an existing value (conflation) | The new value belongs to the same conceptual category AND consumers do not need to discriminate (message-text-substring sufficient) | Defer the split; three-site documentation discipline (Literal docstring + emit-site comment + TODOS.md); reversible later |
+| **Sentinel** at the coercion layer | The new value does NOT belong to the same conceptual category — it's a semantically different signal that happens to be expressed at the same surface | Intercept BEFORE constructing the enum value; propagate via a separate field on the return type; the enum stays closed; downstream consumers are unchanged |
+
+**The original guidance below was written when the decision tree had only TWO branches (widen / reuse). It remains correct for those two branches. The Sentinel branch was added by D6f U2 KD-1 — see [[sentinel-at-coercion-layer-not-enum-widening-2026-05-24]] for the full sentinel pattern.**
+
+**Original (widen / reuse) framing:** When a new emission site needs a signal that semantically fits
 an existing ``Literal`` category value used in a frozen dataclass
 that flows to wire-format outputs, prefer category reuse over
 Literal widening IF the user-visible signal via message text is
 sufficient. Reuse is reversible (a future delivery can still
 widen); widening is a wire-format change at the moment of
 introduction. Document the conflation at THREE sites so the
-deferred design is discoverable.**
+deferred design is discoverable.
 
 The three-site documentation discipline:
 
@@ -202,6 +227,33 @@ The inverse — when to widen the Literal instead:
   it in message parsing.
 - **Different fields are required at the two sites** — the
   conflation only works when the structural shape matches.
+
+The third branch — when to use a sentinel at the coercion layer instead:
+
+- **The new value is semantically different from the enum's existing
+  category.** E.g., `"off"` arriving at `[severities]` is a DISABLE
+  signal, not a severity level; widening `LintSeverity` would force
+  downstream consumers (`SEVERITY_RANK` lookup, `_emit()` filter,
+  SARIF formatter `assert_never`, JSON wire-format string, severity-
+  coloring) to handle a value that doesn't belong to the rank ladder.
+- **The new value's processing belongs at a layer above the enum's
+  consumers.** The sentinel is intercepted at the input boundary
+  (coercion layer); the enum stays closed; the new value flows
+  through a separate field on the return type (e.g., a
+  `_CoercedSeverities` NamedTuple carrying both `severities: dict[str,
+  LintSeverity]` AND `off_rule_ids: frozenset[str]`). Consumers of
+  the enum see no new value; consumers of the new field see the new
+  signal natively.
+- **Cascade analysis matters.** Before choosing widen for a new value,
+  enumerate every enum consumer (rank lookup, filter, exhaustive
+  match, formatter `assert_never`, wire format). If any consumer
+  would need to handle the new value as a special case (rather than
+  routing it through the enum's natural semantics), the sentinel
+  pattern is cleaner. See [[sentinel-at-coercion-layer-not-enum-widening-2026-05-24]]
+  for the propagation contract.
+- **Decision question:** "Does the new value belong to the same
+  conceptual category as the existing enum values?" If YES, widen
+  (closed-Literal) or reuse (conflation). If NO, use a sentinel.
 
 ## Examples
 

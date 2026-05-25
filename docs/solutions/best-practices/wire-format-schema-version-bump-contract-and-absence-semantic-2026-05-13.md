@@ -1,7 +1,7 @@
 ---
 title: "Document both the bump contract and the field-absence semantic when introducing a wire-format schema_version"
 date: 2026-05-13
-last_updated: 2026-05-17
+last_updated: 2026-05-25
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -167,52 +167,110 @@ The inverse — when this discipline is NOT applicable:
 
 ### Constant with both clauses (the discipline anchor)
 
-``src/protokit/formatters/_builtin_lint.py:227–250``:
+``src/protokit/formatters/_builtin_lint.py`` — the constant
+docstring is the single source of truth and now carries a full
+progression narrative. Abbreviated form:
 
 ```python
 #: D6a U9 R9d: wire-format schema version for ``lint_json`` (top-level
 #: ``schema_version``) and ``lint_sarif`` (``runs[].properties.lint_schema_version``).
 #: Both formatters MUST emit the same string value per the
-#: cross-format-enum-string-parity discipline. ``lint_human`` (terminal-
-#: rendered text) and ``lint_junit`` (XML; downstream JUnit consumers
-#: rely on the standard schema without protokit-specific extensions)
-#: deliberately do NOT carry this field.
+#: cross-format-enum-string-parity discipline. ``lint_human`` and
+#: ``lint_junit`` deliberately do NOT carry this field.
 #:
 #: Consumer contract:
-#:   - Consumers MUST treat unknown values as forward-compatible
-#:     (read what they can, ignore new keys they don't understand).
+#:   - Consumers MUST treat unknown values as forward-compatible.
 #:   - Field-absent semantic: protokit output that predates this
 #:     constant (no ``schema_version`` key at all) is the implicit
-#:     version ``"0.1"`` — i.e., one bump below the first
-#:     documented value. Consumers comparing versions should treat
-#:     absence as a known-older release, NOT as an error.
+#:     version ``"0.1"`` — one bump below the first documented value.
+#:     Consumers comparing versions should treat absence as a known-
+#:     older release, NOT as an error.
 #:   - Protokit bumps this version on:
 #:       (a) addition of new top-level keys
 #:       (b) change in meaning of an existing field
 #:       (c) removal of a previously documented field
 #:   - **Bump-trigger refinement (closed Literals vs open ladders):**
-#:     Adding new string values to an existing enum field has two
-#:     consumer-impact regimes — open severity-string ladders
-#:     (consumers tolerate unknown values gracefully) do NOT bump;
-#:     closed Literal discriminators (consumers exhaustively switch
-#:     on the value) DO bump. The discriminating question: can a
-#:     consumer that doesn't know about the new value still produce
-#:     a correct result? See [[closed-literal-discriminator-bump-trigger-2026-05-17]]
-#:     for the consumer-correctness test + the D6b U5 worked example.
-_LINT_JSON_SCHEMA_VERSION: str = "0.3"  # 0.2 → 0.3 in D6b U5 (closed-Literal addition)
+#:     Closed Literal discriminators (consumers exhaustively switch
+#:     on the value) DO bump. Open severity-string ladders DO NOT.
+#:     See [[closed-literal-discriminator-bump-trigger-2026-05-17]].
+#:   - **Pre-release carve-out**: closed-discriminator value renames
+#:     within the same unreleased version cycle (between two internal
+#:     units U_N and U_N+1 of the same delivery, both preceding the
+#:     version bump to a user-visible release) do NOT bump. First
+#:     case: D6c U2→U3 ``violation_kind`` rename (``"empty-mixed"`` →
+#:     ``"empty-mixed-single"`` + ``"empty-mixed-multi"``); both U2
+#:     and U3 land before the 0.4.0 boundary; schema_version stays
+#:     ``"0.3"`` across the rename.
+#:   - **Multi-value-one-bump**: when a single delivery adds multiple
+#:     closed-Literal values, ONE schema-version bump covers them all
+#:     (the bump triggers ON the closed-Literal change as a unit, not
+#:     per-value). First case: D6f U2 added BOTH
+#:     ``"contradictory_disable_config"`` AND ``"unknown_rule_id"``
+#:     in one commit; ``"0.5"`` → ``"0.6"`` covers both.
+#:
+#: Worked-example progression (every bump under this contract):
+#:   * ``"0.2"`` — initial (D6a U9, 2026-05-13)
+#:   * ``"0.2"`` → ``"0.3"`` — D6b U5 (commit ``16b494f``); added
+#:     ``"severities_unloaded_rule"`` to ``LintRuntimeWarning.category``
+#:     (first closed-Literal addition).
+#:   * ``"0.3"`` → ``"0.4"`` — D6d U1; added
+#:     ``"custom_annotation_extension_unresolved"`` to ``category``
+#:     (synthetic ``custom/<suffix>`` rule unresolved-extension).
+#:   * ``"0.4"`` → ``"0.5"`` — D6d U2; added ``"extension_unresolved"``
+#:     to ``category`` (built-in option-aware rule unresolved-extension;
+#:     same root condition as D6d U1's sixth value but distinct
+#:     ``category`` so consumers discriminate without text parsing).
+#:   * ``"0.5"`` → ``"0.6"`` — D6f U2; added
+#:     ``"contradictory_disable_config"`` + ``"unknown_rule_id"`` in
+#:     ONE bump (R9b per-rule disable infrastructure surfaced two new
+#:     categories from one feature set).
+#:
+#: Pre-release carve-out worked example: D6c U2 shipped R8b with
+#: ``violation_kind="package/directory-same-package/empty-mixed"``;
+#: D6c U3 corrected the helper-bug fix to split that arm into
+#: ``/empty-mixed-single`` + ``/empty-mixed-multi`` empirically against
+#: buf v1.69.0. Both U2 and U3 land before the 0.4.0 release boundary;
+#: ``schema_version`` stays ``"0.3"`` across the rename. Post-1.0, the
+#: same rename WOULD bump per the value-migrated-vs-value-added
+#: distinction in [[closed-literal-discriminator-bump-trigger-2026-05-17]].
+_LINT_JSON_SCHEMA_VERSION: str = "0.6"
 ```
 
-The bump-trigger refinement landed in D6b U5 (commit `16b494f`)
-as the first closed-Literal-discriminator addition under this
-contract. Before U5 the constant docstring had a single blanket
-sentence: "Adding new severity-level / category strings to an
-existing enum field does NOT bump the version." That wording was
-correct for `LintFinding.severity` (open ladder) but WRONG for
-`LintRuntimeWarning.category` (closed discriminator) — the U5
-addition of `"severities_unloaded_rule"` to `category` triggered
-the 0.2 → 0.3 bump, contradicting the blanket sentence and
-forcing the refinement. See [[closed-literal-discriminator-bump-trigger-2026-05-17]]
-for the full distinction + when each regime applies.
+The progression as of 2026-05-25 spans five bumps under this
+contract. Three institutional refinements have accumulated on top
+of the original dual-clause structure:
+
+1. **Closed-Literal vs open-ladder distinction** — landed at D6b U5
+   (commit `16b494f`) as the first closed-Literal-discriminator
+   addition. Before U5 the docstring had a single blanket sentence
+   ("enum-value additions don't bump") that was correct for
+   `LintFinding.severity` (open ladder) but WRONG for
+   `LintRuntimeWarning.category` (closed discriminator). The U5
+   addition forced the refinement; see
+   [[closed-literal-discriminator-bump-trigger-2026-05-17]] for the
+   full distinction.
+2. **Pre-release carve-out** — landed via D6c U3 retroactively
+   recognizing that the U2→U3 `violation_kind` rename (both pre-
+   0.4.0-release) did not need a bump. The carve-out is grounded in
+   [[pre-1.0-version-bump-as-communication-contract-2026-05-14]]:
+   the pre-release surface is internal-only by the version-bump
+   communication contract; no consumer has stored state against the
+   intermediate U_N value. Post-1.0 the same rename WOULD bump per
+   the value-migrated-vs-value-added distinction.
+3. **Multi-value-one-bump** — landed at D6f U2 when the R9b per-rule
+   disable infrastructure surfaced two new `category` values
+   (`"contradictory_disable_config"` + `"unknown_rule_id"`) in a
+   single feature commit. The bump triggers ON the closed-Literal
+   change as a unit, not per-value — so one `"0.5"` → `"0.6"` bump
+   covers both additions. The plan's KD-7 made this explicit
+   (sequence the bump atomic with the model.py Literal additions,
+   not deferred to the delivery-boundary version-bump unit).
+
+The three refinements compose: a single delivery can add multiple
+closed-Literal values in one feature commit (multi-value-one-bump),
+correct intermediate values across units within that delivery without
+re-bumping (pre-release carve-out), and the schema_version emerges at
+release time as one increment over the prior public release.
 
 ### Cross-format parity — same value, different key paths
 
@@ -269,7 +327,7 @@ def test_runtime_warnings_and_schema_version_coexist(
     assert "runtime_warnings" in properties, properties
     assert "lint_schema_version" in properties, properties
     assert len(properties["runtime_warnings"]) == 1
-    assert properties["lint_schema_version"] == "0.3"
+    assert properties["lint_schema_version"] == "0.6"
 ```
 
 ### Format-exclusion tests
@@ -369,3 +427,26 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   widening + `_LINT_JSON_SCHEMA_VERSION` 0.2 → 0.3 + bump-contract
   docstring refinement), `7cd4095` (ce:review follow-ups — 6
   safe_auto stale-narrative fixes).
+- D6d U1+U2 anchor commits (0.5.0 release): two-step bump under
+  the closed-Literal contract — U1 (`0.3` → `0.4`) added
+  `"custom_annotation_extension_unresolved"`; U2 (`0.4` → `0.5`)
+  added `"extension_unresolved"`. Same root condition (extension
+  not in pool), distinct category to let consumers discriminate
+  pyproject-mis-config (U1) from missing-googleapis (U2) without
+  parsing message text.
+- D6f U2 anchor commit (0.7.0 release): `b8f0168` (feat —
+  `_LINT_JSON_SCHEMA_VERSION` `0.5` → `0.6` atomic with the two new
+  `LintRuntimeWarning.category` Literal additions). First worked
+  example of the multi-value-one-bump observation: two values added
+  to the same closed Literal in one commit produce ONE bump, not
+  two. KD-7 in the D6f plan sequenced the bump atomic with the
+  model.py Literal additions (NOT deferred to the delivery-boundary
+  package-version bump in U3) so the wire format and the bump land
+  together.
+- [[test-proxy-signal-suppressed-by-mechanism-under-test-2026-05-25]] —
+  emerged at the same D6f U3 ce:review pass that triggered this
+  refresh. The new test-design discipline applies broadly to
+  suppression mechanisms; the closed-Literal bump contract is the
+  wire-format analog (both convert "absence of signal / absence of
+  bump" into a positive contract that distinguishes the silent-pass
+  case from the actual valid case).

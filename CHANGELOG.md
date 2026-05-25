@@ -432,6 +432,308 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D6f — R6 promotion to ERROR + R9b per-rule disable (0.7.0)
+
+D6f is a **D6e KD-1 demonstration delivery**: the first
+post-closing-arc release that exercises the inverted UX
+philosophy (`protokit-UX overrides buf-parity`) on a
+user-facing severity decision. Two paired changes ship together:
+**R9b** — full per-rule disable surface (`"off"` severity
+sentinel, `disabled_rules` / `enabled_rules` pyproject lists,
+`--disable-rule` / `--enable-rule` CLI flags, multi-kind
+`custom/<suffix>` prefix expansion) — and **R6 promotion** —
+all 5 rules in `options/deprecated_replacement` flip
+WARNING → ERROR in the `default` profile only. R9b shipped
+first (U2 before U1) as the safety net so the migration recipe
+is real on day one, per the post-ship-adoption-monitoring
+discipline.
+
+#### Added — R9b per-rule disable (full surface)
+
+- **`[severities]` `"<rule_id>" = "off"`** — new accepted
+  value alongside `"error"` / `"warning"` / `"info"`. Intercepted
+  at the config-coercion layer (`_coerce_severities`) BEFORE
+  `LintSeverity` construction; the `LintSeverity` enum stays
+  closed at 3 members (ERROR, WARNING, INFO). `OFF` rule_ids
+  flow through the unified `ResolvedLintConfig.disabled_rules`
+  set and the rule is excluded from `_loaded_specs` at engine
+  setup — wire-safety invariant: `LintSeverity.OFF` never
+  enters `LintFinding`. Resolves the documented 2-step `"= "info"
+  + --min-severity warning"` workaround from D6e.
+- **`[tool.protokit.lint] disabled_rules` / `enabled_rules`**
+  pyproject lists — explicit per-rule disable + enable
+  directives. Entries validated against `_R9B_RULE_ID_REGEX`
+  (canonical `pack/rule-suffix`, bare `custom/<suffix>`, or
+  mangled `custom/<suffix>__<kind>` forms); normalized via
+  `.strip().lower()` per the input-boundary normalization
+  discipline. Heterogeneous arrays, non-string elements, and
+  unrecognized formats all exit 2 via
+  `error[lint-pyproject-config-invalid]`.
+- **`--disable-rule` / `--enable-rule` CLI flags**
+  (repeatable; env-var override via `PROTOKIT_DISABLE_RULE` /
+  `PROTOKIT_ENABLE_RULE`). Bad flag values exit 2 via the new
+  `error[lint-cli-option-invalid]` code (distinct from
+  `lint-pyproject-config-invalid` so CI scripts can attribute
+  CLI-flag failures separately from pyproject-coercion
+  failures). Click `multiple=True` natural empty-tuple
+  sentinel — no `ParameterSource` machinery; absent flag
+  yields `()` which becomes `None` in `cli_overrides`.
+- **Multi-kind `custom/<suffix>` prefix expansion** at the
+  config-resolution layer — `disabled_rules = ["custom/audit-
+  required"]` suppresses every kind of `audit-required` (the
+  bare suffix expands to all mangled forms emitted by
+  `synthetic_rule_ids()`; e.g., `custom/audit-required`,
+  `custom/audit-required__method`, `custom/audit-required__enum_value`).
+  Per-kind disable still works via the explicit mangled form
+  (`disabled_rules = ["custom/audit-required__method"]`); no
+  expansion, exact match. Suffix-equality matching (NOT
+  substring) so `"custom/foo"` never matches `"custom/foobar"`.
+- **R8 precedence — polarity-first / tier-second** —
+  ONE principle, two-step application: (1) any disable at any
+  tier wins over any enable; (2) within the same polarity, CLI
+  > pyproject. Resolved exhaustively in
+  `ResolvedLintConfig.from_dict`; engine hot path sees only the
+  effective rule set.
+- **NEW `LintRuntimeWarning(category="contradictory_disable_config")`**
+  — fires when a disable mechanism silently overrides a
+  lower-tier enable directive (5 enumerated cases in the R8
+  resolution table). Message text names the rule_id + both
+  involved mechanisms so users know exactly which directive
+  was overridden.
+- **NEW `LintRuntimeWarning(category="unknown_rule_id")`**
+  — lenient-with-warning for `disabled_rules` / `enabled_rules`
+  entries that don't match any loaded rule_id. Fires at the
+  engine's `unloaded_rule_ids` diff step (mirrors the
+  pre-existing `severities_unloaded_rule_ids` pattern). Carries
+  the normalized rule_id so users see exactly the form that
+  failed to match (helps diagnose typos and case-sensitivity
+  issues).
+- **`_LINT_JSON_SCHEMA_VERSION` bump `"0.5"` → `"0.6"`** —
+  triggered ON the two closed-Literal additions to
+  `LintRuntimeWarning.category` (items 8 + 9 of the Literal),
+  NOT at the delivery boundary. Per the schema-bump policy,
+  one bump covers both new categories; the bump lands atomic
+  with the model.py Literal additions in U2 rather than
+  deferred to U3's package version bump. Consumers parsing
+  the schema against `"0.5"` MUST update.
+- **SARIF rule catalog `defaultConfiguration.level`** — every
+  entry in `tool.driver.rules[]` now emits SARIF 2.1.0 §3.49.3
+  `defaultConfiguration.level` derived from the rule's spec
+  severity. IDE integrations (VS Code SARIF viewer, GitHub
+  Advanced Security, etc.) can now display rule severities in
+  the pre-flight rule panel without running a lint. Multi-kind
+  rules emit the strictest severity across kinds.
+- **SARIF runtime-warning propertyBag rule_id field** — the
+  two new D6f categories
+  (`contradictory_disable_config`, `unknown_rule_id`) emit a
+  `rule_id` key in their SARIF `properties` bag so SARIF
+  consumers can correlate warnings to rule_ids without parsing
+  message text. Pre-existing rule-scoped categories keep their
+  existing shape (no `rule_id` in propertyBag).
+
+#### Changed — R6 promotion (WARNING → ERROR in default profile)
+
+- **All 5 rules in `options/deprecated_replacement` flipped
+  WARNING → ERROR** in the `default` profile. The 5 rule_ids:
+  - `options/deprecated-field-must-have-replacement-comment`
+  - `options/deprecated-enum-value-must-have-replacement-comment`
+  - `options/deprecated-method-must-have-replacement-comment`
+  - `options/deprecated-message-must-have-replacement-comment`
+  - `options/deprecated-enum-must-have-replacement-comment`
+
+  Deprecated elements MUST now carry a replacement reference
+  in their leading comment OR be explicitly suppressed via one
+  of the R9b mechanisms above. The leading-comment-regex
+  heuristic is UNCHANGED — only the severity flips. The
+  `recommended` profile is unaffected (R6 has no buf BASIC
+  analogue and continues to ship `default`-only).
+
+- **Phase 0 empirical validation** (KD-8 hard gate, captured
+  in the U1 commit body): 200 random `.proto` files from
+  googleapis (`random.seed(42)`) returned 19 R6 findings;
+  manual classification per the KD-8 rubric returned 0 noisy
+  hits (0.0%). Gate threshold was >10% OR >5 absolute noisy
+  hits → STOP. Result: gate passed with substantial margin.
+  Sampled hits inspected: every flag corresponds to a
+  deprecated element with no replacement reference in the
+  leading comment — the heuristic correctly identifies absence
+  of replacement guidance, not noisy informal phrasings.
+
+#### Behavior changes (defaults; demotable)
+
+**R6 promotion — exit-code impact by `--max-warnings` posture:**
+
+| Posture | Pre-0.7.0 | Post-0.7.0 |
+|---|---|---|
+| `--max-warnings` unset | R6 finding: exit 0 (WARNING; not counted) | R6 finding: exit 1 (ERROR; `has_error` short-circuits) — **SILENT CI-PASS REGRESSION RISK** |
+| `--max-warnings 0` | R6 finding: exit 1 (counted as warning) | R6 finding: exit 1 (ERROR; `has_error` short-circuits before `max_warnings` gate) |
+| `--min-severity error` | R6 finding: exit 0 (WARNING filtered by floor) | R6 finding: exit 1 (ERROR passes floor) |
+
+This is the inverse-direction sibling of the D6e R4b
+`file/syntax-specified` demotion. The posture-1 regression
+("silent CI-pass") is the dominant concern: projects that
+previously ignored R6 WARNINGs will see their CI flip from
+green to red on upgrade.
+
+#### Pre-upgrade migration recipe
+
+Four paths, in increasing specificity. Pick the one matching
+your project's posture:
+
+1. **Fix the schema** (recommended). Add a replacement
+   reference to the leading comment of every deprecated
+   element. The heuristic matches phrasings like `Use FooBar
+   instead.`, `Replaced by FooBar.`, etc. — see
+   `src/protokit/schema/lint/rules/options/deprecated_replacement.py`
+   for the regex.
+
+2. **Demote one rule back to WARNING** via `[severities]`:
+   ```toml
+   [tool.protokit.lint.severities]
+   "options/deprecated-field-must-have-replacement-comment" = "warning"
+   ```
+
+3. **Disable one rule via `"off"`** (new in D6f):
+   ```toml
+   [tool.protokit.lint.severities]
+   "options/deprecated-field-must-have-replacement-comment" = "off"
+   ```
+   Equivalent to `disabled_rules = [...]` with the same rule_id.
+
+4. **Disable the whole R6 family via `disabled_rules`** (new
+   in D6f):
+   ```toml
+   [tool.protokit.lint]
+   disabled_rules = [
+     "options/deprecated-field-must-have-replacement-comment",
+     "options/deprecated-enum-value-must-have-replacement-comment",
+     "options/deprecated-method-must-have-replacement-comment",
+     "options/deprecated-message-must-have-replacement-comment",
+     "options/deprecated-enum-must-have-replacement-comment",
+   ]
+   ```
+   The 5-rule family-list form is load-bearing for users who
+   want to suppress R6 wholesale without writing 5 separate
+   `[severities]` entries.
+
+5. **Pin to 0.6.0 indefinitely**: `pip install protokit==0.6.0`.
+
+**Cross-tier escape hatch caveat**: `--enable-rule R` does NOT
+override pyproject `disabled_rules ⊇ R` (R8 polarity-first;
+disable wins across tiers). The `--no-config` flag bypasses
+the entire pyproject table — including profile, exclude, and
+severities — so users who want to override ONE disabled rule
+without losing the rest of their pyproject config MUST edit
+the pyproject directly. The `contradictory_disable_config`
+runtime warning fires on this case with an actionable message.
+
+#### Flat-config-only convention
+
+D6f explicitly does NOT implement multi-tier pyproject
+inheritance (parent `disabled_rules` + child `enabled_rules`
+merge semantics). protokit-lint is currently flat-config-only:
+the first `pyproject.toml` encountered during the walk-up is
+the sole source. The R8 polarity-first / tier-second
+resolution applies WITHIN a single pyproject's lists AND
+across the CLI-vs-pyproject tier boundary; layered pyproject
+inheritance is explicit D6g+ scope.
+
+#### Test coverage
+
+- **R8 13-case precedence parametrization** at
+  `tests/schema/lint/test_r9b_precedence.py` — 12 cases from
+  the brainstorm R8 resolution table + 1 added post-review
+  (`--enable-rule R + [severities] R = "off"`). Each case
+  pins the effective load-set + the expected
+  `contradictory_disable_config` emission.
+- **R8b + R8c runtime warning coverage** at
+  `tests/schema/lint/test_r9b_warnings.py` — every
+  contradictory-config branch + every unknown-rule_id path
+  emits exactly one structured warning with the rule_id +
+  mechanism attribution.
+- **`_coerce_disabled_rules` / `_coerce_enabled_rules`**
+  consolidated parametrized coverage at
+  `tests/schema/lint/_config/test_coerce_disable_enable_rules.py`
+  (single test file per scope-guardian discipline — saves the
+  near-duplicate two-helper split).
+- **`_CoercedSeverities` namedtuple return shape** at
+  `tests/schema/lint/_config/test_severities.py` — verifies
+  `"off"` interception + the two-part return shape +
+  rule_id normalization.
+- **`cli_overrides` dispatch + intra-`from_dict` ordering** at
+  `tests/schema/lint/_config/test_from_dict_r9b.py` — verifies
+  the KD-2 ordering (custom_annotation_rules FIRST, then
+  disable/enable coercion + prefix expansion, then R8
+  precedence, then R8b warnings, then unified-disabled merge).
+- **CLI Click integration** at
+  `tests/schema/lint/cli/test_cli_disable_enable_rule_flags.py`
+  — `multiple=True` repeatability, env-var integration, and
+  the `lint-cli-option-invalid` error code path.
+- **End-to-end profile-augmentation guard** at
+  `tests/schema/lint/cli/test_cli_r9b_profile_augmentation.py`
+  — the load-bearing regression test: setting
+  `[severities] "<rule>" = "off"` produces ZERO findings on a
+  rule-violating fixture via full CLI invocation. Catches the
+  silent-no-op risk where `from_dict` bookkeeping never
+  reaches engine setup.
+- **R6 per-rule severity pin** at
+  `tests/schema/lint/rules/options/test_deprecated_replacement_severity.py`
+  — parametrized over all 5 R6 rule_ids on TWO surfaces (rule
+  spec metadata AND engine-loaded `LintRuleSpec`); pins the
+  family count (exactly 5 rules) and `default`-profile-only
+  scope. Mirrors the D6e R4b regression-pin pattern.
+- **R6 exit-code regression** at
+  `tests/schema/lint/cli/test_cli_ci_gating.py::TestR6PromotionExitCodeRegression`
+  — 3 postures (`--max-warnings` unset, `--max-warnings 0`,
+  `--min-severity error`) all → exit 1 post-promotion; 2
+  migration-path integration tests (R9b `--disable-rule`
+  restores exit 0; `[severities]` demote restores exit 0);
+  multi-ElementKind 2-rule fire pin.
+- **R6 migration recipe end-to-end** at
+  `tests/schema/lint/cli/test_cli_r6_migration_recipe.py` —
+  all 4 migration paths verified via `--proto` + `--config`
+  invocations against `cli_fixtures/d6f_r6_migration/` (5
+  fixtures including the multi-ElementKind `sad_multi_element.proto`).
+- **R9b CLI dedup regression** at
+  `tests/schema/lint/test_cli_rule_pack_dedup.py::TestR9bCliInteractionRegression`
+  (NEW class — separate from `TestRulePackDedupAcrossBuiltinPacks`
+  so a failing R14b test signals R9b-specific issue, not
+  `--rule-pack` dedup). 5 cases: `--disable-rule` filters
+  BUILTIN_PACKS; `--enable-rule` adds without duplication;
+  cross-pack-and-disable-rule interaction; idempotent
+  repeated `--disable-rule`; multi-kind custom prefix expansion.
+- **Migration-recipe TOML byte-equivalence fixtures** at
+  `tests/schema/lint/cli/cli_fixtures/d6f_migration_recipe/`
+  — 4 single-entry + 1 family-list TOML snippets that parse
+  cleanly through `_coerce_severities` /
+  `_coerce_disabled_rules` per the snippet-fixture
+  byte-equivalence discipline. Every TOML snippet in the
+  migration recipe above maps to a fixture.
+
+#### Deferred to D6g+
+
+- **R6 promotion in `recommended` profile** — no buf BASIC
+  analogue, so promotion would diverge from buf parity without
+  KD-1 justification. Stays at `default`-only.
+- **Per-finding suppress mechanism**
+  (`[severities] "custom/X.params.option" = "off"`) — R9b is
+  rule-level only; param-level suppression is finer-grained
+  scope.
+- **Layered multi-pyproject inheritance** — flat-config-only
+  is the current architectural reality per KD-3. Layered
+  resolution is its own design problem (precedence semantics,
+  attribution, override directionality) and is explicit D6g+
+  scope.
+- **Buf-parity aliases** (`--except-rule` / `--also-rule`) —
+  12-week trigger window expires 2026-08-15. Ship if real
+  user demand surfaces in that window.
+- **`options/field-behavior-consistent` IDENTIFIER-based
+  contradictions** — current rule covers VALUE-based
+  contradictions only; IDENTIFIER-based scope is a
+  rule-expansion task.
+- **SHA-pinning test for D6e U3 buf snapshots** — carried
+  forward from D6e U4 deferred list; orthogonal to D6f scope.
+
 ### D6e — buf BASIC closure + UX philosophy revision (0.6.0)
 
 D6e closes the buf-parity arc: `protokit lint` now matches

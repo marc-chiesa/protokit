@@ -1,0 +1,13 @@
+# D6f R9b — Enable ONE rule via `enabled_rules` list.
+#
+# Source: README.md `### Disabling and re-enabling rules` →
+# "Enable mechanisms" table → `enabled_rules` row.
+# Byte-equivalent to the published snippet per
+# [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]].
+#
+# Useful when paired with `--no-builtin-rules` (or
+# `no_builtin_rules = true`): enable specific rules without
+# pulling the entire BUILTIN_PACKS surface. Subject to R8
+# polarity-first: any disable at any tier wins over this enable.
+[tool.protokit.lint]
+enabled_rules = ["package/no-import-cycle"]

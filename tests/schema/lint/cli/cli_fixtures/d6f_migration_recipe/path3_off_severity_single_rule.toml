@@ -1,0 +1,12 @@
+# D6f migration recipe path #3 — Disable ONE R6 rule via "off" severity.
+#
+# Source: CHANGELOG.md `### D6f — 0.7.0` → `#### Pre-upgrade migration
+# recipe` → path 3. Byte-equivalent to the published snippet per
+# [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]].
+#
+# Equivalent to `disabled_rules = [<same rule_id>]`. The "off" value
+# is intercepted at the config-coercion layer per D6f U2 KD-1; the
+# `LintSeverity` enum stays closed at 3 members. Use this single-rule
+# form when only ONE specific R6 ElementKind needs suppressing.
+[tool.protokit.lint.severities]
+"options/deprecated-field-must-have-replacement-comment" = "off"
