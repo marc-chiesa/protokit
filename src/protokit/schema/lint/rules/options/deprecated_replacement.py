@@ -24,12 +24,18 @@ analogue and would dilute the parity claim. Users targeting the full
 protokit capability via ``--profile default`` see R6 findings; users
 targeting buf BASIC parity via ``--profile recommended`` do not.
 
-**Severity.** All 5 rules ship at ``warning`` severity. The heuristic
-regex matcher will miss some legitimate replacement phrasings; shipping
-at ``warning`` bounds the CI blast radius so users can demote per-rule
-via ``[tool.protokit.lint.severities]`` without breaking builds while
-they tune the rules to their codebase. Promotion to ``error`` is a
-post-D6b decision contingent on real-world miss/hit-rate measurement.
+**Severity.** All 5 rules ship at ``error`` severity in the ``default``
+profile (D6f promotion from the D6b initial ``warning``). The post-D6f
+contract: deprecated elements MUST carry a replacement reference in
+their leading comment, or be explicitly disabled via the D6f R9b
+mechanisms (``[severities] "<rule_id>" = "off"`` or ``disabled_rules``
+/ ``--disable-rule``). The promotion was gated by an empirical Phase 0
+hit-rate validation against googleapis (200-file sample, seed=42):
+19 hits across 10 files, 0 noisy classifications. See the D6f U1 plan
+KD-8 + the D6f CHANGELOG entry for the worked migration recipe; the
+heuristic regex is unchanged (precision-first; some legitimate
+replacement phrasings still miss, and R9b is the documented escape
+hatch).
 
 **Sanitization.** Each finding's ``params["comment"]`` carries the
 leading comment text (truncated to 500 chars) after running through the
@@ -53,8 +59,12 @@ references will have empty ``source_code_info.location[]`` arrays. The
 and the rules emit findings for every deprecated element in the schema.
 This over-reporting is documented in the 0.3.0 CHANGELOG entry; the workarounds
 are (a) regenerate the descriptor set with ``--include_source_info``,
-(b) lint via ``--proto`` mode instead, or (c) demote the R6 rules via
-``[tool.protokit.lint.severities]``. A runtime ``LintCompileDiagnostic``
+(b) lint via ``--proto`` mode instead, (c) demote the R6 rules via
+``[tool.protokit.lint.severities]`` (e.g.,
+``"options/deprecated-field-must-have-replacement-comment" = "warning"``),
+or (d) disable them per-rule via the D6f R9b mechanisms
+(``[severities] "<rule_id>" = "off"``, ``disabled_rules = [...]``,
+or ``--disable-rule <rule_id>``). A runtime ``LintCompileDiagnostic``
 for the absent-source-info case is deferred to a future delivery per
 the D6b U3 plan's K-9 decision.
 
@@ -206,7 +216,7 @@ _REPLACEMENT_HINT: str = (
 
 @lint_rule(
     rule_id="options/deprecated-field-must-have-replacement-comment",
-    severity=LintSeverity.WARNING,
+    severity=LintSeverity.ERROR,
     profiles=("default",),
     element=ElementKind.FIELD,
     message_template=(
@@ -223,8 +233,9 @@ def check_deprecated_field_must_have_replacement_comment(
     Reads the field's ``FieldOptions.deprecated`` bit; when set, looks up
     the field's leading comment via the U2-shipped
     :func:`leading_comment` helper and runs it through the shared
-    :func:`_check_replacement_comment` regex matcher. Fires a warning
-    when no recognized replacement phrasing is found.
+    :func:`_check_replacement_comment` regex matcher. Fires an error
+    when no recognized replacement phrasing is found (D6f promotion;
+    pre-D6f severity was ``warning``).
 
     Protokit-original — no buf analogue (per
     [[buf-parity-divergence-documentation-discipline]]).
@@ -246,7 +257,7 @@ def check_deprecated_field_must_have_replacement_comment(
 
 @lint_rule(
     rule_id="options/deprecated-enum-value-must-have-replacement-comment",
-    severity=LintSeverity.WARNING,
+    severity=LintSeverity.ERROR,
     profiles=("default",),
     element=ElementKind.ENUM_VALUE,
     message_template=(
@@ -262,7 +273,8 @@ def check_deprecated_enum_value_must_have_replacement_comment(
 
     Reads ``EnumValueOptions.deprecated``; on a match, looks up the
     value's leading comment and verifies it contains recognized
-    replacement phrasing. Fires a warning otherwise.
+    replacement phrasing. Fires an error otherwise (D6f promotion; pre-D6f severity was
+    ``warning``).
 
     Protokit-original — no buf analogue (per
     [[buf-parity-divergence-documentation-discipline]]).
@@ -284,7 +296,7 @@ def check_deprecated_enum_value_must_have_replacement_comment(
 
 @lint_rule(
     rule_id="options/deprecated-method-must-have-replacement-comment",
-    severity=LintSeverity.WARNING,
+    severity=LintSeverity.ERROR,
     profiles=("default",),
     element=ElementKind.METHOD,
     message_template=(
@@ -300,7 +312,8 @@ def check_deprecated_method_must_have_replacement_comment(
 
     Reads ``MethodOptions.deprecated``; on a match, looks up the method's
     leading comment and verifies it contains recognized replacement
-    phrasing. Fires a warning otherwise.
+    phrasing. Fires an error otherwise (D6f promotion; pre-D6f severity was
+    ``warning``).
 
     Protokit-original — no buf analogue (per
     [[buf-parity-divergence-documentation-discipline]]).
@@ -322,7 +335,7 @@ def check_deprecated_method_must_have_replacement_comment(
 
 @lint_rule(
     rule_id="options/deprecated-message-must-have-replacement-comment",
-    severity=LintSeverity.WARNING,
+    severity=LintSeverity.ERROR,
     profiles=("default",),
     element=ElementKind.MESSAGE,
     message_template=(
@@ -338,7 +351,8 @@ def check_deprecated_message_must_have_replacement_comment(
 
     Reads ``MessageOptions.deprecated``; on a match, looks up the
     message's leading comment and verifies it contains recognized
-    replacement phrasing. Fires a warning otherwise.
+    replacement phrasing. Fires an error otherwise (D6f promotion; pre-D6f severity was
+    ``warning``).
 
     Protokit-original — no buf analogue (per
     [[buf-parity-divergence-documentation-discipline]]).
@@ -360,7 +374,7 @@ def check_deprecated_message_must_have_replacement_comment(
 
 @lint_rule(
     rule_id="options/deprecated-enum-must-have-replacement-comment",
-    severity=LintSeverity.WARNING,
+    severity=LintSeverity.ERROR,
     profiles=("default",),
     element=ElementKind.ENUM,
     message_template=(
@@ -376,7 +390,8 @@ def check_deprecated_enum_must_have_replacement_comment(
 
     Reads ``EnumOptions.deprecated``; on a match, looks up the enum's
     leading comment and verifies it contains recognized replacement
-    phrasing. Fires a warning otherwise.
+    phrasing. Fires an error otherwise (D6f promotion; pre-D6f severity was
+    ``warning``).
 
     Protokit-original — no buf analogue (per
     [[buf-parity-divergence-documentation-discipline]]).

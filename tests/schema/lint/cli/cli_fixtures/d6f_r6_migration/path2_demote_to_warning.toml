@@ -1,0 +1,17 @@
+# D6f migration recipe path #2 — demote one R6 rule back to WARNING.
+#
+# Use this when the codebase has legitimate replacement-comment
+# phrasings the R6 regex misses (e.g., "Removed: prefer NewField.")
+# and the author can't or won't update every comment. The rule still
+# fires for human review but no longer fails CI without
+# --max-warnings.
+#
+# Pre-D6f this was the documented suppression path (alongside
+# --min-severity warning); post-D6f the R9b "off" form (path #3) is
+# the preferred escape hatch because it doesn't depend on the
+# WARNING/ERROR distinction.
+[tool.protokit.lint]
+profile = "default"
+
+[tool.protokit.lint.severities]
+"options/deprecated-field-must-have-replacement-comment" = "warning"

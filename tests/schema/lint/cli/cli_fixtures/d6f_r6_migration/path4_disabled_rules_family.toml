@@ -1,0 +1,19 @@
+# D6f migration recipe path #4 — disable the entire R6 family via
+# `disabled_rules` (D6f R9b U2 mechanism, KD-4 5-rule family-list form).
+#
+# Use this when a project does not want to opt into R6 at all (e.g.,
+# a brand-new project pre-stabilization where deprecation-replacement
+# documentation isn't yet a team standard). All 5 R6 rules are
+# disabled in one declaration; the 5-rule enumeration is load-bearing
+# for KD-4 (per the D6f plan: "MUST include the 5-rule family-list
+# form").
+[tool.protokit.lint]
+profile = "default"
+
+disabled_rules = [
+    "options/deprecated-field-must-have-replacement-comment",
+    "options/deprecated-enum-value-must-have-replacement-comment",
+    "options/deprecated-method-must-have-replacement-comment",
+    "options/deprecated-message-must-have-replacement-comment",
+    "options/deprecated-enum-must-have-replacement-comment",
+]

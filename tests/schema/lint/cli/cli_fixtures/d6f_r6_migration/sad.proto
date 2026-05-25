@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package demo.d6f.r6;
+
+// A user model with a legacy field marked deprecated. The leading
+// comment on `legacy_id` does NOT name a replacement, so post-D6f
+// the R6 rule fires at ERROR severity (this fixture is the shared
+// "sad path" target across all 4 migration recipe paths).
+message User {
+    string id = 1;
+
+    // No longer used.
+    string legacy_id = 2 [deprecated = true];
+}

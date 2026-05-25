@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package demo.d6f.r6;
+
+// Migration recipe path #1 — "fix the schema." The user adds a
+// recognized replacement-phrasing reference to the leading comment
+// (one of the 4 canonical forms: "Use X instead", "Replaced by X",
+// "Migrate to X", "See X for the replacement"). The R6 heuristic
+// regex matches; no finding fires.
+//
+// This is the GOLDEN migration path — the rule's intent is to nudge
+// authors to document the replacement, and a fix in the proto is
+// the action the rule WANTS the author to take. The other 3 paths
+// (demote, R9b-off, R9b-list) are documented escape hatches when a
+// fix is not yet possible.
+message User {
+    string id = 1;
+
+    // Use id instead.
+    string legacy_id = 2 [deprecated = true];
+}

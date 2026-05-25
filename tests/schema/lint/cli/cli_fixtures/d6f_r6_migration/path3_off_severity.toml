@@ -1,0 +1,17 @@
+# D6f migration recipe path #3 — disable one R6 rule via the
+# `[severities]` "off" sentinel (D6f R9b U2 mechanism).
+#
+# Use this when the rule fires on a deprecated element your team
+# has chosen to NOT document a replacement for (legitimate cross-
+# team deferrals, internal-only fields, etc.). The rule does not
+# load; zero findings are emitted.
+#
+# Per the D6f KD-1 sentinel pattern, "off" is intercepted at the
+# `_coerce_severities` boundary and does NOT extend the LintSeverity
+# enum — wire-format consumers continue to see exactly 3 severities
+# (error / warning / info).
+[tool.protokit.lint]
+profile = "default"
+
+[tool.protokit.lint.severities]
+"options/deprecated-field-must-have-replacement-comment" = "off"

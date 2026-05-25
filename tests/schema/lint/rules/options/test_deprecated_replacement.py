@@ -123,7 +123,7 @@ class TestRuleSpecs:
     def test_field_spec(self) -> None:
         spec = check_deprecated_field_must_have_replacement_comment._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "options/deprecated-field-must-have-replacement-comment"
-        assert spec.severity is LintSeverity.WARNING
+        assert spec.severity is LintSeverity.ERROR
         assert spec.profiles == ("default",)
         assert spec.element is ElementKind.FIELD
         assert spec.source_spec == ""
@@ -131,7 +131,7 @@ class TestRuleSpecs:
     def test_enum_value_spec(self) -> None:
         spec = check_deprecated_enum_value_must_have_replacement_comment._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "options/deprecated-enum-value-must-have-replacement-comment"
-        assert spec.severity is LintSeverity.WARNING
+        assert spec.severity is LintSeverity.ERROR
         assert spec.profiles == ("default",)
         assert spec.element is ElementKind.ENUM_VALUE
         assert spec.source_spec == ""
@@ -139,7 +139,7 @@ class TestRuleSpecs:
     def test_method_spec(self) -> None:
         spec = check_deprecated_method_must_have_replacement_comment._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "options/deprecated-method-must-have-replacement-comment"
-        assert spec.severity is LintSeverity.WARNING
+        assert spec.severity is LintSeverity.ERROR
         assert spec.profiles == ("default",)
         assert spec.element is ElementKind.METHOD
         assert spec.source_spec == ""
@@ -147,7 +147,7 @@ class TestRuleSpecs:
     def test_message_spec(self) -> None:
         spec = check_deprecated_message_must_have_replacement_comment._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "options/deprecated-message-must-have-replacement-comment"
-        assert spec.severity is LintSeverity.WARNING
+        assert spec.severity is LintSeverity.ERROR
         assert spec.profiles == ("default",)
         assert spec.element is ElementKind.MESSAGE
         assert spec.source_spec == ""
@@ -155,7 +155,7 @@ class TestRuleSpecs:
     def test_enum_spec(self) -> None:
         spec = check_deprecated_enum_must_have_replacement_comment._lint_spec  # type: ignore[attr-defined]
         assert spec.rule_id == "options/deprecated-enum-must-have-replacement-comment"
-        assert spec.severity is LintSeverity.WARNING
+        assert spec.severity is LintSeverity.ERROR
         assert spec.profiles == ("default",)
         assert spec.element is ElementKind.ENUM
         assert spec.source_spec == ""
@@ -374,7 +374,7 @@ class TestDeprecatedFieldRule:
         )
         assert len(report.findings) == 1
         f = report.findings[0]
-        assert f.severity is LintSeverity.WARNING
+        assert f.severity is LintSeverity.ERROR
         assert f.violation_kind == "options/deprecated-field-must-have-replacement-comment"
         # The non-matching comment is preserved (sanitized) in params.
         assert "This is being removed." in f.params["comment"]
@@ -464,7 +464,7 @@ class TestDeprecatedEnumValueRule:
         )
         assert len(report.findings) == 1
         f = report.findings[0]
-        assert f.severity is LintSeverity.WARNING
+        assert f.severity is LintSeverity.ERROR
         assert f.params["name"] == "LEGACY"
 
     def test_no_comment_yields_one_finding(self, tmp_path: Path) -> None:

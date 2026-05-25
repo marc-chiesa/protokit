@@ -489,6 +489,237 @@ class TestMaxWarningsExitLadder:
         assert result.exit_code == 0, result.output
 
 
+_PROTO_R6_DEPRECATED_NO_REPLACEMENT = """\
+syntax = "proto3";
+package demo.r6;
+
+message User {
+    // This is being removed.
+    string old_field = 1 [deprecated = true];
+}
+"""
+"""Proto fixture with a deprecated field whose leading comment does
+NOT match the R6 replacement-heuristic regex. Post-D6f, the
+``options/deprecated-field-must-have-replacement-comment`` rule fires
+at ERROR severity. Pre-D6f it fired at WARNING.
+
+Inline-string-fixture style matches the existing test_cli_ci_gating
+discipline (cf. ``test_proto2_file_under_default_profile_exits_0_post_r4b_demotion``
+above). --proto mode is required because R6 needs leading-comment
+source info; the dedup helper at
+``tests/schema/lint/_cli_dedup_helpers.py`` compiles without
+``include_source_info=True`` and therefore would over-report per the
+D6b U3 K-9 caveat — using --proto mode instead exercises the
+``cli.py:731`` flip's load-bearing kwarg.
+"""
+
+
+class TestR6PromotionExitCodeRegression:
+    """D6f U1 — R6 promotion (WARNING → ERROR) exit-code regression pin.
+
+    The mirror counterpart to
+    ``TestMaxWarningsExitLadder.test_proto2_file_under_default_profile_exits_0_post_r4b_demotion``
+    above. D6e R4b was an inverse-direction demotion
+    (``file/syntax-specified``: ERROR → WARNING); D6f R6 is the
+    promotion. Pins post-D6f exit codes across the three
+    user-visible CI postures named in the D6f plan U1 *Error paths*
+    test scenarios:
+
+    1. ``--max-warnings`` unset: pre-promotion exit 0; post-promotion
+       exit 1. **SILENT CI-PASS REGRESSION RISK** — documented in the
+       CHANGELOG migration table.
+    2. ``--max-warnings 0``: pre-promotion exit 1 (warnings>0 gate);
+       post-promotion exit 1 (``has_error=True`` short-circuits before
+       the gate is consulted).
+    3. ``--min-severity error``: pre-promotion exit 0 (WARNING filtered
+       below floor); post-promotion exit 1 (ERROR passes floor).
+
+    Together these three pin the user-facing severity change as
+    intentional. A regression that demotes any R6 rule back to WARNING
+    will fire across (1) and (3); a regression that breaks the
+    ``has_error`` short-circuit ordering will fire on (2).
+    """
+
+    def _write_proto(self, tmp_path: Path) -> Path:
+        proto = tmp_path / "r6_sad.proto"
+        proto.write_text(_PROTO_R6_DEPRECATED_NO_REPLACEMENT)
+        return proto
+
+    def test_max_warnings_unset_post_promotion_exits_1(
+        self, tmp_path: Path,
+    ) -> None:
+        """Posture 1: silent-CI-pass regression risk pinned.
+
+        Pre-D6f: WARNING-only findings without --max-warnings exit 0
+        (R20 contract). A user with no CI gating saw a silent passing
+        build. Post-D6f: R6 fires at ERROR, the has_error short-circuit
+        forces exit 1, CI fails. The CHANGELOG migration recipe MUST
+        call this out — users who relied on bare ``protokit lint`` to
+        pass their CI will see a new failure on upgrade.
+        """
+        import json
+
+        proto = self._write_proto(tmp_path)
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto", str(proto),
+                "-I", str(tmp_path),
+                "--profile", "default",
+                "--format", "json",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 1, (
+            f"D6f R6 promotion: post-promotion --max-warnings-unset "
+            f"with an R6 finding must exit 1 (was 0 pre-D6f). Got "
+            f"exit={result.exit_code}; output={result.output!r}"
+        )
+        payload = json.loads(result.stdout)
+        r6 = [
+            f for f in payload["findings"]
+            if f["rule_id"].startswith("options/deprecated-")
+        ]
+        assert len(r6) == 1, r6
+        assert r6[0]["severity"] == "error", (
+            f"D6f R6 promotion: finding severity must be 'error'; "
+            f"got {r6[0]['severity']!r}"
+        )
+
+    def test_max_warnings_zero_post_promotion_exits_1(
+        self, tmp_path: Path,
+    ) -> None:
+        """Posture 2: has_error short-circuit verified.
+
+        Pre-D6f: ``--max-warnings 0`` with a WARNING finding exits 1
+        via the warnings>0 gate. Post-D6f: same fixture fires at ERROR,
+        ``has_error=True`` short-circuits the exit-code logic at
+        ``cli.py:1210-1222`` BEFORE the max_warnings gate is consulted.
+        Both paths exit 1; the assertion pins the post-D6f code path.
+        """
+        proto = self._write_proto(tmp_path)
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto", str(proto),
+                "-I", str(tmp_path),
+                "--profile", "default",
+                "--max-warnings", "0",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 1, (
+            f"D6f R6 promotion: --max-warnings 0 with an R6 finding "
+            f"must exit 1. Got exit={result.exit_code}; "
+            f"output={result.output!r}"
+        )
+
+    def test_min_severity_error_post_promotion_exits_1(
+        self, tmp_path: Path,
+    ) -> None:
+        """Posture 3: severity floor admits R6 post-D6f.
+
+        Pre-D6f: ``--min-severity error`` filtered the WARNING R6
+        finding out of the report, leaving zero findings and exit 0.
+        Post-D6f: R6 fires at ERROR, passes the severity floor, exit 1.
+        This posture is the ONE where the upgrade impact is most visible
+        — a user explicitly opting into errors-only sees the new error
+        immediately.
+        """
+        proto = self._write_proto(tmp_path)
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto", str(proto),
+                "-I", str(tmp_path),
+                "--profile", "default",
+                "--min-severity", "error",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 1, (
+            f"D6f R6 promotion: --min-severity error with an R6 "
+            f"finding must exit 1 (was 0 pre-D6f, when WARNING was "
+            f"filtered below the floor). Got exit={result.exit_code}; "
+            f"output={result.output!r}"
+        )
+
+    def test_r9b_disable_via_off_severity_restores_exit_0(
+        self, tmp_path: Path,
+    ) -> None:
+        """Migration recipe path #3 (R9b ``"off"``) end-to-end.
+
+        Post-D6f R6 promotion + U2 R9b infrastructure: a user can
+        suppress the new ERROR via ``--disable-rule`` (CLI) without
+        editing the proto. This pins the integration between U2's
+        R9b dispatch and U1's R6 severity. If the dispatch silently
+        no-ops (the U2 KD-1 propagation gap), this test catches it
+        with the migration-recipe lens.
+
+        Uses ``--disable-rule`` rather than a pyproject fixture so the
+        test is self-contained (no I/O beyond the inline proto).
+        """
+        proto = self._write_proto(tmp_path)
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto", str(proto),
+                "-I", str(tmp_path),
+                "--profile", "default",
+                "--disable-rule",
+                "options/deprecated-field-must-have-replacement-comment",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, (
+            f"D6f migration recipe #3: --disable-rule for the R6 rule "
+            f"must restore exit 0. If this fails, U2's R9b dispatch "
+            f"is not actually subtracting from the composed profile "
+            f"(KD-1 propagation gap). Got exit={result.exit_code}; "
+            f"output={result.output!r}"
+        )
+
+    def test_demote_to_warning_severities_restores_exit_0_default(
+        self, tmp_path: Path,
+    ) -> None:
+        """Migration recipe path #2 (demote to ``warning``) end-to-end.
+
+        Post-D6f: the user demotes a single R6 rule back to ``warning``
+        via a ``[severities]`` pyproject entry. The R6 finding still
+        fires (still useful for human review) but no longer fails CI
+        without ``--max-warnings``.
+
+        Uses ``--severity`` via a tmp pyproject fixture would require
+        more setup; instead we use ``--no-config`` + the proto-only
+        invocation to establish the baseline, then verify the
+        ``[severities]`` override path via a tmp pyproject.
+        """
+        proto = self._write_proto(tmp_path)
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            "[tool.protokit.lint]\n"
+            "profile = \"default\"\n"
+            "[tool.protokit.lint.severities]\n"
+            "\"options/deprecated-field-must-have-replacement-comment\""
+            " = \"warning\"\n"
+        )
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto", str(proto),
+                "-I", str(tmp_path),
+                "--config", str(pyproject),
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, (
+            f"D6f migration recipe #2: demoting the R6 rule to "
+            f"'warning' via [severities] must restore exit 0 in the "
+            f"absence of --max-warnings. Got exit={result.exit_code}; "
+            f"output={result.output!r}"
+        )
+
+
 class TestStatisticsFooter:
     """``--statistics`` opt-in human-format footer with per-severity
     counts, filtered count, and runtime-warning count. Empty rows

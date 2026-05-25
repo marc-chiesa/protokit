@@ -116,9 +116,9 @@ class TestProtoModeR6:
                 "warning",
             ],
         )
-        # Warning-severity finding present → exit code 1 (warnings > 0
-        # with default max_warnings).
-        assert result.exit_code in (0, 1), result.output
+        # Post-D6f R6 promotion: ERROR-severity finding present →
+        # exit code 1 unconditionally (has_error=True short-circuits).
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
         r6_findings = [
             f for f in payload["findings"]
@@ -132,7 +132,7 @@ class TestProtoModeR6:
             r6_findings[0]["rule_id"]
             == "options/deprecated-field-must-have-replacement-comment"
         )
-        assert r6_findings[0]["severity"] == "warning"
+        assert r6_findings[0]["severity"] == "error"
 
     def test_proto_mode_happy_path_no_r6_findings(
         self, tmp_path: Path,
@@ -220,7 +220,9 @@ class TestDescriptorSetModeR6:
                 "warning",
             ],
         )
-        assert result.exit_code in (0, 1), result.output
+        # Post-D6f R6 promotion: descriptor-set-mode also surfaces an
+        # ERROR-severity finding → exit code 1.
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
         r6_findings = [
             f for f in payload["findings"]
@@ -231,6 +233,7 @@ class TestDescriptorSetModeR6:
             r6_findings[0]["rule_id"]
             == "options/deprecated-field-must-have-replacement-comment"
         )
+        assert r6_findings[0]["severity"] == "error"
 
     def test_descriptor_set_with_source_info_happy_path(
         self, tmp_path: Path,
