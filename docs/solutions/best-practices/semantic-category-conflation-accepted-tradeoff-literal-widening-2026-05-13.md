@@ -377,6 +377,16 @@ def test_unknown_rule_id_emits_unloaded_rule_warning(
   triggered by the U5 resolution. The bump-contract refinement
   needed for the U5 split (closed-Literal vs open-ladder
   distinction) extends [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]].
+- [[sentinel-at-coercion-layer-not-enum-widening-2026-05-24]] —
+  **third option** in the widen-vs-reuse decision tree (D6f U2 KD-1).
+  When the new value is a SENTINEL (semantically different from the
+  enum's existing category, e.g., `"off"` as a disable signal vs.
+  severity levels), intercept at the coercion layer BEFORE constructing
+  the enum value and propagate via a separate field on the return
+  type. The enum stays closed; downstream consumers are unchanged.
+  This widen-vs-reuse framing assumes the new value belongs to the
+  same conceptual category — the sentinel pattern is the correct
+  answer when that assumption does not hold.
 - [[value-migrated-vs-value-added-consumer-migration-2026-05-17]] —
   the consumer-side semantics of the U5 resolution. When a
   reuse-then-split decision documented here eventually lands as

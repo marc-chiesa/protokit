@@ -375,6 +375,18 @@ test.
   strongest signals to date; the parallel D5 U2 review showed that
   3-way convergence with diverse reasoning chains is also a
   high-reliability indicator — not a weaker form of the same signal.
+- [[flat-config-only-single-pyproject-tier-no-inheritance-2026-05-24]] —
+  scope clarification. The "walk-up-discovered pyproject" caller
+  surface this doc names refers to the EXISTING `_load_from_walkup`
+  function that discovers a SINGLE pyproject via CWD upward walk
+  — fully compatible with flat-config-only. It is NOT multi-tier
+  pyproject inheritance (parent + child merge), which is an
+  explicit non-goal under the D6f KD-3 architectural decision.
+  The `source_label` pattern in this doc handles the
+  single-pyproject + multi-caller case correctly; extending it
+  to a hypothetical multi-tier-pyproject world would require
+  augmenting `source_label` with a tier identifier, which is
+  deferred until D6g+ pending empirical demand.
 
 ## Fix Commits
 

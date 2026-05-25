@@ -311,6 +311,17 @@ the proper place to document its resolution is here.
   `explicit_sources`. A test that asserts `default_map` overrides
   pyproject is the cheapest pinning.
 
+### Architectural scope: two-tier (CLI > pyproject) only
+
+The two-source precedence hierarchy this doc defines (CLI > pyproject > default)
+is the complete tier model for protokit-lint. A third tier (workspace pyproject,
+parent pyproject under multi-tier inheritance, system-wide config) is an EXPLICIT
+non-goal — see [[flat-config-only-single-pyproject-tier-no-inheritance-2026-05-24]].
+Adding a third tier would require extending `ParameterSource` semantics to
+distinguish "tier-A-config" from "tier-B-config" and is deferred to D6g+ pending
+empirical demand. Under the current flat-config-only architecture, the two-source
+`ParameterSource` model defined here is complete.
+
 ## Examples
 
 ### Before — initial D5 U2 implementation (commit `3463691`), missing `DEFAULT_MAP`

@@ -194,6 +194,18 @@ naturally to source attribution.
   assertions that the wrong attribution does not appear. A single
   positive assertion is half coverage.
 
+### Architectural scope: flat-config-only (D6f KD-3)
+
+This learning's scope is two-source attribution: CLI vs. (single)
+pyproject. Walk-up-discovered pyproject scenarios (parent + child
+pyproject merge) are an EXPLICIT non-goal in protokit — see
+[[flat-config-only-single-pyproject-tier-no-inheritance-2026-05-24]].
+The "implicit path (e.g., walk-up)" and "walk-up-discovered pyproject"
+phrasings in this doc apply only IF protokit ever adopts multi-tier
+pyproject inheritance; under the current flat-config-only architecture
+they are hypothetical. The two-source attribution contract this doc
+defines is complete for the flat-config tier-count.
+
 ## Examples
 
 ### Before — D3 (pre-U2), hard-coded CLI attribution
