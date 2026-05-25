@@ -344,6 +344,7 @@ class TestR8bRuleSpec:
 
 ## Related
 
+- [[sarif-rule-catalog-default-configuration-level-severity-contract-2026-05-25]] — same function (`_lint_rules_catalog` in `_builtin_lint.py`), different field. This learning covers `shortDescription` corruption from identity templates; the companion learning covers the absence of `defaultConfiguration.level` and the multi-kind dict-severity reduction (`max(values(), key=SEVERITY_RANK[__getitem__])`) needed at the catalog emit site. Two formatter-layer gaps in the same function shipped during the same closing arc (D6c → D6f). When extending `_lint_rules_catalog` in the future, audit BOTH fields.
 - [[expose-finding-params-lint-json-sarif-agent-native-2026-05-19]] — sibling agent-native discipline. Dict-shaped templates give agents the `violation_kind` discriminator; surfacing `params` in structured output gives them the per-finding semantic fields. Both ce:review findings (#6 + #8) shipped together at D6c U2 commit `808189b`.
 - [[closed-literal-discriminator-bump-trigger-2026-05-17]] — schema-evolution rules for `violation_kind` as a discriminator. Adding a new arm to a multi-kind rule is an open-ladder extension; consumers that branch on existing kinds and ignore unknowns are forward-compatible.
 - [[buf-parity-divergence-documentation-discipline-2026-05-13]] — four-site documentation discipline for parity divergences. Dict-shaped templates extend the discipline: each arm's message_template is one of the four sites, and the per-arm test methods are another.
