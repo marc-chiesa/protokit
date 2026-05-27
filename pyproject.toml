@@ -10,7 +10,7 @@ readme = {file = "README.md", content-type = "text/markdown"}
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Marc" },
+    { name = "Marc Chiesa", email = "3333934+marc-chiesa@users.noreply.github.com" },
 ]
 keywords = ["protobuf", "diff", "schema", "compatibility", "protocol-buffers"]
 classifiers = [
@@ -24,15 +24,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 dependencies = [
     "protobuf>=4.21.0",
     "click>=8.0",
-    # TOML parsing for pyproject [tool.protokit.lint] (D5 R25).
+    # TOML parsing for pyproject [tool.protokit.lint] configuration.
     # Python 3.11+ ships tomllib in stdlib; tomli is the 3.10 fallback.
     # Standard import pattern: `import tomllib if sys.version_info >= (3, 11) else import tomli as tomllib`.
     "tomli>=2.0,<3; python_version<'3.11'",
-    # gitignore-style glob matching for D5 R26 [tool.protokit.lint] exclude /
+    # gitignore-style glob matching for [tool.protokit.lint] exclude /
     # --exclude PATTERN. Pure-Python; used by mypy/dvc/pre-commit.
     "pathspec>=0.12,<2",
 ]
@@ -59,8 +60,8 @@ dev = [
     "types-jsonschema",
     "mypy>=1.8",
     "ruff>=0.5",
-    # D5 U6 perf-smoke meta-test parses .github/workflows/ci.yml via
-    # yaml.safe_load to assert at-least-one-cell-ran (KTD-3). NEVER
+    # The perf-smoke meta-test parses .github/workflows/ci.yml via
+    # yaml.safe_load to assert at-least-one-cell-ran. NEVER
     # yaml.load() without explicit SafeLoader (security: prevents
     # arbitrary code execution via YAML object construction).
     "PyYAML>=6.0,<7",
@@ -71,26 +72,29 @@ dev = [
 protokit = "protokit.cli:main"
 
 [project.urls]
-Repository = "https://github.com/marc/protokit"
+Homepage = "https://github.com/marc-chiesa/protokit"
+Repository = "https://github.com/marc-chiesa/protokit"
+Changelog = "https://github.com/marc-chiesa/protokit/blob/main/CHANGELOG.md"
+Issues = "https://github.com/marc-chiesa/protokit/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/protokit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# D5 R23a: register the `slow` marker so future --strict-markers
-# adoption doesn't regress. Used by tests/schema/lint/test_perf_smoke.py
-# (D5 U6) to gate the perf-smoke test off the fast-iteration loop.
+# Register the `slow` marker so future --strict-markers adoption
+# doesn't regress. Used by tests/schema/lint/test_perf_smoke.py to
+# gate the perf-smoke test off the fast-iteration loop.
 #
-# D6a U8 Phase A: register the `parity` marker for the buf-parity
-# test harness in tests/parity/. The marker is documentary — default
-# `pytest tests/` still collects parity tests, but the `buf_binary`
-# session fixture calls `pytest.skip(...)` when buf is absent, so
-# they appear as graceful skips rather than failures. CI's dedicated
-# `parity` job (Phase B+C) installs the pinned buf binary and runs
-# these tests with the marker explicitly selected via `-m parity`.
+# Register the `parity` marker for the buf-parity test harness in
+# tests/parity/. The marker is documentary — default `pytest tests/`
+# still collects parity tests, but the `buf_binary` session fixture
+# calls `pytest.skip(...)` when buf is absent, so they appear as
+# graceful skips rather than failures. CI's dedicated `parity` job
+# installs the pinned buf binary and runs these tests with the marker
+# explicitly selected via `-m parity`.
 markers = [
-    "slow: tests excluded by `pytest -m 'not slow'` (currently: D5 perf smoke on linux+py3.12)",
+    "slow: tests excluded by `pytest -m 'not slow'` (currently: perf smoke on linux+py3.12)",
     "parity: buf-parity tests (tests/parity/); buf binary discovered via $BUF_BINARY or PATH (graceful skip if absent); CI runs them in the dedicated parity job",
 ]
 
