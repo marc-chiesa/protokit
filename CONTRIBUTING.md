@@ -8,6 +8,12 @@ Install the project in editable mode with the development extras:
 pip install -e ".[dev,compiler]"
 ```
 
+## AI-assisted contributions
+
+Contributions may credit AI tools via `Co-Authored-By:` trailers in
+commit messages. You are responsible for correctness and license
+compliance of everything you submit, regardless of tooling used.
+
 ## Running tests
 
 The full test suite runs under `pytest`:
@@ -18,13 +24,18 @@ The full test suite runs under `pytest`:
 
 ## Tests that require `buf`
 
-A small subset of tests verify parity with `buf v1.69.0`:
+**Note:** `buf` is a parity-test-only optional dependency; `protokit`
+itself has no buf runtime requirement and `pip install protokit` does
+not require buf. Parity tests skip cleanly when buf is absent.
+
+A small subset of tests verify parity with the pinned buf version
+declared at `_BUF_PARITY_PIN` in `src/protokit/schema/lint/cli.py`:
 
 - `tests/parity/` — the multi-rule parity harness (gated by
   `@pytest.mark.parity`; opt in with `pytest -m parity`).
-- `tests/schema/lint/test_buf_smoke_assumptions.py` — the D6b U4 buf
-  smoke regression gate: re-invokes `buf lint --error-format=json`
-  against the 22 fixtures under
+- `tests/schema/lint/test_buf_smoke_assumptions.py` — the buf smoke
+  regression gate: re-invokes `buf lint --error-format=json` against
+  the 22 fixtures under
   `tests/schema/lint/rules/fixtures/package_same/_buf_smoke/` and
   asserts byte-equality with the committed `recorded/*.json`
   snapshots. Skipped when `BUF_BINARY` is unset and `buf` is not on
@@ -51,7 +62,7 @@ export BUF_BINARY=/path/to/buf
 ```
 
 The discovery contract lives in `tests/_buf_helpers.py:discover_buf_binary`
-(shared between the parity harness + the U4 smoke test): `BUF_BINARY`
+(shared between the parity harness and the smoke test): `BUF_BINARY`
 env var first, then PATH lookup, otherwise skip the test cleanly.
 
 ## Regenerating buf smoke snapshots
