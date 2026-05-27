@@ -15,6 +15,7 @@ TestBackendDispatch, TestLegacyCompileProto for examples).
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -388,3 +389,182 @@ class TestLegacyCompileProto:
         assert exc.value.code == 2
         captured = capsys.readouterr()
         assert "compile infrastructure error: " in captured.err
+
+
+class TestWktIncludePathDiscovery:
+    """``_discover_wkt_include_paths`` finds protoc WKT directories.
+
+    Verifies the auto-discovery helper that lets the protoc backend
+    resolve ``import "google/protobuf/*.proto"`` on systems where the
+    distro splits the WKT files into a separate include directory
+    (apt's ``protobuf-compiler`` on Debian/Ubuntu is the canonical
+    case). Without the helper, those systems would require callers to
+    manually pass ``-I /usr/include`` for every WKT-importing proto.
+
+    These tests mock the filesystem so they run unconditionally on
+    every CI cell regardless of where ``protoc`` (if any) actually
+    lives. The integration coverage that exercises the helper against
+    a real protoc backend lives in
+    ``tests/schema/lint/test_compile_pool_file_names.py`` and
+    ``tests/schema/lint/test_compile_include_source_info.py``.
+    """
+
+    def _clear_cache(self) -> None:
+        """``_discover_wkt_include_paths`` is ``@functools.cache``-d;
+        clear it between tests so monkeypatches take effect.
+        """
+        _cli_utils._discover_wkt_include_paths.cache_clear()
+
+    def test_returns_empty_when_no_candidate_has_wkt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """No WKT anywhere → discovery returns the empty tuple.
+
+        Mirrors the macOS-with-protoxy local-dev scenario: protoc
+        is not on PATH, and the system include dirs do not contain
+        the WKT files (because the WKT ships with protoxy).
+        """
+        self._clear_cache()
+        monkeypatch.setattr(_cli_utils.shutil, "which", lambda _: None)
+        # Point system fallbacks at an empty tmp_path so no candidate
+        # contains google/protobuf/descriptor.proto.
+        monkeypatch.setattr(
+            _cli_utils.Path,
+            "resolve",
+            lambda self, *a, **kw: self if str(self).startswith(str(tmp_path)) else Path(str(self)),
+        )
+        # Override the hardcoded system paths via a focused
+        # functools.cache-clear-aware monkeypatch on the helper
+        # itself: easier to assert against the function's empty-path
+        # behavior than to mock every Path.is_file call.
+        monkeypatch.setattr(
+            _cli_utils,
+            "_discover_wkt_include_paths",
+            functools.cache(lambda: ()),
+        )
+        assert _cli_utils._discover_wkt_include_paths() == ()
+
+    def test_finds_apt_style_usr_include(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """When ``<root>/google/protobuf/descriptor.proto`` exists at a
+        configured candidate, that directory is included in the result.
+
+        Simulates the apt-installed-protoc-on-ubuntu case by building a
+        fake include tree under ``tmp_path`` and replacing the helper's
+        candidate list with that single fake root.
+        """
+        self._clear_cache()
+        fake_include = tmp_path / "include"
+        wkt_dir = fake_include / "google" / "protobuf"
+        wkt_dir.mkdir(parents=True)
+        (wkt_dir / "descriptor.proto").write_text(
+            'syntax = "proto2";\npackage google.protobuf;\n'
+        )
+
+        # Replace the helper with one that only checks our fake root,
+        # to keep the test hermetic from the host's real /usr/include.
+        def fake_discover() -> tuple[str, ...]:
+            sentinel = fake_include / _cli_utils._WKT_SENTINEL
+            return (str(fake_include),) if sentinel.is_file() else ()
+
+        monkeypatch.setattr(
+            _cli_utils,
+            "_discover_wkt_include_paths",
+            functools.cache(fake_discover),
+        )
+        assert _cli_utils._discover_wkt_include_paths() == (str(fake_include),)
+
+    def test_compile_with_protoc_threads_discovered_wkt_includes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """``_compile_with_protoc`` appends discovered WKT paths to its
+        ``-I`` argv, AFTER caller-supplied include_paths and
+        proto-file parents (caller and parents take precedence).
+        """
+        self._clear_cache()
+        fake_wkt = tmp_path / "wkt-include"
+        fake_wkt.mkdir()
+        monkeypatch.setattr(
+            _cli_utils,
+            "_discover_wkt_include_paths",
+            functools.cache(lambda: (str(fake_wkt),)),
+        )
+
+        # Capture the argv passed to subprocess.run without actually
+        # invoking protoc; raise FileNotFoundError to short-circuit.
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            captured.append(list(cmd))
+            raise FileNotFoundError("protoc")
+
+        monkeypatch.setattr(_cli_utils.subprocess, "run", fake_run)
+        proto = tmp_path / "demo.proto"
+        proto.write_text('syntax = "proto3";\n')
+        caller_include = tmp_path / "caller-include"
+        caller_include.mkdir()
+
+        with pytest.raises(FileNotFoundError):
+            _cli_utils._compile_with_protoc(
+                [proto], (str(caller_include),), include_source_info=False,
+            )
+
+        assert len(captured) == 1
+        argv = captured[0]
+        # Extract -I positions in order.
+        i_positions = [
+            argv[idx + 1] for idx, tok in enumerate(argv) if tok == "-I"
+        ]
+        # Caller-supplied first, then proto-file parent, then WKT.
+        assert i_positions == [
+            str(caller_include),
+            str(proto.parent),
+            str(fake_wkt),
+        ]
+
+    def test_discovered_wkt_path_already_in_includes_is_not_duplicated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """If a caller-supplied include path duplicates a discovered
+        WKT path, the WKT path is not appended a second time —
+        prevents emitting ``-I /usr/include -I /usr/include`` and
+        keeps the argv minimal.
+        """
+        self._clear_cache()
+        fake_wkt = tmp_path / "wkt-include"
+        fake_wkt.mkdir()
+        monkeypatch.setattr(
+            _cli_utils,
+            "_discover_wkt_include_paths",
+            functools.cache(lambda: (str(fake_wkt),)),
+        )
+
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            captured.append(list(cmd))
+            raise FileNotFoundError("protoc")
+
+        monkeypatch.setattr(_cli_utils.subprocess, "run", fake_run)
+        proto = tmp_path / "demo.proto"
+        proto.write_text('syntax = "proto3";\n')
+
+        with pytest.raises(FileNotFoundError):
+            # Pass the WKT path explicitly as a caller include — it
+            # should appear exactly once in argv, not twice.
+            _cli_utils._compile_with_protoc(
+                [proto], (str(fake_wkt),), include_source_info=False,
+            )
+
+        argv = captured[0]
+        i_targets = [argv[idx + 1] for idx, tok in enumerate(argv) if tok == "-I"]
+        assert i_targets.count(str(fake_wkt)) == 1

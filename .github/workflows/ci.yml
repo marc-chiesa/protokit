@@ -15,10 +15,13 @@
 #     System protoc is installed on EVERY cell so the protoc-only path
 #     always runs; the `has_protoxy` axis only controls protoxy.
 #
-# Apt-shipped protoc on ubuntu-latest is currently 3.21.x — sufficient
-# for proto3 fixtures. If a future release introduces Edition 2023
-# fixtures, switch this step to a binary download from the protocolbuffers
-# release bucket pinned to v25+.
+# protoc is downloaded as a pinned binary release (v25.3) from the
+# protocolbuffers GitHub releases rather than apt's protobuf-compiler
+# package. The binary release ships well-known-type .proto files in
+# include/ adjacent to the binary; apt's split-package layout does
+# not, which broke cross-backend byte-equivalence tests on the first
+# CI run. Bumping the pinned version is a one-line edit to both
+# `Install system protoc` steps.
 
 name: ci
 
@@ -55,9 +58,23 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install system protoc
+        # Pinned binary release from the protocolbuffers repo (not
+        # apt's protobuf-compiler). The binary release ships the
+        # well-known-type .proto files in include/ adjacent to the
+        # binary, which protoc auto-finds — apt's split-package
+        # layout does NOT add /usr/include to protoc's search path
+        # and breaks cross-backend byte-equivalence tests that
+        # import google/protobuf/any.proto. (protokit also
+        # auto-discovers WKT include paths at runtime, but pinning
+        # the binary version makes the parity baseline reproducible
+        # across CI runs.)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          PROTOC_VERSION=25.3
+          curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
+          sudo unzip -o -q /tmp/protoc.zip -d /usr/local
+          sudo chmod a+r -R /usr/local/include/google
+          sudo chmod a+x /usr/local/bin/protoc
+          protoc --version
 
       - name: Install package + dev deps (with protoxy)
         if: matrix.has_protoxy
@@ -186,14 +203,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install system protoc
-        # Mirrors the protoc install in the `test` job above. The
-        # parity tests invoke `protokit lint --proto` which compiles
-        # .proto source via protoxy (primary) or protoc (fallback);
-        # apt-shipped protoc on ubuntu-latest is sufficient for the
-        # proto3 fixtures in tests/parity/fixtures/.
+        # Mirrors the protoc install in the `test` job above. Pinned
+        # binary release ships well-known-type .proto files in
+        # include/ adjacent to the binary so cross-backend
+        # byte-equivalence tests that import google/protobuf/*.proto
+        # resolve cleanly.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          PROTOC_VERSION=25.3
+          curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
+          sudo unzip -o -q /tmp/protoc.zip -d /usr/local
+          sudo chmod a+r -R /usr/local/include/google
+          sudo chmod a+x /usr/local/bin/protoc
+          protoc --version
 
       - name: Install package + dev deps (with compiler extra)
         run: pip install -e ".[compiler,dev]"

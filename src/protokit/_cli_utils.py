@@ -7,9 +7,11 @@ point — consumers should invoke the CLIs, not import from here.
 
 from __future__ import annotations
 
+import functools
 import importlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,6 +76,74 @@ def _protoc_timeout_seconds() -> float:
         return float(raw)
     except ValueError:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+
+
+# Sentinel file used to validate a candidate WKT include directory.
+# Every protoc distribution ships descriptor.proto at this relative
+# path; presence is the necessary-and-sufficient check before adding
+# the candidate to a protoc -I search path.
+_WKT_SENTINEL = Path("google") / "protobuf" / "descriptor.proto"
+
+
+@functools.cache
+def _discover_wkt_include_paths() -> tuple[str, ...]:
+    """Locate well-known-type (WKT) include directories for the protoc backend.
+
+    Different protoc distributions place the WKT ``.proto`` files in
+    different locations and do NOT consistently add them to protoc's
+    default search path:
+
+    - Protobuf binary releases ship them in ``<install>/include/``
+      adjacent to ``<install>/bin/protoc``. protoc auto-finds these.
+    - apt-installed ``protobuf-compiler`` on Debian/Ubuntu places them
+      at ``/usr/include/google/protobuf/`` but does NOT add
+      ``/usr/include`` to protoc's search path.
+    - Homebrew installs place them under the brew prefix
+      (``/opt/homebrew/include/`` or ``/usr/local/include/``).
+    - Conda installs place them under the env's ``include/``.
+
+    Returns a tuple of validated include directories (each one
+    contains ``google/protobuf/descriptor.proto``) in priority order:
+    the directory adjacent to the resolved ``protoc`` binary first,
+    then ``/usr/include`` and ``/usr/local/include`` as system
+    fallbacks. The result is cached for the process lifetime since
+    discovery involves filesystem stats and the answer is stable
+    across calls.
+
+    Threaded into ``_compile_with_protoc`` AFTER caller-supplied
+    include paths and after proto-file-parent paths so explicit
+    user overrides always win. Users who do not import any WKT see
+    no behavioral change.
+    """
+    candidates: list[Path] = []
+    protoc_path = shutil.which("protoc")
+    if protoc_path is not None:
+        # <install>/bin/protoc -> <install>/include. Binary releases
+        # and most package managers follow this layout; protoc usually
+        # auto-finds this one, but adding it explicitly is harmless
+        # and covers the edge case of an unusual build.
+        protoc_install_include = Path(protoc_path).resolve().parent.parent / "include"
+        candidates.append(protoc_install_include)
+    # System fallbacks for split-package distros (apt's
+    # protobuf-compiler is the canonical example).
+    candidates.append(Path("/usr/include"))
+    candidates.append(Path("/usr/local/include"))
+
+    validated: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        # Resolve to dedup symlinks (e.g., /usr/local/include ->
+        # /opt/homebrew/include on some macOS configurations).
+        try:
+            resolved = str(candidate.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (candidate / _WKT_SENTINEL).is_file():
+            validated.append(str(candidate))
+    return tuple(validated)
 
 
 def error_exit(message: str) -> NoReturn:
@@ -406,7 +476,17 @@ def _compile_with_protoc(
         OSError: Other infrastructure failures (permission denied, etc.).
     """
     parents = list(dict.fromkeys(str(p.parent) for p in proto_paths_in))
-    includes = [*include_paths, *parents]
+    # Auto-discovered WKT paths come LAST so caller-supplied paths and
+    # proto-file parents always take precedence. Users who do not
+    # import any WKT see no behavioral change; users importing
+    # google/protobuf/* on systems with split-package protoc installs
+    # (apt's protobuf-compiler is the canonical example) no longer
+    # need to pass -I /usr/include themselves.
+    wkt_includes = [
+        p for p in _discover_wkt_include_paths()
+        if p not in include_paths and p not in parents
+    ]
+    includes = [*include_paths, *parents, *wkt_includes]
 
     with tempfile.NamedTemporaryFile(suffix=".descriptor_set", delete=False) as tmp:
         tmp_path = Path(tmp.name)

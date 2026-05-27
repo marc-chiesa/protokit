@@ -432,6 +432,32 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### 0.7.1 — WKT include-path auto-discovery for the system-protoc backend
+
+Patch release. No new features; no behavior change for the protoxy
+backend (which already bundles the well-known-type protos
+in-process).
+
+**Fix:** `_compile_with_protoc` now auto-discovers WKT include
+directories (the directory adjacent to the resolved `protoc`
+binary, plus `/usr/include` and `/usr/local/include` as fallbacks)
+and threads them into the protoc `-I` argv AFTER caller-supplied
+include paths and proto-file parents. Users importing
+`google/protobuf/*.proto` on systems with split-package protoc
+installs — most notably Debian/Ubuntu's `apt install
+protobuf-compiler`, which places protoc at `/usr/bin/protoc` and
+the WKT files at `/usr/include/google/protobuf/` without adding
+`/usr/include` to protoc's search path — no longer need to pass
+`-I /usr/include` themselves.
+
+CI also switches from apt-installed `protobuf-compiler` to a
+pinned binary release (v25.3) from the protocolbuffers GitHub
+release bucket, both to fix the same symptom in the parity test
+matrix and to make the cross-backend byte-equivalence baseline
+reproducible across CI runs.
+
+Tag: `v0.7.1`. PyPI: `pip install protokit==0.7.1`.
+
 ### D6f — R6 promotion to ERROR + R9b per-rule disable (0.7.0)
 
 D6f is a **D6e KD-1 demonstration delivery**: the first
