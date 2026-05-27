@@ -27,7 +27,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "protobuf>=4.21.0",
+    # Upper bound: protobuf 6+ removed several FieldDescriptor /
+    # MessageDescriptor attributes (notably ``.label``) that protokit's
+    # lint rule packs and the compatibility checker rely on. Adopting
+    # the new API is planned for a future release; for now we pin to
+    # the same range the [compiler] extra's protoxy 0.7.x package
+    # transitively pins (``protobuf<6``), so users get a working
+    # install whether or not they install [compiler].
+    "protobuf>=4.21.0,<6",
     "click>=8.0",
     # TOML parsing for pyproject [tool.protokit.lint] configuration.
     # Python 3.11+ ships tomllib in stdlib; tomli is the 3.10 fallback.

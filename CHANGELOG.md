@@ -468,12 +468,32 @@ protoc backends now compares **semantic** equivalence of the
 leading_detached_comments)`` mapping that ``leading_comment()``
 actually consumes. The byte-equivalence assertion was a strong
 proxy that only held when both backends used the same protoc
-version; protoxy's embedded protoc is older than the
-protocolbuffers v25.3 binary release, so the two now produce
-different bytes for the same input even though the path→comments
-mapping (the production-code-visible contract) is identical.
-No source-code change in production — only the test invariant
-was tightened to match the real contract.
+version; different protoc versions encode location spans
+differently even though the path→comments mapping (the
+production-code-visible contract) is identical. No source-code
+change in production — only the test invariant was tightened to
+match the real contract.
+
+**Fix #3 — protobuf upper bound at ``<6``.** Pin
+``protobuf<6`` in pyproject's ``dependencies``. protobuf 6+
+removed ``FieldDescriptor.label`` and related attributes that
+protokit's lint rule packs and the compatibility checker rely
+on; users without the ``[compiler]`` extra (which transitively
+pins protoxy → ``protobuf<6``) were silently getting protobuf 7
+and an immediately-broken install. Both code paths are now
+guaranteed to resolve to a tested combination. Adopting the new
+descriptor API is planned for a future release.
+
+**Fix #4 — perf-smoke fixture directory layout.** The perf-smoke
+synthetic fixture wrote 50 files with distinct
+``perfsmoke.file<N>`` packages into a single directory, which
+post-D6c lint rules (``package/directory-same-package``, added
+in 0.4.0) correctly flagged as 50 findings — a pre-existing test
+bug masked locally because the smoke runs only on linux+py3.12,
+which had never executed before the first public CI run.
+Restructure each file into its own
+``perfsmoke/file<N>/file_<N>.proto`` subtree so package and
+directory align.
 
 CI still installs protoc via apt's `protobuf-compiler` package
 (protoc 3.21.x on ubuntu-latest). The 0.7.1 runtime

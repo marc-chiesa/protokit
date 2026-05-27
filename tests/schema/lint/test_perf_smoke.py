@@ -71,11 +71,16 @@ _PERF_SMOKE_THRESHOLD_SECONDS = 0.5
 def _generate_proto_source(file_idx: int, n_messages: int, n_fields: int) -> str:
     """Render one synthetic ``.proto`` file's source text.
 
-    Field names use ``snake_case`` so the canonical ``naming``
-    rule pack produces zero findings — the smoke times the walker
-    cost, not the cost of accumulating findings. A future smoke
-    variant could flip to ``camelCase`` field names to time the
-    findings-emit path, but the catastrophic-regression canary
+    Field names use ``snake_case`` and message names use ``PascalCase``
+    so the canonical ``naming`` rule pack produces zero findings —
+    the smoke times the walker cost, not the cost of accumulating
+    findings. The per-file package is ``perfsmoke.file<idx>`` and the
+    file is written under a matching ``perfsmoke/file<idx>/`` subtree
+    so ``package/directory-match``, ``package/same-directory``, and
+    ``package/directory-same-package`` (added 0.4.0) all pass: each
+    package lives in its own directory with exactly one file. A
+    future smoke variant could flip names to ``camelCase`` to time
+    the findings-emit path, but the catastrophic-regression canary
     is the walker, so the current shape is deliberate.
     """
     lines: list[str] = [
@@ -93,10 +98,18 @@ def _generate_proto_source(file_idx: int, n_messages: int, n_fields: int) -> str
 
 
 def _generate_synthetic_fixture(tmp_path: Path) -> list[Path]:
-    """Write the 50-file synthetic fixture to ``tmp_path`` and return paths."""
+    """Write the 50-file synthetic fixture to ``tmp_path`` and return paths.
+
+    Each file lives at ``perfsmoke/file<idx>/file_<idx>.proto`` so
+    its directory layout matches its dotted package
+    (``perfsmoke.file<idx>``) and no cross-file package-vs-directory
+    lint rule fires on the otherwise-clean walker fixture.
+    """
     paths: list[Path] = []
     for i in range(_PERF_SMOKE_FILES):
-        p = tmp_path / f"file_{i:03d}.proto"
+        subdir = tmp_path / "perfsmoke" / f"file{i}"
+        subdir.mkdir(parents=True, exist_ok=True)
+        p = subdir / f"file_{i:03d}.proto"
         p.write_text(
             _generate_proto_source(
                 file_idx=i,
