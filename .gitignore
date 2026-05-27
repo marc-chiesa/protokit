@@ -16,6 +16,16 @@ venv/
 .env
 **/.DS_Store
 
-# ce:review and other compound-engineering workflow artifacts —
-# per-run state, not part of the codebase
+# compound-engineering workflow artifacts and per-run state —
+# not part of the codebase
 .context/
+.claude/
+
+# Internal planning artifacts live in marc-chiesa/protokit-internal
+# (private). These paths are listed here so `git add .` cannot
+# accidentally re-add them to the public repo.
+TODOS.md
+CLAUDE.md
+CHANGELOG-DRAFT.md
+docs/brainstorms/
+docs/plans/
