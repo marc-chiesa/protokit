@@ -16,15 +16,9 @@
 #     always runs; the `has_protoxy` axis only controls protoxy.
 #
 # Apt-shipped protoc on ubuntu-latest is currently 3.21.x — sufficient
-# for proto3 fixtures. If a future delivery introduces Edition 2023
+# for proto3 fixtures. If a future release introduces Edition 2023
 # fixtures, switch this step to a binary download from the protocolbuffers
 # release bucket pinned to v25+.
-#
-# Note: this workflow lands as dormant config — the repo has no
-# configured GitHub remote at the time of writing. It fires on day-1
-# of CI activation (when a remote is configured + push happens).
-# Pre-remote validation: run `actionlint` locally before merge to catch
-# YAML typos, invalid action versions, and expression-syntax errors.
 
 name: ci
 
