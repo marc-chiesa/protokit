@@ -1,12 +1,12 @@
-# protokit CI — landed by protokit-lint Delivery 1 (2026-05-01).
+# protokit CI — initial workflow landed 2026-05-01.
 #
-# Matrix axes (from pass-3 doc-review on the Delivery 1 plan):
+# Matrix axes:
 #
 #   - python: 3.10 (project floor) and 3.12 (project ceiling). 3.11 is
-#     intentionally NOT in the matrix per pass-2 review's A9 finding —
-#     the only currently-load-bearing distinction (tomllib stdlib branch)
-#     is shared with 3.12. Adding 3.11 later when a 3.11-specific issue
-#     surfaces is a one-line change to this file.
+#     intentionally NOT in the matrix — the only currently-load-bearing
+#     distinction (tomllib stdlib branch) is shared with 3.12. Adding
+#     3.11 later when a 3.11-specific issue surfaces is a one-line change
+#     to this file.
 #
 #   - has_protoxy: true installs the optional `[compiler]` extra
 #     (protoxy 0.7+); false skips it. Tests that integration-test the
@@ -37,12 +37,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # D6b U6 ce:review follow-up (REL-003): explicit job-level cap as
-    # secondary safety net beyond the 30s per-subprocess guard in
+    # Explicit job-level cap as a secondary safety net beyond the
+    # 30s per-subprocess guard in
     # tests/_buf_helpers.py:run_buf_subprocess. Empirical timing:
-    # full suite ~15s; U6 added 27 cases adding <2s. 30 minutes is
-    # ~120x the empirical wall-time, leaving headroom for cold CI
-    # runners while guarding against future deadlock scenarios.
+    # full suite ~15s. 30 minutes leaves ~120x the empirical wall-
+    # time, with headroom for cold CI runners while guarding against
+    # future deadlock scenarios.
     timeout-minutes: 30
 
     strategy:
@@ -77,7 +77,7 @@ jobs:
         # Cheap insurance against the matrix collapsing to an effective
         # single cell. If a dev dep transitively pulled protoxy in, the
         # has_protoxy=false cell would silently exercise both backends,
-        # defeating the matrix. Per pass-3 doc-review F11.
+        # defeating the matrix.
         if: ${{ !matrix.has_protoxy }}
         run: |
           if pip list --format=freeze | grep -i '^protoxy='; then
@@ -100,13 +100,13 @@ jobs:
         # would miss it without the explicit exact-match — it
         # registers all four lint formatters at module load time and
         # MUST stay quarantined behind the lint subcommand entry
-        # point per KD-10 invariant 2. A regression in any future
+        # point per the lint-quarantine invariant. A regression in any future
         # delivery that adds an eager import of any of these surfaces
         # here.
         #
         # NOTE: this is a SNAPSHOT of today's transitive imports; future
         # deliveries that add eager imports may need to update this
-        # assertion target. Per pass-3 doc-review F7. Mirrored in
+        # assertion target. Mirrored in
         # tests/schema/lint/test_cold_import_extended.py for
         # local feedback before push.
         run: |
@@ -123,7 +123,7 @@ jobs:
           print('cold-import OK')
           "
 
-      - name: Run mypy (scoped to D1+D3 ratcheted surface)
+      - name: Run mypy (scoped to ratcheted surface)
         # Strict-mode mypy is configured in pyproject.toml but the
         # broader codebase has ~30 pre-existing strict-mode errors.
         # This step gates ONLY the modules currently in
@@ -143,14 +143,13 @@ jobs:
         run: pytest tests/ -v
 
   # =====================================================================
-  # D6a U8 Phase B parity job — buf v1.69.0 cross-tool parity checks.
+  # Parity job — buf v1.69.0 cross-tool parity checks.
   # =====================================================================
   #
   # Runs every buf-equivalent protokit lint rule's fixture through both
   # `protokit lint` and `buf lint` and asserts equivalent findings.
-  # See tests/parity/conftest.py for the harness and
-  # docs/plans/2026-05-13-001-feat-d6a-u8-parity-test-infra-plan.md for
-  # the design.
+  # See tests/parity/conftest.py for the harness; the parity-test
+  # infrastructure design is documented in the project's design notes.
   #
   # ----- Advisory posture (DO NOT add to required-checks) -----
   #

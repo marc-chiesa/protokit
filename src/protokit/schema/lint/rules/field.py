@@ -5,17 +5,16 @@ Currently ships one rule:
 - ``field/not-required`` (buf:FIELD_NOT_REQUIRED) — fires when a
   proto2 field is declared ``required``. Proto2-only;
   ``recommended`` + ``default`` profiles see ZERO findings from
-  this rule (D6e KD-5 + KD-2: proto2-specific strictness ships
-  in opt-in ``proto2-strict`` profile only per the inverted UX
-  philosophy at KD-1).
+  this rule (proto2-specific strictness ships in the opt-in
+  ``proto2-strict`` profile only, per the inverted UX
+  philosophy).
 
-D6e U1+U2 (0.6.0) introduces the ``field`` pack as the namespace
-anchor for future field-level proto2-strict rules per KD-11 (the
-per-syntax-version profile pattern). Future candidates include
-``field/no-group-syntax`` (proto2-only ``group`` construct),
-``field/no-explicit-default`` (proto2's ``default = X``), and
-``field/packed-repeated-primitive`` (proto2 packed annotation).
-None of those ship in D6e.
+The ``field`` pack landed in 0.6.0 as the namespace anchor for future
+field-level proto2-strict rules (per the per-syntax-version profile
+pattern). Future candidates include ``field/no-group-syntax``
+(proto2-only ``group`` construct), ``field/no-explicit-default``
+(proto2's ``default = X``), and ``field/packed-repeated-primitive``
+(proto2 packed annotation). None of those ship yet.
 
 Phase 0 EV-2 falsification (2026-05-22)
 ---------------------------------------
@@ -47,10 +46,8 @@ exposed on the upb backend's runtime descriptor (see
 References:
 - buf BASIC rule catalog (parity target named via
   ``source_spec="buf:FIELD_NOT_REQUIRED"``).
-- protokit-lint D6e plan, U2.
-- SUPERSEDED brainstorm `docs/brainstorms/2026-05-20-d6d-u3-field-not-required-requirements.md`
-  (UR-6 rule body bound verbatim; severity/profile decisions
-  superseded by D6e KD-5).
+- See the project's design notes for the rule body, severity, and
+  profile-membership rationale.
 """
 
 from __future__ import annotations
@@ -89,16 +86,17 @@ def check_field_not_required(ctx: FieldLintContext) -> None:
     and explicit ``syntax = "proto2";``) and a non-empty string
     (``"proto3"`` or ``"editions"``) for the post-proto2 syntaxes.
 
-    **Cheap-check-first ordering (ce:review ADV-1 + Correctness#2):**
-    LABEL_REQUIRED check runs BEFORE the syntax probe. proto3 has
-    no ``required`` label, so proto3 fields exit immediately
-    without a per-field ``CopyToProto`` allocation. proto2 fields
-    that aren't ``required`` also exit immediately. The expensive
+    **Cheap-check-first ordering:** LABEL_REQUIRED check runs
+    BEFORE the syntax probe. proto3 has no ``required`` label, so
+    proto3 fields exit immediately without a per-field
+    ``CopyToProto`` allocation. proto2 fields that aren't
+    ``required`` also exit immediately. The expensive
     ``CopyToProto`` round-trip (needed because
-    ``FileDescriptor.syntax`` isn't exposed on the upb backend per
-    [[copytoproto-round-trip-for-proto-form-only-descriptor-fields-2026-05-13]])
-    is paid only when a field has LABEL_REQUIRED, which is at most
-    once per required-field per run rather than once per field.
+    ``FileDescriptor.syntax`` isn't exposed on the upb backend —
+    see the CopyToProto round-trip best-practice note in
+    ``docs/solutions/``) is paid only when a field has
+    LABEL_REQUIRED, which is at most once per required-field per
+    run rather than once per field.
     For a typical proto2 codebase this turns an O(fields) cost
     into O(required-fields), and for proto3 codebases the cost is
     O(0).

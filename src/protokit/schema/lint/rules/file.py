@@ -4,8 +4,8 @@ Currently ships one rule:
 
 - ``file/syntax-specified`` (buf:SYNTAX_SPECIFIED) — fires when
   the file's resolved syntax is not ``"proto3"`` or ``"editions"``.
-  **Default severity: WARNING** (D6e R4b demotion from D6a's
-  ERROR). **Known buf-parity divergence**: buf's own
+  **Default severity: WARNING** (demoted from the original ERROR
+  default). **Known buf-parity divergence**: buf's own
   SYNTAX_SPECIFIED rule fires only when the literal
   ``syntax = "...";`` declaration is missing from the .proto
   source. Protokit's rule operates on descriptor output, where
@@ -15,17 +15,16 @@ Currently ships one rule:
   therefore fires on every proto2 file regardless of whether
   the syntax statement was explicit.
 
-**D6e R4b WARNING demotion (D6e KD-2 pragmatic-not-dogmatic):**
-the rule's behavior actively contradicts D6e KD-1 (protokit-UX
-overrides buf-parity when they conflict) at ship day — firing
-ERROR on every proto2 file is opinionated proto2-hostility in
-default profiles, which the inverted philosophy rejects. The
-rule still surfaces the signal ("we recommend declaring syntax
-explicitly so future readers don't have to guess proto2 from
-descriptor shape") but does NOT fail CI on proto2 files by
-default. Proto3-only shops who relied on the ERROR enforcement
-can re-promote via ``[tool.protokit.lint.severities]
-"file/syntax-specified" = "error"``.
+**WARNING demotion (pragmatic-not-dogmatic):** the rule's prior
+ERROR behavior actively contradicted protokit's UX-over-parity
+philosophy — firing ERROR on every proto2 file is opinionated
+proto2-hostility in default profiles, which that philosophy
+rejects. The rule still surfaces the signal ("we recommend
+declaring syntax explicitly so future readers don't have to
+guess proto2 from descriptor shape") but does NOT fail CI on
+proto2 files by default. Proto3-only shops who relied on the
+ERROR enforcement can re-promote via ``[tool.protokit.lint
+.severities] "file/syntax-specified" = "error"``.
 
 The CopyToProto round-trip pattern is used here because
 ``FileDescriptor.syntax`` is not exposed on the upb backend's
@@ -34,14 +33,14 @@ runtime descriptor (see
 Reading ``fdp.syntax`` after ``ctx.file.CopyToProto(fdp)`` is the
 documented, stable, backend-agnostic path.
 
-Module shape mirrors the other D6a rule packs.
+Module shape mirrors the other rule packs.
 
 References:
 - buf BASIC rule catalog (parity targets named per-rule via
   ``source_spec="buf:<RULE_ID>"``).
-- protokit-lint D6a plan, Unit 6 (original ERROR severity).
-- protokit-lint D6e plan, U1 R4b (WARNING demotion under the
-  inverted UX philosophy).
+- See the project's design notes for the original ERROR-default
+  rationale and the subsequent WARNING demotion under the
+  inverted UX philosophy.
 """
 
 from __future__ import annotations
@@ -100,11 +99,11 @@ def check_syntax_specified(ctx: FileLintContext) -> None:
     work from descriptor output, so the rule fires on both
     no-syntax and explicit-proto2 cases.
 
-    **D6e R4b: severity WARNING in default profiles**. The
-    rule's spirit is "declare syntax explicitly so future readers
-    don't have to guess" — surfacing the signal at WARNING is
-    sufficient. Proto3-only shops who relied on the prior ERROR
-    enforcement can re-promote via
+    **Severity WARNING in default profiles**. The rule's spirit
+    is "declare syntax explicitly so future readers don't have to
+    guess" — surfacing the signal at WARNING is sufficient.
+    Proto3-only shops who relied on the prior ERROR enforcement
+    can re-promote via
     ``[tool.protokit.lint.severities] "file/syntax-specified" =
     "error"``.
 

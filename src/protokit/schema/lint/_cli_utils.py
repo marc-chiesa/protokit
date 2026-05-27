@@ -41,28 +41,29 @@ from protokit.schema.lint.model import DuplicateRuleError
 #: lint-internal failures vs. click-side flag errors (which keep their
 #: own ``Usage:`` prefix per click's defaults).
 #:
-#: U2 shipped the input-side codes (bad-input, pool-conflict,
-#: missing-imports, compile-failed); U3 added the rule-loading codes
-#: (no-rules, unknown-profile, rule-collision, rule-pack-load);
-#: U4a closes the set with format-unavailable and formatter-exception.
-#: Order is the R20a Reachability Matrix order — stable for
-#: documentation and CI grep contracts.
+#: The set was assembled incrementally as the lint CLI grew: input-
+#: side codes (bad-input, pool-conflict, missing-imports,
+#: compile-failed) landed first; the rule-loading codes (no-rules,
+#: unknown-profile, rule-collision, rule-pack-load) followed; and
+#: format-unavailable + formatter-exception closed the set. Order is
+#: the Reachability Matrix order — stable for documentation and CI
+#: grep contracts.
 #:
 #: Prefix family (stable, closed set per delivery):
 #:   info[lint-compile]:                backend info/warning diagnostics in --proto mode
 #:   info[lint-pack-profiles]:          R11 per-pack introspection (pack= profiles= ...)
 #:   warning[lint-compile]:             backend warning diagnostics in --proto mode
 #:   warning[lint-cli]:                 CLI-layer advisories (e.g. ignored flags)
-#:   protokit lint: warning [<category>]: D5 U5 R21a runtime-warning stderr family
-#:                                         (5 categories as of D6b U5)
+#:   protokit lint: warning [<category>]: runtime-warning stderr family
+#:                                         (5 categories at present)
 #:   error[lint-CODE]:                  exit-2 paths; CODE must be in this tuple
 #:
-#: Note: the legacy ``warning[lint-runtime]:`` stderr prefix was
-#: removed in D5 U4 (R21) and is not restored. Runtime warnings
+#: Note: the legacy ``warning[lint-runtime]:`` stderr prefix has
+#: been removed and is not restored. Runtime warnings
 #: (``rule_exception``, ``unloaded_rule``, ``severities_unloaded_rule``,
 #: ``min_severity_relaxed``, ``all_files_excluded``) are carried in
 #: ``LintReport.runtime_warnings``. Under ``--format=human`` (the
-#: default) they surface on stderr via the D5 U5 CLI-side hook as
+#: default) they surface on stderr via the CLI-side hook as
 #: ``protokit lint: warning [<category>]: <message>`` — see
 #: ``_emit_human_runtime_warnings`` in ``cli.py``. Machine
 #: formatters (``--format=json`` / ``--format=junit`` /
@@ -79,43 +80,38 @@ _LINT_ERROR_CODES: tuple[str, ...] = (
     "missing-imports",
     "rule-collision",
     "rule-pack-load",
-    # D5 U1: pyproject `[tool.protokit.lint]` discovery / loading errors.
+    # Pyproject `[tool.protokit.lint]` discovery / loading errors.
     # Covers walk-up failures, explicit `--config PATH` shadow paths
-    # (per R5a: missing file, unreadable, table-absent, invalid TOML),
-    # and any `tomllib.load` triple-arm-guarded failure surface. Per
-    # KTD-9, the message body is newline-sanitized; per KTD-9 fallback
-    # contract, `TOMLDecodeError` content is replaced with the structured
-    # form `TOML parse error at {filename}:{line}:{col}` to prevent
-    # raw-bytes echoing per R5a content-safety.
+    # (missing file, unreadable, table-absent, invalid TOML), and any
+    # `tomllib.load` triple-arm-guarded failure surface. The message
+    # body is newline-sanitized; `TOMLDecodeError` content is replaced
+    # with the structured form
+    # `TOML parse error at {filename}:{line}:{col}` to prevent
+    # raw-bytes echoing per content-safety.
     "pyproject-config-load",
-    # D5 U2: pyproject `[tool.protokit.lint]` schema validation errors —
-    # unknown keys (R3), type mismatches (R3a), heterogeneous list
-    # elements (KTD-5). Distinct from `pyproject-config-load` (parse-time
-    # failure) — this code surfaces post-parse-success validation
-    # failures.
-    # Wired in D5 U2 (schema validation); declared here so the closed-set
-    # contract advances atomically with U1's tuple expansion.
+    # Pyproject `[tool.protokit.lint]` schema validation errors —
+    # unknown keys, type mismatches, heterogeneous list elements.
+    # Distinct from `pyproject-config-load` (parse-time failure) —
+    # this code surfaces post-parse-success validation failures.
     "pyproject-config-invalid",
-    # D5 U3: `--exclude PATTERN` (CLI) or pyproject `exclude = [...]`
+    # `--exclude PATTERN` (CLI) or pyproject `exclude = [...]`
     # contains a pattern that `pathspec.PathSpec.from_lines` rejects.
     # Distinct from `pyproject-config-invalid` because exclude patterns
     # can come from CLI flags, not just pyproject — reusing the
     # pyproject-specific code would mis-attribute the source.
-    # Wired in D5 U3 (pathspec compilation); declared here for the same
-    # reason as `pyproject-config-invalid` above.
     "exclude-pattern-invalid",
-    # D6f U2 COR-1: R9b directives disabled every rule in the
-    # resolved profile. The profile WAS declared (otherwise the
-    # `unknown-profile` code would fire); the user has disabled all
-    # its rules via `disabled_rules` / `[severities] = "off"` /
-    # `--disable-rule`. Fires BEFORE `unknown-profile` so the more
-    # specific error wins. Alphabetically inserted.
+    # R9b directives disabled every rule in the resolved profile. The
+    # profile WAS declared (otherwise the `unknown-profile` code would
+    # fire); the user has disabled all its rules via `disabled_rules`
+    # / `[severities] = "off"` / `--disable-rule`. Fires BEFORE
+    # `unknown-profile` so the more specific error wins. Alphabetically
+    # inserted.
     "no-rules-after-disable",
-    # D6f U2 CLR-01: a CLI `--disable-rule` / `--enable-rule` option
-    # value failed format validation. Distinct from
-    # `pyproject-config-invalid` (which attributes pyproject-sourced
-    # coercion failures) so CI scripts can distinguish a bad CLI flag
-    # value from a bad pyproject entry without parsing freeform text.
+    # A CLI `--disable-rule` / `--enable-rule` option value failed
+    # format validation. Distinct from `pyproject-config-invalid`
+    # (which attributes pyproject-sourced coercion failures) so CI
+    # scripts can distinguish a bad CLI flag value from a bad
+    # pyproject entry without parsing freeform text.
     "cli-option-invalid",
 )
 
@@ -325,8 +321,8 @@ def _load_descriptor_sets_to_result(
     different directories). The user-facing meaning generalizes to
     "you passed two inputs that conflict on file name" cleanly
     enough to avoid extending the closed-set ``DiagnosticCategory``
-    Literal type (per origin KD-8: don't extend D2's locked types
-    in D3 when avoidable).
+    Literal type (the original discipline was: don't extend the
+    locked diagnostic-category set when reuse is semantically clean).
 
     Args:
         paths: One or more ``.descriptor_set`` paths (absolute or
@@ -362,16 +358,16 @@ def _load_descriptor_sets_to_result(
     # documented invariant. Maintained in parse-order parallel to
     # root_files so the two stay in step.
     pool_names: list[str] = []
-    # D6b U3b: capture FileDescriptorProto references BEFORE pool.Add()
-    # consumes source_code_info. The Python-level fd reference retains
-    # its .source_code_info field for downstream R6 comment-aware rules.
+    # Capture FileDescriptorProto references BEFORE pool.Add() consumes
+    # source_code_info. The Python-level fd reference retains its
+    # .source_code_info field for downstream R6 comment-aware rules.
     # When the input descriptor set was built without
     # ``protoc --include_source_info``, each fd's source_code_info.location
     # array will be empty — leading_comment() returns None for every
     # lookup, R6 rules emit findings for every deprecated element (the
-    # documented descriptor-set-mode caveat per the D6b U3 plan K-9).
-    # Mirrors the U1 capture-around-Add pattern at
-    # src/protokit/_cli_utils.py:264-267 (_populate_pool_with_capture).
+    # documented descriptor-set-mode caveat). Mirrors the
+    # capture-around-Add pattern at src/protokit/_cli_utils.py:264-267
+    # (_populate_pool_with_capture).
     source_info_descriptors: dict[
         str, descriptor_pb2.FileDescriptorProto,
     ] = {}
@@ -406,12 +402,11 @@ def _load_descriptor_sets_to_result(
                 # the pool.
                 continue
             seen_names.add(fd.name)
-            # PRE-ADD capture per K-7/K-8: pool.Add(fd) consumes
-            # source_code_info regardless of fd's serialized state, so
-            # the capture must precede Add. See U1's
-            # _populate_pool_with_capture docstring at
-            # src/protokit/_cli_utils.py:230-238 for the load-bearing
-            # invariant this mirrors.
+            # PRE-ADD capture: pool.Add(fd) consumes source_code_info
+            # regardless of fd's serialized state, so the capture must
+            # precede Add. See the _populate_pool_with_capture
+            # docstring at src/protokit/_cli_utils.py:230-238 for the
+            # load-bearing invariant this mirrors.
             source_info_descriptors[fd.name] = fd
             try:
                 pool.Add(fd)
@@ -455,8 +450,9 @@ def _load_descriptor_sets_to_result(
     return CompileResult(
         pool=pool,
         root_files=tuple(root_files),
-        # D6b U4a + ce:review follow-up (Finding #2): pool_file_names tracks
-        # pool membership via the parallel `pool_names` list (NOT root_files),
+        # pool_file_names tracks pool membership via the parallel
+        # `pool_names` list (NOT root_files; the rename was a
+        # code-review follow-up),
         # so the invariant set(pool_file_names) >= set(root_files) is
         # source-of-truth-driven rather than incidental. Today the two
         # lists are identical content because this loader treats every fd

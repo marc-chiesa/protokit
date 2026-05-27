@@ -194,9 +194,9 @@ class CompileResult:
             without backend invocation. Consumed by R7's engine
             pre-walk pass to detect cross-file option-value
             disagreement; emits only on root_files via the existing
-            Step 4 dispatch gate. INTERNAL field added in D6b U4a;
-            subject to change pre-1.0 — consumers should not depend
-            on this field.
+            Step 4 dispatch gate. INTERNAL field added as part of
+            R7's engine pre-walk infrastructure; subject to change
+            pre-1.0 — consumers should not depend on this field.
         diagnostics: Tuple of :class:`LintCompileDiagnostic`
             instances. Empty tuple on clean success. On
             both-backend failure (protoxy parse error followed by
@@ -206,17 +206,17 @@ class CompileResult:
             Also receives a ``pool_file_names_invariant`` error
             diagnostic when ``__post_init__`` detects
             ``root_files`` not a subset of ``pool_file_names``
-            (D6b U4a: surfaces caller-supplied inconsistency
-            without raising; ``pool_file_names`` is reset to ``()``
-            so the engine pre-walk early-returns instead of
-            mis-firing on partial state).
+            (surfaces caller-supplied inconsistency without raising;
+            ``pool_file_names`` is reset to ``()`` so the engine
+            pre-walk early-returns instead of mis-firing on partial
+            state).
         source_info_descriptors: Optional read-only mapping from
             ``fd.name`` to the raw :class:`FileDescriptorProto`
             captured BEFORE ``pool.Add()`` discards
             ``source_code_info``. Populated only when
             :func:`compile_protos_to_result` is called with
             ``include_source_info=True``; ``None`` otherwise.
-            Consumed by R6 comment-aware lint rules (D6b U2/U3).
+            Consumed by R6 comment-aware lint rules.
             Wrapped in :class:`types.MappingProxyType` at
             construction time so the frozen-dataclass guarantee
             holds against post-hoc mutation. Defaults to ``None``
@@ -239,13 +239,13 @@ class CompileResult:
         is real. Mirrors the pattern in
         :class:`protokit.schema.profiles.LintProfile`.
 
-        ``source_info_descriptors`` (D6b R6b) follows the same discipline:
+        ``source_info_descriptors`` follows the same discipline:
         when non-None, the caller's mapping is wrapped in
         :class:`types.MappingProxyType` so post-construction mutation
         cannot affect the stored mapping.
 
-        ``pool_file_names`` (D6b U4a) also snapshots into an immutable
-        tuple. **Invariant check via diagnostic emission, NOT raise:**
+        ``pool_file_names`` also snapshots into an immutable tuple.
+        **Invariant check via diagnostic emission, NOT raise:**
         if ``pool_file_names`` is non-empty but does not include every
         entry in ``root_files``, append a ``pool_file_names_invariant``
         error diagnostic and reset ``pool_file_names`` to ``()`` so the
@@ -560,15 +560,15 @@ def compile_protos_to_result(
             an empty :class:`CompileResult` (no error).
         proto_paths: Additional ``-I``-style include directories.
             Each input's parent directory is automatically added.
-        include_source_info: When ``True`` (D6b R6a), both backends
-            preserve ``source_code_info`` and the returned
+        include_source_info: When ``True``, both backends preserve
+            ``source_code_info`` and the returned
             :class:`CompileResult` carries a non-None
             :attr:`CompileResult.source_info_descriptors` mapping. Default
-            ``False`` preserves pre-D6b behavior for ``protokit
+            ``False`` preserves the original behavior for ``protokit
             compat``, codegen, and other non-lint consumers. The
-            lint CLI will pass ``True`` in D6b U3 so comment-aware
-            rules (D6b R6 family) can read leading comments; until
-            then every consumer keeps the zero-cost default.
+            lint CLI passes ``True`` so comment-aware rules (the R6
+            family) can read leading comments; other consumers keep
+            the zero-cost default.
             Early-return paths (basename collision, empty input,
             irrecoverable failure) pass ``source_info_descriptors=None``
             regardless of the flag.
@@ -632,7 +632,8 @@ def compile_protos_to_result(
                 # ``_compile_with_protoc`` below starts from the init values
                 # — not a partially populated state. A refactor that split
                 # this assignment would silently expose partial state to
-                # the fallback arm. D6b U4a extends to a 4-tuple unpack.
+                # the fallback arm. The unpack widened to 4 elements
+                # when ``pool_file_names`` joined the backend return tuple.
                 (
                     pool,
                     root_files,

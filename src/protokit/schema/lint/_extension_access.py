@@ -14,9 +14,9 @@ through a pool-bound options class, restoring proto2 presence semantics.
 The pattern is used by:
 
 - :mod:`protokit.schema.lint._custom_rules` for the synthetic
-  ``custom/<suffix>`` rule closures (D6d U1).
+  ``custom/<suffix>`` rule closures.
 - :mod:`protokit.schema.lint.rules.options.field_behavior` for the
-  ``options/field-behavior-consistent`` rule (D6d U2).
+  ``options/field-behavior-consistent`` rule.
 - Future built-in option-aware rules that consume arbitrary custom
   extensions.
 
@@ -24,21 +24,19 @@ See :func:`get_pool_bound_options_class` and
 :func:`resolve_enum_value_for_comparison` for the helpers exposed
 by this module.
 
-**Visibility note (D6d U2 ce:review MAINT-3 / AC-3):** the leading
-underscore on the module name marks this as an implementation detail
-of the lint package — NOT part of the protokit public API. The two
-helpers intentionally lack underscore prefixes so internal callers
-within the lint package can import them by name; they are
-``package-internal public`` (callable from any module under
-``protokit.schema.lint.*``) but not stable across protokit releases.
-External rule-pack authors should pin a protokit version range if
-they depend on these helpers; the Public Surface (DRAFT) appendix in
-README classifies this module as INTERNAL.
+**Visibility note:** the leading underscore on the module name marks
+this as an implementation detail of the lint package — NOT part of the
+protokit public API. The two helpers intentionally lack underscore
+prefixes so internal callers within the lint package can import them
+by name; they are ``package-internal public`` (callable from any
+module under ``protokit.schema.lint.*``) but not stable across
+protokit releases. External rule-pack authors should pin a protokit
+version range if they depend on these helpers; the Public Surface
+(DRAFT) appendix in README classifies this module as INTERNAL.
 
 References:
 
-- D6d U1 plan: ``docs/plans/2026-05-19-001-feat-d6d-option-aware-pack-expansion-plan.md``
-- Extracted from ``_custom_rules.py`` during D6d U2 per SSOT discipline
+- Extracted from ``_custom_rules.py`` as part of SSOT discipline
   (the helpers must serve both synthetic rules and built-in
   option-aware rules without cross-module private imports).
 - Regression contract pinned at

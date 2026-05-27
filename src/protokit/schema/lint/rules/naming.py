@@ -1,26 +1,21 @@
 """``naming`` rule pack — naming-case rules for protokit-lint.
 
-D2 shipped the AIP-122 field-naming canary (``naming/snake-case-fields``).
-D6a (Unit 3) extends the pack with the remaining naming-case rules
-needed for buf BASIC parity: PascalCase for messages/enums/services/RPCs;
-UPPER_SNAKE_CASE for enum values; lower_snake for oneofs/files/packages.
+The original AIP-122 field-naming canary (``naming/snake-case-fields``)
+shipped first; the pack was later extended with the remaining naming-case
+rules needed for buf BASIC parity: PascalCase for messages/enums/services/
+RPCs; UPPER_SNAKE_CASE for enum values; lower_snake for oneofs/files/
+packages.
 
 References:
 - buf BASIC rule catalog (parity targets named per-rule via
   ``source_spec="buf:<RULE_ID>"``).
 - AIP-122 § "Field names" (the original spec the
   ``naming/snake-case-fields`` rule traces to; the rule's
-  ``source_spec`` carries the buf alias post-D6c for audit-trail
-  consistency, but the regex semantics are AIP-122):
+  ``source_spec`` now carries the buf alias for audit-trail consistency,
+  but the regex semantics are AIP-122):
   https://google.aip.dev/122
-- protokit-lint D2 plan:
-  ``docs/plans/2026-05-02-001-feat-protokit-lint-d2-engine-plan.md``
-- protokit-lint D6a plan:
-  ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
-- protokit-lint D6c plan (KTD-11 source_spec correction folding the
-  D6b ``naming/snake-case-fields`` AIP-122 attribution into the
-  buf-source-primary audit trail):
-  ``docs/plans/2026-05-18-003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md``
+- See the naming-rule extension rationale and the buf-source-primary
+  audit-trail correction in the project's design notes.
 
 Module shape adopts the ``RULES`` attribute name from compat
 (``schema/checker.py:217-220``) but its wire format differs: this

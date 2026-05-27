@@ -1,4 +1,4 @@
-"""R7 PACKAGE_SAME_* rule family (D6b U4a + U4b).
+"""R7 PACKAGE_SAME_* rule family.
 
 Seven cross-file lint rules that flag a package whose files disagree
 on a language-specific ``FileOptions`` attribute:
@@ -59,7 +59,7 @@ for the 100-char line cap; the runtime ``str`` is unbroken):
 
 Empirically verified across all 7 rules' mixed-value + mixed-presence
 smoke fixtures (21 buf v1.69.0 NDJSON snapshots committed alongside
-the rule pack). The literal-identical template means the U7
+the rule pack). The literal-identical template means the cross-rule
 presence-ratchet test can assert one substring across all 7 rule_ids.
 
 Sanitization
@@ -75,8 +75,8 @@ buf's :file:`recorded/mixed-value-with-inner-quote.json` byte format.
 control chars); the helper applies it explicitly.
 
 No per-value sub-cap. The 500-char composed cap is the only DoS
-bound (mirrors R6's pattern; per-value sub-cap dropped per the U4
-document-review 3-persona convergence).
+bound (mirrors R6's pattern; per-value sub-cap dropped per the
+3-persona document review convergence).
 
 Severity + Profiles
 -------------------
@@ -90,26 +90,26 @@ BUILTIN_PACKS registration
 --------------------------
 
 Default-on under ``recommended`` + ``default`` profiles as of
-``protokit 0.3.0`` (D6b U7's BUILTIN_PACKS flip). Bare
-``protokit lint --profile recommended <inputs>`` fires R7 on
-cross-file option disagreement. The
+``protokit 0.3.0`` (BUILTIN_PACKS flip). Bare ``protokit lint
+--profile recommended <inputs>`` fires R7 on cross-file option
+disagreement. The
 ``--rule-pack=protokit.schema.lint.rules.package_same`` flag
 remains supported as an idempotent explicit load — the engine's
 module-name short-circuit at ``engine.py:241-242`` + the CLI's
-loaded-pack dedup absorb the redundant load. See
-``CHANGELOG.md`` ``### D6b — 0.3.0`` for the 4-path pre-upgrade
-migration recipe per [[pre-1.0-version-bump-as-communication-contract]].
+loaded-pack dedup absorb the redundant load. See ``CHANGELOG.md``
+for the 0.3.0 entry's pre-upgrade migration recipe (pre-1.0
+version bumps act as a communication contract for default-on rule
+additions).
 
 References
 ----------
 
-- D6b U4 plan:
-  ``docs/plans/2026-05-17-002-feat-d6b-u4-r7-package-same-revised-plan.md``
-- Per-unit brainstorm:
-  ``docs/brainstorms/2026-05-17-d6b-u4-r7-package-same-revised-requirements.md``
+- See the project's design notes for the R7 plan, brainstorm, and
+  pre-walk engine plumbing rationale.
 - Empirical foundation (21 buf v1.69.0 NDJSON snapshots):
   ``tests/schema/lint/rules/fixtures/package_same/_buf_smoke/recorded/*.json``
-- U4a engine plumbing landed in ``LintEngine._build_package_options_accumulator``
+- Engine plumbing landed in
+  ``LintEngine._build_package_options_accumulator``
   (commits ``d58dc38`` + ``f20f632``).
 """
 
@@ -220,8 +220,8 @@ def _escape_message_value(value: str) -> str:
         — buf renders inner quotes as literal ``\\"`` in message text.
       - Backslash escape: :file:`recorded/mixed-{value,presence}-php-namespace.json`
         — buf renders PHP namespace values like ``Foo\\X`` as literal
-        ``Foo\\\\X`` in message text (D6b U6 empirical parity-gate
-        discovery, 2026-05-18).
+        ``Foo\\\\X`` in message text (discovered via an empirical
+        parity-gate run, 2026-05-18).
 
     ``_safe_for_stderr`` does NOT do these escapes (it only handles
     control characters); the helper applies them explicitly here.
@@ -239,14 +239,14 @@ def _truncate_values_payload(payload: str) -> str:
     positions for backslash characters inserted by
     :func:`_escape_message_value`:
 
-      1. **Split ``\\"`` escape pair** (D6b U4b origin case): truncation
-         lands precisely between the ``\\`` and its ``"`` partner,
-         leaving a single backslash with no semantic meaning.
-      2. **Split ``\\\\`` doubled-backslash pair** (D6b U6 ce:review
-         correctness/adversarial convergence): with the U6 backslash-
-         doubling step added to :func:`_escape_message_value`, a value
-         containing a literal backslash near the boundary expands to
-         ``\\\\``; truncation can land at the END of a complete
+      1. **Split ``\\"`` escape pair** (origin case): truncation lands
+         precisely between the ``\\`` and its ``"`` partner, leaving a
+         single backslash with no semantic meaning.
+      2. **Split ``\\\\`` doubled-backslash pair** (surfaced by a later
+         correctness + adversarial review pass): once the backslash-
+         doubling step was added to :func:`_escape_message_value`, a
+         value containing a literal backslash near the boundary expands
+         to ``\\\\``; truncation can land at the END of a complete
          doubled-pair, leaving both backslashes inside the window.
 
     A naive ``if endswith("\\\\"): strip one`` guard correctly handles

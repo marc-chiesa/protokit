@@ -1,17 +1,17 @@
 """Built-in LINT_REPORT formatters.
 
-D3 ships all four lint formatters: ``human``, ``json``,
-``junit``, ``sarif`` (the original D3+D4 split was reversed
-during D3 brainstorm pressure-test pass per KD-5 — half-formatter
-parity damaged the CI-auditability identity bet, so D3 absorbs
-the original D4 scope). All four are registered under the same
-``FormatterKind.LINT_REPORT`` discriminator. Unit 1 shipped
-``human`` first (commit ``c610dae``); the three machine
-formatters land in U4.
+This module ships all four lint formatters: ``human``, ``json``,
+``junit``, ``sarif``. An earlier roadmap split the human formatter
+from the three machine formatters across two deliveries, but the
+split was reversed during a brainstorm pressure-test pass —
+half-formatter parity damaged the CI-auditability identity bet, so
+all four ship together. They are registered under the same
+``FormatterKind.LINT_REPORT`` discriminator; ``human`` landed first
+(commit ``c610dae``) and the three machine formatters followed.
 
 Cold-import contract: this module is **NOT** in the eager-load
-tuple at ``src/protokit/formatters/__init__.py`` — preserves
-D1's cold-import gate (``import protokit.schema`` does not
+tuple at ``src/protokit/formatters/__init__.py`` — preserves the
+cold-import gate (``import protokit.schema`` does not
 transitively load ``protokit.schema.lint`` or this module).
 ``protokit.schema.lint.cli`` imports this module at its module
 top, which triggers the formatter registration as a side
@@ -85,7 +85,7 @@ def _render_message(finding: LintFinding, spec: LintRuleSpec | None) -> str:
     if not template_str:
         return f"{finding.rule_id}"
 
-    # ``str.format(**params)`` is a D3-present trust-boundary: R8
+    # ``str.format(**params)`` is a built-in trust-boundary: R8
     # lets users load `--rule-pack` modules whose `LintRuleSpec`
     # objects control these templates AND ``LintFinding.params``
     # is typed ``dict[str, Any]`` so a user pack can store
@@ -188,9 +188,9 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     The ``--statistics`` footer is rendered by the CLI callback
     (Unit 4), NOT by this formatter — keeps the formatter pure
     so that machine formats (``lint_json`` / ``lint_junit`` /
-    ``lint_sarif``, also shipped in D3 per KD-5 revised) which
-    embed counts in their structured payloads can reuse the same
-    ``LintReport`` input without footer-stripping logic.
+    ``lint_sarif``, which all ship together) which embed counts in
+    their structured payloads can reuse the same ``LintReport`` input
+    without footer-stripping logic.
 
     The function is named ``lint_human`` (not ``_render_human``)
     to match the sibling-pattern parity convention established by
@@ -226,7 +226,7 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 
 
 
-#: D6a U9 R9d: wire-format schema version for ``lint_json`` (top-level
+#: Wire-format schema version for ``lint_json`` (top-level
 #: ``schema_version``) and ``lint_sarif`` (``runs[].properties.lint_schema_version``).
 #: Both formatters MUST emit the same string value per the
 #: cross-format-enum-string-parity discipline. ``lint_human`` (terminal-
@@ -266,44 +266,43 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:         construct to handle the new case.
 #:     The discriminating question: can a consumer that doesn't know
 #:     about the new value still produce a correct result? Open
-#:     ladders: yes. Closed discriminators: no. D6b U5's addition of
-#:     ``"severities_unloaded_rule"`` to the ``category`` Literal is
+#:     ladders: yes. Closed discriminators: no. The addition of
+#:     ``"severities_unloaded_rule"`` to the ``category`` Literal was
 #:     the first closed-Literal addition under this contract; it
-#:     bumps schema_version from ``"0.2"`` to ``"0.3"``.
+#:     bumped schema_version from ``"0.2"`` to ``"0.3"``.
 #:   - **Pre-release carve-out**: closed-discriminator value renames
 #:     within the SAME unreleased version cycle (i.e., between two
-#:     internal units U_N and U_N+1 of the same delivery, both of
-#:     which precede the version bump to a user-visible release) do
-#:     NOT bump ``_LINT_JSON_SCHEMA_VERSION``. Rationale: the
-#:     pre-release surface is internal-only by the version-bump
-#:     communication contract (see [[pre-1.0-version-bump-as-
-#:     communication-contract-2026-05-14]]); no consumer has stored
-#:     state against the intermediate U_N value. The next public
-#:     release's CHANGELOG documents the final user-visible
-#:     ``violation_kind`` (and any other closed-discriminator) set.
-#:     First case under this clause: D6c U2 shipped R8b with
-#:     ``violation_kind="package/directory-same-package/empty-mixed"``;
-#:     D6c U3 corrected the helper-bug fix to split that arm into
-#:     ``/empty-mixed-single`` + ``/empty-mixed-multi`` empirically
-#:     against buf v1.69.0. Both U2 and U3 land before the 0.4.0
-#:     release (U5 boundary); ``schema_version`` stays ``"0.3"``.
-#:     Post-1.0, the same rename WOULD bump per the
-#:     value-migrated-vs-value-added distinction in
-#:     [[closed-literal-discriminator-bump-trigger-2026-05-17]].
-#:   - **D6d 0.5.0 bumps**: ``_LINT_JSON_SCHEMA_VERSION`` advances
-#:     in TWO steps under the closed-Literal discriminator contract:
+#:     internal units of the same delivery, both of which precede
+#:     the version bump to a user-visible release) do NOT bump
+#:     ``_LINT_JSON_SCHEMA_VERSION``. Rationale: the pre-release
+#:     surface is internal-only by the pre-1.0 version-bump
+#:     communication contract (see the matching learning under
+#:     ``docs/solutions/``); no consumer has stored state against
+#:     intermediate values. The next public release's CHANGELOG
+#:     documents the final user-visible ``violation_kind`` (and any
+#:     other closed-discriminator) set. The first case under this
+#:     clause was an intermediate ``violation_kind=
+#:     "package/directory-same-package/empty-mixed"`` arm that was
+#:     later split empirically against buf v1.69.0 into
+#:     ``/empty-mixed-single`` + ``/empty-mixed-multi`` before the
+#:     0.4.0 release. Post-1.0, the same rename WOULD bump per the
+#:     value-migrated-vs-value-added distinction documented in the
+#:     closed-Literal-discriminator bump-trigger learning under
+#:     ``docs/solutions/``.
+#:   - **0.5.0 bumps**: ``_LINT_JSON_SCHEMA_VERSION`` advanced in TWO
+#:     steps under the closed-Literal discriminator contract:
 #:
-#:     * **U1**: ``"0.3"`` → ``"0.4"`` for the sixth value
+#:     * ``"0.3"`` → ``"0.4"`` for the sixth value
 #:       ``"custom_annotation_extension_unresolved"`` (synthetic
 #:       ``custom/<suffix>`` rule skipped because its configured
 #:       ``option`` is not registered in the compile pool).
-#:     * **U2**: ``"0.4"`` → ``"0.5"`` for the seventh value
+#:     * ``"0.4"`` → ``"0.5"`` for the seventh value
 #:       ``"extension_unresolved"`` (built-in option-aware rule —
 #:       e.g., ``options/field-behavior-consistent`` — skipped
 #:       because the compile set is missing the well-known proto
 #:       its depended-on extension lives in). Distinct category
-#:       from the U1 sixth value: same root condition, different
-#:       root cause (user mis-configured pyproject vs user did not
+#:       from the sixth value: same root condition, different root
+#:       cause (user mis-configured pyproject vs user did not
 #:       include googleapis); consumers discriminate via the
 #:       ``category`` field without text parsing.
 #:
@@ -311,19 +310,18 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     mypy-strict narrowing pattern documented on
 #:     :class:`LintRuntimeWarning`) must extend their match
 #:     construct to handle BOTH new cases.
-#:   - **D6f 0.7.0 bump**: ``"0.5"`` → ``"0.6"`` for the eighth and
-#:     ninth ``LintRuntimeWarning.category`` Literal values
-#:     (``"contradictory_disable_config"`` from Req-R8b +
-#:     ``"unknown_rule_id"`` from Req-R8c), both surfaced by D6f U2's
-#:     R9b per-rule disable infrastructure. One bump covers both
-#:     additions per [[closed-literal-discriminator-bump-trigger-
-#:     2026-05-17]] (the bump triggers ON the closed-Literal change,
+#:   - **0.7.0 bump**: ``"0.5"`` → ``"0.6"`` for the eighth and ninth
+#:     ``LintRuntimeWarning.category`` Literal values
+#:     (``"contradictory_disable_config"`` + ``"unknown_rule_id"``),
+#:     both surfaced by the R9b per-rule disable infrastructure. One
+#:     bump covers both additions per the closed-Literal bump-trigger
+#:     discipline (the bump triggers ON the closed-Literal change,
 #:     not at the delivery boundary — the schema bump lands atomic
-#:     with the model.py Literal additions in U2, NOT deferred to
-#:     U3's package version bump). The pyproject ``[project] version``
+#:     with the model.py Literal additions, NOT deferred to the
+#:     package version bump). The pyproject ``[project] version``
 #:     bump (``0.6.0`` → ``0.7.0``) is a distinct surface that lands
-#:     in U3 alongside the CHANGELOG fold per
-#:     [[pre-1.0-version-bump-as-communication-contract-2026-05-14]].
+#:     with the CHANGELOG fold per the pre-1.0 version-bump
+#:     communication contract.
 _LINT_JSON_SCHEMA_VERSION: str = "0.6"
 
 
@@ -332,7 +330,7 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
 
     Top-level keys (stable schema):
 
-    - ``schema_version``: wire-format version string (D6a U9 R9d).
+    - ``schema_version``: wire-format version string.
       Consumers MUST treat unknown values as forward-compatible.
       See :data:`_LINT_JSON_SCHEMA_VERSION` for the bump contract.
     - ``findings``: list of finding dicts (rule_id, severity,
@@ -379,7 +377,7 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       behavior should switch on ``violation_kind`` to determine which
       keys are present.
 
-      Current multi-arm rule (one as of D6c U3):
+      Current multi-arm rule (one at present):
 
       - ``package/directory-same-package`` (R8b, three arms):
 
@@ -423,9 +421,8 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
                 .removesuffix("Location")
                 .lower()
             ),
-            # D6e PD-12b: open-extension line/column fields on
-            # FileLocation. Only emitted by D6e U3
-            # ``package/no-import-cycle`` (which reads
+            # Open-extension line/column fields on FileLocation. Only
+            # emitted by ``package/no-import-cycle`` (which reads
             # ``SourceCodeInfo.Location`` for the offending
             # ``import`` statement); other FileLocation-emitting
             # rules leave these as None. Pre-existing consumers
@@ -439,9 +436,9 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
             "message": _render_message(
                 finding, report.specs.get(finding.rule_id),
             ),
-            # Per-finding ``params`` dict (D6c U2 ce:review #8 +
-            # agent-native finding). Exposes the rule's semantic
-            # introspection fields so agent callers don't have to
+            # Per-finding ``params`` dict (added during an
+            # agent-native finding review pass). Exposes the rule's
+            # semantic introspection fields so agent callers don't have to
             # string-parse the rendered ``message``. For multi-kind
             # rules like R8b, the ``packageless_present``
             # discriminator (a bool) lives here; for any rule whose
@@ -482,7 +479,7 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
         "runtime_warning_count": len(report.runtime_warnings),
     }
     payload: dict[str, Any] = {
-        # D6a U9 R9d wire-format version; see the
+        # Wire-format version; see the
         # ``_LINT_JSON_SCHEMA_VERSION`` constant's docstring for the
         # full consumer contract (bump rules + absence semantic).
         "schema_version": _LINT_JSON_SCHEMA_VERSION,
@@ -565,12 +562,12 @@ def _build_lint_testsuite(
     # ``[{category}]`` token so consumers can distinguish them from
     # compile diagnostics (which lead with ``{level} [{category}]:``).
     #
-    # Per D5 U5 R21a, the cross-formatter render contract: every
-    # ``LintRuntimeWarning`` category (``rule_exception``,
-    # ``unloaded_rule``, ``severities_unloaded_rule``,
-    # ``min_severity_relaxed``, ``all_files_excluded``, plus any
-    # future category) renders here regardless of source — closes the
-    # D3-era silent-warning regression for ``lint_junit``.
+    # Cross-formatter render contract: every ``LintRuntimeWarning``
+    # category (``rule_exception``, ``unloaded_rule``,
+    # ``severities_unloaded_rule``, ``min_severity_relaxed``,
+    # ``all_files_excluded``, plus any future category) renders here
+    # regardless of source — closes the earlier silent-warning
+    # regression for ``lint_junit``.
     system_out_lines: list[str] = [
         f"{d.level} [{d.category}]: {d.message}" for d in warning_diags
     ]
@@ -638,8 +635,9 @@ def _lint_result_for_finding(
     context (the location string is the canonical address), so
     this is a narrower shape than compat's ``_result_for_finding``.
 
-    Per-result ``properties.params`` (D6c U2 ce:review #8) carries the
-    rule's semantic introspection fields (e.g., R8b's
+    Per-result ``properties.params`` (added during an agent-native
+    finding review pass) carries the rule's semantic introspection
+    fields (e.g., R8b's
     ``packageless_present`` discriminator + ``directory`` / ``packages``
     / ``package``) so SARIF consumers can programmatically distinguish
     rule-arm sub-types without parsing the rendered ``message.text``.
@@ -654,8 +652,8 @@ def _lint_result_for_finding(
             "fullyQualifiedName": str(finding.location),
         }],
     }
-    # D6e PD-12b: FileLocation with optional line/column (e.g.,
-    # D6e U3 package/no-import-cycle pointing at an offending
+    # FileLocation with optional line/column (e.g.,
+    # package/no-import-cycle pointing at an offending
     # `import` statement) populates SARIF physicalLocation.region.
     # SARIF consumers (IDE LSP integrations, GitHub Code Scanning,
     # CodeQL viewers) use region.startLine/startColumn to render
@@ -747,19 +745,19 @@ def _protokit_version() -> str:
     Thin wrapper around ``protokit._cli_utils._get_protokit_version``;
     kept as a function (not a direct import alias) so the
     ``tool.driver.version`` call site stays readable. Three independent
-    copies of the same try/except-PackageNotFoundError block collapsed
-    in D6a U9 ce:review (F11).
+    copies of the same try/except-PackageNotFoundError block were
+    collapsed during a code-review pass.
     """
     from protokit._cli_utils import _get_protokit_version
     return _get_protokit_version()
 
 
-#: D6f AN-W1: categories whose SARIF propertyBag includes a ``rule_id``
-#: field for wire-format parity with the JSON formatter. Only the two
-#: new D6f categories are listed here; pre-existing rule-scoped
-#: categories (``rule_exception``, ``unloaded_rule``, etc.) keep their
-#: existing behavior (no ``rule_id`` in propertyBag) per the user-
-#: accepted consistency gap / out-of-scope follow-up.
+#: Categories whose SARIF propertyBag includes a ``rule_id`` field
+#: for wire-format parity with the JSON formatter. Only the two
+#: newest categories are listed here; pre-existing rule-scoped
+#: categories (``rule_exception``, ``unloaded_rule``, etc.) keep
+#: their existing behavior (no ``rule_id`` in propertyBag) per the
+#: user-accepted consistency gap / out-of-scope follow-up.
 _SARIF_RULE_ID_PROPERTY_CATEGORIES: frozenset[str] = frozenset({
     "contradictory_disable_config",
     "unknown_rule_id",
@@ -771,7 +769,7 @@ def _sarif_runtime_warning_entry(w: LintRuntimeWarning) -> dict[str, Any]:
 
     The base shape (``level``, ``message.text``,
     ``properties.{category, subcategory: "runtime"}``) is emitted for
-    every category. For the two D6f categories in
+    every category. For the categories listed in
     :data:`_SARIF_RULE_ID_PROPERTY_CATEGORIES`, a ``rule_id`` key is
     additionally emitted in the ``properties`` bag so SARIF consumers
     can correlate warnings back to rule_ids without parsing the message
@@ -823,8 +821,8 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
        most lint findings carry only logical locations
        (``str(finding.location)``) since the descriptor-set input
        doesn't carry per-finding source-file URIs the way compat's
-       git-mode runs do. D6e PD-12b added optional ``line`` /
-       ``column`` fields to ``FileLocation``; when a rule populates
+       git-mode runs do. Later additions placed optional ``line`` /
+       ``column`` fields on ``FileLocation``; when a rule populates
        them (currently ``package/no-import-cycle``, which reads
        ``SourceCodeInfo.Location``), this formatter emits a
        sibling ``physicalLocation.region.startLine`` /
@@ -836,14 +834,14 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
 
     Stable schema (within ``runs[0]``):
 
-    - ``properties.lint_schema_version`` (D6a U9 R9d): wire-format
-      version string. Prefixed with ``lint_`` to namespace under
-      SARIF's reserved ``schema`` property; same value as
-      ``lint_json``'s top-level ``schema_version`` per cross-format
-      parity. Bag is unconditionally present after U9 — see
-      ``_LINT_JSON_SCHEMA_VERSION`` constant for the bump contract.
-    - ``properties.runtime_warnings`` (D5 U5 R21a): present only
-      when ``report.runtime_warnings`` is non-empty.
+    - ``properties.lint_schema_version``: wire-format version string.
+      Prefixed with ``lint_`` to namespace under SARIF's reserved
+      ``schema`` property; same value as ``lint_json``'s top-level
+      ``schema_version`` per cross-format parity. Bag is
+      unconditionally present — see ``_LINT_JSON_SCHEMA_VERSION``
+      constant for the bump contract.
+    - ``properties.runtime_warnings``: present only when
+      ``report.runtime_warnings`` is non-empty.
     """
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
@@ -893,15 +891,15 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
         "invocations": [invocation],
     }
 
-    # D5 U5 R21a / KTD-1: runtime warnings ride in
-    # ``runs[].properties.runtime_warnings`` (SARIF ``propertyBag``
-    # is permitted on any object). Each entry has shape::
+    # Runtime warnings ride in ``runs[].properties.runtime_warnings``
+    # (SARIF ``propertyBag`` is permitted on any object). Each entry
+    # has shape::
     #
     #     {
     #         "level": "warning",
     #         "message": {"text": "..."},
     #         "properties": {
-    #             "category": "<one of the five categories>",
+    #             "category": "<one of the categories>",
     #             "subcategory": "runtime",
     #         },
     #     }
@@ -910,8 +908,8 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     # (above) remains compile-stage diagnostics only — runtime
     # warnings are intentionally a separate channel so SARIF
     # consumers can filter ``properties.subcategory == "runtime"``
-    # without scanning the notifications stream. Per KTD-1, no
-    # ``descriptor.id`` is emitted — categorization travels via
+    # without scanning the notifications stream. No ``descriptor.id``
+    # is emitted — categorization travels via
     # ``properties.category`` instead. The block is omitted when
     # the report carries no runtime warnings (matches the
     # ``toolExecutionNotifications`` pattern above and keeps the
@@ -932,10 +930,10 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
             for w in report.runtime_warnings
         ]
 
-    # D6a U9 R9d: wire-format schema version (key name
-    # ``lint_schema_version`` to namespace under SARIF's reserved
-    # ``schema`` property). Cross-format parity: same string value
-    # as ``lint_json``'s top-level ``schema_version``.
+    # Wire-format schema version (key name ``lint_schema_version``
+    # to namespace under SARIF's reserved ``schema`` property).
+    # Cross-format parity: same string value as ``lint_json``'s
+    # top-level ``schema_version``.
     run_props["lint_schema_version"] = _LINT_JSON_SCHEMA_VERSION
 
     # default=str: same rationale as lint_json — preserve output when

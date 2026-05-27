@@ -230,8 +230,8 @@ def _protokit_version() -> str:
     Thin wrapper around ``protokit._cli_utils._get_protokit_version``;
     kept as a function (not a direct import alias) so the
     ``tool.driver.version`` call site stays readable. Three independent
-    copies of the same try/except-PackageNotFoundError block collapsed
-    in D6a U9 ce:review (F11).
+    copies of the same try/except-PackageNotFoundError block were
+    collapsed during a code-review pass.
     """
     from protokit._cli_utils import _get_protokit_version
     return _get_protokit_version()

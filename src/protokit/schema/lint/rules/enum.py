@@ -20,9 +20,8 @@ The pack ships two rules:
 References:
 - buf BASIC rule catalog (parity targets named per-rule via
   ``source_spec="buf:<RULE_ID>"``).
-- protokit-lint D6a plan:
-  ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
-  (Unit 4 introduces this pack).
+- The enum-rule pack was introduced as part of the BASIC rule-library
+  build-out; see the project's design notes for full rationale.
 
 Module shape mirrors :mod:`protokit.schema.lint.rules.naming`:
 a top-level ``RULES`` tuple of ``@lint_rule``-decorated callables,

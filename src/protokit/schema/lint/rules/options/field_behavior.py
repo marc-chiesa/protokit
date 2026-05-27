@@ -1,4 +1,4 @@
-"""``options/field-behavior-consistent`` rule pack — D6d Unit 2.
+"""``options/field-behavior-consistent`` rule pack.
 
 Single specimen of the "value-validation" template family. Validates
 well-formedness of declared ``(google.api.field_behavior)`` annotation
@@ -7,8 +7,8 @@ lists on proto fields. Anchored to https://google.aip.dev/203.
 Three violation arms, each its own ``violation_kind`` so SARIF agent-
 native consumers can discriminate by
 ``finding.params['violation_kind']`` without parsing the rendered
-message text (see
-[[dict-shaped-message-template-multi-arm-rule-violation-kind-2026-05-19]]).
+message text (see the dict-shaped message-template pattern documented
+under ``docs/solutions/best-practices/``).
 
 - ``options/field-behavior-consistent/duplicate-value`` — the same
   FieldBehavior enum identifier appears 2+ times in the annotation
@@ -36,14 +36,13 @@ message text (see
   are deliberately excluded from the curated set: AIP-203 says
   IDENTIFIER "conveys OUTPUT_ONLY in create contexts and IMMUTABLE
   in mutation contexts" — the contextual semantics make a hard
-  contradiction claim harder to defend. Deferred to D6g+ pending
-  evidence (D6f shipped R6 promotion + R9b per-rule disable but
-  did not expand the curated contradiction set; listed explicitly
-  in the D6f plan's Scope Boundaries).
+  contradiction claim harder to defend. Expanding the curated set is
+  deferred pending corpus evidence; the R6 promotion and R9b per-rule
+  disable surface that shipped alongside this rule did not expand it.
 
-**Phase 0a (D6d U2) finding:** protoxy compile-FAILS on unknown enum
-identifiers (``= REQURIED``) and on out-of-enum numeric literals
-(``= 999``). The "INVALID identifier" and "numeric out-of-enum"
+**Compile-time falsification finding:** protoxy compile-FAILS on
+unknown enum identifiers (``= REQURIED``) and on out-of-enum numeric
+literals (``= 999``). The "INVALID identifier" and "numeric out-of-enum"
 violation classes are therefore unreachable at the lint stage. The
 only reachable "invalid"-like case is the explicit
 ``FIELD_BEHAVIOR_UNSPECIFIED`` identifier, which surfaces normally
@@ -54,8 +53,8 @@ numbers differently would extend this contract; the
 ``resolve_enum_value_for_comparison`` helper already returns the raw
 integer for unknown-number cases.
 
-**Extension-access path:** the rule re-uses U1's dynamic-pool re-
-parse helpers from
+**Extension-access path:** the rule re-uses the dynamic-pool
+re-parse helpers from
 :mod:`protokit.schema.lint._extension_access`
 (``get_pool_bound_options_class`` +
 ``resolve_enum_value_for_comparison``) — the bootstrap-pool
@@ -67,21 +66,20 @@ raises ``KeyError``; the rule emits a deduplicated
 ``LintRuntimeWarning(category="extension_unresolved")`` and skips
 firing for that file.
 
-**Registration (D6d U5 delivery boundary, 0.5.0):** the rule pack
-is registered in ``BUILTIN_PACKS`` alongside ``deprecated_replacement``.
-Module-import dormancy through U2-U4 followed the
-[[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]]
-discipline; the U5 boundary flipped the registration with the
+**Registration (0.5.0 delivery boundary):** the rule pack is
+registered in ``BUILTIN_PACKS`` alongside ``deprecated_replacement``.
+The rule was staged as dormant module-import code through earlier
+units (the dormant-code-at-delivery-boundary discipline documented in
+``docs/solutions/``) and the registration flipped at the
 0.4.0 → 0.5.0 version bump.
 
 **Profile placement:** ``severity=WARNING``, ``profiles=("default",)``
-only. ``recommended``-profile users see ZERO new findings on D6d
-upgrade per R6 of the D6d brainstorm — conservative-launch posture
-matching D6b R6's leading-comment family. Promotion to
-``recommended`` deferred to D6g+ pending corpus evidence (D6e
-shipped the buf-parity closure and D6f shipped the R6 promotion
-+ R9b per-rule disable surface; neither promoted this rule to
-``recommended``; the conservative-launch posture continues).
+only. ``recommended``-profile users see ZERO new findings on upgrade
+— conservative-launch posture matching the R6 leading-comment family.
+Promotion to ``recommended`` is deferred pending corpus evidence; the
+later buf-parity closure and the R6 promotion + R9b per-rule disable
+surface did not promote this rule, so the conservative-launch posture
+continues.
 
 **Severity profile dispatch:** the three violation arms share a
 uniform ``WARNING`` severity, implemented as a dict-shaped
@@ -98,10 +96,8 @@ References:
 - AIP-203: https://google.aip.dev/203
 - googleapis source:
   https://github.com/googleapis/googleapis/blob/master/google/api/field_behavior.proto
-- D6d brainstorm:
-  ``docs/brainstorms/2026-05-19-d6d-option-aware-pack-expansion-requirements.md``
-- D6d plan:
-  ``docs/plans/2026-05-19-001-feat-d6d-option-aware-pack-expansion-plan.md``
+- See the project's design notes for the option-aware pack-expansion
+  brainstorm and plan.
 - Dict-template precedent:
   ``src/protokit/schema/lint/rules/package.py`` (R8b
   ``_R8B_MESSAGE_TEMPLATES``).
@@ -266,10 +262,10 @@ def _engine_for_ctx(ctx: FieldLintContext) -> LintEngine:
 def _emit_unresolved_extension(ctx: FieldLintContext) -> None:
     """Emit a deduplicated ``extension_unresolved`` runtime warning.
 
-    Matches the U1 synthetic-rule emission shape but uses the new
-    ``"extension_unresolved"`` Literal value (D6d U2 — engine-emitted,
-    for built-in option-aware rules whose depended-on extension is
-    absent from the compile set).
+    Matches the synthetic ``custom/<suffix>`` rule's emission shape
+    but uses the ``"extension_unresolved"`` Literal value (engine-
+    emitted, for built-in option-aware rules whose depended-on
+    extension is absent from the compile set).
 
     Dedup is keyed by ``(rule_id, file_name)`` within a per-engine,
     per-run set: the value held in :data:`_UNRESOLVED_SEEN` is the

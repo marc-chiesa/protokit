@@ -1,19 +1,20 @@
-"""D6d U1 — synthetic ``custom/<suffix>`` rule loader.
+"""Synthetic ``custom/<suffix>`` rule loader.
 
 Materializes user-declared ``[[tool.protokit.lint.custom_annotation_rules]]``
 entries into a synthetic ``ModuleType`` exposing a ``RULES`` tuple of
-closures (per-entry, per-``ElementKind`` — KD-19). The synthetic module
-is fed to :meth:`protokit.schema.lint.engine.LintEngine.load_rule_pack`
-to register the closures into the engine's ``_loaded_specs`` dict
-through the same code path BUILTIN_PACKS modules travel.
+closures (per-entry, per-``ElementKind``). The synthetic module is fed
+to :meth:`protokit.schema.lint.engine.LintEngine.load_rule_pack` to
+register the closures into the engine's ``_loaded_specs`` dict through
+the same code path BUILTIN_PACKS modules travel.
 
 The user-facing contract is the synthetic ``rule_id`` ``custom/<suffix>``
 that surfaces in finding output exactly like a built-in rule_id — no
 machine-readable distinction beyond the ``custom/`` namespace prefix
-(KD-8 invariant: ``BUILTIN_PACKS`` MUST NEVER ship a ``custom/*``
+(invariant: ``BUILTIN_PACKS`` MUST NEVER ship a ``custom/*``
 rule_id).
 
-**Extension-resolution model (per D6d U1 Phase 0 verification 2026-05-19).**
+**Extension-resolution model** (per the Phase 0 empirical verification
+that landed alongside this loader, 2026-05-19).
 The naive ``protokit.options.get_option_value`` helper does NOT surface
 custom-extension values when the extension is registered through a
 ``protoxy``-built ``DescriptorPool`` (rather than via a generated
@@ -54,11 +55,11 @@ For enum-typed extensions, the runtime value is the enum number
 compared against ``allowed_values`` written as identifier strings
 (per the R2 contract).
 
-**Closure capture discipline (KD-20).** Closures bind per-entry state
-via factory functions to avoid the loop-variable
-capture-by-reference footgun. Each synthetic rule has its own state
-(option name, allowed_values, severity, dedup set) bound by the
-factory's argument frame, not by the enclosing loop.
+**Closure capture discipline.** Closures bind per-entry state via
+factory functions to avoid the loop-variable capture-by-reference
+footgun. Each synthetic rule has its own state (option name,
+allowed_values, severity, dedup set) bound by the factory's argument
+frame, not by the enclosing loop.
 
 **Dedup of unresolved-extension warnings.** The
 ``custom_annotation_extension_unresolved`` warning emits at most once
@@ -70,29 +71,27 @@ keyed by the active :class:`LintEngine`. The value tracks
 ``engine.run()`` assigns a fresh ``_runtime_warnings`` list on each
 entry, an id-mismatch signals a NEW run and the dedup set resets
 automatically. This mirrors the pattern in
-``protokit.schema.lint.rules.options.field_behavior`` (D6d U2) and
-closes the cross-run dedup leak that the original U1 closure-
-captured-set pattern carried (per learning
-``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``).
-The CLI is unaffected today (one ``engine.run()`` per process), but
-long-lived runtimes (MCP / IDE integrations) that recycle
-engines across sessions would otherwise observe silent dedup leakage
-(tracked for D6g+ in TODOS.md backlog).
+``protokit.schema.lint.rules.options.field_behavior`` and closes the
+cross-run dedup leak that the original closure-captured-set pattern
+carried (see the matching per-engine-per-run state learning under
+``docs/solutions/``). The CLI is unaffected today (one
+``engine.run()`` per process), but long-lived runtimes (MCP / IDE
+integrations) that recycle engines across sessions would otherwise
+observe silent dedup leakage (tracked in TODOS.md backlog).
 
 **Synthetic module name.** ``_SYNTHETIC_MODULE_NAME`` is a stable
 identifier; the ``LintEngine.load_rule_pack`` idempotency guard at
 ``engine.py:303`` short-circuits a second load on the same engine
 instance. The CLI creates a fresh engine per invocation so this is
 correct. Long-lived engines would observe stale rule registration on
-config changes — a known long-lived-runtime concern documented in the
-D6d plan's KD-21 (tracked for D6g+ in TODOS.md backlog).
+config changes — a known long-lived-runtime concern (tracked in
+TODOS.md backlog).
 
 References:
 
-- D6d U1 plan: ``docs/plans/2026-05-19-001-feat-d6d-option-aware-pack-expansion-plan.md``
-- Phase 0 Open Question resolution (re-parse pattern): see this
-  module's docstring above.
-- KD-8 invariant (``custom/`` namespace reserved): enforced by
+- See the project's design notes for the option-aware pack-expansion
+  plan and the Phase 0 re-parse-pattern rationale.
+- ``custom/`` namespace invariant enforced by
   ``tests/schema/lint/test_no_builtin_rule_uses_custom_prefix.py``.
 """
 
@@ -127,21 +126,21 @@ _SYNTHETIC_MODULE_NAME: str = "protokit_lint_synthetic_custom_annotations"
 
 # Per-engine + per-run dedup map for unresolved-extension warnings.
 # Mirrors the pattern in
-# ``protokit.schema.lint.rules.options.field_behavior`` (D6d U2) —
-# keyed by engine via ``WeakKeyDictionary`` so dedup state is collected
-# when the engine is GC'd. Value is ``(id(engine._runtime_warnings),
+# ``protokit.schema.lint.rules.options.field_behavior`` — keyed by
+# engine via ``WeakKeyDictionary`` so dedup state is collected when
+# the engine is GC'd. Value is ``(id(engine._runtime_warnings),
 # dedup_set)``: the id changes on every ``engine.run()`` entry (the
 # engine assigns a fresh list at ``engine.py``'s run path), so a
 # mismatched id signals a NEW run and the dedup set is reset
-# automatically. This closes the cross-run dedup leak that the U1
-# closure-captured-set pattern carried (per learning
-# ``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``):
+# automatically. This closes the cross-run dedup leak that the
+# original closure-captured-set pattern carried (see the matching
+# per-engine-per-run-state learning under ``docs/solutions/``):
 # without the per-run reset, a second ``engine.run()`` on the same
-# engine would silently emit zero warnings even though the unresolved-
-# extension condition still holds. The CLI is unaffected today (one
-# ``engine.run()`` per process), but long-lived runtimes (MCP / IDE
-# integrations) that recycle engines across sessions would hit the
-# leak without this discipline (tracked for D6g+ in TODOS.md backlog).
+# engine would silently emit zero warnings even though the
+# unresolved-extension condition still holds. The CLI is unaffected
+# today (one ``engine.run()`` per process), but long-lived runtimes
+# (MCP / IDE integrations) that recycle engines across sessions would
+# hit the leak without this discipline (tracked in TODOS.md backlog).
 _UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
     weakref.WeakKeyDictionary()
 )
@@ -170,7 +169,8 @@ def _dedup_seen_for_run(engine: LintEngine) -> set[tuple[str, str]]:
 #: context (e.g., ``"field"`` for FieldLintContext) and
 #: ``options_full_name`` is the fully-qualified options message name
 #: used to resolve a pool-bound options class. The lookup is centralized
-#: so the closure body stays kind-uniform per the U1 Phase 0 finding.
+#: so the closure body stays kind-uniform (per the Phase 0 finding
+#: that landed alongside this loader).
 _KIND_DESCRIPTOR_TABLE: dict[ElementKind, tuple[str, str]] = {
     ElementKind.FILE: ("file", "google.protobuf.FileOptions"),
     ElementKind.SERVICE: ("service", "google.protobuf.ServiceOptions"),
@@ -190,11 +190,11 @@ def _make_synthetic_closure(
 ) -> Any:
     """Factory: build one synthetic-rule closure for ``(spec, kind)``.
 
-    Per D6d KD-20, the per-entry state (``spec``, ``kind``) binds via
-    the factory's argument frame — NOT via the enclosing loop's
-    variable. This avoids the classic Python loop-variable
-    capture-by-reference footgun where two distinct entries would
-    otherwise share the last entry's bindings.
+    The per-entry state (``spec``, ``kind``) binds via the factory's
+    argument frame — NOT via the enclosing loop's variable. This
+    avoids the classic Python loop-variable capture-by-reference
+    footgun where two distinct entries would otherwise share the last
+    entry's bindings.
 
     The closure body:
 
@@ -205,8 +205,9 @@ def _make_synthetic_closure(
        returns. Dedup state lives in the module-level
        :data:`_UNRESOLVED_SEEN` :class:`WeakKeyDictionary` keyed by
        engine + a per-run id, so the warning re-fires on a fresh
-       ``engine.run()`` call (closes the U1 cross-run leak per
-       ``weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20``).
+       ``engine.run()`` call (closes the original cross-run leak;
+       see the matching per-engine-per-run-state learning under
+       ``docs/solutions/``).
     2. Resolves the pool-bound options class. On a missing
        ``descriptor.proto`` pool entry (rare; minimal compile sets),
        silently returns (no warning — this is a non-actionable env
@@ -336,7 +337,7 @@ def _make_synthetic_closure(
         rule_id=rule_id,
         severity=severity_map,
         # Multiple profiles intentionally — synthetic rules are
-        # always-on when configured (KD-12). The composed-profile
+        # always-on when configured. The composed-profile
         # augmentation in cli.py unions the synthetic rule_ids into
         # whichever profile the user selected, so this profile tuple
         # is documentary; LintProfile.from_pack(synthetic_module,
@@ -358,8 +359,8 @@ def build_synthetic_module(
 
     Returns ``None`` when ``specs`` is empty — the caller (cli.py)
     short-circuits the synthetic-rule load path so the engine sees
-    BUILTIN_PACKS and user packs only, matching pre-D6d behavior
-    byte-for-byte for the zero-config case.
+    BUILTIN_PACKS and user packs only, matching the pre-custom-rule
+    behavior byte-for-byte for the zero-config case.
 
     Each spec produces ``len(spec.element_kinds)`` closures (one per
     declared kind, all sharing the same ``rule_id``). The synthetic
@@ -376,7 +377,7 @@ def build_synthetic_module(
     **Multi-kind ``rule_id`` collision pitfall.** Two closures sharing
     the same ``rule_id`` would normally trip
     :exc:`LintEngine.load_rule_pack`'s intra-pack collision detection.
-    Per D6d KD-19 we verified empirically that
+    We verified empirically that
     ``LintEngine._loaded_specs`` is keyed by ``rule_id`` alone, so
     duplicating a key collides at the staging step
     (``engine.py:323-331``). To preserve multi-kind support, the
@@ -437,8 +438,8 @@ def build_synthetic_module(
                 kind=kind,
                 engine=engine,
             )
-            # Per KD-19, multi-kind entries register N closures with
-            # the same rule_id. The engine's intra-pack dedup keys by
+            # Multi-kind entries register N closures with the same
+            # rule_id. The engine's intra-pack dedup keys by
             # spec.rule_id, so directly appending all closures would
             # raise DuplicateRuleError. We mint a kind-disambiguated
             # rule_id for closures past the first kind, EXPOSING the
@@ -448,7 +449,7 @@ def build_synthetic_module(
             #   spec.element_kinds=["field", "method"] →
             #     rule_id 0: "custom/<suffix>"           on FIELD
             #     rule_id 1: "custom/<suffix>__method"   on METHOD
-            # Single-kind entries (the common case in D6d's worked
+            # Single-kind entries (the common case in the worked
             # example) avoid the suffix entirely. The internal
             # mangling stays hidden from the public R10 contract by
             # virtue of the public-rule_id-only being THE registered
@@ -492,9 +493,9 @@ def synthetic_rule_ids(
 
     For a single-kind entry, returns ``{f"custom/{suffix}"}``. For a
     multi-kind entry, returns
-    ``{f"custom/{suffix}", f"custom/{suffix}__<kind>", ...}`` per
-    KD-19's mangling discipline (see
-    :func:`build_synthetic_module` docstring).
+    ``{f"custom/{suffix}", f"custom/{suffix}__<kind>", ...}`` per the
+    multi-kind mangling discipline documented in
+    :func:`build_synthetic_module`.
 
     Args:
         specs: Validated entries.

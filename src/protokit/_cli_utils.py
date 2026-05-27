@@ -49,10 +49,10 @@ def _get_protokit_version() -> str:
     (e.g., the SARIF ``tool.driver.version`` field or the
     ``protokit lint --version`` output), not on every CLI invocation.
 
-    Single source of truth for what were three independent copies
-    pre-D6a U9 (``_builtin_compat._protokit_version``,
+    Single source of truth for what were previously three independent
+    copies (``_builtin_compat._protokit_version``,
     ``_builtin_lint._protokit_version``, and the lint subcommand's
-    ``--version`` callback) per the U9 ce:review F11 finding.
+    ``--version`` callback), collapsed during a code-review pass.
     """
     from importlib.metadata import PackageNotFoundError, version
     try:
@@ -293,17 +293,17 @@ def _compile_with_protoxy(
         include_paths: Additional ``-I``-style include directories. Each
             input path's parent is automatically added to the include
             list (deduped via ``dict.fromkeys`` for deterministic order).
-        include_source_info: When ``True`` (D6b R6a), the backend
+        include_source_info: When ``True``, the backend
             requests ``source_code_info`` preservation in the emitted
             ``FileDescriptorSet`` and returns a third tuple element
             mapping ``fd.name`` → ``FileDescriptorProto`` captured BEFORE
             ``pool.Add()`` consumes (and discards) the source-location
             data. When ``False`` (default), the third element is
-            ``None`` and the backend behaves as it did pre-D6b. The
-            lint CLI will pass ``True`` in D6b U3; ``protokit compat``
-            / codegen / direct API callers stay on the default to
-            avoid the 10-30% descriptor-size cost of preserving
-            comments.
+            ``None`` and the backend behaves as it did before the
+            comment-aware lint rules landed. The lint CLI passes
+            ``True``; ``protokit compat`` / codegen / direct API
+            callers stay on the default to avoid the 10-30%
+            descriptor-size cost of preserving comments.
 
     Returns:
         Tuple of ``(DescriptorPool, root_names, source_info_descriptors,
@@ -312,13 +312,14 @@ def _compile_with_protoxy(
         (NOT including transitive imports), in input order;
         ``source_info_descriptors`` is the raw
         ``Mapping[str, FileDescriptorProto] | None`` described above;
-        and ``pool_file_names`` (D6b U4a) is the full set of fd.name
+        and ``pool_file_names`` is the full set of fd.name
         strings registered in the returned ``DescriptorPool``, including
         transitive imports brought in via ``include_imports=True``. R7's
         engine pre-walk pass consumes ``pool_file_names`` to detect
         per-package option disagreements; the tuple is in
         ``fds.file`` iteration order (topological, byte-identical
-        across backends per the U1 cross-backend equivalence pattern).
+        across backends per the established cross-backend equivalence
+        pattern).
 
     Raises:
         protoxy.ProtoxyError: On parse / compile failure.
@@ -332,13 +333,14 @@ def _compile_with_protoxy(
         files=[str(p) for p in proto_paths_in],
         includes=includes,
         include_imports=True,
-        # Pre-D6b this was hard-coded ``False`` to keep the in-memory
+        # Originally hard-coded ``False`` to keep the in-memory
         # FileDescriptorSet byte-equivalent between backends — neither
-        # carried source-location info into the pool. D6b R6a opts in
-        # at the API boundary: when ``include_source_info=True``, both
-        # backends carry source-location info, and bytes remain
-        # byte-equivalent across backends when the flag's value agrees
-        # (verified by tests/schema/lint/test_compile_include_source_info.py).
+        # carried source-location info into the pool. The comment-aware
+        # lint family opts in at the API boundary: when
+        # ``include_source_info=True``, both backends carry source-
+        # location info, and bytes remain byte-equivalent across
+        # backends when the flag's value agrees (verified by
+        # tests/schema/lint/test_compile_include_source_info.py).
         include_source_info=include_source_info,
     )
     pool = descriptor_pool.DescriptorPool()
@@ -379,12 +381,12 @@ def _compile_with_protoc(
     Args:
         proto_paths_in: Sequence of root ``.proto`` file paths.
         include_paths: Additional ``-I``-style include directories.
-        include_source_info: When ``True`` (D6b R6a), the backend
+        include_source_info: When ``True``, the backend
             appends ``--include_source_info`` to the protoc argv and
             captures every emitted ``FileDescriptorProto`` BEFORE
             ``pool.Add()`` consumes (and discards) ``source_code_info``.
             Returned as the third tuple element. Default ``False``
-            preserves pre-D6b behavior for non-lint consumers.
+            preserves the original behavior for non-lint consumers.
 
     Returns:
         Tuple of ``(DescriptorPool, root_names, source_info_descriptors)`` where
@@ -412,11 +414,11 @@ def _compile_with_protoc(
     try:
         cmd = ["protoc", "--descriptor_set_out", str(tmp_path), "--include_imports"]
         if include_source_info:
-            # D6b R6a: opt-in source-info preservation. protoc's flag
-            # mirrors protoxy's ``include_source_info`` keyword; both
-            # backends must flip atomically when the caller opts in so
-            # the byte-equivalence-between-backends invariant continues
-            # to hold (cross-checked by
+            # Opt-in source-info preservation. protoc's flag mirrors
+            # protoxy's ``include_source_info`` keyword; both backends
+            # must flip atomically when the caller opts in so the
+            # byte-equivalence-between-backends invariant continues to
+            # hold (cross-checked by
             # tests/schema/lint/test_compile_include_source_info.py).
             cmd.append("--include_source_info")
         for inc in includes:

@@ -12,11 +12,11 @@ Buf BASIC parity rules covering the file's ``package`` statement:
   directory path. E.g., a file at ``acme/api/v1/users.proto`` is
   expected to declare ``package acme.api.v1;`` — the package
   segments and the directory path segments must align.
-- ``package/same-directory`` (buf:PACKAGE_SAME_DIRECTORY) — D6c U2
+- ``package/same-directory`` (buf:PACKAGE_SAME_DIRECTORY) —
   cross-file rule. Fires when a single package's files live in
   more than one directory.
 - ``package/directory-same-package`` (buf:DIRECTORY_SAME_PACKAGE)
-  — D6c U2 cross-file rule. Fires when a single directory contains
+  — cross-file rule. Fires when a single directory contains
   files declaring more than one package (including the special
   empty-mixed arm when declared + packageless files co-occur).
 
@@ -34,7 +34,7 @@ POSIX-separator convention (see
 split the directory portion, matching the convention.
 
 The two cross-file rules (R8 + R8b) consume the dual-view
-accumulator landed in D6c U1 via
+accumulator built by the engine pre-walk via
 ``FileLintContext.directory_packages`` (per-package view, R8) +
 ``FileLintContext.directory_packages_by_dir`` (per-directory
 inverted index, R8b). Both iterate over a single shared pre-walk
@@ -49,10 +49,8 @@ format, not because the file mixes conventions casually.
 References:
 - buf BASIC rule catalog (parity targets named per-rule via
   ``source_spec="buf:<RULE_ID>"``).
-- protokit-lint D6a plan, Unit 6 (R8 + R8b precursors):
-  ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``.
-- protokit-lint D6c plan (R8 + R8b cross-file rule callables):
-  ``docs/plans/2026-05-18-003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md``.
+- See the project's design notes for the precursors and the
+  cross-file R8 + R8b rule-callables design.
 """
 
 from __future__ import annotations
@@ -232,18 +230,17 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
     """Fire when a single package's files span more than one directory.
 
     Consumes ``ctx.directory_packages`` (the per-package view built
-    by ``LintEngine._build_directory_package_accumulator`` in D6c U1).
-    Lookup is by ``ctx.file.package`` — if the inner ``{fname: dirname}``
+    by ``LintEngine._build_directory_package_accumulator``). Lookup
+    is by ``ctx.file.package`` — if the inner ``{fname: dirname}``
     mapping contains more than one distinct ``dirname``, emit a per-file
     finding listing every directory.
 
     Directory list rendering is empirically locked against buf
     v1.69.0: comma-no-space, alphabetic-sorted, single message
-    template at all N values (per the D6c plan's KTD-4 (e)
-    empirical verification — see ``docs/plans/2026-05-18-003-
-    feat-d6c-r8-r8b-cross-file-package-rules-plan.md``). Example
-    output: ``Multiple directories "d1,d2,d3" contain files with
-    package "acme.x".``.
+    template at all N values (verified empirically; see the project's
+    design notes for the cross-file-rule plan). Example output:
+    ``Multiple directories "d1,d2,d3" contain files with package
+    "acme.x".``.
 
     **Silent on**:
 
@@ -263,7 +260,7 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
     Engine's per-file walk fires this rule once per root file, so a
     3-file package with a 2-directory split produces 3 findings
     (one per root file in the package) — buf v1.69.0 all-disagreers-
-    fire semantics. Empirically verified per the D6c plan's KTD-9
+    fire semantics. Empirically verified by the cross-file rule's
     co-fire fixture.
     """
     if ctx.directory_packages is None:
@@ -305,21 +302,22 @@ def check_package_same_directory(ctx: FileLintContext) -> None:
 #:   ``Multiple packages "X,Y[,Z]" and file with no package detected within
 #:   directory "D".``
 #:
-#: The third arm was added at U3 ce:work (2026-05-19) after the parity
-#: gate's first run surfaced a real divergence from buf v1.69.0 on the
-#: multi-declared+packageless ``no-package-mixed`` fixture — the U2 plan's
-#: KTD-4 (b) claim that buf "produces exactly one declared-package value
-#: in this template even if multiple declared packages exist" was based
-#: on a Phase 0 fixture that had only 1 declared + 2 packageless. Buf
-#: actually renders ALL declared packages in this case with the
-#: ``Multiple packages "..."`` prefix instead of ``Package "..."``.
-#: See [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]]
-#: Case 4 for the latent-helper-bug pattern.
+#: The third arm was added (2026-05-19) after the parity gate's first
+#: run surfaced a real divergence from buf v1.69.0 on the
+#: multi-declared+packageless ``no-package-mixed`` fixture — the
+#: original implementation's claim that buf "produces exactly one
+#: declared-package value in this template even if multiple declared
+#: packages exist" was based on a Phase 0 fixture that had only 1
+#: declared + 2 packageless. Buf actually renders ALL declared
+#: packages in this case with the ``Multiple packages "..."`` prefix
+#: instead of ``Package "..."``. See the empirical-parity-gate
+#: latent-helper-bug learning under ``docs/solutions/`` for the
+#: pattern.
 #:
 #: Dict-shaped ``message_template`` keyed by ``violation_kind`` so each
 #: arm is a separately introspectable per-kind template (SARIF rules
 #: catalog reads the per-kind shortDescription rather than the literal
-#: ``"{payload}"`` identity-template the rule shipped with at U2's
+#: ``"{payload}"`` identity-template the rule shipped with at its
 #: initial drop).
 _R8B_STANDARD_KIND = "package/directory-same-package"
 _R8B_EMPTY_MIXED_SINGLE_KIND = (
@@ -361,7 +359,8 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
     """Fire when a single directory contains files declaring multiple packages.
 
     Consumes ``ctx.directory_packages_by_dir`` (the per-directory
-    inverted-index view built by D6c U1). Lookup is by the current
+    inverted-index view built by the engine pre-walk). Lookup is by
+    the current
     file's directory — if more than one package key occurs in the
     inner ``{pkg: frozenset[fname]}`` mapping, emit a per-file
     finding.
@@ -371,28 +370,29 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
 
     - **Standard** (2+ declared packages, no packageless):
       ``Multiple packages "X,Y[,Z]" detected within directory "Z".``
-      Package list is comma-no-space, alphabetic-sorted (per the D6c
-      plan's KTD-4 (e) empirical verification — see
-      ``docs/plans/2026-05-18-003-feat-d6c-r8-r8b-cross-file-package-rules-plan.md``).
+      Package list is comma-no-space, alphabetic-sorted (verified
+      empirically; see the project's design notes for the cross-file
+      rule plan).
     - **Empty-mixed-single** (exactly 1 declared + ≥1 packageless):
       ``Package "X" and file with no package detected within directory "Y".``
-      Buf renders the single declared-package value verbatim. Phase 0
-      verified this arm.
+      Buf renders the single declared-package value verbatim. The
+      original Phase 0 fixture verified this arm.
     - **Empty-mixed-multi** (2+ declared + ≥1 packageless): ``Multiple
       packages "X,Y[,Z]" and file with no package detected within
       directory "Y".`` Buf renders ALL declared packages in
       comma-separated alphabetic order — distinct from the
-      single-declared arm. **Discovered at U3 ce:work (2026-05-19)**:
-      U2's R8b implementation only handled the single-declared case
-      because the plan's KTD-4 (b) verification used a 1-declared + 2-
-      packageless Phase 0 fixture. U3's ``no-package-mixed`` parity
-      fixture (2-declared + 1-packageless) surfaced the missing arm per
-      [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]].
+      single-declared arm. **Discovered during follow-up implementation
+      (2026-05-19)**: the initial R8b implementation only handled the
+      single-declared case because the plan's verification used a
+      1-declared + 2-packageless Phase 0 fixture. A subsequent
+      ``no-package-mixed`` parity fixture (2-declared + 1-packageless)
+      surfaced the missing arm — see the empirical-parity-gate
+      latent-helper-bug learning under ``docs/solutions/``.
 
     Directory rendering: proto-root files canonicalize to ``"."``
-    via ``posixpath.dirname(name) or "."`` (KTD-4 (c)). Buf renders
-    proto-root as ``"directory \\".\\""``; protokit's canonicalization
-    matches byte-for-byte.
+    via ``posixpath.dirname(name) or "."``. Buf renders proto-root
+    as ``"directory \\".\\""``; protokit's canonicalization matches
+    byte-for-byte.
 
     **Silent on**:
 
@@ -405,8 +405,8 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
 
     Engine's per-file walk fires this rule once per root file, so a
     2-package directory with 3 files produces 3 findings (one per
-    root file in the directory). Empirically verified per the D6c
-    plan's KTD-9 co-fire fixture.
+    root file in the directory). Empirically verified by the
+    cross-file rule's co-fire fixture.
     """
     if ctx.directory_packages_by_dir is None:
         return
@@ -487,7 +487,7 @@ def check_directory_same_package(ctx: FileLintContext) -> None:
     source_spec="buf:PACKAGE_NO_IMPORT_CYCLE",
 )
 def check_package_no_import_cycle(ctx: FileLintContext) -> None:
-    """Fire on package-level import cycles (D6e U3 / 26th buf BASIC rule).
+    """Fire on package-level import cycles (26th buf BASIC rule).
 
     Consumes the per-file cycle-closing-import map built by
     :meth:`LintEngine._build_import_graph_accumulator` (Step 3.5c
@@ -497,10 +497,11 @@ def check_package_no_import_cycle(ctx: FileLintContext) -> None:
     source file's package. Emits ONE finding per cycle-closing
     edge, pointing at the import statement's line/column when
     ``include_source_info=True`` is in effect (the lint CLI's
-    ``--proto`` mode default per D6b U3a; descriptor-set input
-    without source_info emits at whole-file FileLocation).
+    ``--proto`` mode default; descriptor-set input without
+    source_info emits at whole-file FileLocation).
 
-    **Phase 0 binding** (2026-05-22, see plan PD-6 + PD-14):
+    **Phase 0 binding** (2026-05-22, see the project's design notes
+    for the import-cycle plan):
     file-level import cycles are caught at the COMPILE phase
     (both buf v1.69.0 and protoxy reject them at parse layer).
     This rule's actual operational ground is the rarer PACKAGE-
@@ -515,7 +516,7 @@ def check_package_no_import_cycle(ctx: FileLintContext) -> None:
     statement). Sibling "leaf" files in cyclic packages that
     don't have cycle-closing imports themselves do NOT emit
     findings (this addresses the UX over-emission concern raised
-    at ce:review session 2026-05-22).
+    at a code-review session, 2026-05-22).
 
     **Message format** matches buf v1.69.0:
     ``"Package import cycle: <self_pkg> -> <pkg_2> -> ... ->
@@ -568,13 +569,13 @@ def check_package_no_import_cycle(ctx: FileLintContext) -> None:
 # alphabetic sorting would make this ordering incidental rather than
 # load-bearing; until that refactor lands, do not reorder this tuple.
 #
-# **D6e U3 placement**: ``check_package_no_import_cycle`` slots
-# alphabetically between PACKAGE_DIRECTORY_MATCH and PACKAGE_SAME_DIRECTORY
-# (alphabetical co-fire ordering by buf rule_id places
-# PACKAGE_NO_IMPORT_CYCLE between them). Insertion order in this tuple
-# matches that alphabetical position when co-fire occurs — though Phase 0
+# **package/no-import-cycle placement**: ``check_package_no_import_cycle``
+# slots alphabetically between PACKAGE_DIRECTORY_MATCH and
+# PACKAGE_SAME_DIRECTORY (alphabetical co-fire ordering by buf rule_id
+# places PACKAGE_NO_IMPORT_CYCLE between them). Insertion order in this
+# tuple matches that alphabetical position when co-fire occurs — Phase 0
 # did not surface a multi-rule co-fire fixture so the empirical pinning
-# happens at U3's parity gate, not here.
+# happens at the parity gate, not here.
 RULES: tuple[Callable[..., None], ...] = (
     check_package_defined,
     check_package_directory_match,

@@ -1,8 +1,8 @@
-"""Comment-access helpers for option-aware lint rules (D6b Unit 2 / R6b).
+"""Comment-access helpers for option-aware lint rules.
 
 Bridges :attr:`protokit.schema.compile.CompileResult.source_info_descriptors`
-(shipped in D6b U1 / R6a) to rule bodies that need to read proto-source
-comments — currently the 5 R6 deprecated-replacement rules landing in U3.
+to rule bodies that need to read proto-source comments — currently the
+R6 deprecated-replacement rule family.
 
 Two module-level free functions:
 
@@ -51,8 +51,8 @@ and are a stable contract across protobuf 4 and 5:
 * ``EnumDescriptorProto.value`` = 2
 * ``ServiceDescriptorProto.method`` = 2
 
-See ``docs/plans/2026-05-14-002-feat-d6b-u2-leading-comment-helper-plan.md``
-K-5 for the full recipe table.
+See the leading-comment helper recipe table in the project's design
+notes for the full encoding.
 """
 
 from __future__ import annotations
@@ -219,8 +219,8 @@ def leading_comment(
     return value into wire-format output (lint findings, JSON, SARIF,
     JUnit ``<system-out>``) MUST run it through the existing
     ``protokit.schema.lint._cli_utils._safe_for_stderr`` sanitizer (or
-    equivalent) first. The dual-sanitization model (KTD-9 in D6a) is
-    enforced at finding-construction time by callers, not here.
+    equivalent) first. The dual-sanitization model is enforced at
+    finding-construction time by callers, not here.
 
     **Legitimate ``None`` state.** ``source_info_descriptors`` is ``None``
     whenever the caller did NOT pass ``include_source_info=True`` into

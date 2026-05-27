@@ -1,4 +1,4 @@
-"""``options/deprecated_replacement`` rule pack — D6b Unit 3 R6 family.
+"""``options/deprecated_replacement`` rule pack — R6 family.
 
 Five comment-aware lint rules that flag ``*Options.deprecated = true``
 declarations whose leading comment lacks a recognized replacement
@@ -25,31 +25,33 @@ protokit capability via ``--profile default`` see R6 findings; users
 targeting buf BASIC parity via ``--profile recommended`` do not.
 
 **Severity.** All 5 rules ship at ``error`` severity in the ``default``
-profile (D6f promotion from the D6b initial ``warning``). The post-D6f
-contract: deprecated elements MUST carry a replacement reference in
-their leading comment, or be explicitly disabled via the D6f R9b
-mechanisms (``[severities] "<rule_id>" = "off"`` or ``disabled_rules``
-/ ``--disable-rule``). The promotion was gated by an empirical Phase 0
-hit-rate validation against googleapis (200-file sample, seed=42):
-19 hits across 10 files, 0 noisy classifications. See the D6f U1 plan
-KD-8 + the D6f CHANGELOG entry for the worked migration recipe; the
-heuristic regex is unchanged (precision-first; some legitimate
-replacement phrasings still miss, and R9b is the documented escape
-hatch).
+profile (promoted from the initial ``warning``). The current contract:
+deprecated elements MUST carry a replacement reference in their
+leading comment, or be explicitly disabled via the R9b mechanisms
+(``[severities] "<rule_id>" = "off"`` or ``disabled_rules`` /
+``--disable-rule``). The promotion was gated by an empirical hit-rate
+validation against googleapis (200-file sample, seed=42): 19 hits
+across 10 files, 0 noisy classifications. See the CHANGELOG entry for
+the worked migration recipe; the heuristic regex is unchanged
+(precision-first; some legitimate replacement phrasings still miss,
+and R9b is the documented escape hatch).
 
 **Sanitization.** Each finding's ``params["comment"]`` carries the
 leading comment text (truncated to 500 chars) after running through the
 existing ``_safe_for_stderr`` sanitizer to neutralize newlines, control
-chars, and U+2028/U+2029 separators per the D5 U5 threat model. The
-truncated + sanitized comment then has ``{`` / ``}`` characters doubled
-(``.replace("{", "{{").replace("}", "}}")``) so ``message_template.format(**params)``
-cannot raise ``KeyError`` on adversarial input.
+chars, and U+2028/U+2029 separators per the runtime-warning threat
+model. The truncated + sanitized comment then has ``{`` / ``}``
+characters doubled
+(``.replace("{", "{{").replace("}", "}}")``) so
+``message_template.format(**params)`` cannot raise ``KeyError`` on
+adversarial input.
 
 **Buf parity.** Each of the 5 rules carries ``source_spec=""`` (empty)
-to exclude it from the parity harness — R6 has no buf analogue per the
-[[buf-parity-divergence-documentation-discipline]] learning. The rule
-docstrings document this protokit-original status explicitly so the
-delivery-boundary unit's presence ratchet can assert on the substring.
+to exclude it from the parity harness — R6 has no buf analogue, per
+the buf-parity-divergence documentation discipline (see the matching
+learning under ``docs/solutions/``). The rule docstrings document this
+protokit-original status explicitly so the delivery-boundary unit's
+presence ratchet can assert on the substring.
 
 **Descriptor-set-mode caveat.** When a descriptor set is loaded without
 ``protoc --include_source_info``, the captured ``FileDescriptorProto``
@@ -57,26 +59,25 @@ references will have empty ``source_code_info.location[]`` arrays. The
 :func:`leading_comment` helper returns ``None`` for every lookup,
 :func:`_check_replacement_comment` returns ``False`` for ``None`` input,
 and the rules emit findings for every deprecated element in the schema.
-This over-reporting is documented in the 0.3.0 CHANGELOG entry; the workarounds
-are (a) regenerate the descriptor set with ``--include_source_info``,
-(b) lint via ``--proto`` mode instead, (c) demote the R6 rules via
-``[tool.protokit.lint.severities]`` (e.g.,
+This over-reporting is documented in the 0.3.0 CHANGELOG entry; the
+workarounds are (a) regenerate the descriptor set with
+``--include_source_info``, (b) lint via ``--proto`` mode instead,
+(c) demote the R6 rules via ``[tool.protokit.lint.severities]`` (e.g.,
 ``"options/deprecated-field-must-have-replacement-comment" = "warning"``),
-or (d) disable them per-rule via the D6f R9b mechanisms
-(``[severities] "<rule_id>" = "off"``, ``disabled_rules = [...]``,
-or ``--disable-rule <rule_id>``). A runtime ``LintCompileDiagnostic``
-for the absent-source-info case is deferred to a future delivery per
-the D6b U3 plan's K-9 decision.
+or (d) disable them per-rule via the R9b mechanisms
+(``[severities] "<rule_id>" = "off"``, ``disabled_rules = [...]``, or
+``--disable-rule <rule_id>``). A runtime ``LintCompileDiagnostic`` for
+the absent-source-info case is deferred to a future delivery.
 
 References:
 
-- protokit-lint D6b U3 plan:
-  ``docs/plans/2026-05-15-001-feat-d6b-u3-r6-deprecated-replacement-plan.md``
-- per-unit brainstorm:
-  ``docs/brainstorms/2026-05-15-d6b-u3-r6-deprecated-replacement-family-requirements.md``
-- U2-shipped helpers: ``protokit.schema.lint.rules.options._comments``
+- See the project's design notes for the R6 deprecated-replacement
+  brainstorm and plan.
+- Shared comment helpers:
+  ``protokit.schema.lint.rules.options._comments``
   (``descriptor_path`` + ``leading_comment``)
-- U2-shipped sanitizer: ``protokit.schema.lint._cli_utils._safe_for_stderr``
+- Shared sanitizer:
+  ``protokit.schema.lint._cli_utils._safe_for_stderr``
 """
 
 from __future__ import annotations
