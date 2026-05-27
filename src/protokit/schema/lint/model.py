@@ -1,7 +1,7 @@
-"""Lint-side type system for protokit schema lint (D1 foundation).
+"""Lint-side type system for protokit schema lint.
 
 Defines the dataclasses, enums, and exception types that every
-lint-side delivery (engine, registry, CLI formatters) load-bears on.
+lint-side component (engine, registry, CLI formatters) load-bears on.
 This module is import-safe to load on its own — it has zero runtime
 imports of ``protokit.schema.compile`` (the ``LintCompileDiagnostic``
 reference on ``LintReport.diagnostics`` is a string forward reference,
@@ -19,11 +19,11 @@ Types defined here, in declaration order:
    and JSON output share a single canonical address shape.
 5. ``LintFinding`` — single rule violation. NO ``message`` field;
    formatters render from ``LintRuleSpec.message_template`` at output
-   time (per S3-1C).
+   time.
 6. ``LintReport`` — top-level result bundle (findings + compile
    diagnostics + which profiles/rules ran). ``diagnostics`` is a
    string forward reference to ``LintCompileDiagnostic`` defined in
-   ``protokit.schema.compile`` (Unit 3).
+   ``protokit.schema.compile``.
 7. ``LintProfile`` — bundle of ``rule_ids`` + min severity + per-rule
    severity overrides. ``compose()`` merges multiple profiles using
    most-strict-wins semantics.
@@ -55,8 +55,8 @@ from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
 if TYPE_CHECKING:
-    # ``FileDescriptorProto`` is referenced only by the 5 R6 ElementKind
-    # contexts' ``source_info_descriptors`` annotation (D6b U2 / R6b).
+    # ``FileDescriptorProto`` is referenced only by the 5 ElementKind
+    # contexts' ``source_info_descriptors`` annotation.
     # Gated under TYPE_CHECKING so importing ``model.py`` does NOT pull
     # in ``descriptor_pb2`` and its ~8 transitive protobuf modules — a
     # module-weight argument distinct from the cold-import contract
@@ -134,13 +134,13 @@ class FileLocation:
             (e.g., ``"acme/user.proto"``).
         line: Optional 1-indexed source line. Populated by rules
             that read ``SourceCodeInfo.Location`` to point at a
-            specific source position (e.g., D6e U3
+            specific source position (e.g.,
             ``package/no-import-cycle`` points at the offending
             ``import`` statement). ``None`` for rules that emit at
             whole-file scope or when ``include_source_info=False``
-            at compile time. Open extension per
-            [[closed-literal-discriminator-bump-trigger-2026-05-17]]
-            (no ``_LINT_JSON_SCHEMA_VERSION`` bump).
+            at compile time. Open extension under the closed-literal
+            discriminator-bump trigger pattern (no
+            ``_LINT_JSON_SCHEMA_VERSION`` bump).
         column: Optional 1-indexed source column. Paired with
             ``line``; both are present or both are None.
     """
@@ -154,7 +154,7 @@ class FileLocation:
 
         Examples:
             ``acme/user.proto`` (whole-file finding)
-            ``acme/user.proto:3:1`` (D6e U3 import-statement scope)
+            ``acme/user.proto:3:1`` (import-statement scope)
         """
         if self.line is not None and self.column is not None:
             return f"{self.file}:{self.line}:{self.column}"
@@ -298,7 +298,7 @@ class OneofLocation:
 # accept "any location" should use this alias; pattern-matching on
 # specific variants is encouraged at consumer sites.
 #
-# Exhaustiveness contract (load-bearing for D2+):
+# Exhaustiveness contract (load-bearing):
 #
 # Adding a 9th variant in a future delivery silently breaks any
 # ``match`` statement over ``LintLocation`` that lacks a wildcard arm.
@@ -327,7 +327,7 @@ LintLocation = (
 class LintFinding:
     """A single rule violation produced by a lint pass.
 
-    Carries no human-readable ``message`` field by design (per S3-1C):
+    Carries no human-readable ``message`` field by design:
     formatters render the message at output time from
     ``LintRuleSpec.message_template`` interpolated with ``params``.
     Keeping templates centralized in the rule spec means a CLI tweak
@@ -392,7 +392,7 @@ class LintRuntimeWarning:
        profile {name} but not loaded into the engine``. Carries
        ``rule_id`` populated; ``exception_type`` / ``descriptor_path``
        ``None``.
-    3. ``"severities_unloaded_rule"`` (CLI-synthesized only, D6b U5)
+    3. ``"severities_unloaded_rule"`` (CLI-synthesized only)
        — a key in ``[tool.protokit.lint.severities]`` is not in the
        composed profile's ``rule_ids``, so the severity override has
        no effect. Message: ``rule {rid} is named in
@@ -401,12 +401,12 @@ class LintRuntimeWarning:
        ``rule_id`` populated; ``exception_type`` / ``descriptor_path``
        ``None``.
 
-       **U5 split note.** Categories 2 and 3 were a single
-       ``"unloaded_rule"`` value through D6a (per U9 KTD-2; semantic
-       conflation accepted with message-substring discrimination).
-       D6b U5 split them so programmatic consumers can switch on
-       ``category`` directly instead of matching message substrings.
-       The schema_version 0.2 → 0.3 bump (see
+       **Split note.** Categories 2 and 3 were a single
+       ``"unloaded_rule"`` value through 0.2.0 (semantic conflation
+       accepted with message-substring discrimination). 0.3.0 split
+       them so programmatic consumers can switch on ``category``
+       directly instead of matching message substrings. The
+       schema_version 0.2 → 0.3 bump (see
        ``_LINT_JSON_SCHEMA_VERSION`` in
        ``protokit.formatters._builtin_lint``) is the consumer-facing
        wire-format signal that switch statements need re-checking.
@@ -414,21 +414,21 @@ class LintRuntimeWarning:
        ``"[tool.protokit.lint.severities]"`` substring on
        ``unloaded_rule`` warnings should now switch on
        ``category == "severities_unloaded_rule"`` directly.
-    4. ``"min_severity_relaxed"`` (D5 U4) — the CLI-side relaxation
+    4. ``"min_severity_relaxed"`` — the CLI-side relaxation
        notice fired when the resolved ``min_severity`` is more
        lenient than the composed profile's intrinsic floor. The
-       message field carries the R20 source-attributed text
+       message field carries the source-attributed text
        (CLI-source / pyproject-source / both branches). Emitted
        CLI-side, NOT by the engine. ``rule_id`` is ``None`` because
        the warning is not scoped to a single rule.
-    5. ``"all_files_excluded"`` (D5 U3) — the CLI-side notice fired
+    5. ``"all_files_excluded"`` — the CLI-side notice fired
        when ``--exclude`` / pyproject ``exclude`` filters drop every
        file from the descriptor pool before ``engine.run``. The
        message field describes how many files were excluded. Emitted
        CLI-side, NOT by the engine; engine is short-circuited.
        ``rule_id`` is ``None`` because the warning is not scoped to
        a single rule.
-    6. ``"custom_annotation_extension_unresolved"`` (D6d U1, engine-
+    6. ``"custom_annotation_extension_unresolved"`` (engine-
        emitted) — a synthetic ``custom/<suffix>`` rule's configured
        ``option`` is not a registered extension in the compile pool
        (``pool.FindExtensionByName(option)`` raises ``KeyError``). The
@@ -439,7 +439,7 @@ class LintRuntimeWarning:
        most once per (rule_id, file) pair to avoid log floods on
        multi-element walks. ``exception_type`` / ``descriptor_path``
        ``None``.
-    7. ``"extension_unresolved"`` (D6d U2, engine-emitted) — a
+    7. ``"extension_unresolved"`` (engine-emitted) — a
        built-in option-aware rule (e.g.,
        ``options/field-behavior-consistent``) needs a specific
        protobuf extension that is not registered in the compile pool
@@ -459,35 +459,35 @@ class LintRuntimeWarning:
        set is missing the well-known proto a built-in rule depends
        on. Consumers can discriminate via the ``category`` field
        without text parsing.
-    8. ``"contradictory_disable_config"`` (D6f U2, CLI-emitted via
+    8. ``"contradictory_disable_config"`` (CLI-emitted via
        ``ResolvedLintConfig.from_dict``) — a rule_id appears in BOTH
        a disable directive AND an enable directive across the R9b
        precedence table, so the polarity-first / tier-second
        resolution silently overrode one of the two. Categories of
-       contradiction (per the R8 resolution table): (a) pyproject
-       ``disabled_rules`` ⊃ R AND ``enabled_rules`` ⊃ R; (b) CLI
-       ``--disable-rule R`` AND ``--enable-rule R``; (c) CLI
-       ``--enable-rule R`` AND pyproject ``disabled_rules`` ⊃ R
-       (cross-tier disable wins); (d) pyproject ``disabled_rules``
-       ⊃ R AND ``[severities] R = <non-off>`` (severity override is
-       moot under polarity-first); (e) ``[severities] R = "off"``
-       AND ``enabled_rules`` ⊃ R. The idempotent case
+       contradiction: (a) pyproject ``disabled_rules`` ⊃ R AND
+       ``enabled_rules`` ⊃ R; (b) CLI ``--disable-rule R`` AND
+       ``--enable-rule R``; (c) CLI ``--enable-rule R`` AND
+       pyproject ``disabled_rules`` ⊃ R (cross-tier disable wins);
+       (d) pyproject ``disabled_rules`` ⊃ R AND
+       ``[severities] R = <non-off>`` (severity override is moot
+       under polarity-first); (e) ``[severities] R = "off"`` AND
+       ``enabled_rules`` ⊃ R. The idempotent case
        (``[severities] R = "off"`` AND ``disabled_rules`` ⊃ R —
        both are disables) does NOT warn. Carries ``rule_id``
        populated; the message names the involved directives.
-    9. ``"unknown_rule_id"`` (D6f U2, CLI-emitted) — a rule_id named
+    9. ``"unknown_rule_id"`` (CLI-emitted) — a rule_id named
        in pyproject ``disabled_rules`` / ``enabled_rules`` or CLI
        ``--disable-rule`` / ``--enable-rule`` does not correspond to
        any loaded rule in the engine's ``_loaded_specs`` registry
-       after rule-pack loading. Lenient-with-warning per Req-R8c:
-       the unknown id is dropped from the effective disabled /
-       enabled set and a warning fires so the user sees the typo or
-       removed-rule reference without their lint pass exiting 2.
+       after rule-pack loading. Lenient-with-warning: the unknown
+       id is dropped from the effective disabled / enabled set and
+       a warning fires so the user sees the typo or removed-rule
+       reference without their lint pass exiting 2.
        Carries ``rule_id`` populated with the normalized form
-       (``.strip().lower()`` per KD-6) so the user sees what was
-       actually compared against the registry.
+       (``.strip().lower()``) so the user sees what was actually
+       compared against the registry.
 
-    **BREAKING (D5 U3)**: ``rule_id`` was widened from ``str`` to
+    **BREAKING (0.5.0)**: ``rule_id`` was widened from ``str`` to
     ``str | None``. The rule-scoped categories
     (``rule_exception``, ``unloaded_rule``, ``severities_unloaded_rule``,
     ``custom_annotation_extension_unresolved``, ``extension_unresolved``,
@@ -498,8 +498,8 @@ class LintRuntimeWarning:
     populate ``None``. Consumers iterating ``w.rule_id`` (e.g.,
     ``w.rule_id.upper()``) on the non-rule-scoped categories will
     raise ``AttributeError`` — migrate to ``str | None``-aware
-    narrowing per the mypy-strict pattern below. See the CHANGELOG
-    D5 entry for the BREAKING marker and migration recipes.
+    narrowing per the mypy-strict pattern below. See the 0.5.0
+    CHANGELOG entry for the BREAKING marker and migration recipes.
 
     **Field-population per category** (enforced by tests, not by the
     type system):
@@ -516,7 +516,7 @@ class LintRuntimeWarning:
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"severities_unloaded_rule"`` (CLI-synthesized, D6b U5):
+    ``"severities_unloaded_rule"`` (CLI-synthesized):
         - ``rule_id``: populated (``str``) — the bad key from
           ``[tool.protokit.lint.severities]``
         - ``message``: human-readable
@@ -525,19 +525,19 @@ class LintRuntimeWarning:
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"min_severity_relaxed"`` (CLI-emitted, D5 U4):
+    ``"min_severity_relaxed"`` (CLI-emitted):
         - ``rule_id``: ``None`` (not rule-scoped)
-        - ``message``: R20-attributed text (CLI/pyproject/both branches)
+        - ``message``: source-attributed text (CLI/pyproject/both branches)
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"all_files_excluded"`` (CLI-emitted, D5 U3):
+    ``"all_files_excluded"`` (CLI-emitted):
         - ``rule_id``: ``None`` (not rule-scoped)
         - ``message``: human-readable "N files excluded by patterns"
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"custom_annotation_extension_unresolved"`` (engine-emitted, D6d U1):
+    ``"custom_annotation_extension_unresolved"`` (engine-emitted):
         - ``rule_id``: populated (``str``) — the synthetic
           ``custom/<suffix>`` rule whose configured ``option`` could
           not be resolved
@@ -546,7 +546,7 @@ class LintRuntimeWarning:
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"extension_unresolved"`` (engine-emitted, D6d U2):
+    ``"extension_unresolved"`` (engine-emitted):
         - ``rule_id``: populated (``str``) — the built-in rule_id
           whose configured ``option`` could not be resolved
         - ``message``: human-readable "rule <rid> skipped on file
@@ -556,17 +556,17 @@ class LintRuntimeWarning:
         - ``descriptor_path``: ``None``
 
     ``"contradictory_disable_config"`` (CLI-emitted via
-    ``from_dict``, D6f U2):
+    ``from_dict``):
         - ``rule_id``: populated (``str``) — the contradicted
-          rule_id (normalized to lowercase per KD-6)
+          rule_id (normalized to lowercase)
         - ``message``: human-readable text naming both directives
           (e.g., "rule <rid> appears in both
           [tool.protokit.lint] disabled_rules and enabled_rules;
-          disable wins per R8 polarity-first precedence")
+          disable wins per polarity-first precedence")
         - ``exception_type``: ``None``
         - ``descriptor_path``: ``None``
 
-    ``"unknown_rule_id"`` (CLI-emitted, D6f U2):
+    ``"unknown_rule_id"`` (CLI-emitted):
         - ``rule_id``: populated (``str``) — the unknown rule_id
           named in disabled_rules / enabled_rules /
           --disable-rule / --enable-rule (post-normalization)
@@ -576,7 +576,7 @@ class LintRuntimeWarning:
         - ``descriptor_path``: ``None``
 
     For ``category="rule_exception"``, ``descriptor_path`` mirrors
-    D1's ``LintLocation.__str__`` shapes per ``ElementKind``:
+    the ``LintLocation.__str__`` shapes per ``ElementKind``:
 
     +--------------+---------------------------------------+
     | ElementKind  | ``descriptor_path`` format            |
@@ -593,19 +593,16 @@ class LintRuntimeWarning:
 
     **mypy-strict narrowing pattern.** mypy ``--strict`` does not
     narrow ``Optional`` fields by Literal discriminator within a
-    single dataclass. Downstream consumers (D4 formatters) match D1's
+    single dataclass. Downstream formatter consumers match the
     ``LintCompileDiagnostic`` precedent: branch on ``category``,
     then ``assert w.descriptor_path is not None`` (or use ``cast``)
-    inside the ``"rule_exception"`` branch before reading. After D5
-    U3 the same pattern extends to ``rule_id``: branch on
-    ``category``, then ``assert w.rule_id is not None`` inside any
-    of the three rule-scoped branches (``"rule_exception"`` /
-    ``"unloaded_rule"`` / ``"severities_unloaded_rule"``). This is
-    the same pattern ``LintCompileDiagnostic`` requires for its own
-    Optional fields (``command``, ``exit_code``, ``stderr``,
-    ``exception_type``); D2 introduced the convention, D5 U3
-    extended it to ``rule_id``, D6b U5 added
-    ``severities_unloaded_rule`` to the rule-scoped set.
+    inside the ``"rule_exception"`` branch before reading. The same
+    pattern extends to ``rule_id``: branch on ``category``, then
+    ``assert w.rule_id is not None`` inside any of the three
+    rule-scoped branches (``"rule_exception"`` / ``"unloaded_rule"``
+    / ``"severities_unloaded_rule"``). This is the same pattern
+    ``LintCompileDiagnostic`` requires for its own Optional fields
+    (``command``, ``exit_code``, ``stderr``, ``exception_type``).
 
     Attributes:
         category: Discriminator for the nine event shapes. Four
@@ -694,33 +691,33 @@ class LintReport:
         runtime_warnings: Tuple of engine- AND CLI-stage warnings
             raised during the run. Seven categories share the type:
             ``rule_exception``, ``unloaded_rule``,
-            ``custom_annotation_extension_unresolved`` (D6d U1), and
-            ``extension_unresolved`` (D6d U2) (all engine-emitted)
-            plus ``severities_unloaded_rule`` (D6b U5, rule-scoped
-            CLI-emitted), ``min_severity_relaxed`` (D5 U4), and
-            ``all_files_excluded`` (D5 U3) (the last two are
-            non-rule-scoped CLI-emitted with ``rule_id=None``). See
-            :class:`LintRuntimeWarning` for the full per-category
-            field-population contract. Defaults to ``()``.
+            ``custom_annotation_extension_unresolved``, and
+            ``extension_unresolved`` (all engine-emitted) plus
+            ``severities_unloaded_rule`` (rule-scoped CLI-emitted),
+            ``min_severity_relaxed``, and ``all_files_excluded``
+            (the last two are non-rule-scoped CLI-emitted with
+            ``rule_id=None``). See :class:`LintRuntimeWarning` for
+            the full per-category field-population contract.
+            Defaults to ``()``.
         filtered_count: Count of findings dropped at emit time
             because their effective severity ranked below the active
-            profile's ``min_severity``. Lets D3+ tooling render
+            profile's ``min_severity``. Lets downstream tooling render
             ``--statistics`` / ``--max-warnings`` flows without
             re-walking at a lower threshold. Defaults to ``0``.
         specs: Snapshot of ``rule_id → LintRuleSpec`` for every rule
             loaded into the engine at run time. Lets formatters
             render messages from ``LintRuleSpec.message_template``
             without re-walking the engine's loaded-rule registry —
-            critical for D3's ``human`` formatter and D4's machine
-            formatters. Engine passes its ``self._loaded_specs`` map;
-            ``__post_init__`` snapshots via ``dict(...)`` then wraps
-            the snapshot in ``types.MappingProxyType`` so the result
-            is **immutable post-construction** — `report.specs[k] = v`
+            critical for human + machine formatters. Engine passes
+            its ``self._loaded_specs`` map; ``__post_init__``
+            snapshots via ``dict(...)`` then wraps the snapshot in
+            ``types.MappingProxyType`` so the result is
+            **immutable post-construction** — `report.specs[k] = v`
             raises ``TypeError``. This matches the immutability
             guarantee of the sibling tuple fields (``findings``,
             ``runtime_warnings``) so all consumers of the frozen
             ``LintReport`` see consistent semantics. Defaults to an
-            empty mapping for backward compatibility with D2 callers
+            empty mapping for backward compatibility with callers
             that constructed ``LintReport`` positionally.
 
             **Note**: this is the loaded-rule registry (every rule
@@ -889,15 +886,14 @@ class LintProfile:
         This makes ``LintRuleSpec.profiles`` load-bearing for end
         users: rule pack authors annotate profile membership at the
         rule (``@lint_rule(..., profiles=("default",))``), and
-        callers derive the profile via this classmethod. D5's
-        ``[tool.protokit.lint] profile = "default"`` resolves
-        trivially via this method.
+        callers derive the profile via this classmethod. The
+        ``[tool.protokit.lint] profile = "default"`` pyproject
+        directive resolves trivially via this method.
 
         Returns an empty-rule_ids profile when the module has no
         ``RULES`` attribute, when ``RULES`` is empty, or when no rule
         in the pack declares ``profile_name`` — matching the explicit
-        empty-rule_ids contract (the engine then runs zero rules per
-        the locked R12).
+        empty-rule_ids contract (the engine then runs zero rules).
 
         Args:
             module: An imported module exposing ``RULES`` (a tuple of
@@ -1094,16 +1090,16 @@ class _LintContextEmitMixin:
                 ``message_template``. Defaults to an empty dict if
                 ``None``.
             location: Optional override of the default
-                context-derived location. Used by D6e U3's
+                context-derived location. Used by
                 ``package/no-import-cycle`` to emit at the
                 offending ``import`` statement's
                 ``FileLocation(file, line, column)`` rather than
                 the default whole-file
                 ``FileLocation(file=ctx.file.name)``. When
                 ``None`` (the default), falls back to
-                ``self.location()`` — preserves the
-                pre-D6e behavior for every rule that does not
-                pass this kwarg.
+                ``self.location()`` — preserves the original
+                behavior for every rule that does not pass this
+                kwarg.
         """
         finding = LintFinding(
             rule_id=self._rule_id,  # type: ignore[attr-defined]
@@ -1135,8 +1131,8 @@ class _LintContextEmitMixin:
 class CycleEdge:
     """One cycle-closing ``import`` edge in a package-import cycle.
 
-    Returned by ``LintEngine._build_import_graph_accumulator`` (D6e
-    U3 PD-8 revision) as the per-file payload of
+    Returned by ``LintEngine._build_import_graph_accumulator``
+    as the per-file payload of
     ``FileLintContext.import_cycles``. Each edge describes ONE
     ``import "..."`` statement that closes a package-level cycle:
     the source file (the FileLintContext's own file) imports
@@ -1187,42 +1183,44 @@ class FileLintContext(_LintContextEmitMixin):
         _effective_severity: Engine-injected resolver that maps a
             ``violation_kind`` to the effective ``LintSeverity`` for
             this rule under the active profile.
-        package_options: Engine-injected accumulator built by Step 3.5
-            pre-walk (D6b U4a / R7). Shape:
+        package_options: Engine-injected accumulator built by the
+            Step 3.5 pre-walk for the PACKAGE_SAME_* family. Shape:
             ``Mapping[package, Mapping[option_attr, Mapping[filename, str | None]]]``.
             All 3 nesting levels wrapped in ``MappingProxyType`` so
             mutation at any depth raises ``TypeError``. Defaults to
             ``None`` so test helpers can construct ``FileLintContext``
             without threading the accumulator through every call site;
-            R7 rules early-return on ``None``. INTERNAL field; consumers
-            are R7 rules (U4b), not external callers — subject to
-            change pre-1.0.
+            PACKAGE_SAME_* rules early-return on ``None``. INTERNAL
+            field; consumers are the PACKAGE_SAME_* rules, not
+            external callers — subject to change pre-1.0.
         directory_packages: Engine-injected per-package view of the
-            Step 3.5b cross-file pre-walk accumulator (D6c U1 / R8).
-            Shape: ``Mapping[package, Mapping[filename, dirname]]``.
+            Step 3.5b cross-file pre-walk accumulator for
+            ``package/same-directory``. Shape:
+            ``Mapping[package, Mapping[filename, dirname]]``.
             Both nesting levels wrapped in ``MappingProxyType``.
             Defaults to ``None`` so test helpers can construct
             ``FileLintContext`` without threading the accumulator;
-            R8 rules early-return on ``None``. R8 (``package/same-
-            directory``) consumes this view via package-name lookup.
+            consumer rules early-return on ``None``.
+            ``package/same-directory`` consumes this view via
+            package-name lookup.
             **Diverges from ``package_options`` in iteration scope**:
-            iterates ``root_files`` (NOT ``pool_file_names``) per
-            KTD-4 (d) — buf v1.69.0 does not cross-fire across
-            module boundaries. INTERNAL field; consumers are R8 +
-            R8b (D6c U2), not external callers — subject to change
-            pre-1.0.
+            iterates ``root_files`` (NOT ``pool_file_names``)
+            because buf v1.69.0 does not cross-fire across module
+            boundaries. INTERNAL field; consumers are
+            ``package/same-directory`` + ``package/directory-same-package``,
+            not external callers — subject to change pre-1.0.
         directory_packages_by_dir: Engine-injected per-directory
-            inverted-index view of the Step 3.5b accumulator (D6c U1
-            / R8b). Shape:
+            inverted-index view of the Step 3.5b accumulator for
+            ``package/directory-same-package``. Shape:
             ``Mapping[directory, Mapping[package, frozenset[filename]]]``.
             Both nesting levels wrapped in ``MappingProxyType``;
-            innermost fname collections wrapped in ``frozenset``. R8b
-            (``package/directory-same-package``) consumes this view
+            innermost fname collections wrapped in ``frozenset``.
+            ``package/directory-same-package`` consumes this view
             via directory-name lookup, achieving O(1) per-file access
             instead of O(N) scan over ``directory_packages`` (the
             per-package view would produce O(N²) total across N
-            files; the inverted index resolves the ce:review ADV-1
-            finding). Defaults to ``None`` mirroring
+            files; the inverted index resolves the originally-noted
+            quadratic-scan concern). Defaults to ``None`` mirroring
             ``directory_packages``; populated together with the
             per-package view in the same pre-walk pass. INTERNAL
             field.
@@ -1234,43 +1232,43 @@ class FileLintContext(_LintContextEmitMixin):
     _emit_fn: EmitFn
     _rule_id: str
     _effective_severity: Callable[[str], LintSeverity]
-    # ce:review follow-up (Finding #4): moved to the end of the
-    # engine-injected group + default `= None`. Originally positioned
-    # before the engine-injected triple per U2 convention ("required
-    # position"), but the no-default form forced every test helper that
-    # constructs FileLintContext directly to thread `package_options=None`
-    # explicitly — a U4b test-author footgun. With the default, the field
-    # behaves like a sibling engine-injected optional (parallel to the
-    # `source_info_descriptors` pattern on peer context types) and direct
-    # test construction stays terse. The engine continues to pass it
-    # explicitly via kwarg in `_build_file_ctx`.
+    # Positioned at the end of the engine-injected group with a
+    # default of ``= None`` so test helpers that construct
+    # FileLintContext directly do not need to thread
+    # `package_options=None` explicitly — the no-default form was a
+    # test-author footgun. The field behaves like a sibling
+    # engine-injected optional (parallel to the
+    # `source_info_descriptors` pattern on peer context types) and
+    # direct test construction stays terse. The engine continues to
+    # pass it explicitly via kwarg in `_build_file_ctx`.
     package_options: Mapping[
         str, Mapping[str, Mapping[str, str | None]]
     ] | None = None
-    # D6c U1 / R8 + R8b cross-file accumulator. Same sibling-pattern
+    # Cross-file accumulator for the package/same-directory +
+    # package/directory-same-package rules. Same sibling-pattern
     # rationale as `package_options` (default `= None` so test helpers
     # construct without threading the kwarg); engine threads explicitly
-    # via `_build_file_ctx`. Iteration scope = root_files (per KTD-4 (d)).
+    # via `_build_file_ctx`. Iteration scope = root_files (because buf
+    # does not cross-fire across module boundaries).
     # Two views populated together by `_build_directory_package_accumulator`:
-    # per-package (R8) + per-directory inverted index (R8b). The inverted
+    # per-package + per-directory inverted index. The inverted
     # index is essential to avoid O(N²) per-file scan that the per-package
-    # view alone would produce (ce:review ADV-1 resolution).
+    # view alone would produce.
     directory_packages: Mapping[str, Mapping[str, str]] | None = None
     directory_packages_by_dir: (
         Mapping[str, Mapping[str, frozenset[str]]] | None
     ) = None
-    # D6e U3 / PACKAGE_NO_IMPORT_CYCLE accumulator. Same sibling-
-    # pattern rationale as directory_packages (default `= None`).
+    # PACKAGE_NO_IMPORT_CYCLE accumulator. Same sibling-pattern
+    # rationale as directory_packages (default `= None`).
     # Maps each root file name to the tuple of cycle-closing
     # CycleEdge entries for that file. A root file with no cycle-
     # closing imports is absent from the mapping; an empty pool or
     # no SCCs of size >= 2 produces an empty (but non-None)
-    # mapping. Per the U3 Phase 0 revision (PD-6 + PD-8), this
-    # replaces the originally-planned per-root-file fan-out with
-    # per-import-edge precision matching buf v1.69.0's behavior.
-    # Single-view (the only consumer is check_package_no_import_-
-    # cycle); does not need a dual-view per
-    # [[dual-view-prewalk-accumulator-cross-file-rule-dispatch-2026-05-19]].
+    # mapping. Replaces the originally-considered per-root-file
+    # fan-out with per-import-edge precision matching buf v1.69.0's
+    # behavior. Single-view (the only consumer is
+    # check_package_no_import_cycle); does not need a dual-view
+    # accumulator since cross-file dispatch is single-keyed.
     import_cycles: Mapping[str, tuple[CycleEdge, ...]] | None = None
 
     def location(self) -> LintLocation:
@@ -1325,12 +1323,12 @@ class MethodLintContext(_LintContextEmitMixin):
             ``source_code_info``. Populated when the caller passed
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
-            otherwise ``None``. Comment-aware lint rules (the D6b U3
-            R6 deprecated-replacement family) will read this through
+            otherwise ``None``. Comment-aware lint rules (the
+            deprecated-replacement family) will read this through
             :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
-            accepted false-positive tradeoff (parent plan U2 K-6).
+            accepted false-positive tradeoff.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1370,12 +1368,12 @@ class EnumLintContext(_LintContextEmitMixin):
             ``source_code_info``. Populated when the caller passed
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
-            otherwise ``None``. Comment-aware lint rules (the D6b U3
-            R6 deprecated-replacement family) will read this through
+            otherwise ``None``. Comment-aware lint rules (the
+            deprecated-replacement family) will read this through
             :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
-            accepted false-positive tradeoff (parent plan U2 K-6).
+            accepted false-positive tradeoff.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1414,12 +1412,12 @@ class EnumValueLintContext(_LintContextEmitMixin):
             ``source_code_info``. Populated when the caller passed
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
-            otherwise ``None``. Comment-aware lint rules (the D6b U3
-            R6 deprecated-replacement family) will read this through
+            otherwise ``None``. Comment-aware lint rules (the
+            deprecated-replacement family) will read this through
             :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
-            accepted false-positive tradeoff (parent plan U2 K-6).
+            accepted false-positive tradeoff.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1459,12 +1457,12 @@ class MessageLintContext(_LintContextEmitMixin):
             ``source_code_info``. Populated when the caller passed
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
-            otherwise ``None``. Comment-aware lint rules (the D6b U3
-            R6 deprecated-replacement family) will read this through
+            otherwise ``None``. Comment-aware lint rules (the
+            deprecated-replacement family) will read this through
             :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
-            accepted false-positive tradeoff (parent plan U2 K-6).
+            accepted false-positive tradeoff.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1503,12 +1501,12 @@ class FieldLintContext(_LintContextEmitMixin):
             ``source_code_info``. Populated when the caller passed
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
-            otherwise ``None``. Comment-aware lint rules (the D6b U3
-            R6 deprecated-replacement family) will read this through
+            otherwise ``None``. Comment-aware lint rules (the
+            deprecated-replacement family) will read this through
             :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
-            accepted false-positive tradeoff (parent plan U2 K-6).
+            accepted false-positive tradeoff.
         _emit_fn: Engine-injected emit closure.
         _rule_id: Engine-injected rule_id.
         _effective_severity: Engine-injected severity resolver.
@@ -1623,11 +1621,11 @@ class LintRuleError(Exception):
     intentionally omitted — it is a subclass of ``LookupError``,
     which is already in the tuple, so listing it would be dead
     coverage. ``DecodeError`` (``google.protobuf.message.DecodeError``)
-    was added at D6d U2 ce:review to cover the dynamic-pool re-parse
-    pattern used by option-aware rules (``MergeFromString`` on
-    serialized options bytes). Other ``google.protobuf.message.Error``
-    subclasses are not listed because no other subclass is reachable
-    via the current rule-callable surface. (AC-06.)
+    covers the dynamic-pool re-parse pattern used by option-aware
+    rules (``MergeFromString`` on serialized options bytes). Other
+    ``google.protobuf.message.Error`` subclasses are not listed
+    because no other subclass is reachable via the current
+    rule-callable surface. (AC-06.)
 
     **Escape hatch for "abort the run".** Rule authors who want to
     halt the entire lint pass (e.g., catastrophic schema corruption
@@ -1638,9 +1636,8 @@ class LintRuleError(Exception):
     ``LintEngine.run`` and surfacing to the caller. Note that
     ``sys.exit()`` (and ``pytest.exit()``, which subclasses
     ``SystemExit``) are caught by the engine and converted to
-    runtime warnings — a deliberate divergence from D1's R16 to
-    prevent rules from silently terminating the calling process. See
-    the D2 plan's Key Technical Decisions for the full rationale.
+    runtime warnings — a deliberate divergence to prevent rules
+    from silently terminating the calling process.
 
     No fields beyond ``Exception``'s; the engine reads
     ``str(exc)`` into ``LintRuntimeWarning.message`` and

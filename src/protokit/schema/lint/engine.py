@@ -20,35 +20,32 @@ cross-pack collision — another behaviour divergence; lint chose to
 surface duplicates loudly). ``run(compile_result, *, profile)``
 walks ``compile_result.root_files`` in sorted order, dispatches
 rules per ``ElementKind`` with a narrow exception-catch tuple
-(including ``SystemExit`` per the D2-specific R16 amendment), and
+(including ``SystemExit`` per the lint-engine-specific amendment), and
 returns a ``LintReport`` with findings, runtime warnings, and a
 filtered-count for the min-severity gate.
 
 Walk order is deterministic by construction: per-level
 lexicographic sort by ``full_name`` (with file-`.name` tie-break
 for ambiguous packages). Rule registration order within an
-``ElementKind`` is preserved as the secondary order. The walk
-order, severity-resolution rules, and failure-containment posture
-are documented in ``docs/plans/2026-05-02-001-feat-protokit-lint-d2-engine-plan.md``.
+``ElementKind`` is preserved as the secondary order.
 
 **Pre-walk accumulators (cross-file rule infrastructure).** Before
 Step 4's per-file walk, ``run()`` invokes two sibling pre-walk
 accumulators that capture per-file state for cross-file rule
 consumers. They differ DELIBERATELY in iteration scope:
 
-- ``_build_package_options_accumulator`` (D6b U4a / R7
-  PACKAGE_SAME_* family) — iterates ``pool_file_names`` (full pool
-  including transitive imports) and captures FileOptions values
-  per-(package, option_attr, filename). R7's per-option
-  cross-language-namespace conflicts intentionally span the
-  import boundary.
-- ``_build_directory_package_accumulator`` (D6c U1 / R8 + R8b
-  package/same-directory + package/directory-same-package) —
-  iterates ``root_files`` (per-invocation scope only) and captures
-  per-(package, filename, dirname). R8/R8b's per-directory
+- ``_build_package_options_accumulator`` (PACKAGE_SAME_* family)
+  — iterates ``pool_file_names`` (full pool including transitive
+  imports) and captures FileOptions values per-(package,
+  option_attr, filename). The per-option cross-language-namespace
+  conflicts intentionally span the import boundary.
+- ``_build_directory_package_accumulator``
+  (``package/same-directory`` + ``package/directory-same-package``)
+  — iterates ``root_files`` (per-invocation scope only) and
+  captures per-(package, filename, dirname). The per-directory
   file-organization rule is intentionally local to the user-owned
   files (buf v1.69.0 does not cross-fire across module boundaries
-  per the D6c KTD-4 (d) empirical correction).
+  per the empirical correction recorded in tests).
 
 Both accumulators snapshot into instance attributes
 (``_current_*``) at Step 3.5 / 3.5b and clear in the ``finally``
@@ -104,7 +101,7 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# D6e U3 / PACKAGE_NO_IMPORT_CYCLE helpers
+# PACKAGE_NO_IMPORT_CYCLE helpers
 # ---------------------------------------------------------------------------
 
 
@@ -113,7 +110,7 @@ def _tarjan_scc(
 ) -> list[list[str]]:
     """Tarjan strongly-connected-components on a directed graph.
 
-    Hand-implemented per D6e U3 PD-5 — graphlib's
+    Hand-implemented because graphlib's
     ``TopologicalSorter`` detects DAG-ness but does not enumerate
     SCCs. Returns a list of SCCs in reverse-topological order;
     each SCC is a list of node identifiers (package names). SCCs
@@ -223,8 +220,8 @@ def _import_source_position(
     sci = fdp.source_code_info
     if not sci or not sci.location:
         return (None, None)
-    # ce:review U3 PERF-2 (2026-05-22): avoid list() allocation per
-    # iteration. Each SourceCodeInfo.Location's path + span are
+    # Avoid list() allocation per iteration: each
+    # SourceCodeInfo.Location's path + span are
     # protobuf RepeatedScalarFieldContainer instances supporting
     # direct indexed access; list() materializes a fresh Python list
     # only to throw it away for non-matching entries. For a 200-line
@@ -267,17 +264,15 @@ def _walk_cycle_forward(
     shouldn't happen if the caller verified SCC membership),
     return a single-element tuple containing source_pkg.
 
-    **Iterative implementation** (ce:review U3 KP-3/COR-2/ADV-001,
-    2026-05-22): mirrors the iterative posture of
+    **Iterative implementation**: mirrors the iterative posture of
     :func:`_tarjan_scc` for the same recursion-limit safety on
-    pathologically large SCCs. The prior recursive form raised
+    pathologically large SCCs. A recursive form would raise
     ``RecursionError`` for SCCs ≥ ~999 packages (empirically
-    confirmed at ce:review session); RecursionError is a subclass
-    of ``RuntimeError`` and is not in
-    :data:`_RULE_EXCEPTION_TUPLE`, so it would propagate out of
-    :func:`_build_import_graph_accumulator` and crash
-    :meth:`LintEngine.run`. Iterative DFS uses an explicit work
-    stack to bound memory cost to the same O(SCC size) as the
+    confirmed); ``RecursionError`` is a subclass of ``RuntimeError``
+    and is not in :data:`_RULE_EXCEPTION_TUPLE`, so it would
+    propagate out of :func:`_build_import_graph_accumulator` and
+    crash :meth:`LintEngine.run`. Iterative DFS uses an explicit
+    work stack to bound memory cost to the same O(SCC size) as the
     recursive form without consuming Python frames.
     """
     # Iterative DFS within the SCC. Each work-stack frame is
@@ -324,21 +319,19 @@ def _walk_cycle_forward(
 
 
 # Engine-stage exception tuple. Catching ``SystemExit`` is a deliberate
-# divergence from D1's R16 wording: ``LintEngine.run`` is a library call
-# that returns a ``LintReport``; a rule calling ``sys.exit(0)`` must NOT
-# silently terminate the caller's process and produce zero findings. See
-# the D2 plan's Key Technical Decisions for the standalone rationale
-# (independent of the formatter SystemExit P0 learning, which limited
-# its fix to formatters). Rule authors who legitimately want to abort the
-# run raise an Exception subclass NOT in this tuple — ``RuntimeError`` is
-# the canonical choice; see ``LintRuleError`` docstring.
+# divergence: ``LintEngine.run`` is a library call that returns a
+# ``LintReport``; a rule calling ``sys.exit(0)`` must NOT silently
+# terminate the caller's process and produce zero findings. Rule authors
+# who legitimately want to abort the run raise an Exception subclass NOT
+# in this tuple — ``RuntimeError`` is the canonical choice; see
+# ``LintRuleError`` docstring.
 #
 # ``KeyError`` is intentionally NOT listed separately — it is a subclass
 # of ``LookupError``, which is already in the tuple, so adding it would
 # be dead coverage.
 #
-# ``DecodeError`` (D6d U2 ce:review REL-1 + SEC-002) is added because
-# option-aware rules using the dynamic-pool re-parse pattern
+# ``DecodeError`` is included because option-aware rules using the
+# dynamic-pool re-parse pattern
 # (``parsed.MergeFromString(descriptor.GetOptions().SerializeToString())``)
 # can encounter malformed serialized options bytes if a future protobuf
 # version, protoxy upgrade, or descriptor-set corruption surfaces them.
@@ -385,7 +378,7 @@ class LintEngine:
     are cheap to construct, so per-thread instances are the recommended
     pattern.
 
-    Attributes (introspectable for tests / D3 CLI ``--list-rules``):
+    Attributes (introspectable for tests / CLI ``--list-rules``):
         See :meth:`__init__`.
     """
 
@@ -399,20 +392,20 @@ class LintEngine:
         self._runtime_warnings: list[LintRuntimeWarning] = []
         self._filtered_count: int = 0
         self._current_profile: LintProfile | None = None
-        # Per-run snapshot of the active ``CompileResult.source_info_descriptors``
-        # (D6b U2 / R6b). Read by the 5 R6 ElementKind context builders
-        # so comment-aware rules in U3 can call ``leading_comment`` on the
-        # ctx-provided mapping without parameter-threading through every
-        # dispatch helper. Set immediately after the reentrancy guard in
-        # :meth:`run` and cleared in the ``finally`` block. The set-after-
-        # guard ordering is load-bearing: it lets the existing
-        # ``_current_profile`` guard catch reentrant ``run()`` calls
-        # before this field can be corrupted.
+        # Per-run snapshot of the active ``CompileResult.source_info_descriptors``.
+        # Read by the 5 ElementKind context builders so comment-aware
+        # rules can call ``leading_comment`` on the ctx-provided
+        # mapping without parameter-threading through every dispatch
+        # helper. Set immediately after the reentrancy guard in
+        # :meth:`run` and cleared in the ``finally`` block. The
+        # set-after-guard ordering is load-bearing: it lets the
+        # existing ``_current_profile`` guard catch reentrant
+        # ``run()`` calls before this field can be corrupted.
         self._current_source_info_descriptors: (
             Mapping[str, FileDescriptorProto] | None
         ) = None
         # Per-run snapshot of the Step 3.5 pre-walk's package_options
-        # accumulator (D6b U4a / R7). Shape:
+        # accumulator (PACKAGE_SAME_* family). Shape:
         # Mapping[package, Mapping[option_attr, Mapping[fname, str | None]]]
         # with 3-level MappingProxyType wraps. None when the pre-walk
         # early-returned (pool_file_names was empty). Set in ``run()``
@@ -421,56 +414,56 @@ class LintEngine:
             Mapping[str, Mapping[str, Mapping[str, str | None]]] | None
         ) = None
         # Per-run snapshots of the Step 3.5b cross-file directory
-        # pre-walk's accumulators (D6c U1 / R8 + R8b). Two views of the
-        # same {package, filename, dirname} triples produced in one pass
-        # so each rule callable gets O(1) access to its primary key:
+        # pre-walk's accumulators (``package/same-directory`` +
+        # ``package/directory-same-package``). Two views of the same
+        # {package, filename, dirname} triples produced in one pass so
+        # each rule callable gets O(1) access to its primary key:
         #
         # _current_directory_packages: Mapping[pkg, Mapping[fname, dirname]]
-        #   — primary view for R8 (package/same-directory). Lookup by
+        #   — primary view for ``package/same-directory``. Lookup by
         #   package name → set of (fname, dirname); fires when the set
         #   of distinct dirnames > 1.
         # _current_directory_packages_by_dir:
         #   Mapping[dirname, Mapping[pkg, frozenset[fname]]] — inverted
-        #   view for R8b (package/directory-same-package). Lookup by
+        #   view for ``package/directory-same-package``. Lookup by
         #   directory → set of (pkg, fnames-in-that-dir); fires when
         #   the set of distinct packages > 1 (or when a packageless
-        #   entry mixes with a declared-package entry, per KTD-4 (b)).
+        #   entry mixes with a declared-package entry).
         #
         # Both wraps are 2-level MappingProxyType. Both ``None`` when the
         # pre-walk early-returned (root_files was empty). Set together
         # in ``run()`` after Step 3 + cleared together in the ``finally``
-        # block. The dual-view design prevents R8b's per-file O(N) scan
-        # over the per-package view that would otherwise produce O(N²)
+        # block. The dual-view design prevents
+        # ``package/directory-same-package``'s per-file O(N) scan over
+        # the per-package view that would otherwise produce O(N²)
         # behavior on large projects.
         #
-        # Diverges from R7's accumulator in iteration scope: R8/R8b's
-        # per-module-isolation semantic (buf does not cross-fire across
-        # module boundaries) scopes to ``root_files``, NOT
-        # ``pool_file_names``.
+        # Diverges from the PACKAGE_SAME_* accumulator in iteration
+        # scope: this rule family's per-module-isolation semantic (buf
+        # does not cross-fire across module boundaries) scopes to
+        # ``root_files``, NOT ``pool_file_names``.
         self._current_directory_packages: (
             Mapping[str, Mapping[str, str]] | None
         ) = None
         self._current_directory_packages_by_dir: (
             Mapping[str, Mapping[str, frozenset[str]]] | None
         ) = None
-        # D6e U3 / PACKAGE_NO_IMPORT_CYCLE accumulator. Per-run
-        # snapshot of the Step 3.5c pre-walk's import-graph SCC
-        # analysis. Maps root file name to the tuple of
-        # cycle-closing CycleEdge entries for that file. A file
-        # with no cycle-closing imports is absent from the
-        # mapping; ``None`` when the pre-walk early-returned
-        # (root_files was empty or no SCCs of size >= 2 exist).
-        # Set in ``run()`` after Step 3.5b + cleared in the
-        # ``finally`` block alongside the directory_packages
-        # accumulators.
+        # PACKAGE_NO_IMPORT_CYCLE accumulator. Per-run snapshot of
+        # the Step 3.5c pre-walk's import-graph SCC analysis. Maps
+        # root file name to the tuple of cycle-closing CycleEdge
+        # entries for that file. A file with no cycle-closing
+        # imports is absent from the mapping; ``None`` when the
+        # pre-walk early-returned (root_files was empty or no SCCs
+        # of size >= 2 exist). Set in ``run()`` after Step 3.5b +
+        # cleared in the ``finally`` block alongside the
+        # directory_packages accumulators.
         #
-        # Per the U3 Phase 0 revision (PD-6 + PD-8 + PD-14):
-        # buf v1.69.0 detects file-level cycles at the COMPILE
-        # phase, so this accumulator only catches the rarer
-        # case where file-level imports are acyclic but
-        # package-level imports cycle. Emission is per-import-
-        # edge to match buf's behavior + avoid over-emitting on
-        # sibling leaf files in cyclic packages.
+        # Empirical binding: buf v1.69.0 detects file-level cycles
+        # at the COMPILE phase, so this accumulator only catches the
+        # rarer case where file-level imports are acyclic but
+        # package-level imports cycle. Emission is per-import-edge
+        # to match buf's behavior + avoid over-emitting on sibling
+        # leaf files in cyclic packages.
         self._current_import_cycles: (
             Mapping[str, tuple[CycleEdge, ...]] | None
         ) = None
@@ -483,7 +476,7 @@ class LintEngine:
     def has_rules(self) -> bool:
         """True iff at least one rule has been loaded.
 
-        Public accessor for the R9 zero-rules CLI guard. Replaces the
+        Public accessor for the zero-rules CLI guard. Replaces the
         prior ``_loaded_specs`` dict-truthiness check used by callers.
         """
         return bool(self._loaded_specs)
@@ -493,9 +486,9 @@ class LintEngine:
         """Frozen snapshot of every rule_id loaded into the engine.
 
         Public accessor over the internal ``_loaded_specs`` dict.
-        Used by CLI-orchestration code (D6f R8c unknown_rule_id
-        synthesis) to diff R9b directives against the loaded
-        registry without reaching into engine internals.
+        Used by CLI-orchestration code (unknown_rule_id synthesis)
+        to diff R9b directives against the loaded registry without
+        reaching into engine internals.
         """
         return frozenset(self._loaded_specs.keys())
 
@@ -506,7 +499,7 @@ class LintEngine:
         future plugin APIs) that need to introspect a loaded rule's
         spec metadata — ``source_spec``, ``severity``, ``element``,
         ``message_template`` — without reaching into the private
-        ``_loaded_specs`` dict. Aligns with the D6b U4b
+        ``_loaded_specs`` dict. Aligns with the
         :func:`get_lint_spec` discipline that eliminated
         ``# type: ignore[attr-defined]`` suppressions for function-
         attached specs.
@@ -668,8 +661,9 @@ class LintEngine:
            ``full_name`` with file-`.name` tie-break for ambiguous
            packages.
         5. Per-rule dispatch wraps the callable in a narrow exception
-           tuple including ``SystemExit`` (D2-specific divergence
-           from R16; see Key Technical Decisions in the plan).
+           tuple including ``SystemExit`` (deliberate divergence from
+           the "rules don't catch SystemExit" default; see
+           ``_RULE_EXCEPTION_TUPLE`` comment above).
         6. The emit callback filters by ``profile.min_severity`` at
            emit time; filtered findings increment ``filtered_count``
            and never reach ``LintReport.findings``.
@@ -710,19 +704,19 @@ class LintEngine:
         self._runtime_warnings = []
         self._filtered_count = 0
         self._current_profile = profile
-        # Snapshot the source-info mapping for the 5 R6 ElementKind
-        # context builders (D6b U2 / R6b). Set AFTER the reentrancy
-        # guard above so the guard fires first if a rule recurses into
-        # ``run()`` mid-walk — preserving the K-1 set-after-guard
-        # invariant called out in the U2 plan.
+        # Snapshot the source-info mapping for the 5 ElementKind
+        # context builders. Set AFTER the reentrancy guard above so
+        # the guard fires first if a rule recurses into ``run()``
+        # mid-walk — preserving the set-after-guard invariant.
         self._current_source_info_descriptors = (
             compile_result.source_info_descriptors
         )
 
         try:
             # Step 2: unloaded-rule diff (one warning per missing rule_id).
-            # Per KTD-9, ``rid`` (from ``profile.rule_ids``) and
-            # ``profile.name`` are operator-supplied strings — pyproject
+            # Per the dual-sanitization model, ``rid`` (from
+            # ``profile.rule_ids``) and ``profile.name`` are
+            # operator-supplied strings — pyproject
             # ``profile = ...`` values or ``--profile NAME`` CLI args —
             # so they pass through ``_safe_for_stderr`` at construction
             # time, matching the ``rule_exception`` path below. Without
@@ -731,7 +725,7 @@ class LintEngine:
             # not strip ESC) and SARIF ``message.text`` (where
             # ``json.dumps`` does not escape ESC). The stderr boundary
             # (``_emit_human_runtime_warnings``) is the backstop; this
-            # is the primary defense per the dual-sanitization model.
+            # is the primary defense.
             loaded_ids = set(self._loaded_specs.keys())
             safe_profile_name = _safe_for_stderr(profile.name)
             for rid in sorted(profile.rule_ids - loaded_ids):
@@ -745,7 +739,7 @@ class LintEngine:
                         # terminators would survive into machine output and
                         # trigger log-aggregator record injection. Apply the
                         # same sanitizer here as the message slot per the
-                        # dual-sanitization model (KTD-9).
+                        # dual-sanitization model.
                         rule_id=safe_rid,
                         message=(
                             f"rule {safe_rid!r} is named in profile "
@@ -767,45 +761,47 @@ class LintEngine:
             for spec in active_specs:
                 group_by_kind[spec.element].append(spec)
 
-            # Step 3.5: pre-walk file-options accumulator for R7 cross-file
-            # PACKAGE_SAME_* rules. Iterates the FULL pool —
-            # including transitively-imported protos — so the canonical
-            # value computation matches buf's full-module walk; findings
-            # still emit only on root_files via Step 4's dispatch gate.
-            # Built unconditionally when pool_file_names is non-empty (no
-            # lazy-gating; revisit only if SC E7 benchmark exceeds 50ms).
+            # Step 3.5: pre-walk file-options accumulator for the
+            # cross-file PACKAGE_SAME_* rules. Iterates the FULL
+            # pool — including transitively-imported protos — so the
+            # canonical value computation matches buf's full-module
+            # walk; findings still emit only on root_files via
+            # Step 4's dispatch gate. Built unconditionally when
+            # pool_file_names is non-empty (no lazy-gating; revisit
+            # only if the accumulator-build benchmark exceeds 50ms).
             # No WKT filter (empirically dropped per
             # tests/schema/lint/rules/fixtures/package_same/_buf_smoke/
             # recorded/wkt-conflict.json — buf fires on disagreeing
             # google.protobuf files, so protokit must too).
-            # Defensive try/except KeyError mirrors Step 4 below (root_files
-            # name not in pool → compile-failure path skip).
+            # Defensive try/except KeyError mirrors Step 4 below
+            # (root_files name not in pool → compile-failure path
+            # skip).
             self._current_package_options = self._build_package_options_accumulator(
                 compile_result,
             )
-            # Step 3.5b (D6c U1 / R8 + R8b): cross-file directory pre-walk.
-            # Scoped to ``root_files`` (NOT ``pool_file_names``) per the
-            # KTD-4 (d) empirical correction — buf v1.69.0 does not
-            # cross-fire PACKAGE_SAME_DIRECTORY / DIRECTORY_SAME_PACKAGE
-            # across module boundaries (Phase 0 verification recipes
-            # documented in docs/plans/2026-05-18-003-feat-d6c-r8-r8b-
-            # cross-file-package-rules-plan.md § Phase 0). Diverges from
-            # R7's pool-scope iteration; both are correct for their rule
-            # families. DO NOT unify without empirical re-verification.
+            # Step 3.5b: cross-file directory pre-walk for
+            # ``package/same-directory`` + ``package/directory-same-package``.
+            # Scoped to ``root_files`` (NOT ``pool_file_names``) per
+            # the empirical correction — buf v1.69.0 does not
+            # cross-fire PACKAGE_SAME_DIRECTORY /
+            # DIRECTORY_SAME_PACKAGE across module boundaries.
+            # Diverges from the PACKAGE_SAME_* pool-scope iteration;
+            # both are correct for their rule families. DO NOT unify
+            # without empirical re-verification.
             (
                 self._current_directory_packages,
                 self._current_directory_packages_by_dir,
             ) = self._build_directory_package_accumulator(compile_result)
 
-            # Step 3.5c: D6e U3 / PACKAGE_NO_IMPORT_CYCLE pre-walk.
+            # Step 3.5c: PACKAGE_NO_IMPORT_CYCLE pre-walk.
             # Build the package-level import graph from root_files'
             # dependencies, run Tarjan SCC, and produce a per-file
             # map of cycle-closing import edges. Empty when no
-            # cycles exist (the common case). Per the U3 Phase 0
-            # revision (PD-14): file-level cycles are caught at
-            # the COMPILE phase before this point; this pre-walk
-            # only encounters package-level cycles where individual
-            # file imports are acyclic.
+            # cycles exist (the common case). Empirical binding:
+            # file-level cycles are caught at the COMPILE phase
+            # before this point; this pre-walk only encounters
+            # package-level cycles where individual file imports
+            # are acyclic.
             self._current_import_cycles = (
                 self._build_import_graph_accumulator(compile_result)
             )
@@ -827,8 +823,8 @@ class LintEngine:
             # Step 7: build report. Pass loaded specs into the
             # report so formatters can render messages from
             # LintRuleSpec.message_template without reaching back into
-            # engine internals (critical for D3's human formatter and
-            # D4's machine formatters). LintReport.__post_init__
+            # engine internals (critical for the human + machine
+            # formatters). LintReport.__post_init__
             # snapshots the dict, so we don't need a defensive
             # dict(...) here — same convention findings/runtime_warnings
             # use (engine passes raw sequence; post-init re-tuples).
@@ -853,20 +849,21 @@ class LintEngine:
             # Clear the per-run package_options accumulator for the same
             # reason — prevent leak across run() invocations.
             self._current_package_options = None
-            # Clear the per-run directory_packages accumulators (D6c U1)
-            # for the same reason — prevent stale cross-file state from
-            # bleeding into a subsequent run() invocation. Both views
-            # (per-package + per-directory-inverted) reset together.
+            # Clear the per-run directory_packages accumulators
+            # for the same reason — prevent stale cross-file state
+            # from bleeding into a subsequent run() invocation. Both
+            # views (per-package + per-directory-inverted) reset
+            # together.
             self._current_directory_packages = None
             self._current_directory_packages_by_dir = None
-            # D6e U3 / PACKAGE_NO_IMPORT_CYCLE — reset the
-            # per-run import-cycle map. Same rationale as the
+            # PACKAGE_NO_IMPORT_CYCLE — reset the per-run
+            # import-cycle map. Same rationale as the
             # directory_packages reset above (prevent cross-run
             # state leak).
             self._current_import_cycles = None
 
     # ------------------------------------------------------------------
-    # Pre-walk accumulator (R7 PACKAGE_SAME_* infrastructure)
+    # Pre-walk accumulator (PACKAGE_SAME_* infrastructure)
     # ------------------------------------------------------------------
 
     # WKT path prefix is NOT filtered (empirical: buf v1.69.0 fires on
@@ -879,7 +876,7 @@ class LintEngine:
     def _build_package_options_accumulator(
         self, compile_result: CompileResult,
     ) -> Mapping[str, Mapping[str, Mapping[str, str | None]]] | None:
-        """Construct the 3-level ``package_options`` accumulator for R7.
+        """Construct the 3-level ``package_options`` accumulator.
 
         Iterates ``compile_result.pool_file_names`` (the FULL pool
         including transitive imports — superset of ``root_files``) and
@@ -912,11 +909,11 @@ class LintEngine:
         runtime (not module-top) to preserve the cold-import contract
         for ``protokit.schema`` per
         ``tests/schema/lint/test_cold_import_extended.py``. Since
-        D6b U7 registered ``package_same`` in BUILTIN_PACKS, the
-        package_same module loads at engine-init time anyway, so this
-        deferred import is a no-op at runtime — kept here as a defense
-        against any future BUILTIN_PACKS rearrangement that might
-        defer the load.
+        the 0.3.0 release registered ``package_same`` in
+        BUILTIN_PACKS, the package_same module loads at engine-init
+        time anyway, so this deferred import is a no-op at runtime
+        — kept here as a defense against any future BUILTIN_PACKS
+        rearrangement that might defer the load.
         """
         if not compile_result.pool_file_names:
             return None
@@ -931,8 +928,8 @@ class LintEngine:
             compile_result.pool_file_names,
             key=lambda f: (posixpath.basename(f), f),
         ):
-            # ce:review follow-up: widened from KeyError-only to also catch
-            # AttributeError + ValueError. opts.HasField() raises ValueError
+            # Widened from KeyError-only to also catch
+            # AttributeError + ValueError: opts.HasField() raises ValueError
             # for non-presence-tracked fields (proto3 repeated/map/implicit
             # scalars); a future _PACKAGE_SAME_OPTION_ATTRS extension to
             # such a field would otherwise propagate uncaught out of run()
@@ -973,7 +970,7 @@ class LintEngine:
         return MappingProxyType(wrapped)
 
     # ------------------------------------------------------------------
-    # Pre-walk accumulator (R8 + R8b cross-file directory infrastructure)
+    # Pre-walk accumulator (cross-file directory infrastructure)
     # ------------------------------------------------------------------
 
     def _build_directory_package_accumulator(
@@ -982,81 +979,82 @@ class LintEngine:
         Mapping[str, Mapping[str, str]] | None,
         Mapping[str, Mapping[str, frozenset[str]]] | None,
     ]:
-        """Construct dual-view ``directory_packages`` accumulators for R8/R8b.
+        """Construct dual-view ``directory_packages`` accumulators.
 
         Iterates ``compile_result.root_files`` (NOT ``pool_file_names``;
-        this DIVERGES from R7's pre-walk per the KTD-4 (d) empirical
-        correction) and captures each file's ``(fd.package, fname,
-        dirname)`` triple. Returns a tuple ``(by_package, by_directory)``
-        — two views of the same data, both 2-level
-        ``MappingProxyType``-wrapped:
+        this DIVERGES from the PACKAGE_SAME_* pre-walk per the
+        empirical correction) and captures each file's
+        ``(fd.package, fname, dirname)`` triple. Returns a tuple
+        ``(by_package, by_directory)`` — two views of the same data,
+        both 2-level ``MappingProxyType``-wrapped:
 
-        - ``by_package: Mapping[pkg, Mapping[fname, dirname]]`` — R8's
-          primary view. Lookup by package name to find the set of
-          distinct directories containing that package.
+        - ``by_package: Mapping[pkg, Mapping[fname, dirname]]`` —
+          ``package/same-directory``'s primary view. Lookup by
+          package name to find the set of distinct directories
+          containing that package.
         - ``by_directory: Mapping[dirname, Mapping[pkg, frozenset[fname]]]``
-          — R8b's primary view (inverted index). Lookup by directory
-          to find the set of distinct packages declared by files in
-          that directory.
+          — ``package/directory-same-package``'s primary view
+          (inverted index). Lookup by directory to find the set of
+          distinct packages declared by files in that directory.
 
         Both views are built in one pass over ``root_files`` so the
         iteration cost is paid once. The inverted view is essential
-        for R8b's per-file callable to achieve O(1) directory lookup
-        instead of O(N) scan over the per-package view (which would
-        produce O(N²) total across N root files, per the D6c U1
-        ce:review ADV-1 finding).
+        for ``package/directory-same-package``'s per-file callable
+        to achieve O(1) directory lookup instead of O(N) scan over
+        the per-package view (which would produce O(N²) total
+        across N root files).
 
         Both views return ``None`` when ``root_files`` is empty —
         early-return signals to rule callables that no accumulator
         was built (test-helper paths + compile-failure paths).
 
-        **Iteration scope rationale** (the divergence from R7): buf
-        v1.69.0 does NOT cross-fire ``PACKAGE_SAME_DIRECTORY`` /
-        ``DIRECTORY_SAME_PACKAGE`` across module boundaries
-        (empirically verified — two-module buf.yaml with same-package
-        conflicts exits 0; reconstruction recipes documented in the
-        D6c plan's Phase 0 section). protokit's analog to buf's
-        "module" is the set of files protokit was invoked on =
-        ``root_files``. R7's per-option cross-language-namespace
-        conflicts INTENTIONALLY span the import boundary (a vendored
-        ``java_package`` conflict matters to downstream consumers
-        regardless of where the file lives); R8 / R8b's per-directory
-        file-organization rule is INTENTIONALLY local to the
-        user-owned files. **"Correcting" this back to
-        ``pool_file_names`` would cause R8/R8b to fire on
+        **Iteration scope rationale** (the divergence from the
+        PACKAGE_SAME_* accumulator): buf v1.69.0 does NOT cross-fire
+        ``PACKAGE_SAME_DIRECTORY`` / ``DIRECTORY_SAME_PACKAGE``
+        across module boundaries (empirically verified — two-module
+        buf.yaml with same-package conflicts exits 0). protokit's
+        analog to buf's "module" is the set of files protokit was
+        invoked on = ``root_files``. The PACKAGE_SAME_* per-option
+        cross-language-namespace conflicts INTENTIONALLY span the
+        import boundary (a vendored ``java_package`` conflict
+        matters to downstream consumers regardless of where the
+        file lives); the per-directory file-organization rules are
+        INTENTIONALLY local to the user-owned files. **"Correcting"
+        this back to ``pool_file_names`` would cause them to fire on
         transitively-imported files outside the user's control —
         spurious findings on every ``vendor/``-style import.**
 
-        **Empty-package files are INCLUDED** (NOT skipped) per
-        KTD-4 (b). buf v1.69.0 fires R8b on packageless files mixed
-        with declared-package files in the same directory, using a
-        distinct message template
+        **Empty-package files are INCLUDED** (NOT skipped). buf
+        v1.69.0 fires ``directory-same-package`` on packageless
+        files mixed with declared-package files in the same
+        directory, using a distinct message template
         (``"Package \"X\" and file with no package detected within
         directory \"Y\"."``). The accumulator therefore tracks
-        packageless files under an empty-string key; the R8b rule
-        callable (U2) discriminates the mixed case.
+        packageless files under an empty-string key; the rule
+        callable discriminates the mixed case.
 
-        **Proto-root canonicalization** per KTD-4 (c): files at the
-        proto-root render their parent as ``"."``. Empirically
-        verified — buf renders ``"directory \".\""``. Implementation:
+        **Proto-root canonicalization**: files at the proto-root
+        render their parent as ``"."``. Empirically verified — buf
+        renders ``"directory \".\""``. Implementation:
         ``posixpath.dirname(fname) or "."``.
 
-        **No WKT filter** at ``google/protobuf/`` — mirror R7's posture
-        per KTD-4 (a). Single-file Phase 0 fixture was inconclusive;
-        U3 parity gate establishes empirical lock against a multi-dir
-        ``google.protobuf`` fixture.
+        **No WKT filter** at ``google/protobuf/`` — mirrors the
+        PACKAGE_SAME_* posture. Single-file fixture was
+        inconclusive; the multi-dir ``google.protobuf`` fixture
+        establishes the empirical lock.
 
         Defensive ``try/except KeyError: continue`` for the
         ``FindFileByName`` lookup — partial-pool-state tolerance for
-        compile-failure paths. Narrower than R7's exception tuple
-        because the body only calls ``FindFileByName`` (raises
-        ``KeyError`` on missing pool entry), reads ``fd.package`` (plain
-        attribute), and calls ``posixpath.dirname`` (pure Python on
-        ``str``). R7's tuple was widened to ``(KeyError, AttributeError,
-        ValueError)`` because ``opts.HasField()`` raises ``ValueError``
-        for non-presence-tracked fields and ``getattr(opts, attr)``
-        raises ``AttributeError`` for unknown attrs; neither call
-        appears in this body.
+        compile-failure paths. Narrower than the PACKAGE_SAME_*
+        exception tuple because the body only calls
+        ``FindFileByName`` (raises ``KeyError`` on missing pool
+        entry), reads ``fd.package`` (plain attribute), and calls
+        ``posixpath.dirname`` (pure Python on ``str``). The
+        PACKAGE_SAME_* tuple was widened to ``(KeyError,
+        AttributeError, ValueError)`` because ``opts.HasField()``
+        raises ``ValueError`` for non-presence-tracked fields and
+        ``getattr(opts, attr)`` raises ``AttributeError`` for
+        unknown attrs; neither call appears in this body.
 
         Iteration uses ``posixpath.basename`` (NOT ``os.path.basename``)
         for cross-platform determinism per the canonical convention.
@@ -1107,15 +1105,15 @@ class LintEngine:
         )
 
     # ------------------------------------------------------------------
-    # Pre-walk accumulator (D6e U3 / PACKAGE_NO_IMPORT_CYCLE)
+    # Pre-walk accumulator (PACKAGE_NO_IMPORT_CYCLE)
     # ------------------------------------------------------------------
 
     def _build_import_graph_accumulator(
         self, compile_result: CompileResult,
     ) -> Mapping[str, tuple[CycleEdge, ...]] | None:
-        """Build the per-file cycle-closing-import map for U3.
+        """Build the per-file cycle-closing-import map.
 
-        Per the U3 Phase 0 revision (PD-6 + PD-8 + PD-14):
+        Empirical binding:
 
         - File-level cycles are caught at the COMPILE phase (both
           buf v1.69.0 and protoxy reject them at parse layer). By
@@ -1143,7 +1141,7 @@ class LintEngine:
         Rule callables early-return on either signal.
 
         **Iteration scope rationale**: scoped to ``root_files`` per
-        the same KTD-4 (d) module-isolation rationale as
+        the same module-isolation rationale as
         ``_build_directory_package_accumulator``. Transitive non-
         root dependencies contribute to the package graph (as
         target nodes for edges originating in root files) but the
@@ -1176,15 +1174,14 @@ class LintEngine:
         file_packages: dict[str, str] = {}
         # ``source_info_descriptors`` is the separate per-file
         # FileDescriptorProto bag populated by
-        # ``compile_protos_to_result(include_source_info=True)``
-        # (D6b R6b). It's the only path to ``source_code_info`` —
-        # the runtime DescriptorPool drops source positions for
-        # memory reasons, so ``fd.CopyToProto(fdp)`` after
-        # ``pool.Add()`` returns an fdp with empty
-        # ``source_code_info``. When ``include_source_info=False``
-        # at compile time (e.g., descriptor-set input), this is
-        # ``None`` and line/column degrade to ``None`` per the
-        # PD-8 contract.
+        # ``compile_protos_to_result(include_source_info=True)``.
+        # It's the only path to ``source_code_info`` — the runtime
+        # DescriptorPool drops source positions for memory reasons,
+        # so ``fd.CopyToProto(fdp)`` after ``pool.Add()`` returns
+        # an fdp with empty ``source_code_info``. When
+        # ``include_source_info=False`` at compile time (e.g.,
+        # descriptor-set input), this is ``None`` and line/column
+        # degrade to ``None``.
         source_info_descriptors = (
             compile_result.source_info_descriptors or {}
         )
@@ -1202,8 +1199,8 @@ class LintEngine:
             # lives in compile_result.source_info_descriptors,
             # NOT in this fdp (the pool stripped it).
             #
-            # ce:review U3 REL-1 (2026-05-22): catch DecodeError
-            # from CopyToProto. fd.CopyToProto() delegates to
+            # Catch DecodeError from CopyToProto:
+            # fd.CopyToProto() delegates to
             # ParseFromString(self.serialized_pb), which raises
             # google.protobuf.message.DecodeError on malformed
             # serialized bytes (e.g., a descriptor-set input with
@@ -1260,15 +1257,14 @@ class LintEngine:
         # edges; an edge is cycle-closing iff its target package
         # is in the same SCC as the source file's package.
         result: dict[str, tuple[CycleEdge, ...]] = {}
-        # ce:review U3 KP-4/PERF-1/ADV-006 (2026-05-22): cache
-        # scc_member_set + cycle_path per src_pkg. The DFS in
+        # Cache scc_member_set + cycle_path per src_pkg. The DFS in
         # _walk_cycle_forward depends only on (package_edges,
         # scc_member_set, src_pkg) — all loop-invariant for the
-        # inner per-edge loop. The prior form re-ran the DFS
-        # once per cycle-closing edge with identical arguments.
-        # For a file with K cycle-closing imports into the same
-        # SCC: K identical DFS calls. Cache amortizes the cost
-        # to O(packages-in-SCC) per (fname, src_pkg) pair.
+        # inner per-edge loop. Without the cache the DFS would
+        # re-run once per cycle-closing edge with identical
+        # arguments. For a file with K cycle-closing imports into
+        # the same SCC: K identical DFS calls. Cache amortizes the
+        # cost to O(packages-in-SCC) per (fname, src_pkg) pair.
         scc_cache: dict[
             str, tuple[set[str], tuple[str, ...]]
         ] = {}
@@ -1409,7 +1405,7 @@ class LintEngine:
         try:
             spec.fn(ctx)
         except _RULE_EXCEPTION_TUPLE as exc:
-            # Q16 content-safety: the message field must NOT include
+            # Content-safety: the message field must NOT include
             # raw exception tracebacks or filesystem paths. Two
             # layers run on every rule_exception emit:
             #
@@ -1417,23 +1413,25 @@ class LintEngine:
             #    ``OSError`` subclasses (defense-in-depth for a
             #    future widening of ``_RULE_EXCEPTION_TUPLE``;
             #    OSError is not in the tuple today).
-            # 2. ``_safe_for_stderr`` (KTD-9) collapses all ASCII
+            # 2. ``_safe_for_stderr`` collapses all ASCII
             #    control characters to spaces so a multi-line
             #    exception message cannot forge fake
             #    ``warning[lint-runtime]:`` or ``error[lint-CODE]:``
             #    lines in downstream stderr surfaces.
             #
-            # ``repr(exc)`` fallback preserves the pre-U4 behavior
-            # for exceptions whose ``str()`` is empty. ``exception_type``
-            # carries the precise class name for programmatic filtering.
+            # ``repr(exc)`` fallback preserves the legacy behavior
+            # for exceptions whose ``str()`` is empty.
+            # ``exception_type`` carries the precise class name for
+            # programmatic filtering.
             scrubbed = _scrub_exc_message(exc) or repr(exc)
             safe_message = _safe_for_stderr(scrubbed)
             # ``spec.rule_id`` flows verbatim into lint_json / lint_sarif wire
             # formats. ``json.dumps`` does NOT escape U+2028/U+2029, so an
             # attacker-influenced rule_id with embedded Unicode line terminators
             # survives into machine output and triggers log-aggregator record
-            # injection. Sanitize at construction time per KTD-9, mirroring the
-            # ``unloaded_rule`` arm above.
+            # injection. Sanitize at construction time per the
+            # dual-sanitization model, mirroring the ``unloaded_rule``
+            # arm above.
             safe_rule_id = _safe_for_stderr(spec.rule_id)
             self._runtime_warnings.append(
                 LintRuntimeWarning(
@@ -1512,20 +1510,23 @@ class LintEngine:
             file=fd,
             pool=fd.pool,
             profile=profile.name,
-            # R7's engine pre-walk populates _current_package_options
-            # before Step 4's per-file walk; this snapshot is what R7 rules
-            # consume via ctx.package_options. None when the pre-walk
+            # The PACKAGE_SAME_* engine pre-walk populates
+            # _current_package_options before Step 4's per-file
+            # walk; this snapshot is what those rules consume via
+            # ctx.package_options. None when the pre-walk
             # early-returned (pool_file_names was empty).
             package_options=self._current_package_options,
-            # D6c U1's cross-file pre-walk populates two views:
-            # _current_directory_packages (per-package, R8's primary
-            # view) + _current_directory_packages_by_dir (per-directory
-            # inverted index, R8b's primary view). Both None when
-            # root_files was empty. The dual-view design avoids R8b's
+            # The cross-file pre-walk populates two views:
+            # _current_directory_packages (per-package, primary
+            # view for ``package/same-directory``) +
+            # _current_directory_packages_by_dir (per-directory
+            # inverted index, primary view for
+            # ``package/directory-same-package``). Both None when
+            # root_files was empty. The dual-view design avoids the
             # O(N²) scan over the per-package view.
             directory_packages=self._current_directory_packages,
             directory_packages_by_dir=self._current_directory_packages_by_dir,
-            # D6e U3 / PACKAGE_NO_IMPORT_CYCLE — populated by
+            # PACKAGE_NO_IMPORT_CYCLE — populated by
             # _build_import_graph_accumulator at Step 3.5c. Maps
             # root file name to cycle-closing CycleEdge entries.
             # None when root_files was empty or no SCCs of size >= 2.
