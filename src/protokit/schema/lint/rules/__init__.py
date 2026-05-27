@@ -2,9 +2,10 @@
 
 This package marker exposes the curated set of rule packs that
 ``protokit lint`` auto-loads at subcommand startup. Submodules are
-loaded only when explicitly imported by callers (preserves the
-cold-import contract documented in
-``docs/brainstorms/2026-04-30-protokit-lint-delivery-1-foundation-requirements.md``).
+loaded only when explicitly imported by callers, preserving the
+cold-import contract for the ``protokit lint`` subcommand
+(importing the lint package must not transitively import any
+rule-pack module — only ``BUILTIN_PACKS``).
 
 Each submodule is a rule pack: a module exposing a top-level
 ``RULES`` tuple of ``@lint_rule``-decorated callables. Callers
