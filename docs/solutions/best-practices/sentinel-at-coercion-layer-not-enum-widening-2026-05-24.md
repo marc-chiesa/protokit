@@ -216,4 +216,4 @@ The sentinel-at-coercion-layer pattern touches none of these. Every one of them 
 - [[normalize-at-input-boundary-2026-05-07]] — the canonical reference for `_coerce_severities` as the input-boundary normalization point. The interception described here is one more responsibility loaded onto the same coercion function.
 - [[symmetric-coercion-strictness-multi-source-field-resolver-2026-05-12]] — the multi-source coercion strictness contract that this pattern extends with in-band sentinel interception.
 - [[closed-literal-discriminator-bump-trigger-2026-05-17]] — provides the discriminating question ("can a consumer that doesn't know about the new value still produce a correct result?") that justifies interception over widening for closed Literal / exhaustive-switch consumers.
-- [[migration-recipe-severity-aware-template-reuse-2026-05-21]] — flagged `LintSeverity("off") → ValueError → exit-2 pyproject-config-invalid` as deferred-to-D6e+. D6f KD-1 is the resolution.
+- migration-recipe-severity-aware-template-reuse-2026-05-21 — flagged `LintSeverity("off") → ValueError → exit-2 pyproject-config-invalid` as deferred-to-D6e+. D6f KD-1 is the resolution.

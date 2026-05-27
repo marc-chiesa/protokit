@@ -265,4 +265,4 @@ reviewer (M5), kieran-python reviewer (KP-3), and adversarial
 reviewer (A2) independently surfaced the asymmetric strictness
 during the 9-reviewer parallel pass on commit `5a464e2`. Three-way
 convergence is the must-fix threshold per
-[[apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09]].
+apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.

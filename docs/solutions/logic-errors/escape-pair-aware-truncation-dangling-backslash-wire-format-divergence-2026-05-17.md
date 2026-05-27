@@ -47,7 +47,7 @@ A 500-character length cap applied AFTER `_escape_inner_quote` has expanded each
 
 **Per-value sub-cap (rejected alternative).** Capping each value individually before composition (e.g., `[:480]` per value) would prevent the cap boundary from ever landing on a `\"` pair, but it breaks byte-parity with buf for under-cap values whose full string buf preserves. Rejected per the plan's "no per-value sub-cap" decision; the escape-pair-safe post-truncation guard (Solution below) is byte-compatible.
 
-**Catching it in pre-merge review without a regression test.** All three reviewers who saw it (correctness `RR-1 @ 0.62`, testing `T-03 @ 0.82`, adversarial `ADV-1 @ 0.92`) flagged the issue from different angles. The merged confidence after 3-way convergence was capped 1.0 — but without a concrete regression test, a future refactor could re-introduce the bug. See [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] for the BOOST mechanism that escalated this to P2 gated_auto.
+**Catching it in pre-merge review without a regression test.** All three reviewers who saw it (correctness `RR-1 @ 0.62`, testing `T-03 @ 0.82`, adversarial `ADV-1 @ 0.92`) flagged the issue from different angles. The merged confidence after 3-way convergence was capped 1.0 — but without a concrete regression test, a future refactor could re-introduce the bug. See ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 for the BOOST mechanism that escalated this to P2 gated_auto.
 
 ## Solution
 
@@ -128,12 +128,12 @@ Steps 1-4 already existed before the fix; step 5 is the addition that closes the
 - Alternative architecture: cap BEFORE escape composition (a per-value sub-cap that bounds escaped-value length pre-composition). Rejected here because it breaks buf byte-parity for under-cap values; preferred when wire-format parity is not a constraint.
 - ALWAYS pair a wire-format truncation helper with a regression test that engineers the exact boundary case. Calculate the boundary arithmetic explicitly: in this case 482-char value + inner `"` → 484 escaped chars; 484 + 1 (comma) + first 15 chars of value B + premium = 500 exactly. The test fixture must reproduce that arithmetic; a naive multi-KB value test misses the boundary entirely.
 - **When adding a NEW escape class to an existing helper, audit every guard that inspects trailing runs of the new escape character.** A guard designed for a split-pair (single stranded char) must be upgraded to an odd-count check before the new escape class ships. The D6b U6 ce:review caught this regression class via cross-reviewer convergence; see [[truncation-guard-odd-count-discipline-for-doubled-escape-pairs-2026-05-18]].
-- During ce:review, treat 3-way independent reviewer convergence on a single concern as a strong signal to elevate severity, even when each reviewer's individual confidence is already above gate — see [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] for the BOOST mechanism. The D6b U6 case is now Case 4 (FIX-INDUCED SECOND-ORDER) in that doc.
+- During ce:review, treat 3-way independent reviewer convergence on a single concern as a strong signal to elevate severity, even when each reviewer's individual confidence is already above gate — see ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 for the BOOST mechanism. The D6b U6 case is now Case 4 (FIX-INDUCED SECOND-ORDER) in that doc.
 
 ## Related Issues
 
 - [[module-name-newline-injection-stderr-forge-2026-05-07]] — established `_safe_for_stderr` and the "every interpolated slot" sanitization principle. The escape-pair truncation guard layers on top of that sanitization: `_safe_for_stderr` neutralizes control chars; `_truncate_values_payload` adds length cap + escape-pair repair.
-- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — the multi-reviewer convergence mechanism that escalated this finding from individually-actionable to gated_auto with mandatory regression test.
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — the multi-reviewer convergence mechanism that escalated this finding from individually-actionable to gated_auto with mandatory regression test.
 - `src/protokit/schema/lint/rules/package_same.py:200-326` — the `_escape_inner_quote` + `_check_package_option` + `_truncate_values_payload` helpers in their canonical composition order.
 - `tests/schema/lint/rules/test_package_same.py::TestAdversarialSanitization` — full adversarial test class housing the regression test alongside newline / U+2028 / U+2029 / multi-KB / control-char sanitization tests.
 - D6b U4b plan: `docs/plans/2026-05-17-002-feat-d6b-u4-r7-package-same-revised-plan.md`

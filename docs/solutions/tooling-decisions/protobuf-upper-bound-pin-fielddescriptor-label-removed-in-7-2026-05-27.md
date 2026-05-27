@@ -127,8 +127,8 @@ User runs `pip install protokit==0.7.1`. pip resolves `protobuf-5.29.6`. `protok
 ## Related
 
 - [[deprecationwarning-poisons-except-exception-strict-warning-ci-2026-05-11]] — same "third-party lib deprecates/removes a symbol our code uses" pattern; the `<6` pin is the **upstream-mitigation** form of the broader problem this doc treats from the **downstream-defense** side.
-- [[pre-1.0-version-bump-as-communication-contract-2026-05-14]] — same family (version semantics), but our-version-side rather than dependency-side.
-- [[post-ship-adoption-monitoring-pre-1.0-breaking-default-change-2026-05-19]] — same "what protects users from silent breakage" framing.
+- pre-1.0-version-bump-as-communication-contract-2026-05-14 — same family (version semantics), but our-version-side rather than dependency-side.
+- post-ship-adoption-monitoring-pre-1.0-breaking-default-change-2026-05-19 — same "what protects users from silent breakage" framing.
 - [[wkt-include-path-auto-discovery-system-protoc-backend-2026-05-27]] — sibling 0.7.1 fix; both surfaced on the first public CI run.
-- [[first-public-push-plan-for-ci-iteration-debugging-2026-05-27]] — the meta-learning: this category of "matrix-cell-only failure" is exactly what a `has_extra: {true, false}` axis exists to catch.
+- first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning: this category of "matrix-cell-only failure" is exactly what a `has_extra: {true, false}` axis exists to catch.
 - Canonical commit: `b22d60a` ("fix: pin protobuf<6 + restructure perf-smoke fixture per-package directory").

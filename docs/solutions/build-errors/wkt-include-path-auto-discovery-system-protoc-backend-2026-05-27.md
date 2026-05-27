@@ -46,7 +46,7 @@ The protoxy backend (Rust bindings, `pip install protokit[compiler]`) bundles WK
 ## What Didn't Work
 
 - **Documenting "users must pass `-I /usr/include` themselves"** — punts the problem onto every consumer of the API, defeating the value of an in-process compile helper. Documentation as a fix-shape is the wrong shape when the right answer is for the helper to find the WKT files itself.
-- **Pinning a newer protoc binary release on CI** — protoc binary tarballs ship WKT in `<install>/include/` adjacent to the binary, which protoc auto-finds. Pinning v25.3 binary on CI fixed the WKT-resolution failure but introduced descriptor-encoding skew with protoxy 0.7.2's embedded protoc, causing ~10 lint-rule tests to fail with different (but equally real) errors. See [[protoc-version-skew-between-system-and-embedded-breaks-descriptor-tests-2026-05-27]] and [[dont-pin-binary-protoc-when-test-suite-cross-checks-protoxy-2026-05-27]].
+- **Pinning a newer protoc binary release on CI** — protoc binary tarballs ship WKT in `<install>/include/` adjacent to the binary, which protoc auto-finds. Pinning v25.3 binary on CI fixed the WKT-resolution failure but introduced descriptor-encoding skew with protoxy 0.7.2's embedded protoc, causing ~10 lint-rule tests to fail with different (but equally real) errors. See protoc-version-skew-between-system-and-embedded-breaks-descriptor-tests-2026-05-27 and [[dont-pin-binary-protoc-when-test-suite-cross-checks-protoxy-2026-05-27]].
 - **Adding `-I /usr/include` unconditionally** — works on apt installs but pollutes the include path on systems where `/usr/include` doesn't contain protobuf at all (or contains a different version), risking surprising override behavior if a user has a protoc-version-specific WKT elsewhere.
 
 ## Solution
@@ -148,5 +148,5 @@ The `@functools.cache` decorator is also load-bearing for performance: discovery
 - [[pureposixpath-for-proto-descriptor-file-stem-2026-05-12]] — already cites the matcher-backend doc as foundational; same `-I` mental model.
 - [[dont-pin-binary-protoc-when-test-suite-cross-checks-protoxy-2026-05-27]] — the operational counterpart: when test suite cross-validates backends, the WKT auto-discovery helper makes apt's split-package layout viable so CI can stay on protoc-3.21 (matching protoxy's embedded version) without manual `-I /usr/include`.
 - [[protoc-25-rejects-end-of-options-separator-2026-05-27]] — sibling protoc cross-version-compatibility learning.
-- [[first-public-push-plan-for-ci-iteration-debugging-2026-05-27]] — the meta-learning that surfaced this whole cluster.
+- first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning that surfaced this whole cluster.
 - Canonical commit: `469af3d` ("fix: WKT include-path auto-discovery for system-protoc backend (0.7.1)").

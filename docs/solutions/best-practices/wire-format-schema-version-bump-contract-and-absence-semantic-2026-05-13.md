@@ -101,7 +101,7 @@ Sub-rules:
    ``runs[0].properties``) catches regressions where one stomps
    on the other during ``setdefault``-based property assembly.
 5. **Add a DRAFT-table row** for the new field per
-   [[public-surface-draft-discipline-source-audit-2026-05-12]].
+   public-surface-draft-discipline-source-audit-2026-05-12.
    The README schema-linting section must enumerate the
    new field with its bump policy summary before the delivery
    boundary commit.
@@ -252,7 +252,7 @@ of the original dual-clause structure:
 2. **Pre-release carve-out** — landed via D6c U3 retroactively
    recognizing that the U2→U3 `violation_kind` rename (both pre-
    0.4.0-release) did not need a bump. The carve-out is grounded in
-   [[pre-1.0-version-bump-as-communication-contract-2026-05-14]]:
+   pre-1.0-version-bump-as-communication-contract-2026-05-14:
    the pre-release surface is internal-only by the version-bump
    communication contract; no consumer has stored state against the
    intermediate U_N value. Post-1.0 the same rename WOULD bump per
@@ -359,13 +359,13 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   representation. The two learnings together define the
   "same-string-across-siblings" discipline at both the enum
   level (existing) and the schema_version level (this doc).
-- [[public-surface-draft-discipline-source-audit-2026-05-12]] —
+- public-surface-draft-discipline-source-audit-2026-05-12 —
   the ``schema_version`` constant and the new CLI flags
   introduced in D6a U9 are DRAFT-table rows pending Unit 10
   stabilization. This learning is the design rationale; that
   learning is the operational discipline for keeping the
   README table accurate against the source.
-- [[audit-wire-format-before-claiming-sibling-parity-2026-05-03]] —
+- audit-wire-format-before-claiming-sibling-parity-2026-05-03 —
   structural sibling-parity audit. The bump contract is itself
   a wire-format claim; the audit discipline applies to verifying
   the version field is actually emitted at both sibling sites.

@@ -101,7 +101,7 @@ The D6d U2 message: `"_CONTRADICTORY_PAIRS tuples must be alphabetically sorted 
 
 **Import-time failure has zero production cost.** The `assert` fires once at module import. In optimized deployments (`python -O`), assertions are skipped entirely — but pre-1.0 protokit does not ship with `-O`, and CI always runs without it. The assertion is free in production AND mechanical in CI.
 
-**Cross-reviewer convergence is the surfacing mechanism.** Three independent D6d U2 reviewers (maintainability MAINT-4, adversarial ADV-3, kieran-python KP-4) flagged the comment-only enforcement from three angles: maintainability ("convention erodes"), adversarial ("construct the malformed addition"), kieran-python ("type-system invisibility"). The convergence signals the risk is structurally obvious once read side-by-side, but invisible without juxtaposition — exactly the convergence-boost discipline from [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]].
+**Cross-reviewer convergence is the surfacing mechanism.** Three independent D6d U2 reviewers (maintainability MAINT-4, adversarial ADV-3, kieran-python KP-4) flagged the comment-only enforcement from three angles: maintainability ("convention erodes"), adversarial ("construct the malformed addition"), kieran-python ("type-system invisibility"). The convergence signals the risk is structurally obvious once read side-by-side, but invisible without juxtaposition — exactly the convergence-boost discipline from ce-review-convergence-rescues-sub-threshold-findings-2026-05-17.
 
 ## When to Apply
 
@@ -211,5 +211,5 @@ The factory silently corrects any wrong-order addition. Preferred when pairs are
 - [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]] — sibling: structural enforcement of conventions. Where that doc covers programmatic fixture builders that prevent class-of-errors via construction, this doc covers module-level assertions that enforce load-bearing ordering conventions on curated constants. Both are instances of the broader "enforce structurally, not by convention" discipline.
 - [[weakkeydict-plus-id-resettable-attr-per-engine-per-run-state-2026-05-20]] — sibling: another structural-enforcement pattern from the same D6d U2 ce:review pass.
 - [[bound-method-self-extraction-rule-to-engine-callback-2026-05-20]] — sibling: another structural-debt pattern from the same D6d U2 ce:review pass.
-- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — sibling: the 3-way reviewer convergence (MAINT-4 + ADV-3 + KP-4) that surfaced the comment-only enforcement gap.
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — sibling: the 3-way reviewer convergence (MAINT-4 + ADV-3 + KP-4) that surfaced the comment-only enforcement gap.
 - Anchor commit: D6d U2 ce:review follow-up commit (2026-05-20). See `src/protokit/schema/lint/rules/options/field_behavior.py:179-198` for the assertion.

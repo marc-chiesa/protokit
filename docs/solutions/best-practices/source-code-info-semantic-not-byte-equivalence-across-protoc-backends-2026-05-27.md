@@ -132,9 +132,9 @@ The full implementation lives at `tests/schema/lint/test_compile_include_source_
 ## Related
 
 - [[parity-gate-must-assert-at-design-claim-granularity-2026-05-22]] — the complementary half of the rule. That doc argues for tightening when the assertion was coarser than the design claim; this doc argues for loosening when the assertion is stricter. Unifying rule: assertion granularity must match design-claim granularity.
-- [[audit-wire-format-before-claiming-sibling-parity-2026-05-03]] — same "verify wire format before claiming parity" instinct, scoped to backend version drift.
+- audit-wire-format-before-claiming-sibling-parity-2026-05-03 — same "verify wire format before claiming parity" instinct, scoped to backend version drift.
 - [[buf-parity-divergence-documentation-discipline-2026-05-13]] — same "when exact parity isn't achievable, document the divergence" family.
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — parity-gate pattern that this learning protects (the helper-bug detection relied on byte-equivalence only because both backends shipped the same encoder).
-- [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]] — uses byte-equivalence in a different domain (doc fixtures) where there is no version-sensitive encoding; helpful contrast.
+- changelog-readme-snippet-fixture-byte-equivalence-2026-05-21 — uses byte-equivalence in a different domain (doc fixtures) where there is no version-sensitive encoding; helpful contrast.
 - [[dont-pin-binary-protoc-when-test-suite-cross-checks-protoxy-2026-05-27]] — the operational counterpart that keeps both backends in lockstep so the semantic-equivalence test is the LAST resort, not the first.
 - Canonical commit: `f3ecd69` ("test: cross-backend source_code_info — semantic equivalence, not byte equivalence").

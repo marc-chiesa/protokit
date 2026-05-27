@@ -233,7 +233,7 @@ class TestArtifactRatchet:
    - Audit-trail breadcrumbs: a `> **Audit-trail note:**`
      blockquote in the D6b section pointing forward to the D6c
      `#### Corrected` subsection per
-     [[audit-trail-correction-as-changelog-subsection-2026-05-19]].
+     audit-trail-correction-as-changelog-subsection-2026-05-19.
    - New-section body cross-references: the D6d migration framing
      in the current release describing what D6c shipped.
 

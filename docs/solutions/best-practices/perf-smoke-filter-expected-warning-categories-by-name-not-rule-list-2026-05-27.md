@@ -130,6 +130,6 @@ Adding a new extension-aware rule next release: no change to the smoke. The new 
 - [[perf-smoke-profile-compose-across-builtin-packs-2026-05-13]] — same file (`test_perf_smoke.py`), same "decouple the smoke from per-delivery rule lists" instinct. Consider consolidating into a perf-smoke discipline cluster.
 - [[test-method-names-encode-invariants-not-delivery-deltas-2026-05-13]] — same "decouple tests from per-delivery details" mental shape, applied at the test-name granularity.
 - [[dual-ssot-derivation-import-time-drift-guard-2026-05-19]] — same "don't hand-curate a list when you can derive it" pattern, applied to schema-version drift.
-- [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]] — references `custom_annotation_extension_unresolved` runtime warning category as a silent-failure signal.
+- changelog-readme-snippet-fixture-byte-equivalence-2026-05-21 — references `custom_annotation_extension_unresolved` runtime warning category as a silent-failure signal.
 - [[perf-smoke-fixture-layout-must-track-cross-file-lint-rule-additions-2026-05-27]] — the companion 0.7.1 fix on the same test module.
 - Canonical commit: `5886fdb` ("test: perf smoke filters extension_unresolved warnings (documented surface)").

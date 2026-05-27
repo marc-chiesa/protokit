@@ -585,7 +585,7 @@ to pass user-supplied module paths.
 - Fix commit: `1249b10` — D3 unit 3 ce:review follow-ups
   (safe_auto + approved gated). The `_safe_module_name` helper and
   the call-site swaps landed in the safe_auto pass.
-- [[github-actions-expression-injection-env-block-mitigation-2026-05-13]] —
+- github-actions-expression-injection-env-block-mitigation-2026-05-13 —
   the GH Actions YAML-layer analog. This doc covers attacker-controlled
   module names interpolated into stderr lines via f-string (breaking
   the receiver's line parser); the cross-ref doc covers attacker-

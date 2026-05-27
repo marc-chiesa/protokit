@@ -137,7 +137,7 @@ Do NOT use this pattern for:
 - [[family-aware-partition-pattern-multi-family-parity-harness-2026-05-19]] — the per-family conftest constants pattern (`_D6E_PACKAGE_NO_IMPORT_CYCLE_*` follows this).
 - [[closed-literal-discriminator-bump-trigger-2026-05-17]] — used to confirm the FileLocation.line/column extension is open extension (no schema version bump).
 - [[parity-gate-must-assert-at-design-claim-granularity-2026-05-22]] (sibling learning captured at same boundary) — when the design claim is "byte-equivalent at line/column granularity", the parity gate must compare at that granularity, not just at file/message granularity.
-- [[phase-0-narrowing-rule-reachable-but-narrower-than-brainstorm-assumed-2026-05-22]] (sibling learning captured at same boundary) — the file-level-cycles-caught-at-COMPILE-phase finding from U3 Phase 0.
+- phase-0-narrowing-rule-reachable-but-narrower-than-brainstorm-assumed-2026-05-22 (sibling learning captured at same boundary) — the file-level-cycles-caught-at-COMPILE-phase finding from U3 Phase 0.
 
 ## Worked example
 

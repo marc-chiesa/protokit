@@ -139,8 +139,8 @@ Per [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-20
 
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — Case 2 (D6b U7) of the integration-test-surfaces-latent-bug pattern; this bug fix is the canonical worked example.
 - [[multi-mechanism-fix-docstring-enumerate-each-layer-failure-mode-2026-05-18]] — the docstring discipline that prevents future-engineer removal of the load-bearing CLI dedup guard.
-- [[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]] — the BUILTIN_PACKS flip pattern that U7 executes; U7's delivery-boundary commit was the trigger event for this bug to surface.
-- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — Case 4 (BOOST mode); the 5-reviewer convergence on the U7 docstring is the documentation analog of this code-finding convergence.
+- dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17 — the BUILTIN_PACKS flip pattern that U7 executes; U7's delivery-boundary commit was the trigger event for this bug to surface.
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — Case 4 (BOOST mode); the 5-reviewer convergence on the U7 docstring is the documentation analog of this code-finding convergence.
 - [[clirunner-catch-exceptions-false-explicit-discipline-2026-05-21]] — companion: the `catch_exceptions=False` discipline that the per-flip dedup-regression test relies on. The ValueError propagation only works if the test harness doesn't silently absorb it.
-- [[changelog-readme-snippet-fixture-byte-equivalence-2026-05-21]] — sibling delivery-boundary discipline from the same D6d new-U4 ce:review pass.
-- [[migration-recipe-severity-aware-template-reuse-2026-05-21]] — sibling delivery-boundary discipline; both surfaced at the D6d new-U4 ce:review.
+- changelog-readme-snippet-fixture-byte-equivalence-2026-05-21 — sibling delivery-boundary discipline from the same D6d new-U4 ce:review pass.
+- migration-recipe-severity-aware-template-reuse-2026-05-21 — sibling delivery-boundary discipline; both surfaced at the D6d new-U4 ce:review.

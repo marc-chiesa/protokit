@@ -82,7 +82,7 @@ When multiple coupled mechanisms implement a single correctness property across 
 - Five reviewers independently flagging the same docstring at high confidence is a DIAGNOSTIC SIGNAL: the existing description was producing a false mental model. A docstring that accurately describes a fix but still misleads a reader about the fix's necessity is functionally the same as a wrong docstring.
 - The three-mechanism enumeration pattern converts the docstring from a NARRATIVE ("here is what happened") into a SPECIFICATION ("here is what breaks if each piece is removed"). Specifications are more durable than narratives under refactoring pressure.
 
-This pattern complements [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] (the convergence boost mechanism): when 3+ reviewers agree on a documentation gap, BOOST mode applies even though the individual confidences may have been moderate. The 5-way convergence on the U7 docstring is the canonical worked example of BOOST applied to documentation rather than to code findings.
+This pattern complements ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 (the convergence boost mechanism): when 3+ reviewers agree on a documentation gap, BOOST mode applies even though the individual confidences may have been moderate. The 5-way convergence on the U7 docstring is the canonical worked example of BOOST applied to documentation rather than to code findings.
 
 ## When to Apply
 
@@ -157,6 +157,6 @@ Failure mode of the post-fix docstring: a maintainer reads mechanism 1's note "t
 ## Related
 
 - [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]] — the bug fix whose docstring this discipline applies to.
-- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — the BOOST mode convergence mechanism that elevated the docstring finding from individual-reviewer P2/P3 to a P2/1.00 finding. The 5-way convergence on documentation is the canonical worked example of BOOST applied beyond code findings.
-- [[ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier-2026-05-14]] — INVERSE pattern: when 5-reviewer convergence indicates AMPLIFIED FALSE POSITIVE (reviewers misread the same forward-looking text), the same convergence signal needs the independence check to distinguish from REAL convergence (this doc's case).
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — the BOOST mode convergence mechanism that elevated the docstring finding from individual-reviewer P2/P3 to a P2/1.00 finding. The 5-way convergence on documentation is the canonical worked example of BOOST applied beyond code findings.
+- ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier-2026-05-14 — INVERSE pattern: when 5-reviewer convergence indicates AMPLIFIED FALSE POSITIVE (reviewers misread the same forward-looking text), the same convergence signal needs the independence check to distinguish from REAL convergence (this doc's case).
 - [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]] — companion documentation-stability pattern: presence-ratchet pins prose substrings; the three-mechanism docstring pins multi-layer fix semantics.

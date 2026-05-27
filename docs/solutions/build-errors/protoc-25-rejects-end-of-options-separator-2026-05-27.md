@@ -92,7 +92,7 @@ The fix is unconditional (not version-gated) because:
 ## Prevention
 
 - **Audit argv-builders against the current major version of every upstream CLI tool you shell out to.** Pinned binary releases give you control; system-installed binaries vary by host distribution.
-- **Surface subprocess stderr in test failures.** A test that uses `subprocess.run(..., check=True, capture_output=True)` captures stderr into `exc.stderr` but doesn't surface it in the default `CalledProcessError` repr. Either re-raise with stderr in the message, or add a CI sanity step that exercises the critical path with stderr visible (see [[first-public-push-plan-for-ci-iteration-debugging-2026-05-27]]).
+- **Surface subprocess stderr in test failures.** A test that uses `subprocess.run(..., check=True, capture_output=True)` captures stderr into `exc.stderr` but doesn't surface it in the default `CalledProcessError` repr. Either re-raise with stderr in the message, or add a CI sanity step that exercises the critical path with stderr visible (see first-public-push-plan-for-ci-iteration-debugging-2026-05-27).
 - **Treat defensive hardening flags as opt-in audit candidates.** Flags added "just in case" tend to become active bugs when upstream removes them. Track the reason each defensive flag exists; when the originating concern is no longer load-bearing, remove the flag.
 - **Prefer "drop the flag" over "gate the flag on version" when an upstream removes a previously-standard feature.** Version-gating is correct in principle but expensive in practice — each new upstream release is another version branch to maintain.
 
@@ -101,5 +101,5 @@ The fix is unconditional (not version-gated) because:
 - [[wkt-include-path-auto-discovery-system-protoc-backend-2026-05-27]] — the WKT fix landed first; this separator fix is the second protoc-cross-version concern surfaced by the same CI iteration.
 - [[matcher-backend-path-resolution-skew-silently-empties-output-2026-05-02]] — sibling protoc-quirk learning: protoxy and protoc both don't resolve symlinks in `-I` paths.
 - [[subprocess-exit-code-validation-test-harness-2026-05-13]] — same "shelling out to an external binary; must validate behavior across versions" mental class.
-- [[first-public-push-plan-for-ci-iteration-debugging-2026-05-27]] — the meta-learning. The CI sanity step pattern added in `e0bcd25` is what surfaced `Unknown flag: --` with visible stderr instead of `assert 0 == 1`.
+- first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning. The CI sanity step pattern added in `e0bcd25` is what surfaced `Unknown flag: --` with visible stderr instead of `assert 0 == 1`.
 - Canonical commit: `b857e45` ("fix: drop protoc `--` end-of-options separator (rejected by protoc 25+)").

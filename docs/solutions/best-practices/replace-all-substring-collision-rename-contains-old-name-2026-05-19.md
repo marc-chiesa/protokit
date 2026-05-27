@@ -119,4 +119,4 @@ assert old_name not in new_name, (
 ## Related
 
 - The Edit tool's `replace_all` flag — pure string-substring operation; does not honor word boundaries or Python identifier boundaries. Same caveat applies to `sed -i 's/old/new/g'`, `perl -pi -e 's/old/new/g'`, and vim `:%s/old/new/g` when `old` is a substring of `new`.
-- [[plan-review-verify-prior-art-citations-2026-05-15]] — adjacent verify-before-act discipline at the planning/review layer. This doc covers the tool-mechanics analog: even when a rename feels mechanical, the containment check is the verify-before-act step.
+- plan-review-verify-prior-art-citations-2026-05-15 — adjacent verify-before-act discipline at the planning/review layer. This doc covers the tool-mechanics analog: even when a rename feels mechanical, the containment check is the verify-before-act step.

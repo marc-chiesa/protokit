@@ -266,7 +266,7 @@ Plus a docstring update on `check_no_public_imports` mirroring the
   skip). When in doubt, classify: does the rule still exist
   upstream? If yes → behavioral divergence; if no → lifecycle
   divergence.
-- [[audit-wire-format-before-claiming-sibling-parity-2026-05-03]] —
+- audit-wire-format-before-claiming-sibling-parity-2026-05-03 —
   the planning-time parity audit discipline. This doc is the
   runtime / harness enforcement complement. The planning-time audit
   catches divergences before implementation; this doc handles

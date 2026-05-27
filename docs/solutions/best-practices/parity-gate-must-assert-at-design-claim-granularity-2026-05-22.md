@@ -169,16 +169,16 @@ Three reviewers independently surfaced the gap:
 - **adversarial ADV-002 (confidence 0.99)**: "Parity claim false: line/column byte-equivalence is asserted in docstrings but never tested — buf and protokit could diverge at any line/column value."
 - **agent-native Warning 2**: "Parity test does not assert location_line/location_column against buf start_line/start_column."
 
-Cross-reviewer convergence at this confidence on the same issue is the strong signal pattern documented at [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — when 3+ reviewers independently flag the same issue, the merged confidence rescues sub-threshold individual findings AND the issue's severity should move to P1 even if no single reviewer rated it P1 individually.
+Cross-reviewer convergence at this confidence on the same issue is the strong signal pattern documented at ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — when 3+ reviewers independently flag the same issue, the merged confidence rescues sub-threshold individual findings AND the issue's severity should move to P1 even if no single reviewer rated it P1 individually.
 
 ## Related disciplines
 
 - [[source-code-info-semantic-not-byte-equivalence-across-protoc-backends-2026-05-27]] — the **inverse complement** captured by the 2026-05-27 update above. That doc covers the LOOSEN-when-assertion-is-stricter-than-the-claim direction; this doc's original body covers the TIGHTEN-when-assertion-is-coarser-than-the-claim direction. Together they constitute the unifying rule "assertion granularity must match design-claim granularity, no tighter and no looser."
-- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] — the meta-pattern: cross-reviewer agreement is strong signal; this U3 case is a worked example.
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — the meta-pattern: cross-reviewer agreement is strong signal; this U3 case is a worked example.
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — the parity-gate-as-oracle discipline; this learning extends it with the "claim-granularity-vs-helper-granularity" gap.
-- [[ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier-2026-05-14]] — the discriminator: ensure the convergence is via independent reasoning chains, not shared misreading. For U3 T1/ADV-002/Agent-native W2: the three reviewers cited different specifics (T1 quoted the docstring; ADV-002 quoted the conftest deferral comment; Agent-native traced the BufFinding fields). Independent reasoning; not a shared-source amplifier.
+- ce-review-cross-reviewer-agreement-shared-misreading-false-positive-amplifier-2026-05-14 — the discriminator: ensure the convergence is via independent reasoning chains, not shared misreading. For U3 T1/ADV-002/Agent-native W2: the three reviewers cited different specifics (T1 quoted the docstring; ADV-002 quoted the conftest deferral comment; Agent-native traced the BufFinding fields). Independent reasoning; not a shared-source amplifier.
 - [[tarjan-scc-iterative-dfs-package-cycle-detection-2026-05-22]] (sibling captured at same boundary) — the algorithmic context where this discipline mattered.
-- [[phase-0-narrowing-rule-reachable-but-narrower-than-brainstorm-assumed-2026-05-22]] (sibling captured at same boundary) — Phase 0 reveals the rule's actual ground; this discipline catches whether the test asserts at the claimed granularity within that ground.
+- phase-0-narrowing-rule-reachable-but-narrower-than-brainstorm-assumed-2026-05-22 (sibling captured at same boundary) — Phase 0 reveals the rule's actual ground; this discipline catches whether the test asserts at the claimed granularity within that ground.
 
 ## Worked example
 

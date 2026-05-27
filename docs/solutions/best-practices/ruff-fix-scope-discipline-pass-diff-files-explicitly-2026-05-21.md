@@ -88,7 +88,7 @@ ruff autofix on a broad path silently inflates the follow-up commit's diff with 
 - **Reviewers can't tell scope.** A PR reviewer reading the follow-up commit sees edits to files that weren't in the ce:review run artifact's diff. They can't tell whether those edits are legitimate review-driven changes or scope creep.
 - **Audit-trail corruption.** The follow-up commit's link to the ce:review run artifact implies "this commit fixes findings from that review." Unrelated autofixes break that implication; the commit is now lying about its provenance.
 - **Bisect hazard.** A broad autofix sweep changes hundreds of lines across files that haven't been touched in months. If a regression bisects through that commit, the unrelated changes become noise that obscures the real cause.
-- **Per-unit pipeline contamination.** When the autofix sweep happens during a multi-unit session (per [[multi-unit-ce-review-stash-pop-coordination-2026-05-21]]), the scope-creep can leak across unit boundaries — autofixing files that belong to the NEXT unit's scope. The stash-pop discipline can't catch this because the autofix targets committed files, not stashed WIP.
+- **Per-unit pipeline contamination.** When the autofix sweep happens during a multi-unit session (per multi-unit-ce-review-stash-pop-coordination-2026-05-21), the scope-creep can leak across unit boundaries — autofixing files that belong to the NEXT unit's scope. The stash-pop discipline can't catch this because the autofix targets committed files, not stashed WIP.
 - **Repeat offenders amplify cost.** Import-order drift is the most common case, but the same pattern applies to `--fix`-eligible rules: `UP*` (pyupgrade), `SIM*` (simplification), `RET*` (return). Any rule with high autofix prevalence on the existing codebase amplifies the scope-creep cost. The D6d session also surfaced `UP037` rewriting type-annotation quotes — a different fix class with the same scope-creep risk.
 
 The three safe shapes above are O(1) extra typing for O(N-unrelated-files) reduction in diff noise. The cost-benefit is overwhelming.
@@ -108,7 +108,7 @@ Apply **every** time an autofix tool is invoked during:
 - A ce:review follow-up commit.
 - Any commit whose subject implies a narrow scope (`fix:`, `feat:` for a specific unit, etc.).
 - Any pre-PR cleanup pass where the diff's scope is the entire content of the PR.
-- A multi-unit session with per-unit scope isolation (see [[multi-unit-ce-review-stash-pop-coordination-2026-05-21]]).
+- A multi-unit session with per-unit scope isolation (see multi-unit-ce-review-stash-pop-coordination-2026-05-21).
 
 Do **not** apply (i.e., a directory glob IS appropriate) when:
 
@@ -172,8 +172,8 @@ git commit -m "chore: project-wide ruff autofix sweep (113 errors)"
 
 ## Related
 
-- [[multi-unit-ce-review-stash-pop-coordination-2026-05-21]] — sibling discipline from the same D6d new-U4 session. Both protect per-unit diff scope; this one against autofix-tool scope-creep, that one against multi-unit WIP. The two together cover the two operational hazards that can violate per-unit pipeline discipline in the same session.
-- [[delivery-boundary-bundled-commit-feat-plus-review-followups-2026-05-21]] — direct companion: the bundled-commit pattern at delivery boundaries depends on a clean diff; this discipline keeps the diff clean.
+- multi-unit-ce-review-stash-pop-coordination-2026-05-21 — sibling discipline from the same D6d new-U4 session. Both protect per-unit diff scope; this one against autofix-tool scope-creep, that one against multi-unit WIP. The two together cover the two operational hazards that can violate per-unit pipeline discipline in the same session.
+- delivery-boundary-bundled-commit-feat-plus-review-followups-2026-05-21 — direct companion: the bundled-commit pattern at delivery boundaries depends on a clean diff; this discipline keeps the diff clean.
 - Auto memory: [[Per-Delivery Workflow]] (auto memory [claude]) — per-unit scope discipline applies to tooling invocations too. The auto-memory establishes the cadence; this learning extends it to the tooling invocation layer.
 - Companion concern: `git add -A` / `git add .` (similar broad-scope hazard during staging — same class of bug, different tool).
 - Anchor commit: D6d new-U4 ce:review follow-ups landing at `67cd7fb` (2026-05-21). The bundled commit's diff shows the post-remediation scope — only U4 files modified.

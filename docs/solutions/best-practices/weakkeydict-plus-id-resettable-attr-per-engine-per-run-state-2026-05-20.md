@@ -37,7 +37,7 @@ protokit-lint's rule callables are module-level functions that receive a `LintCo
 
 Neither a module-level `set` nor a closure-captured `set` (initialized once per closure factory call) satisfies both requirements simultaneously. The `WeakKeyDictionary` + id-of-resettable-attribute pattern closes both.
 
-ce:review caught the failure mode via two-way reviewer convergence (D6d U2, 2026-05-20): correctness COR-1 reasoning from the engine.py:418 reset site + adversarial ADV-1 reasoning from a concrete two-call breakage construction. Both reached the same conclusion independently — the second `engine.run()` emits zero warnings on the same engine. See [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] Case 8.
+ce:review caught the failure mode via two-way reviewer convergence (D6d U2, 2026-05-20): correctness COR-1 reasoning from the engine.py:418 reset site + adversarial ADV-1 reasoning from a concrete two-call breakage construction. Both reached the same conclusion independently — the second `engine.run()` emits zero warnings on the same engine. See ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 Case 8.
 
 ## Guidance
 
@@ -254,9 +254,9 @@ If two instances exist and the codebase is otherwise stable, the boilerplate cos
 
 - [[bound-method-self-extraction-rule-to-engine-callback-2026-05-20]] — coupled sibling: the `ctx._emit_fn.__self__` extraction this pattern uses to recover the engine reference is itself architectural debt documented separately. The two patterns ship together at D6d U2; when the structural fix (a second engine-injected callable on the LintContext mixin) lands at D6e+, the `_engine_for_ctx` helper can drop the `__self__` extraction without changing the WeakKeyDictionary pattern.
 - [[module-level-assert-canonicalization-invariant-frozenset-2026-05-20]] — sibling: another structural-enforcement pattern from the same D6d U2 ce:review pass. Module-level `assert` for ordering invariants at import; this doc covers module-level state for dedup at runtime.
-- [[ce-review-convergence-rescues-sub-threshold-findings-2026-05-17]] Case 8 — concrete reviewer-convergence event that surfaced this bug.
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 Case 8 — concrete reviewer-convergence event that surfaced this bug.
 - [[module-import-time-fixture-mapping-fail-loud-blast-radius-2026-05-18]] — sibling: module-level state initialized at import time, fail-loud blast radius. Different state class (PRECONDITION vs DEDUP) but the same "module-level mutable state with lifecycle constraints" topic.
-- [[dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17]] — companion: the dormant-staged dormant-code discipline applies to the closure-captured `unresolved_seen` set in D6d U1's synthetic rules; the per-run reset pattern documented here is the backport target.
+- dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17 — companion: the dormant-staged dormant-code discipline applies to the closure-captured `unresolved_seen` set in D6d U1's synthetic rules; the per-run reset pattern documented here is the backport target.
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — sibling: latent-bug surface patterns. Where that doc covers parity gates surfacing single-run bugs, this pattern documents the multi-run failure class parity gates DON'T cover (because parity gates are single-run by construction).
-- [[delivery-boundary-unit-commit-composition-2026-05-14]] — related: engine state hygiene. The per-unit commit boundary applies — the WeakKeyDictionary pattern and its regression test land in the SAME unit commit as the rule callable that needs it.
+- delivery-boundary-unit-commit-composition-2026-05-14 — related: engine state hygiene. The per-unit commit boundary applies — the WeakKeyDictionary pattern and its regression test land in the SAME unit commit as the rule callable that needs it.
 - Anchor commit: D6d U2 ce:review follow-up commit (2026-05-20). See `src/protokit/schema/lint/rules/options/field_behavior.py:178-228`.

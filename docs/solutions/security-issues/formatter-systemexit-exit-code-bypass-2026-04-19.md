@@ -355,7 +355,7 @@ unilaterally. Enforce this structurally:
   contract (sibling doc). Same underlying invariant ("exit codes
   are a stable cross-process contract"), enforced on both sides
   of the process boundary.
-- [[sha256sum-strict-flag-supply-chain-silent-bypass-2026-05-13]] —
+- sha256sum-strict-flag-supply-chain-silent-bypass-2026-05-13 —
   same exit-code-contract principle applied to a CLI tool's flag
   semantics. `sha256sum -c -` without `--strict` exits 0 on
   improperly-formatted input lines (the WARNING is informational,
@@ -363,7 +363,7 @@ unilaterally. Enforce this structurally:
   reflect actual verification. Same broader invariant ("the exit
   code is a contract; violations break automation that depends on
   it") at the shell-tool layer.
-- [[github-actions-expression-injection-env-block-mitigation-2026-05-13]] —
+- github-actions-expression-injection-env-block-mitigation-2026-05-13 —
   sibling CI-security learning from the same ce:review pass. Both
   cover "things that look right in CI logs but aren't": this doc
   covers `sys.exit()` bypassing exit-code wrappers; the cross-ref
