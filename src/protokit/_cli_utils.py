@@ -503,10 +503,15 @@ def _compile_with_protoc(
             cmd.append("--include_source_info")
         for inc in includes:
             cmd.extend(["-I", inc])
-        # End-of-options separator: protoc treats positional args
-        # starting with "--" as flags; the separator forces every
-        # subsequent token to be parsed as an input path.
-        cmd.append("--")
+        # NOTE: protoc 25+ rejects the standard ``--`` end-of-options
+        # separator with ``Unknown flag: --``. The separator was a
+        # hardening measure for input paths starting with ``--`` (a
+        # rare-but-real foot-gun) and was accepted by earlier protoc
+        # versions. The blast radius of dropping it is tiny — a proto
+        # path beginning with ``--`` would be misinterpreted as a flag
+        # — and the alternative (gating on protoc version) adds
+        # complexity for marginal benefit. Users with such paths can
+        # rename or pass an absolute path containing ``./``.
         for p in proto_paths_in:
             cmd.append(str(p))
 

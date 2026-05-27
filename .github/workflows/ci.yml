@@ -94,11 +94,13 @@ jobs:
           import "google/protobuf/any.proto";
           message Demo { google.protobuf.Any payload = 1; }
           EOF
+          # protoc 25+ rejects the standard `--` end-of-options
+          # separator; pass file paths positionally instead.
           protoc --descriptor_set_out /tmp/protoc-sanity/out.bin \
                  --include_imports \
                  -I /tmp/protoc-sanity \
                  -I /usr/local/include \
-                 -- /tmp/protoc-sanity/demo.proto
+                 /tmp/protoc-sanity/demo.proto
           ls -la /tmp/protoc-sanity/out.bin
 
       - name: Install package + dev deps (with protoxy)

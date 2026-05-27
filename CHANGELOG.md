@@ -432,29 +432,41 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
-### 0.7.1 — WKT include-path auto-discovery for the system-protoc backend
+### 0.7.1 — WKT include-path auto-discovery + protoc 25+ compatibility (system-protoc backend)
 
 Patch release. No new features; no behavior change for the protoxy
 backend (which already bundles the well-known-type protos
-in-process).
+in-process and does not invoke the protoc binary).
 
-**Fix:** `_compile_with_protoc` now auto-discovers WKT include
-directories (the directory adjacent to the resolved `protoc`
-binary, plus `/usr/include` and `/usr/local/include` as fallbacks)
-and threads them into the protoc `-I` argv AFTER caller-supplied
-include paths and proto-file parents. Users importing
-`google/protobuf/*.proto` on systems with split-package protoc
-installs — most notably Debian/Ubuntu's `apt install
-protobuf-compiler`, which places protoc at `/usr/bin/protoc` and
-the WKT files at `/usr/include/google/protobuf/` without adding
-`/usr/include` to protoc's search path — no longer need to pass
-`-I /usr/include` themselves.
+**Fix #1 — WKT include-path auto-discovery.** `_compile_with_protoc`
+now auto-discovers WKT include directories (the directory adjacent
+to the resolved `protoc` binary, plus `/usr/include` and
+`/usr/local/include` as fallbacks) and threads them into the
+protoc `-I` argv AFTER caller-supplied include paths and
+proto-file parents. Users importing `google/protobuf/*.proto` on
+systems with split-package protoc installs — most notably
+Debian/Ubuntu's `apt install protobuf-compiler`, which places
+protoc at `/usr/bin/protoc` and the WKT files at
+`/usr/include/google/protobuf/` without adding `/usr/include` to
+protoc's search path — no longer need to pass `-I /usr/include`
+themselves.
 
-CI also switches from apt-installed `protobuf-compiler` to a
-pinned binary release (v25.3) from the protocolbuffers GitHub
-release bucket, both to fix the same symptom in the parity test
-matrix and to make the cross-backend byte-equivalence baseline
-reproducible across CI runs.
+**Fix #2 — protoc 25+ end-of-options compatibility.** Drop the
+`--` end-of-options separator from the protoc argv.
+`_compile_with_protoc` previously appended `--` as a hardening
+measure for input paths beginning with `--`, but protoc 25+
+rejects that separator with `Unknown flag: --`. The separator was
+accepted by earlier protoc versions; the blast radius of dropping
+it is tiny (a proto path starting with `--` would now be
+misinterpreted as a flag — rare-to-nonexistent in practice).
+
+CI also switches from apt-installed `protobuf-compiler` (which
+ships protoc 3.21) to a pinned binary release (v25.3) from the
+protocolbuffers GitHub release bucket. The binary release ships
+WKTs in `include/` adjacent to the binary, gives protoc
+auto-resolution, and exercises the protoc-25+-compatible argv on
+every CI run so any future regression in either fix surfaces
+immediately.
 
 Tag: `v0.7.1`. PyPI: `pip install protokit==0.7.1`.
 
