@@ -1,6 +1,7 @@
 ---
-title: "pytestmark does NOT guard module-top imports — use pytest.importorskip"
+title: "pytestmark does NOT guard module-top imports — use pytest.importorskip (+ skipif still needed for inside-try-block imports)"
 date: 2026-05-02
+last_updated: 2026-05-27
 category: docs/solutions/test-failures
 module: testing/pytest-conventions
 problem_type: test_failure
@@ -10,6 +11,7 @@ symptoms:
   - "ModuleNotFoundError surfaces during pytest collection, not as a yellow skip"
   - "Test passes locally where the optional dep IS installed; only the matrix axis without the dep breaks"
   - "Requirements/design docs give wrong guidance such as `OR pytestmark skipif guards`"
+  - "Test monkeypatches `_has_protoxy = lambda: True` and installs a fake `_compile_with_protoxy`, but the fake is never reached on cells without the real dep (dispatcher's inside-try-block `import` raises ImportError before the patch is consulted)"
 root_cause: wrong_api
 resolution_type: code_fix
 severity: high
@@ -21,6 +23,9 @@ tags:
   - ci-matrix
   - collection-error
   - module-skip
+  - inside-try-block-import
+  - monkeypatch-cannot-defeat-import
+  - skipif
 ---
 
 # pytestmark does NOT guard module-top imports — use pytest.importorskip
@@ -145,9 +150,70 @@ The `allow_module_level=True` flag is the key — pytest's collection machinery 
    - **`from optional_dep import ...` at module top → `pytest.importorskip` required.**
    - **Optional dep used only inside test functions → `pytestmark` is sufficient.** (Pytest collects the module without trouble; the inside-test `import` only runs when the test runs, which `pytestmark` skips on the no-dep cell.)
 
+## Sibling pattern (added 2026-05-27): monkeypatch cannot defeat an `import` inside the dispatcher's try block
+
+`pytest.importorskip` at module top correctly gates **test collection** when the optional dep is absent. But there is a second failure mode in the same family that `importorskip` does NOT solve: tests that **monkeypatch** the dispatcher's `_has_protoxy = lambda: True` and install a fake `_compile_with_protoxy` to exercise the protoxy code path *as if* protoxy were available.
+
+The pattern looks like it should work. The test patches the helper that gates dispatch, then patches the function the dispatcher calls. On cells where protoxy IS installed, both patches take effect and the fake runs. On cells where protoxy is NOT installed, the patches are evaluated correctly but the fake **never gets called** — because the dispatcher's protoxy arm has a real `import protoxy` statement inside the try block. That import raises `ImportError` on `has_protoxy: false` cells, hitting the except branch that records a "backend missing" diagnostic, BEFORE the patched `_compile_with_protoxy` is ever reached.
+
+From `src/protokit/schema/compile.py` around line 614:
+
+```python
+def _compile_via_protoxy(...):
+    try:
+        import protoxy  # ← raises ImportError on has_protoxy: false cells
+        return _compile_with_protoxy(...)  # ← never reached; patched fake never invoked
+    except ImportError:
+        return _diagnostic_backend_missing(...)
+```
+
+There is no monkeypatch path that survives this. `monkeypatch.setattr(importlib, "import_module", ...)` doesn't intercept statement-level `import` (which goes through different machinery). `sys.modules["protoxy"] = fake` works in principle but is fragile across Python versions and obscures the test's intent.
+
+The honest classification is `@pytest.mark.skipif(not _cli_utils._has_protoxy(), reason=...)` on every test that asserts something about the protoxy code path — including monkeypatch-based tests, error-prefix-assertion tests ("protoxy compile failed:" vs "protoc compile failed:"), and tests using fixtures that protoxy's looser parser accepts but apt-protoc rejects (`option allow_alias = true` without aliases, control-char comment bodies, enum value uniqueness conflicts).
+
+Four categories of protoxy-dependent test that need the skipif:
+
+1. **Tests that assert protoxy IS dispatched.** Trivially false when protoxy is absent.
+2. **Tests that monkeypatch `_has_protoxy=True` + install a fake `_compile_with_protoxy`.** The fake is unreachable; the inside-try-block `import protoxy` short-circuits to the backend-missing diagnostic first.
+3. **Tests asserting a protoxy-specific error prefix.** Use `_has_protoxy()` to pick the expected prefix:
+
+   ```python
+   expected_prefix = (
+       "protoxy compile failed: "
+       if _cli_utils._has_protoxy()
+       else "protoc compile failed: "
+   )
+   assert expected_prefix in result.output
+   ```
+
+4. **Tests using fixtures that protoxy parses but apt-protoc rejects.** Examples in this codebase: `tests/schema/lint/rules/test_enum.py` (`allow_alias=true` without aliases — apt-protoc 3.21 rejects with `"Status" declares support for enum aliases but no enum values share field numbers`), `tests/schema/lint/rules/test_naming_extended.py` (mixed-case enum value names that collide post-prefix-strip), `tests/schema/lint/rules/options/test_deprecated_replacement.py::TestAdversarial::test_control_chars_sanitized` (control-char comment bodies).
+
+The shape:
+
+```python
+@pytest.mark.skipif(
+    not _cli_utils._has_protoxy(),
+    reason=(
+        "asserts protoxy IS the dispatched backend — trivially false on "
+        "the has_protoxy=false CI matrix cell where the optional "
+        "[compiler] extra is absent and the dispatcher routes to protoc"
+    ),
+)
+def test_dispatches_to_protoxy_when_available(...):
+    ...
+```
+
+The `reason=` string deserves real prose, not just "needs protoxy." Future maintainers debugging a flaky test need to understand WHY the skip is honest, not just THAT it skips.
+
+**Unifying rule of the two patterns.** Module-top imports of the optional dep → use `pytest.importorskip("dep")`. Inside-function or inside-try-block imports of the optional dep that tests try to monkeypatch around → use `@pytest.mark.skipif(not _has_dep())`. Neither replaces the other.
+
+Affects ~8 tests in this codebase; commit `68f8a30` is the canonical pattern. Compatible 0.7.1 changes also added `_has_protoxy()`-parameterized error-prefix assertions (see commit `68f8a30`'s `tests/schema/test_cli.py` change).
+
 ## Related Issues
 
 - `docs/solutions/best-practices/pytest-static-analysis-gate-ratchet-2026-05-02.md` — the static-analysis gate that runs ruff and mypy via subprocess inside pytest tests. Same general theme: the test file IS the test collection; gotchas at the collection layer (like this one) bypass the test logic entirely.
-- `docs/brainstorms/2026-04-30-protokit-lint-delivery-1-foundation-requirements.md` (A9-1) — requirements doc that gave the incorrect "OR pytestmark skipif guards" guidance. Future requirements docs should not propagate the OR.
 - [[fail-closed-ci-matrix-coverage-meta-test]] — forward complement that closes the loop on optional-dep matrix coverage. Once `pytest.importorskip` is in place at module top, this doc's CI-matrix meta-test pattern verifies the CI YAML actually has the complementary no-dep cell. The two together prevent both the silent-collect-failure (`importorskip` solves) and the silent-skip-on-every-cell (meta-test solves) failure modes.
 - [[module-import-time-fixture-mapping-fail-loud-blast-radius-2026-05-18]] — same mechanism, opposite framing. This doc treats collection-time blast radius as a BUG (`pytestmark` cannot guard against collection-time errors from required imports). The D6b U6 doc treats the SAME mechanism as a DELIBERATE design tool (building a fixture-rule_id mapping at module-import time so a misconfigured fixture intentionally fails all tests in the module, surfacing the contract violation immediately). Both perspectives are correct in their own context: use `pytest.importorskip` when the dependency is genuinely optional and the test should skip; use intentional import-time validation when the resource is a required precondition and failure-to-collect is the correct signal.
+- [[mock-patch-c-extension-method-descriptor-2026-05-06]] — sibling "monkeypatch silently no-ops because the call site isn't the patched object" pattern.
+- [[capture-setup-without-dispatch-false-test-confidence-2026-05-17]] — "monkeypatch + capture infrastructure without the dispatch you expect → false confidence." Identical mental model to the inside-try-block-import pattern added 2026-05-27.
+- [[protoc-version-skew-between-system-and-embedded-breaks-descriptor-tests-2026-05-27]] — companion 0.7.1 fix; explains why category 4 (apt-protoc-rejected fixtures) is a real failure mode.

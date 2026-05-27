@@ -1,7 +1,7 @@
 ---
 title: "Matcher-vs-backend path resolution skew silently empties root_files on symlinked workspaces"
 date: 2026-05-02
-last_updated: 2026-05-08
+last_updated: 2026-05-27
 category: docs/solutions/logic-errors
 module: protokit/_cli_utils
 problem_type: logic_error
@@ -24,6 +24,7 @@ tags:
   - protoxy
   - protoc
   - silent-failure
+  - protoc-distribution-quirks
 ---
 
 # Matcher-vs-backend path resolution skew silently empties `root_files` on symlinked workspaces
@@ -142,3 +143,16 @@ The deeper lesson: **the matcher must use the same resolution policy as the sour
 - [[subprocess-exit-code-validation-test-harness-2026-05-13]] — same "silent-green on a broken pipeline" symptom class at a different boundary. This doc covers path-resolution skew between protoc and protoxy producing `root_files = ()`. That doc covers subprocess exit-code skew producing `findings = []` from a crashed external tool. Together they map two distinct mechanisms for the same symptom — a test reports a green run on a pipeline that never produced real output.
 - [[cross-file-pin-regex-anchor-structure-not-annotation-token-2026-05-13]] — same axiom ("matcher and source-of-truth must use identical resolution policies") applied to regex-pattern design instead of path resolution. When a regex's specificity exceeds the contract it's meant to enforce (anchoring on a Python type annotation when only the value matters), every future legal refactor of the over-specified token silently breaks consumers. Same root cause family at a different layer: this doc covers backend resolution skew; that doc covers regex-anchor skew across multi-consumer source parsing.
 - [[capture-setup-without-dispatch-false-test-confidence-2026-05-17]] — third member of the "silent-green" symptom family at a different boundary. This doc covers path-resolution skew producing `root_files = ()`; `subprocess-exit-code-validation-test-harness` covers exit-code skew producing `findings = []`; the capture-setup learning covers dispatch-walk skip producing `captured = []`. All three are test-author traps where infrastructure is set up correctly but the observed signal is silently missing.
+
+## Sibling protoc/protoxy backend-quirk learnings (added 2026-05-27)
+
+This doc was the foundational entry in what has since become a cluster of related learnings about how protoc and protoxy backends disagree in small-but-load-bearing ways. The 0.7.1 hotfix series added three more siblings; the full cluster (tagged `protoc-distribution-quirks` for discoverability) now covers:
+
+- **[[wkt-include-path-auto-discovery-system-protoc-backend-2026-05-27]]** — system-protoc distributions disagree on whether the WKT include directory is on protoc's default search path. apt's `protobuf-compiler` puts WKTs at `/usr/include/google/protobuf/` but does not add `/usr/include` to protoc's search path; protoxy bundles WKTs in-process. Auto-discovery helper that probes `<protoc-install>/include`, `/usr/include`, `/usr/local/include` makes apt's split-package layout work.
+- **[[protoc-25-rejects-end-of-options-separator-2026-05-27]]** — protoc 25+ rejects the standard `--` end-of-options separator with `Unknown flag: --`. Earlier versions accepted it as a POSIX-standard hardening measure. Cross-version protoc compatibility for any code shelling out to protoc.
+- **[[protoc-version-skew-between-system-and-embedded-breaks-descriptor-tests-2026-05-27]]** — when test suites cross-validate between an in-process backend (protoxy) and a system binary backend (protoc), the protoc versions must be kept in lockstep. Bumping one out-of-sync introduces descriptor-encoding differences (proto2 `required` handling, enum `allow_alias` permissiveness, mixed-case enum value rejection, control-char tolerance, `Location.span` encoding) that break ~10 lint-rule tests in this codebase.
+- **[[source-code-info-semantic-not-byte-equivalence-across-protoc-backends-2026-05-27]]** — the second-line defense for the one cross-backend test that genuinely needs to tolerate version-encoding skew. Replace `SerializeToString()` byte-equivalence with semantic equivalence on the `(path → comments)` mapping the consumer actually uses.
+
+The shared axiom from this doc — **the matcher and the source-of-truth must use identical resolution policies** — generalizes across the cluster: WKT search paths must match between the helper and protoc (Learning #1), argv separator semantics must match between the builder and the protoc version (Learning #2), descriptor encoding must match between cross-validated backends (Learning #3), and the parity test must assert at the granularity production code actually consumes (Learning #4 / the inverse-loosening case at [[parity-gate-must-assert-at-design-claim-granularity-2026-05-22]]).
+
+The unifying tag `protoc-distribution-quirks` is added to this doc's frontmatter so future ce-compound-refresh runs and ce-learnings-researcher queries can find the whole cluster from any entry point.
