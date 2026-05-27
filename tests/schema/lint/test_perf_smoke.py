@@ -188,9 +188,27 @@ def test_lint_engine_walks_10k_fields_under_smoke_threshold(
     # raises a rule_exception, or if the profile selects an unloaded
     # rule_id (unloaded_rule), those warnings would otherwise sail
     # through while the canary passes.
-    assert not report.runtime_warnings, (
+    #
+    # Filter out `extension_unresolved` warnings: those are the
+    # documented "rule X requires extension Y which isn't registered
+    # in the compile pool, so the rule skips this file" surface,
+    # emitted by option-aware rules added in 0.5.0+
+    # (notably `options/field-behavior-consistent`, which expects
+    # `google.api.field_behavior` to be imported by the input proto).
+    # The synthetic smoke fixture deliberately uses no external
+    # extensions, so this warning category fires once per file and
+    # is unrelated to walker performance — which is what the smoke
+    # canary actually tests. Counting these as "unexpected" would
+    # tie the smoke to a curated list of which BUILTIN_PACKS
+    # rules happen to use extensions, defeating the "future-proof
+    # the smoke against BUILTIN_PACKS growth" intent above.
+    unexpected_warnings = tuple(
+        w for w in report.runtime_warnings
+        if w.category != "extension_unresolved"
+    )
+    assert not unexpected_warnings, (
         f"smoke fixture produced unexpected runtime warnings: "
-        f"{report.runtime_warnings}"
+        f"{unexpected_warnings}"
     )
     # Defends against the canary timing an empty walk if a future
     # refactor accidentally empties profile.rule_ids before the smoke
