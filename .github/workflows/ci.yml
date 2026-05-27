@@ -72,9 +72,34 @@ jobs:
           PROTOC_VERSION=25.3
           curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
           sudo unzip -o -q /tmp/protoc.zip -d /usr/local
-          sudo chmod a+r -R /usr/local/include/google
+          # Use a+rX (capital X = add execute only where some user
+          # already has it; gives directories traversal rights without
+          # marking ordinary files executable).
+          sudo chmod -R a+rX /usr/local/include/google
           sudo chmod a+x /usr/local/bin/protoc
           protoc --version
+
+      - name: Sanity — protoc can resolve WKT imports from /usr/local/include
+        run: |
+          # Diagnostic that surfaces protoc stderr immediately rather
+          # than waiting for the test suite to fail with stderr buried
+          # inside a CalledProcessError repr. If this step fails the
+          # whole job aborts here with a clear error.
+          ls -ld /usr/local/include/google/protobuf
+          ls /usr/local/include/google/protobuf/any.proto
+          mkdir -p /tmp/protoc-sanity
+          cat > /tmp/protoc-sanity/demo.proto <<'EOF'
+          syntax = "proto3";
+          package demo;
+          import "google/protobuf/any.proto";
+          message Demo { google.protobuf.Any payload = 1; }
+          EOF
+          protoc --descriptor_set_out /tmp/protoc-sanity/out.bin \
+                 --include_imports \
+                 -I /tmp/protoc-sanity \
+                 -I /usr/local/include \
+                 -- /tmp/protoc-sanity/demo.proto
+          ls -la /tmp/protoc-sanity/out.bin
 
       - name: Install package + dev deps (with protoxy)
         if: matrix.has_protoxy
@@ -212,7 +237,7 @@ jobs:
           PROTOC_VERSION=25.3
           curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
           sudo unzip -o -q /tmp/protoc.zip -d /usr/local
-          sudo chmod a+r -R /usr/local/include/google
+          sudo chmod -R a+rX /usr/local/include/google
           sudo chmod a+x /usr/local/bin/protoc
           protoc --version
 
