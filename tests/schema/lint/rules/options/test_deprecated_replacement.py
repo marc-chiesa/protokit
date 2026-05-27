@@ -26,6 +26,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from protokit import _cli_utils
 from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
@@ -823,6 +826,18 @@ class TestAdversarial:
         # is exactly 500, but the bound below documents the general case.
         assert len(report.findings[0].params["comment"]) <= 1000
 
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason=(
+            "fixture deliberately embeds U+0085 / U+2028 / U+2029 / NUL / DEL "
+            "control chars in a // comment to verify the sanitization "
+            "pipeline. Strict protoc (3.21+) rejects these at parse time "
+            "(`Invalid control characters encountered in text`), so the lint "
+            "rule never observes the descriptor. Protoxy's embedded protoc "
+            "permits the input through to the rule; the adversarial coverage "
+            "is meaningful only on the protoxy backend"
+        ),
+    )
     def test_control_chars_sanitized(self, tmp_path: Path) -> None:
         # Proto-comment // lines can't carry raw newlines in the body
         # itself (// ends at the next \n), but they CAN carry U+0085 /

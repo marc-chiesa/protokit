@@ -174,6 +174,14 @@ class TestBackendDispatch:
     | OSError / TimeoutExpired| "compile infrastructure error: " |
     """
 
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason=(
+            "asserts protoxy IS the dispatched backend — trivially false on "
+            "the has_protoxy=false CI matrix cell where the optional "
+            "[compiler] extra is absent and the dispatcher routes to protoc"
+        ),
+    )
     def test_dispatches_to_protoxy_when_available(
         self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

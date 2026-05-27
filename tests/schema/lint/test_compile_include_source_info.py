@@ -393,6 +393,16 @@ class TestParameterValueThreadsToBackend:
 
         assert captured["include_source_info"] is opt_in
 
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason=(
+            "monkeypatches _has_protoxy=True to force the protoxy arm of the "
+            "dispatcher, but the dispatcher then does `import protoxy` inside "
+            "its try block — on the has_protoxy=false CI cell that ImportError "
+            "short-circuits to the backend-missing diagnostic before the fake "
+            "_compile_with_protoxy is reached"
+        ),
+    )
     @pytest.mark.parametrize("opt_in", [True, False])
     def test_protoxy_backend_receives_flag_value(
         self,
@@ -535,6 +545,16 @@ class TestPostInitExceptionContainment:
     "never raises on backend failure" contract.
     """
 
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason=(
+            "monkeypatches _has_protoxy=True to plant a fake protoxy backend "
+            "that returns a buggy Mapping, but the dispatcher's `import "
+            "protoxy` raises ImportError on the has_protoxy=false CI cell "
+            "and short-circuits to the backend-missing diagnostic before the "
+            "fake is reached — making the post_init containment unobservable"
+        ),
+    )
     def test_iteration_failure_in_post_init_becomes_diagnostic(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

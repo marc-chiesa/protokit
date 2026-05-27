@@ -19,6 +19,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from protokit import _cli_utils
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import ElementKind, LintProfile, LintSeverity
 from protokit.schema.lint.rules import naming as naming_pack
@@ -323,6 +326,20 @@ class TestUpperSnakeCaseEnumValues:
         )
         assert report.findings == ()
 
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason=(
+            "fixture intentionally pairs `StatusActive` and `STATUS_active` "
+            "to exercise both mixed-case and lowercase-suffix shapes. Strict "
+            "protoc (3.21+) enforces the enum-value uniqueness rule "
+            "(case-insensitive prefix-strip): both lowercase to `active` "
+            "after the implicit `Status` prefix is stripped, so protoc "
+            "rejects the file at parse time and the lint rule never sees "
+            "the descriptor. Protoxy's embedded protoc permits both shapes "
+            "and lets the rule fire — this test is meaningful only on the "
+            "protoxy backend"
+        ),
+    )
     def test_sad_path_mixed_case_values_fire(self, tmp_path: Path) -> None:
         report = _run_single(
             tmp_path,

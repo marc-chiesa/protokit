@@ -485,8 +485,8 @@ class TestErrors:
 
     def test_compat_compile_failure_exit_code_2(self, tmp_path: Path) -> None:
         """End-to-end: ``protokit compat check --proto`` on a syntactically
-        broken .proto exits 2 and surfaces the locked
-        ``"protoxy compile failed: "`` stderr prefix.
+        broken .proto exits 2 and surfaces the per-backend
+        ``"X compile failed: "`` stderr prefix.
 
         Replaces the helper-level invariant from the deleted
         ``tests/test_cli_utils.py::TestProtoxyBackend::test_compile_failure_exits_with_code_2``
@@ -494,7 +494,16 @@ class TestErrors:
         wrong layer post-refactor (helpers now raise typed exceptions;
         only the legacy adapter / CLI surface translates to ``SystemExit``).
         See protokit-lint Delivery 1 plan for the test-relayering audit.
+
+        The asserted prefix is parameterized on the live backend: the
+        ``has_protoxy=true`` matrix cell sees the ``protoxy compile failed:``
+        path, the ``has_protoxy=false`` cell falls back to protoc and sees
+        ``protoc compile failed:``. The contract under test is that
+        EITHER backend's compile failure produces ``exit_code == 2`` plus
+        the locked ``"<backend> compile failed: "`` stderr prefix.
         """
+        from protokit import _cli_utils
+
         good = tmp_path / "good.proto"
         good.write_text(
             'syntax = "proto3";\npackage t;\nmessage M { string s = 1; }\n'
@@ -505,8 +514,15 @@ class TestErrors:
             "--proto", str(bad), str(good), "--type", "t.M",
         ])
         assert result.exit_code == 2
-        # Locked stderr-string prefix per the post-refactor contract.
-        assert "protoxy compile failed: " in result.output
+        # Locked stderr-string prefix per the post-refactor contract. The
+        # exact word ("protoxy" vs "protoc") depends on which backend the
+        # dispatcher selected at runtime.
+        expected_prefix = (
+            "protoxy compile failed: "
+            if _cli_utils._has_protoxy()
+            else "protoc compile failed: "
+        )
+        assert expected_prefix in result.output
 
 
 # ---------------------------------------------------------------------------

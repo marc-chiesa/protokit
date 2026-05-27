@@ -22,6 +22,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from protokit import _cli_utils
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import ElementKind, LintProfile, LintSeverity
 from protokit.schema.lint.rules import enum as enum_pack
@@ -137,6 +140,18 @@ class TestNoAllowAlias:
         )
         assert report.findings == ()
 
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason=(
+            "fixture sets `option allow_alias = true` on an enum with no "
+            "actual aliasing — strict protoc (3.21+) rejects this at parse "
+            "time with `declares support for enum aliases but no enum values "
+            "share field numbers`, so the lint rule never sees the "
+            "descriptor. Protoxy's embedded protoc permits it; this test "
+            "verifies the rule fires on that shape and is meaningful only on "
+            "the protoxy backend"
+        ),
+    )
     def test_sad_path_allow_alias_without_actual_alias_fires(
         self, tmp_path: Path,
     ) -> None:
