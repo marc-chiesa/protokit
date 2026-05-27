@@ -432,6 +432,35 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### 0.7.2 — scrub maintainer-side strays from public docs/solutions/
+
+No code change; no behavior change. Removes 27 maintainer-side
+learnings from `docs/solutions/` — content about ce:review workflow
+meta, CHANGELOG/migration-recipe discipline, delivery-boundary commit
+composition, phase-0 brainstorm-verification discipline, plan-review
+prior-art audit, pre-release version-bump signaling, fail-closed CI
+matrix coverage, public surface DRAFT discipline, PyPI publish
+ergonomics, GitHub Actions injection mitigations, and similar
+operational discipline. These files were retained in 0.7.0 + 0.7.1 by
+the original pre-release cleanup but they are maintainer-side content
+irrelevant to library users (they don't describe library behavior,
+lint rule design, or anything visible in the public source); they now
+live in a private repo. Public `docs/solutions/` retains 81 project-
+side learnings about lint rule design, library API, wire format,
+debugging patterns, and other content that helps library users.
+
+Git history scrub applied via `git filter-repo --invert-paths`; main
+branch + v0.7.0 + v0.7.1 tags force-updated to remove the 27 paths
+from all reachable history. 0.7.0 and 0.7.1 sdists on PyPI still
+contain the relocated files (PyPI sdists are immutable after
+publish) — 0.7.2 is the first version with a clean published
+distribution. The relocated paths also disappear from any future
+`git clone` checkout.
+
+Tag: `v0.7.2`. PyPI: `pip install protokit==0.7.2`.
+
+---
+
 ### 0.7.1 — WKT include-path auto-discovery + protoc 25+ compatibility (system-protoc backend)
 
 Patch release. No new features; no behavior change for the protoxy
