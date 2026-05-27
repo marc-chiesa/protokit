@@ -1,4 +1,4 @@
-"""Pyproject `[tool.protokit.lint]` config loader (D5 U1).
+"""Pyproject `[tool.protokit.lint]` config loader.
 
 Internal module: imported only from ``protokit.schema.lint.cli``; never
 re-exported from ``protokit.schema.lint.__init__``. The leading
@@ -12,31 +12,26 @@ from ``import protokit.schema`` consumers. The lint-cli-specific test
 (``'protokit.schema.lint.cli' in k``) also covers it transitively
 via cli.py's import. No edits to the cold-import test required.
 
-**Scope (U1)**: discovery + parsing only. Schema validation (R3, R3a),
-precedence resolution (R11-R14), and the ``ResolvedLintConfig`` carrier
-land in U2. U1 returns the raw ``dict[str, Any]`` parsed from the
-``[tool.protokit.lint]`` table (or ``None`` when no config applies).
-
-**Security posture (per plan KTD-7, KTD-9, R5a)**:
+**Security posture**:
 
 - Walk-up termination uses ``(parent / ".git").exists()`` to cover both
   ``.git`` directories AND ``.git`` files (git worktrees, submodules).
   The ``.git`` path is checked for existence only; its contents (the
   ``gitdir: ...`` pointer in worktree ``.git`` files) are NEVER read,
   parsed, or followed.
-- All R5a shadow paths (missing file, unreadable, table-absent, invalid
+- All shadow paths (missing file, unreadable, table-absent, invalid
   TOML) produce exit 2 via ``error_exit_with_code("pyproject-config-load",
   ...)`` with newline-sanitized stderr.
 - ``tomllib.TOMLDecodeError`` messages may include raw file bytes per
-  cpython issue; D5 replaces the raw error message with the structured
-  form ``"TOML parse error at {path}:{line}:{col}"`` using only safe
-  exception attributes.
+  cpython issue; the loader replaces the raw error message with the
+  structured form ``"TOML parse error at {path}:{line}:{col}"`` using
+  only safe exception attributes.
 - Triple-arm exception guards ``(SystemExit, KeyboardInterrupt,
-  Exception)`` around ``tomllib`` calls per the
-  ``keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md``
-  learning. ``KeyboardInterrupt`` is caught and re-raised so the user's
-  SIGINT propagates to Python's default handler (exit 130) rather than
-  being absorbed.
+  Exception)`` around ``tomllib`` calls so a malicious config body
+  cannot bypass the error surface via ``BaseException`` subclasses.
+  ``KeyboardInterrupt`` is caught and re-raised so the user's SIGINT
+  propagates to Python's default handler (exit 130) rather than being
+  absorbed.
 """
 
 from __future__ import annotations
@@ -66,7 +61,7 @@ from protokit.schema.lint.model import (
     LintSeverity,
 )
 
-# Per-key source attribution for ResolvedLintConfig (R20 message branches).
+# Per-key source attribution for ResolvedLintConfig message branches.
 # Used for `min_severity_source`: cli vs pyproject is mutually exclusive
 # (CLI replaces pyproject); a "both" message branch is encoded by
 # `min_severity_source="cli"` + `pyproject_min_severity is not None`.
@@ -74,17 +69,17 @@ from protokit.schema.lint.model import (
 # - "cli":       CLI flag (--profile/--min-severity/etc) explicitly provided.
 # - "pyproject": Pyproject set this key; CLI did not override.
 # - "profile":   Neither CLI nor pyproject set this key; the composed
-#                profile's intrinsic floor is in effect. U4 may transition
-#                "default" to "profile" at emission time when min_severity
-#                is None.
+#                profile's intrinsic floor is in effect. Emission code may
+#                transition "default" to "profile" at emission time when
+#                min_severity is None.
 # - "default":   Neither CLI nor pyproject nor profile set this key.
 ConfigSource = Literal["cli", "pyproject", "profile", "default"]
 
-# Exclude-specific source attribution (R20 message branches for
-# `all_files_excluded`). Unlike `min_severity` (where CLI replaces
-# pyproject), `exclude` APPENDS CLI patterns to pyproject patterns,
-# so the "both" case is structurally distinct — both sources
-# CONTRIBUTE patterns rather than one overriding the other.
+# Exclude-specific source attribution for `all_files_excluded` message
+# branches. Unlike `min_severity` (where CLI replaces pyproject),
+# `exclude` APPENDS CLI patterns to pyproject patterns, so the "both"
+# case is structurally distinct — both sources CONTRIBUTE patterns
+# rather than one overriding the other.
 #
 # - "cli":       CLI `--exclude` patterns only (no pyproject exclude).
 # - "pyproject": Pyproject `exclude` patterns only (no CLI flags).
@@ -92,7 +87,7 @@ ConfigSource = Literal["cli", "pyproject", "profile", "default"]
 # - "default":   No exclude configured (resolved.exclude is the empty tuple).
 ExcludeSource = Literal["cli", "pyproject", "both", "default"]
 
-# Source-attribution descriptors for the R20 ``all_files_excluded``
+# Source-attribution descriptors for the ``all_files_excluded``
 # message. ``"default"`` is excluded from the mapping because the
 # ``__post_init__`` invariant on ``ResolvedLintConfig`` rejects
 # ``exclude_source == "default"`` when ``exclude`` is non-empty, so
@@ -116,11 +111,11 @@ def load_pyproject_config(
 ) -> dict[str, Any] | None:
     """Load the ``[tool.protokit.lint]`` table from pyproject.toml.
 
-    Resolution order (per plan R1, R1a, R5, R5a):
+    Resolution order:
 
     1. If ``no_config`` is True, return ``None`` immediately (bypass).
     2. If ``explicit_path`` is provided, load it in **strict mode**:
-       all R5a shadow paths (missing file, unreadable, missing table,
+       all shadow paths (missing file, unreadable, missing table,
        invalid TOML) produce exit 2 with ``pyproject-config-load`` error
        code. This is the explicit-intent path: a user who typed
        ``--config PATH`` deserves a hard error if their path can't load.
@@ -153,7 +148,7 @@ def load_pyproject_config(
 
     Raises:
         SystemExit: Exit code 2 via ``error_exit_with_code(
-        "pyproject-config-load", ...)`` for any R5a shadow path or
+        "pyproject-config-load", ...)`` for any shadow path or
         unrecoverable parse error.
     """
     if no_config:
@@ -185,15 +180,15 @@ def load_pyproject_config(
 
 
 # ---------------------------------------------------------------------------
-# Walk-up discovery (R1, R1a, KTD-7)
+# Walk-up discovery
 # ---------------------------------------------------------------------------
 
 
 def _walk_up_find_pyproject(start: Path) -> Path | None:
     """Walk up from ``start`` looking for ``pyproject.toml``; terminate at ``.git``.
 
-    Per KTD-7: the ``.git`` boundary check uses ``(parent / ".git").exists()``
-    so both ``.git`` directories (standard checkouts) AND ``.git`` files
+    The ``.git`` boundary check uses ``(parent / ".git").exists()`` so
+    both ``.git`` directories (standard checkouts) AND ``.git`` files
     (git worktrees, submodules — where ``.git`` contains
     ``gitdir: <path>``) terminate the walk-up. Using ``.is_dir()`` would
     silently skip past worktree roots into attacker-writable parent
@@ -222,7 +217,7 @@ def _walk_up_find_pyproject(start: Path) -> Path | None:
             pyproject = candidate / "pyproject.toml"
             if pyproject.is_file():
                 return pyproject
-            # `.git` content is never read — existence check only (KTD-7).
+            # `.git` content is never read — existence check only.
             if (candidate / ".git").exists():
                 return None
         except OSError as exc:
@@ -237,12 +232,12 @@ def _walk_up_find_pyproject(start: Path) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Loading: explicit path (R5a strict mode) and walk-up path (silent fallback)
+# Loading: explicit path (strict mode) and walk-up path (silent fallback)
 # ---------------------------------------------------------------------------
 
 
 def _load_explicit(path: Path) -> dict[str, Any]:
-    """Load ``--config PATH`` in strict R5a mode (table-absent is an error)."""
+    """Load ``--config PATH`` in strict mode (table-absent is an error)."""
     table = _read_and_parse(path, source_label="--config path")
     lint_table = _extract_lint_table(table)
     if lint_table is None:
@@ -261,15 +256,15 @@ def _load_from_walkup(path: Path) -> dict[str, Any] | None:
     table = _read_and_parse(
         path, source_label="walk-up-discovered pyproject",
     )
-    # Walk-up: table-absent returns None silently (run with built-in defaults
-    # per R5). Only parse-time errors are hard.
+    # Walk-up: table-absent returns None silently (run with built-in
+    # defaults). Only parse-time errors are hard.
     return _extract_lint_table(table)
 
 
 def _read_and_parse(
     path: Path, *, source_label: str = "--config path",
 ) -> dict[str, Any]:
-    """Read bytes from ``path`` and parse as TOML; produce R5a shadow-path errors.
+    """Read bytes from ``path`` and parse as TOML; produce shadow-path errors.
 
     The ``source_label`` parameter controls the wording of OS-level
     error messages (missing file / unreadable file) so walk-up-discovered
@@ -324,7 +319,7 @@ def _read_and_parse(
 
 
 def _parse_toml_bytes(data: bytes, path: Path) -> dict[str, Any]:
-    """Decode and parse TOML bytes; produce R5a-safe error messages.
+    """Decode and parse TOML bytes; produce content-safe error messages.
 
     Decoupled from ``_read_and_parse`` so tests can inject TOML bytes
     directly without round-tripping through the filesystem.
@@ -346,17 +341,17 @@ def _parse_toml_bytes(data: bytes, path: Path) -> dict[str, Any]:
     except KeyboardInterrupt:
         # User SIGINT — propagate to Python's default handler (exit 130).
         # Catch-and-reraise prevents the bare-Exception arm from
-        # absorbing the interrupt signal (per KTD-9).
+        # absorbing the interrupt signal.
         raise
     except UnicodeDecodeError:
-        # Not valid UTF-8 (R5a invalid-input case before TOML-level parse).
+        # Not valid UTF-8 (invalid-input case before TOML-level parse).
         # Don't echo the raw bytes/position — just name the file.
         error_exit_with_code(
             "pyproject-config-load",
             f"TOML parse error in {_safe_for_stderr(path)}: not valid UTF-8",
         )
     except tomllib.TOMLDecodeError as exc:
-        # R5a content-safety: tomllib.TOMLDecodeError.args[0] may include
+        # Content-safety: tomllib.TOMLDecodeError.args[0] may include
         # raw file bytes / fragments. NEVER expose. Use only structured
         # attributes (lineno, colno) if present on the exception.
         #
@@ -426,29 +421,26 @@ def _extract_lint_table(table: dict[str, Any]) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
-# Stderr-safe rendering helpers (KTD-9 newline sanitization)
-# Per ce:review finding #9, `_safe_for_stderr` was consolidated to
-# `protokit.schema.lint._cli_utils` so the canonical implementation is
-# shared with `_safe_module_name` (which now delegates to it). The
-# import is at the top of this module alongside `error_exit_with_code`.
-# Per ce:review finding #11, the sanitization scope was extended from
-# newlines only to all ASCII control characters (\n, \r, \x00, \x1b,
-# \t, etc.) — see the helper's docstring for the threat model.
+# Stderr-safe rendering helpers (newline sanitization)
+# `_safe_for_stderr` is consolidated in `protokit.schema.lint._cli_utils`
+# so the canonical implementation is shared with `_safe_module_name`
+# (which now delegates to it). The import is at the top of this module
+# alongside `error_exit_with_code`. Sanitization scope covers all ASCII
+# control characters (\n, \r, \x00, \x1b, \t, etc.) — see the helper's
+# docstring for the threat model.
 
 
 # ---------------------------------------------------------------------------
-# Schema validation + precedence (D5 U2: R2, R3, R3a, R11-R14, KTD-2, KTD-5)
+# Schema validation + precedence
 # ---------------------------------------------------------------------------
 
-#: Top-level keys allowed inside ``[tool.protokit.lint]`` (R2 allowlist).
-#: Anything else surfaces via :func:`_validate_table_keys` as an R3 error,
+#: Top-level keys allowed inside ``[tool.protokit.lint]`` (allowlist).
+#: Anything else surfaces via :func:`_validate_table_keys` as an error,
 #: including nested tables like ``[tool.protokit.lint.rules.foo]`` whose
-#: TOP-LEVEL key (``"rules"``) is not in this set. D6a admits two new
-#: keys (``severities``, ``no_builtin_rules``) per R9a / R9c; until
-#: cross-language profiles arrive in D6b the contract remains "top-level
-#: allowlist only" per KTD-2.
+#: TOP-LEVEL key (``"rules"``) is not in this set. The contract remains
+#: "top-level allowlist only".
 #:
-#: Note: ``schema_version`` is wire-format OUTPUT only (R9d) — it is
+#: Note: ``schema_version`` is wire-format OUTPUT only — it is
 #: emitted by formatters, never accepted as pyproject input.
 _ALLOWED_KEYS: frozenset[str] = frozenset(
     {
@@ -460,18 +452,18 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "severities",
         "no_builtin_rules",
         "custom_annotation_rules",
-        # D6f R5: ``disabled_rules`` / ``enabled_rules`` lists drive
-        # the R9b per-rule disable surface. Both accept the same R9b
-        # rule_id format (``_R9B_RULE_ID_REGEX``); cross-list and
-        # cross-tier interactions resolve via R8 polarity-first /
-        # tier-second precedence in ``ResolvedLintConfig.from_dict``.
+        # ``disabled_rules`` / ``enabled_rules`` lists drive the R9b
+        # per-rule disable surface. Both accept the same R9b rule_id
+        # format (``_R9B_RULE_ID_REGEX``); cross-list and cross-tier
+        # interactions resolve via polarity-first / tier-second
+        # precedence in ``ResolvedLintConfig.from_dict``.
         "disabled_rules",
         "enabled_rules",
     },
 )
 
 
-#: D6d R9: regex contract for ``[[custom_annotation_rules]].rule_suffix``.
+#: Regex contract for ``[[custom_annotation_rules]].rule_suffix``.
 #: Anchored, lowercase-ASCII kebab-case, must start with a letter, no
 #: leading/trailing/double hyphens. Underscores are forbidden so synthetic
 #: rule_ids stay consistent with the project's ``<category>/<short-name>``
@@ -481,14 +473,14 @@ _CUSTOM_RULE_SUFFIX_REGEX: re.Pattern[str] = re.compile(
     r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
 )
 
-#: D6f R9b: regex contract for entries in ``disabled_rules`` /
-#: ``enabled_rules`` (and their CLI overrides ``--disable-rule`` /
-#: ``--enable-rule``). Three shapes accepted:
+#: Regex contract for entries in the R9b per-rule disable surface:
+#: ``disabled_rules`` / ``enabled_rules`` (and their CLI overrides
+#: ``--disable-rule`` / ``--enable-rule``). Three shapes accepted:
 #:
 #: - Canonical ``pack/rule-suffix`` (e.g., ``naming/snake-case-fields``,
 #:   ``options/deprecated-field-must-have-replacement-comment``).
 #: - Bare custom ``custom/<suffix>`` (e.g., ``custom/audit-required``)
-#:   — triggers KD-2 multi-kind prefix expansion at config-resolution
+#:   — triggers multi-kind prefix expansion at the config-resolution
 #:   layer when the suffix matches a declared custom annotation rule.
 #: - Mangled custom ``custom/<suffix>__<kind>`` (e.g.,
 #:   ``custom/audit-required__method``,
@@ -508,16 +500,15 @@ _R9B_RULE_ID_REGEX: re.Pattern[str] = re.compile(
     r"(__[a-z]+(_[a-z]+)*)?$",
 )
 
-#: D6d R8: allowed lowercase ElementKind values for the
-#: ``element_kinds`` array entry. Pyproject TOML uses lowercase
-#: identifiers ("field", "method", ...) which map to ``ElementKind`` via
-#: ``ElementKind(value)``.
+#: Allowed lowercase ElementKind values for the ``element_kinds`` array
+#: entry. Pyproject TOML uses lowercase identifiers ("field", "method", ...)
+#: which map to ``ElementKind`` via ``ElementKind(value)``.
 _VALID_ELEMENT_KIND_NAMES: frozenset[str] = frozenset(
     kind.value for kind in ElementKind
 )
 
 #: Buf-compatibility profile aliases resolved at the
-#: ``_coerce_profile`` input boundary (per KTD-1 and the
+#: ``_coerce_profile`` input boundary (per the
 #: ``normalize-at-input-boundary`` learning). Both pyproject and CLI
 #: input paths flow through ``_coerce_profile`` via ``from_dict``'s
 #: coercion step, so this single mapping covers both surfaces.
@@ -535,17 +526,18 @@ _PROFILE_ALIASES: dict[str, str] = {
 
 
 def _validate_table_keys(table: Mapping[str, Any]) -> None:
-    """Hard-error on any key outside R2's allowlist.
+    """Hard-error on any key outside the top-level allowlist.
 
-    Per R3 / KTD-2's single-pass posture: nested tables like
+    Single-pass posture: nested tables like
     ``[tool.protokit.lint.rules.foo]`` surface as the top-level
-    unknown key ``"rules"``, not the dotted path. D6 may extend to
-    dotted-path messages when nested tables become first-class.
+    unknown key ``"rules"``, not the dotted path. A future revision
+    may extend to dotted-path messages when nested tables become
+    first-class.
 
     Error message names the unknown top-level key(s) AND the
     recognized keys, so users see both what they typed wrong and
-    what they meant. The offending VALUE is never echoed (R5a
-    content-safety carries over from U1's parse-time posture).
+    what they meant. The offending VALUE is never echoed (content-safety
+    carries over from the parse-time posture).
     """
     unknown = sorted(set(table) - _ALLOWED_KEYS)
     if unknown:
@@ -561,21 +553,20 @@ def _validate_table_keys(table: Mapping[str, Any]) -> None:
 
 
 def _coerce_profile(value: Any) -> tuple[str, ...]:
-    """Coerce ``profile`` to ``tuple[str, ...]`` per R15 + R3a/KTD-5.
+    """Coerce ``profile`` to ``tuple[str, ...]``.
 
     ``profile`` is the ONLY field that accepts BOTH a scalar string
-    AND a list of strings (origin R15). All other list-typed fields
-    are list-only. Strings are normalized at the input boundary
-    (strip whitespace + lowercase) per the
-    ``normalize-at-input-boundary`` learning.
+    AND a list of strings. All other list-typed fields are list-only.
+    Strings are normalized at the input boundary (strip whitespace +
+    lowercase) per the ``normalize-at-input-boundary`` learning.
 
-    D6a (R7 / KTD-1): after ``.strip().lower()`` normalization, the
-    buf-compatibility aliases declared in ``_PROFILE_ALIASES`` are
-    resolved to their primary protokit-native names. This happens at
-    the input boundary so downstream code (``LintProfile.compose`` and
-    rule-pack profile-name matching) sees only primary names. Both
-    pyproject and CLI input paths flow through this helper, so the
-    alias resolution covers both surfaces with a single declaration.
+    After ``.strip().lower()`` normalization, the buf-compatibility
+    aliases declared in ``_PROFILE_ALIASES`` are resolved to their
+    primary protokit-native names. This happens at the input boundary
+    so downstream code (``LintProfile.compose`` and rule-pack
+    profile-name matching) sees only primary names. Both pyproject
+    and CLI input paths flow through this helper, so the alias
+    resolution covers both surfaces with a single declaration.
     """
     if isinstance(value, str):
         normalized = value.strip().lower()
@@ -613,12 +604,12 @@ def _coerce_profile(value: Any) -> tuple[str, ...]:
 
 
 def _coerce_exclude(value: Any) -> tuple[str, ...]:
-    """Coerce ``exclude`` to ``tuple[str, ...]`` per R3a/KTD-5 (list-only).
+    """Coerce ``exclude`` to ``tuple[str, ...]`` (list-only).
 
     Unlike :func:`_coerce_profile`, ``exclude`` rejects scalar input
     even when it would coerce cleanly — the contract is "list of
-    glob patterns", not "string or list" (R15 explicitly distinguishes
-    profile from exclude on this dimension).
+    glob patterns", not "string or list" (the schema explicitly
+    distinguishes profile from exclude on this dimension).
 
     Elements are NOT lowercased (path patterns are case-sensitive on
     POSIX, and pathspec handles its own normalization for negation
@@ -648,7 +639,7 @@ def _coerce_exclude(value: Any) -> tuple[str, ...]:
 
 
 def _coerce_min_severity(value: Any) -> LintSeverity:
-    """Coerce ``min_severity`` to ``LintSeverity`` per R3a + boundary-normalize.
+    """Coerce ``min_severity`` to ``LintSeverity`` with boundary normalization.
 
     Accepts only string input matching one of the three severity
     levels (``"info"``, ``"warning"``, ``"error"``), case-insensitive
@@ -680,19 +671,18 @@ def _coerce_min_severity(value: Any) -> LintSeverity:
 
 
 def _coerce_max_warnings(value: Any) -> int:
-    """Coerce ``max_warnings`` to ``int`` per R3a (non-negative).
+    """Coerce ``max_warnings`` to ``int`` (non-negative).
 
     Explicitly rejects ``bool`` inputs even though ``bool`` is an
     ``int`` subclass in Python — accepting ``max_warnings = true``
     as ``1`` would be a surprising silent coercion that TOML users
     would not expect.
 
-    Positive-form isinstance narrowing (F-10): structure the type
-    check so mypy can narrow ``value`` to ``int`` for the remainder
-    of the function without an explicit ``int(value)`` cast at the
-    return statement. F-18 / R5a content-safety carries forward by
-    naming only the *type* on negative-int input (never the raw
-    integer value).
+    Positive-form isinstance narrowing: structure the type check so
+    mypy can narrow ``value`` to ``int`` for the remainder of the
+    function without an explicit ``int(value)`` cast at the return
+    statement. Content-safety carries forward by naming only the
+    *type* on negative-int input (never the raw integer value).
     """
     if not isinstance(value, int) or isinstance(value, bool):
         error_exit_with_code(
@@ -714,7 +704,7 @@ def _coerce_max_warnings(value: Any) -> int:
 
 
 def _coerce_format(value: Any) -> str:
-    """Coerce ``format`` to lowercased string per R3a + boundary-normalize.
+    """Coerce ``format`` to lowercased string with boundary normalization.
 
     Does NOT validate against the formatter registry — the registry
     is mutable across plugin loads, and ``error[lint-format-unavailable]``
@@ -733,10 +723,10 @@ def _coerce_format(value: Any) -> str:
 
 
 class _CoercedSeverities(NamedTuple):
-    """Two-part return shape for :func:`_coerce_severities` (D6f U2 KD-1).
+    """Two-part return shape for :func:`_coerce_severities`.
 
     The ``"off"`` value is intercepted at the coercion layer BEFORE
-    ``LintSeverity(normalized)`` construction (per KD-1 + the
+    ``LintSeverity(normalized)`` construction (per the
     ``semantic-category-conflation-accepted-tradeoff-literal-widening``
     learning). ``LintSeverity`` stays a closed 3-member enum; the
     sentinel is propagated to the disable layer via the second tuple
@@ -745,12 +735,11 @@ class _CoercedSeverities(NamedTuple):
     Attributes:
         severities: The non-``off`` per-rule severity overrides as
             ``dict[str, LintSeverity]``. Keys normalized to lowercase
-            per KD-6. Mirrors the pre-D6f return shape.
+            for canonical-form lookup.
         off_rule_ids: Frozen set of normalized (lowercase) rule_ids
             whose ``[severities]`` value was the sentinel ``"off"``.
             Merged into the unified ``ResolvedLintConfig.disabled_rules``
-            by ``from_dict`` per the KD-1 sentinel propagation contract
-            (see Risks & Dependencies in the D6f U2 plan).
+            by ``from_dict`` per the sentinel propagation contract.
     """
 
     severities: Mapping[str, LintSeverity]
@@ -758,11 +747,11 @@ class _CoercedSeverities(NamedTuple):
 
 
 def _coerce_severities(value: Any) -> _CoercedSeverities:
-    """Coerce ``severities`` to ``_CoercedSeverities`` per R9a + R4 (D6f).
+    """Coerce ``severities`` to ``_CoercedSeverities``.
 
     The ``[tool.protokit.lint.severities]`` table is a flat
-    rule_id-to-severity mapping (no nested rules-pack grouping in
-    D6a). Validates:
+    rule_id-to-severity mapping (no nested rules-pack grouping).
+    Validates:
 
     - Value is a TOML table (``dict``) — scalar / list inputs are
       hard-errors.
@@ -772,11 +761,10 @@ def _coerce_severities(value: Any) -> _CoercedSeverities:
     - Each value coerces to ``LintSeverity`` via the same
       severity-string semantics as :func:`_coerce_min_severity`
       (case-insensitive, whitespace-stripped at the boundary). The
-      D6f-added ``"off"`` value is intercepted before
-      ``LintSeverity()`` construction per KD-1; matching rule_ids
-      accumulate in ``off_rule_ids`` and are NOT written to the
-      ``severities`` dict (so ``LintSeverity`` stays a closed
-      3-member enum).
+      ``"off"`` value is intercepted before ``LintSeverity()``
+      construction; matching rule_ids accumulate in ``off_rule_ids``
+      and are NOT written to the ``severities`` dict (so
+      ``LintSeverity`` stays a closed 3-member enum).
 
     Empty table (``severities = {}``) is valid — explicit empty is
     indistinguishable from omitting the key, but the coercion
@@ -788,8 +776,8 @@ def _coerce_severities(value: Any) -> _CoercedSeverities:
     Python's ``repr()`` escapes control characters and surrogate
     pairs to their ``\\xNN`` / ``\\uNNNN`` form, so embedding control
     chars in a TOML key cannot forge fake stderr lines or smuggle
-    ANSI escapes through (R5a content-safety holds via repr's
-    escaping, not by suppressing the key entirely).
+    ANSI escapes through (content-safety holds via repr's escaping,
+    not by suppressing the key entirely).
 
     The rejected VALUE's content is never echoed — only its Python
     type name appears in error messages — so a TOML value like
@@ -843,16 +831,16 @@ def _coerce_severities(value: Any) -> _CoercedSeverities:
         # so a user who writes ``"Naming/Snake-Case-Fields"`` in their
         # pyproject expects the override to apply to the canonical
         # rule. Without this normalization the override silently
-        # no-ops (or in U9 produces an ``unloaded_rule`` warning
-        # naming the user's wrong casing, not the canonical id).
+        # no-ops (or produces an ``unloaded_rule`` warning naming the
+        # user's wrong casing, not the canonical id).
         # Mirrors ``_coerce_profile``'s normalize-then-resolve order.
         normalized_rule_id = rule_id.strip().lower()
         normalized = sev_value.strip().lower()
-        # D6f R4 / KD-1: intercept ``"off"`` BEFORE constructing
-        # LintSeverity. The matching rule_id is propagated to the
-        # disable layer via ``off_rule_ids`` and NOT written into the
-        # severities dict — preserving the closed 3-member enum and
-        # the SARIF formatter ``assert_never`` wire-safety invariant.
+        # Intercept ``"off"`` BEFORE constructing LintSeverity. The
+        # matching rule_id is propagated to the disable layer via
+        # ``off_rule_ids`` and NOT written into the severities dict —
+        # preserving the closed 3-member enum and the SARIF formatter
+        # ``assert_never`` wire-safety invariant.
         if normalized == "off":
             off_rule_ids.add(normalized_rule_id)
             continue
@@ -860,10 +848,10 @@ def _coerce_severities(value: Any) -> _CoercedSeverities:
             result[normalized_rule_id] = LintSeverity(normalized)
         except ValueError:
             valid = ", ".join(repr(s.value) for s in LintSeverity)
-            # D6f R4: the "valid values" message advertises the
-            # closed enum names PLUS the ``"off"`` sentinel so the
-            # user discovers the disable mechanism from the error
-            # without needing to read the CHANGELOG.
+            # The "valid values" message advertises the closed enum
+            # names PLUS the ``"off"`` sentinel so the user discovers
+            # the disable mechanism from the error without needing to
+            # read the CHANGELOG.
             error_exit_with_code(
                 "pyproject-config-invalid",
                 (
@@ -905,7 +893,7 @@ def _empty_rule_id_set() -> frozenset[str]:
 def _empty_runtime_warnings() -> tuple[LintRuntimeWarning, ...]:
     """Typed factory for ``ResolvedLintConfig.runtime_warnings`` default.
 
-    R8b (``contradictory_disable_config``) warnings produced inside
+    ``contradictory_disable_config`` warnings produced inside
     ``from_dict`` are accumulated on the resolved config so the CLI
     can append them to the final ``LintReport.runtime_warnings``
     tuple. The empty-tuple default keeps the "no contradictions /
@@ -925,18 +913,18 @@ def _coerce_r9b_rule_id_list(
     tuple-of-strings) into a frozen set of normalized canonical ids.
 
     Shared implementation for both pyproject keys AND their CLI
-    overrides per [[symmetric-coercion-strictness-multi-source-field-
-    resolver-2026-05-12]]: same strictness on both sides so the CLI
-    cannot smuggle in a malformed rule_id that pyproject would
-    reject.
+    overrides under the symmetric-coercion-strictness principle for
+    multi-source field resolvers: same strictness on both sides so
+    the CLI cannot smuggle in a malformed rule_id that pyproject
+    would reject.
 
     Validation:
 
     - List-only (no scalar coercion); mirrors :func:`_coerce_exclude`
       at 575-607.
     - Per-element ``isinstance(str)``.
-    - Per-element ``.strip().lower()`` normalization per
-      [[normalize-at-input-boundary-2026-05-07]].
+    - Per-element ``.strip().lower()`` normalization (normalize at the
+      input boundary).
     - Per-element non-empty (after strip) check.
     - Per-element format validation against
       :data:`_R9B_RULE_ID_REGEX` — accepts canonical
@@ -1017,14 +1005,14 @@ def _coerce_r9b_rule_id_list(
 
 
 def _coerce_disabled_rules(value: Any) -> frozenset[str]:
-    """Coerce ``disabled_rules`` to ``frozenset[str]`` per D6f R5."""
+    """Coerce ``disabled_rules`` to ``frozenset[str]``."""
     return _coerce_r9b_rule_id_list(
         value, error_label="[tool.protokit.lint] disabled_rules",
     )
 
 
 def _coerce_enabled_rules(value: Any) -> frozenset[str]:
-    """Coerce ``enabled_rules`` to ``frozenset[str]`` per D6f R5."""
+    """Coerce ``enabled_rules`` to ``frozenset[str]``."""
     return _coerce_r9b_rule_id_list(
         value, error_label="[tool.protokit.lint] enabled_rules",
     )
@@ -1034,7 +1022,7 @@ def _expand_custom_prefix(
     rule_ids: frozenset[str],
     specs: tuple[CustomAnnotationRuleSpec, ...],
 ) -> frozenset[str]:
-    """Expand bare ``custom/<suffix>`` entries to all mangled forms (D6f KD-2).
+    """Expand bare ``custom/<suffix>`` entries to all mangled forms.
 
     Multi-kind custom rule prefix expansion. For each entry in
     ``rule_ids`` matching the bare ``custom/<suffix>`` shape (no
@@ -1051,8 +1039,8 @@ def _expand_custom_prefix(
 
     If no spec matches a bare ``custom/<suffix>`` entry, the entry
     is preserved as-is (it may match a future-shipped or external
-    rule; the unknown-rule_id warning per Req-R8c fires from the
-    CLI orchestration layer later).
+    rule; the unknown-rule_id warning fires from the CLI
+    orchestration layer later).
 
     Args:
         rule_ids: Validated, normalized rule_ids to expand
@@ -1061,7 +1049,7 @@ def _expand_custom_prefix(
         specs: Resolved ``CustomAnnotationRuleSpec`` entries from
             ``_coerce_custom_annotation_rules``. Empty tuple is
             permitted — expansion is a no-op (bare entries flow
-            through unchanged for R8c diagnosis).
+            through unchanged for unknown-rule_id diagnosis).
 
     Returns:
         New frozenset with bare-prefix entries expanded.
@@ -1093,12 +1081,11 @@ def _compute_r8b_contradiction_warnings(
     cli_enabled: frozenset[str],
     non_off_severity_overrides: frozenset[str],
 ) -> tuple[LintRuntimeWarning, ...]:
-    """Compute R8b ``contradictory_disable_config`` warnings (D6f R8b).
+    """Compute ``contradictory_disable_config`` warnings.
 
-    Detects collisions where R8 polarity-first / tier-second
-    resolution silently overrides a user-supplied directive at a
-    lower tier. Per the plan's "R8 precedence resolution" section,
-    the five contradiction patterns are:
+    Detects collisions where polarity-first / tier-second resolution
+    silently overrides a user-supplied directive at a lower tier. The
+    five contradiction patterns are:
 
     1. ``disabled_rules ⊃ R AND enabled_rules ⊃ R`` (within-pyproject)
     2. ``--disable-rule R AND --enable-rule R`` (within-CLI)
@@ -1120,7 +1107,7 @@ def _compute_r8b_contradiction_warnings(
 
     Args:
         off_severity_ids: rule_ids extracted from
-            ``[severities] X = "off"`` (KD-1 sentinel).
+            ``[severities] X = "off"`` (the off-sentinel set).
         pyproject_disabled: rule_ids from pyproject
             ``disabled_rules``.
         cli_disabled: rule_ids from CLI ``--disable-rule``.
@@ -1214,25 +1201,25 @@ class CustomAnnotationRuleSpec:
     Produced by :func:`_coerce_custom_annotation_rules`. Each entry
     materializes into one or more synthetic ``custom/<rule_suffix>``
     lint rules — one closure per ``element_kinds`` member, all sharing
-    the same ``rule_id`` (per D6d KD-19; verified at U1 implementation
-    time that ``LintEngine._loaded_specs`` is keyed by ``rule_id``
-    alone, so multi-kind entries register N closures under one key
-    via the synthetic ModuleType's RULES tuple — the engine accepts
-    repeated keys silently because intra-pack dedup operates only
-    inside ``load_rule_pack``'s staging dict, which the synthetic
-    loader bypasses by appending closures for distinct kinds before
-    handoff).
+    the same ``rule_id`` (verified at implementation time that
+    ``LintEngine._loaded_specs`` is keyed by ``rule_id`` alone, so
+    multi-kind entries register N closures under one key via the
+    synthetic ModuleType's RULES tuple — the engine accepts repeated
+    keys silently because intra-pack dedup operates only inside
+    ``load_rule_pack``'s staging dict, which the synthetic loader
+    bypasses by appending closures for distinct kinds before handoff).
 
     All fields are read-only post-construction. The dataclass is
-    ``frozen=True`` to satisfy the
-    [[frozen-dataclass-mutable-fields-need-post-init-snapshot]] rule:
-    ``element_kinds`` is a tuple and ``allowed_values`` is a tuple
-    (or ``None``) so no mutable nesting is exposed.
+    ``frozen=True`` to satisfy the frozen-dataclass post-init
+    snapshot rule (mutable fields must be snapshotted in
+    ``__post_init__``): ``element_kinds`` is a tuple and
+    ``allowed_values`` is a tuple (or ``None``) so no mutable nesting
+    is exposed.
 
     Attributes:
         rule_suffix: The user-supplied suffix; the materialized
             ``rule_id`` is ``f"custom/{rule_suffix}"``. Must match
-            ``^[a-z][a-z0-9]*(-[a-z0-9]+)*$`` (R9).
+            ``^[a-z][a-z0-9]*(-[a-z0-9]+)*$``.
         option: The custom-extension full name as it would appear in
             a ``.proto`` file (e.g., ``"mycorp.audit_level"``). No
             surrounding parentheses — the synthetic-rule closure
@@ -1242,21 +1229,23 @@ class CustomAnnotationRuleSpec:
         element_kinds: Tuple of ``ElementKind`` values the synthetic
             rule applies to. Non-empty (the validator rejects an
             empty list). Each kind produces one closure attached to
-            the same ``rule_id`` (KD-19).
+            the same ``rule_id``.
         allowed_values: Optional tuple of allowed scalar values. When
             ``None``, the rule is presence-only (fires if the option
             is absent). When non-``None``, the rule fires on absence
             AND on a value not in ``allowed_values``. Values are
             homogeneous (all same Python type — ``str | int | bool``;
             ``float`` and mixed types are rejected at config-load per
-            R2 contract). For enum-typed options, the values are
-            identifier strings (e.g., ``["HIGH", "CRITICAL"]``); the
-            synthetic-rule closure translates the runtime integer to
-            its enum identifier name for comparison.
+            the schema contract). For enum-typed options, the values
+            are identifier strings (e.g., ``["HIGH", "CRITICAL"]``);
+            the synthetic-rule closure translates the runtime integer
+            to its enum identifier name for comparison.
         severity: Default severity for findings produced by this
-            synthetic rule. Defaults to ``LintSeverity.WARNING`` per
-            R5. ``[tool.protokit.lint.severities]`` overrides apply
-            per the usual precedence (KD-12).
+            synthetic rule. Defaults to ``LintSeverity.WARNING``.
+            ``[tool.protokit.lint.severities]`` overrides apply per
+            the usual precedence (severity overrides outrank
+            built-in defaults but lose to polarity-first disable
+            directives).
     """
 
     rule_suffix: str
@@ -1286,7 +1275,7 @@ def _coerce_custom_annotation_rules(
 ) -> tuple[CustomAnnotationRuleSpec, ...]:
     """Coerce ``[[custom_annotation_rules]]`` to a tuple of validated specs.
 
-    D6d R8 + R9. The TOML wire format is array-of-tables:
+    The TOML wire format is array-of-tables:
 
     .. code-block:: toml
 
@@ -1308,9 +1297,10 @@ def _coerce_custom_annotation_rules(
       cleanly.
     - ``allowed_values``: optional homogeneous list of scalars (all
       ``str``, all ``int``, or all ``bool``). Empty list rejected.
-      Mixed-type lists rejected. Floats rejected (per KD-11/R2: scalar
-      protobuf option values comparable by equality include str/int/
-      bool/enum-identifier; floats compare unsafely under ULP drift).
+      Mixed-type lists rejected. Floats rejected: scalar protobuf
+      option values comparable by equality include
+      str/int/bool/enum-identifier; floats compare unsafely under
+      ULP drift.
     - ``severity``: optional string ∈ ``{"error", "warning", "info"}``;
       default ``"warning"``.
 
@@ -1556,7 +1546,7 @@ def _coerce_custom_annotation_rules(
                         f".allowed_values[0] must be one of "
                         f"str / int / bool; got "
                         f"{type(first).__name__}. "
-                        f"(Float-valued options compare unsafely; see D6d KD-11/R2.)"
+                        f"(Float-valued options compare unsafely under ULP drift.)"
                     ),
                 )
             seen_values: set[Any] = set()
@@ -1610,7 +1600,7 @@ def _coerce_custom_annotation_rules(
                 normalized_values.append(raw_value)
             allowed = tuple(normalized_values)
 
-        # severity: optional string. Defaults to "warning" per R5.
+        # severity: optional string. Defaults to "warning".
         severity: LintSeverity = LintSeverity.WARNING
         if "severity" in entry:
             raw_severity = entry["severity"]
@@ -1651,7 +1641,7 @@ def _coerce_custom_annotation_rules(
 
 
 def _coerce_no_builtin_rules(value: Any) -> bool:
-    """Coerce ``no_builtin_rules`` to ``bool`` per R9c.
+    """Coerce ``no_builtin_rules`` to ``bool``.
 
     TOML ``true`` / ``false`` only. String ``"true"`` is rejected
     explicitly — accepting it would surprise users who expect TOML
@@ -1676,22 +1666,22 @@ def _coerce_no_builtin_rules(value: Any) -> bool:
 class ResolvedLintConfig:
     """Merged result of pyproject ``[tool.protokit.lint]`` + CLI + defaults.
 
-    Produced by :meth:`from_dict` after R3 / R3a schema validation
-    and R11-R14 precedence application. The CLI passes one of these
-    to ``_main_impl``; subsequent D5 units consume specific fields
-    (U3: ``exclude``; U4: ``min_severity_source`` + ``pyproject_min_severity``
-    for the R20 relaxation messages).
+    Produced by :meth:`from_dict` after schema validation and
+    precedence application. The CLI passes one of these to
+    ``_main_impl``; downstream code consumes specific fields
+    (``exclude``; ``min_severity_source`` + ``pyproject_min_severity``
+    for source-attributed relaxation messages).
 
-    Source attribution semantics (R20 — only ``min_severity_source``
-    is exposed for now, since it's the only attribution the D5
-    runtime warnings rely on):
+    Source attribution semantics (only ``min_severity_source`` is
+    exposed for now, since it's the only attribution the runtime
+    warnings rely on):
 
     - ``"cli"``:       The CLI flag was explicitly provided.
     - ``"pyproject"``: Pyproject set this key; CLI did not override.
     - ``"profile"``:   Neither CLI nor pyproject set this key; the
                        composed profile's intrinsic floor is in effect.
-                       (U4 may transition ``"default"`` to ``"profile"``
-                       at emission time when ``min_severity is None``.)
+                       (Emission code may transition ``"default"`` to
+                       ``"profile"`` when ``min_severity is None``.)
     - ``"default"``:   Neither CLI nor pyproject nor profile set
                        this key; the built-in default applies.
 
@@ -1717,10 +1707,10 @@ class ResolvedLintConfig:
     min_severity_source: ConfigSource = "default"
     pyproject_min_severity: LintSeverity | None = None
     exclude_source: ExcludeSource = "default"
-    #: D6a R9a — per-rule severity overrides resolved from
+    #: Per-rule severity overrides resolved from
     #: ``[tool.protokit.lint.severities]``. Empty dict when no
     #: overrides are configured. CLI side-channel for this knob is
-    #: deferred to a later delivery (D7+); D6a is pyproject-only.
+    #: deferred to a future release; currently pyproject-only.
     #: ``__post_init__`` wraps the input in ``MappingProxyType(dict(...))``
     #: per the ``frozen-dataclass-mutable-fields-need-post-init-snapshot``
     #: learning so a caller passing a mutable dict cannot leak mutations
@@ -1728,61 +1718,61 @@ class ResolvedLintConfig:
     severities: Mapping[str, LintSeverity] = dataclasses.field(
         default_factory=_empty_severities,
     )
-    #: D6a R9c — when ``True``, ``cli.py`` skips the BUILTIN_PACKS
-    #: auto-load loop. Resolved from either ``--no-builtin-rules`` CLI
-    #: flag OR ``[tool.protokit.lint] no_builtin_rules = true``; CLI
-    #: takes precedence per the standard CLI > pyproject precedence
-    #: applied to the other knobs.
+    #: When ``True``, ``cli.py`` skips the BUILTIN_PACKS auto-load loop.
+    #: Resolved from either ``--no-builtin-rules`` CLI flag OR
+    #: ``[tool.protokit.lint] no_builtin_rules = true``; CLI takes
+    #: precedence per the standard CLI > pyproject precedence applied
+    #: to the other knobs.
     no_builtin_rules: bool = False
-    #: D6d R8 — validated entries from
+    #: Validated entries from
     #: ``[[tool.protokit.lint.custom_annotation_rules]]``. Empty tuple
     #: when no entries are configured. No CLI side-channel — synthetic
-    #: rule declarations are pyproject-only by intent (the array-of-
-    #: tables shape doesn't roundtrip through Click's flag surface;
-    #: see D6d brainstorm KD-9 / KD-12).
+    #: rule declarations are pyproject-only by intent (the
+    #: array-of-tables shape doesn't roundtrip through Click's flag
+    #: surface).
     custom_annotation_rules: tuple[CustomAnnotationRuleSpec, ...] = (
         dataclasses.field(default_factory=_empty_custom_annotation_rules)
     )
-    #: D6f R5 + KD-1 — UNIFIED disabled-rule set merging three sources:
+    #: UNIFIED disabled-rule set merging three sources:
     #: ``[severities] X = "off"`` sentinel ids (intercepted at the
-    #: coercion layer per KD-1), pyproject ``disabled_rules`` list,
-    #: and CLI ``--disable-rule`` overrides. Merging happens inside
+    #: coercion layer), pyproject ``disabled_rules`` list, and CLI
+    #: ``--disable-rule`` overrides. Merging happens inside
     #: ``from_dict`` BEFORE returning, so callers see ONE
     #: ``frozenset[str]`` — no separate ``disabled_via_off_severity``
     #: field leaks past the boundary. ``cli.py`` subtracts this set
     #: from ``composed_profile.rule_ids`` to actuate the disable per
-    #: the KD-1 sentinel propagation contract. Custom-prefix expansion
-    #: (KD-2) materializes any ``custom/<suffix>`` bare entry into the
+    #: the sentinel propagation contract. Custom-prefix expansion
+    #: materializes any bare ``custom/<suffix>`` entry into the
     #: full set of mangled rule_ids for the matching spec before merge.
     disabled_rules: frozenset[str] = dataclasses.field(
         default_factory=_empty_rule_id_set,
     )
-    #: D6f R5 — pyproject ``enabled_rules`` ∪ CLI ``--enable-rule``
-    #: directives. Kept distinct from :attr:`disabled_rules` (NOT
-    #: merged into a single "effective" set) because R8b contradiction
-    #: warnings need both sides attributable: knowing only that R is
-    #: disabled would lose the information needed to emit
-    #: "rule R appears in both disabled_rules and enabled_rules;
-    #: disable wins per R8 polarity-first". Custom-prefix expansion
-    #: (KD-2) applies symmetrically. ``cli.py`` does NOT consume this
-    #: field to actuate disables — R8 precedence is already resolved
-    #: in ``from_dict``, so the surviving set is informational from
-    #: the engine's perspective (the engine sees an effective rule_ids
-    #: set with disables already removed). It IS read by the R8c
-    #: ``unknown_rule_id`` check in ``cli.py`` to detect rule_ids
-    #: named in enable directives that match no loaded rule (the diff
+    #: Pyproject ``enabled_rules`` ∪ CLI ``--enable-rule`` directives.
+    #: Kept distinct from :attr:`disabled_rules` (NOT merged into a
+    #: single "effective" set) because contradiction warnings need
+    #: both sides attributable: knowing only that R is disabled would
+    #: lose the information needed to emit "rule R appears in both
+    #: disabled_rules and enabled_rules; disable wins per polarity-first
+    #: precedence". Custom-prefix expansion applies symmetrically.
+    #: ``cli.py`` does NOT consume this field to actuate disables —
+    #: precedence is already resolved in ``from_dict``, so the
+    #: surviving set is informational from the engine's perspective
+    #: (the engine sees an effective rule_ids set with disables
+    #: already removed). It IS read by the unknown-rule_id check in
+    #: ``cli.py`` to detect rule_ids named in enable directives that
+    #: match no loaded rule (the diff
     #: ``(resolved.disabled_rules | resolved.enabled_rules) - loaded_rule_ids``
     #: covers both sets).
     enabled_rules: frozenset[str] = dataclasses.field(
         default_factory=_empty_rule_id_set,
     )
-    #: D6f R8b — ``contradictory_disable_config`` warnings produced
-    #: inside ``from_dict`` when R9b directives across disable + enable
-    #: mechanisms collide per the R8 precedence table. The CLI appends
+    #: ``contradictory_disable_config`` warnings produced inside
+    #: ``from_dict`` when R9b directives across disable + enable
+    #: mechanisms collide per the precedence table. The CLI appends
     #: this tuple to ``LintReport.runtime_warnings`` so the warnings
     #: surface in every formatter alongside engine-emitted warnings.
-    #: Empty tuple in the common case (no contradictions). R8c
-    #: (``unknown_rule_id``) warnings are NOT carried here — they fire
+    #: Empty tuple in the common case (no contradictions).
+    #: ``unknown_rule_id`` warnings are NOT carried here — they fire
     #: at CLI orchestration time when the full loaded-rule registry is
     #: available, mirroring the existing ``severities_unloaded_rule``
     #: emission pattern at ``cli.py:1160-1177``.
@@ -1798,7 +1788,7 @@ class ResolvedLintConfig:
         # mutations on it would leak through to the dataclass.
         object.__setattr__(self, "profile", tuple(self.profile))
         object.__setattr__(self, "exclude", tuple(self.exclude))
-        # D6d R8: custom_annotation_rules tuple-snapshot for the same
+        # custom_annotation_rules tuple-snapshot for the same
         # frozen-dataclass safety reason. ``_coerce_custom_annotation_rules``
         # already returns a tuple; programmatic callers (tests) may
         # pass a list which we normalize here.
@@ -1817,16 +1807,16 @@ class ResolvedLintConfig:
             "severities",
             MappingProxyType(dict(self.severities)),
         )
-        # D6f R5: frozenset-snapshot the two R9b rule_id sets.
+        # Frozenset-snapshot the two R9b rule_id sets.
         # ``from_dict`` produces frozensets already; programmatic
         # callers (tests, R9b smoke fixtures) may pass list/tuple/set
         # which we normalize here so the frozen-dataclass invariant
         # holds regardless of construction site.
         object.__setattr__(self, "disabled_rules", frozenset(self.disabled_rules))
         object.__setattr__(self, "enabled_rules", frozenset(self.enabled_rules))
-        # D6f R8b: tuple-snapshot accumulated R8b warnings so a caller
+        # Tuple-snapshot accumulated contradiction warnings so a caller
         # passing a list does not leak mutations into the frozen
-        # ResolvedLintConfig (R8b warnings are appended to
+        # ResolvedLintConfig (the warnings are appended to
         # ``LintReport.runtime_warnings`` in ``cli.py``; a mutated
         # source list would silently corrupt the report).
         object.__setattr__(
@@ -1841,7 +1831,7 @@ class ResolvedLintConfig:
         # specifying ``exclude_source``, or where
         # ``dataclasses.replace(resolved, exclude=new)`` is used without
         # also updating ``exclude_source``. Without this guard, the
-        # R20-attributed message silently degrades to an unattributed
+        # source-attributed message silently degrades to an unattributed
         # fallback.
         if self.exclude and self.exclude_source == "default":
             raise ValueError(
@@ -1849,12 +1839,12 @@ class ResolvedLintConfig:
                 "'cli', 'pyproject', or 'both' when exclude is "
                 "non-empty (got 'default').",
             )
-        # D6f GAP 4 — paired-field invariant for R8b warnings.
+        # Paired-field invariant for contradiction warnings.
         # Every contradictory_disable_config warning's rule_id must be
         # present in disabled_rules or enabled_rules. Catches programmatic
         # dataclasses.replace() callers who mutate the disable/enable sets
         # without updating runtime_warnings, which would leave stale
-        # R8b warnings naming rule_ids no longer in conflict.
+        # warnings naming rule_ids no longer in conflict.
         r8b_rule_ids = {
             w.rule_id
             for w in self.runtime_warnings
@@ -1876,9 +1866,9 @@ class ResolvedLintConfig:
     def relaxation_message(
         self, composed_floor: LintSeverity,
     ) -> str | None:
-        """Return the R20 relaxation message, or ``None`` when no relaxation.
+        """Return the relaxation message, or ``None`` when no relaxation.
 
-        Three R20 message templates pinned at the ``ResolvedLintConfig``
+        Three message templates pinned at the ``ResolvedLintConfig``
         boundary per the
         ``cross-format-enum-string-parity-2026-05-08`` learning, so
         every CLI/formatter consumer emits identical text:
@@ -1911,7 +1901,7 @@ class ResolvedLintConfig:
                 override_severity)``.
 
         Returns:
-            The R20-attributed relaxation message, or ``None``.
+            The source-attributed relaxation message, or ``None``.
         """
         if self.min_severity is None:
             return None
@@ -1939,12 +1929,12 @@ class ResolvedLintConfig:
             )
         # "profile" / "default" cannot reach a relaxation message
         # (no override is set when source is "default"; "profile"
-        # is reserved for future U5+ emission code that may emit
-        # different message branches).
+        # is reserved for future emission code that may emit different
+        # message branches).
         return None
 
     def all_files_excluded_message(self, file_count: int) -> str:
-        """Return the R20-attributed message for the all_files_excluded warning.
+        """Return the source-attributed message for the all_files_excluded warning.
 
         Pins the source-aware message templates at the
         ``ResolvedLintConfig`` boundary per the
@@ -1965,9 +1955,9 @@ class ResolvedLintConfig:
           [tool.protokit.lint] exclude patterns:
           vendor/**, third_party/**``
 
-        Per KTD-9, individual patterns are passed through
-        ``_safe_for_stderr`` before joining so a pattern with
-        embedded control characters cannot forge a fake stderr line.
+        Individual patterns are passed through ``_safe_for_stderr``
+        before joining so a pattern with embedded control characters
+        cannot forge a fake stderr line.
 
         The ``exclude_source == "default"`` case is rejected at
         construction time by ``__post_init__`` when ``exclude`` is
@@ -1981,7 +1971,7 @@ class ResolvedLintConfig:
                 (i.e., ``len(result.root_files)`` at the call site).
 
         Returns:
-            The R20-attributed message string.
+            The source-attributed message string.
         """
         safe_patterns = ", ".join(
             _safe_for_stderr(p) for p in self.exclude
@@ -2000,16 +1990,16 @@ class ResolvedLintConfig:
     ) -> ResolvedLintConfig:
         """Validate the pyproject table and merge with CLI overrides.
 
-        Validation phase (single-pass per KTD-2):
+        Validation phase (single-pass):
 
-        - R3 (unknown keys): :func:`_validate_table_keys` hard-errors
-          on any key outside R2's allowlist.
-        - R3a / KTD-5 (type mismatches): per-field ``_coerce_*``
-          helpers validate scalar-vs-list shape, element type, and
-          value range; mismatches exit 2 with
+        - Unknown keys: :func:`_validate_table_keys` hard-errors
+          on any key outside the allowlist.
+        - Type mismatches: per-field ``_coerce_*`` helpers validate
+          scalar-vs-list shape, element type, and value range;
+          mismatches exit 2 with
           ``error[lint-pyproject-config-invalid]:``.
 
-        Precedence (R11-R14, per the plan's decision matrix):
+        Precedence:
 
         - ``profile``:      CLI replaces pyproject entirely. Empty
                             CLI override (``None``) defers to
@@ -2021,8 +2011,8 @@ class ResolvedLintConfig:
                             is the empty tuple.
         - ``min_severity``: CLI replaces pyproject. Source attribution
                             (``min_severity_source``) records which
-                            tier won, so U4 can emit the right R20
-                            relaxation message branch.
+                            tier won, so emission code can choose the
+                            right relaxation message branch.
         - ``max_warnings``: CLI replaces pyproject; otherwise ``None``.
         - ``format``:       CLI replaces pyproject; otherwise ``"human"``.
 
@@ -2037,18 +2027,17 @@ class ResolvedLintConfig:
         - ``"min_severity"``:     ``LintSeverity | None``
         - ``"max_warnings"``:     ``int | None``
         - ``"format"``:           ``str | None``
-        - ``"no_builtin_rules"``: ``bool | None`` — D6a R9c CLI side;
-                                  the actual CLI flag wiring lands in
-                                  D6a U9. ``None`` means "CLI did not
-                                  set this flag"; the pyproject value
-                                  (or default ``False``) wins.
+        - ``"no_builtin_rules"``: ``bool | None``. ``None`` means
+                                  "CLI did not set this flag"; the
+                                  pyproject value (or default
+                                  ``False``) wins.
 
-        Intentionally absent: ``"severities"``. D6a U2 ships the
-        pyproject-only parsing surface for R9a; no CLI side-channel
-        exists yet. If a future delivery wires a CLI severities
-        override, the key must be added to this shape table AND
-        ``from_dict`` updated to read it — otherwise the override
-        is silently dropped.
+        Intentionally absent: ``"severities"``. Currently ships the
+        pyproject-only parsing surface for per-rule severity
+        overrides; no CLI side-channel exists yet. If a future
+        delivery wires a CLI severities override, the key must be
+        added to this shape table AND ``from_dict`` updated to read
+        it — otherwise the override is silently dropped.
 
         Returns:
             A frozen ``ResolvedLintConfig`` with defaults applied
@@ -2056,8 +2045,8 @@ class ResolvedLintConfig:
 
         Raises:
             SystemExit: Exit code 2 via ``error_exit_with_code(
-            "pyproject-config-invalid", ...)`` for any R3 / R3a /
-            KTD-5 violation.
+            "pyproject-config-invalid", ...)`` for any validation
+            violation.
         """
         validated: dict[str, Any] = {}
         if table is not None:
@@ -2074,10 +2063,10 @@ class ResolvedLintConfig:
                 elif key == "format":
                     validated[key] = _coerce_format(value)
                 elif key == "severities":
-                    # D6f KD-1: _coerce_severities now returns a
-                    # _CoercedSeverities NamedTuple carrying the
-                    # non-"off" severities dict + the off_rule_ids
-                    # frozenset (intercepted "off" sentinel).
+                    # _coerce_severities returns a _CoercedSeverities
+                    # NamedTuple carrying the non-"off" severities
+                    # dict + the off_rule_ids frozenset (intercepted
+                    # "off" sentinel).
                     validated[key] = _coerce_severities(value)
                 elif key == "no_builtin_rules":
                     validated[key] = _coerce_no_builtin_rules(value)
@@ -2124,7 +2113,8 @@ class ResolvedLintConfig:
             resolved_exclude = pyproject_exclude + tuple(cli_exclude)
             exclude_source = "both" if pyproject_exclude else "cli"
 
-        # min_severity: CLI replaces pyproject; track source for R20.
+        # min_severity: CLI replaces pyproject; track source for the
+        # source-attributed relaxation message.
         cli_min_sev = cli_overrides.get("min_severity")
         pyproject_min_sev = validated.get("min_severity")
         resolved_min_sev: LintSeverity | None
@@ -2140,10 +2130,10 @@ class ResolvedLintConfig:
             # ``"profile"`` source state in ``ConfigSource`` is reserved
             # for future emission code that may want to attribute a
             # message to the composed profile's intrinsic floor (rather
-            # than to a CLI/pyproject override). U4 shipped the R20
-            # relaxation message without using the ``"profile"`` source
-            # — when no override is set, ``relaxation_message`` returns
-            # ``None``. ``"default"`` is correct here.
+            # than to a CLI/pyproject override). The current relaxation
+            # message implementation does not use the ``"profile"``
+            # source — when no override is set, ``relaxation_message``
+            # returns ``None``. ``"default"`` is correct here.
             min_sev_source = "default"
 
         # max_warnings: CLI replaces pyproject.
@@ -2163,11 +2153,11 @@ class ResolvedLintConfig:
         else:
             resolved_fmt = "human"
 
-        # severities (R9a): pyproject-only in D6a — no CLI side-channel
-        # yet. Defaults to empty dict when the table key is absent.
-        # CLI's user-wins post-compose overlay (KTD-2) is applied in
-        # cli.py around the LintProfile.compose call, NOT here; this
-        # method only resolves the input-boundary value.
+        # severities: pyproject-only — no CLI side-channel yet.
+        # Defaults to empty dict when the table key is absent. CLI's
+        # user-wins post-compose overlay is applied in cli.py around
+        # the LintProfile.compose call, NOT here; this method only
+        # resolves the input-boundary value.
         #
         # Guard against silent-drop: if a future delivery wires a CLI
         # severities override without updating this method, the
@@ -2178,13 +2168,13 @@ class ResolvedLintConfig:
         if "severities" in cli_overrides:
             raise NotImplementedError(
                 "cli_overrides['severities'] is not yet wired into "
-                "ResolvedLintConfig.from_dict — D6a U2 ships pyproject "
-                "parsing only. Add the precedence branch here before "
-                "exposing a CLI severities override.",
+                "ResolvedLintConfig.from_dict — currently ships "
+                "pyproject parsing only. Add the precedence branch "
+                "here before exposing a CLI severities override.",
             )
-        # D6f KD-1: unpack the _CoercedSeverities NamedTuple. The
-        # off_rule_ids set is merged into the unified disabled_rules
-        # field BELOW (after the R8 precedence + R8b warning step).
+        # Unpack the _CoercedSeverities NamedTuple. The off_rule_ids
+        # set is merged into the unified disabled_rules field BELOW
+        # (after the precedence + contradiction-warning step).
         validated_severities_raw = validated.get("severities")
         if validated_severities_raw is None:
             resolved_severities: Mapping[str, LintSeverity] = {}
@@ -2194,7 +2184,7 @@ class ResolvedLintConfig:
             resolved_severities = coerced.severities
             off_severity_rule_ids = coerced.off_rule_ids
 
-        # no_builtin_rules (R9c): CLI replaces pyproject. The CLI flag's
+        # no_builtin_rules: CLI replaces pyproject. The CLI flag's
         # ``ParameterSource`` detection happens in cli.py — by the time
         # ``from_dict`` is called, ``cli_overrides["no_builtin_rules"]``
         # is either ``True``/``False`` (the user explicitly typed the
@@ -2222,7 +2212,7 @@ class ResolvedLintConfig:
                 "in cli.py if this fires.",
             )
 
-        # D6d R8: custom_annotation_rules is pyproject-only (no CLI
+        # custom_annotation_rules is pyproject-only (no CLI
         # side-channel). The validated tuple flows through unchanged;
         # cli.py reads ``resolved.custom_annotation_rules`` to drive
         # the synthetic-rule loader and composed-profile augmentation.
@@ -2232,28 +2222,29 @@ class ResolvedLintConfig:
         if "custom_annotation_rules" in cli_overrides:
             raise NotImplementedError(
                 "cli_overrides['custom_annotation_rules'] is not yet "
-                "wired into ResolvedLintConfig.from_dict — D6d ships "
-                "pyproject-only declarations. Add the precedence branch "
-                "here before exposing a CLI custom-annotation override.",
+                "wired into ResolvedLintConfig.from_dict — currently "
+                "ships pyproject-only declarations. Add the precedence "
+                "branch here before exposing a CLI custom-annotation "
+                "override.",
             )
         resolved_custom_annotation_rules: tuple[
             CustomAnnotationRuleSpec, ...
         ] = validated.get("custom_annotation_rules", ())
 
-        # D6f R5 + R6 + R7 + R8 + R8b: R9b per-rule disable dispatch.
-        # Per KD-2 ordering: (1) custom_annotation_rules already
-        # resolved above, (2) coerce pyproject disabled/enabled
-        # lists, (3) coerce CLI overrides with the SAME strictness
-        # per [[symmetric-coercion-strictness-multi-source-field-
-        # resolver-2026-05-12]], (4) expand custom/<suffix> bare
-        # entries via synthetic_rule_ids((spec,)) using
-        # suffix-equality matching, (5) compute R8b warnings BEFORE
-        # the disable-set merge (warnings need attribution), (6) merge
-        # off_severity_rule_ids into the final unified disabled_rules
-        # frozenset that cli.py subtracts from composed_profile.rule_ids.
+        # R9b per-rule disable dispatch. Ordering: (1)
+        # custom_annotation_rules already resolved above, (2) coerce
+        # pyproject disabled/enabled lists, (3) coerce CLI overrides
+        # with the SAME strictness (symmetric-coercion-strictness for
+        # multi-source field resolvers), (4) expand custom/<suffix>
+        # bare entries via synthetic_rule_ids((spec,)) using
+        # suffix-equality matching, (5) compute contradiction
+        # warnings BEFORE the disable-set merge (warnings need
+        # attribution), (6) merge off_severity_rule_ids into the
+        # final unified disabled_rules frozenset that cli.py
+        # subtracts from composed_profile.rule_ids.
         #
-        # KD-4: NO NotImplementedError trip-wires. U2 ships pyproject
-        # parsing AND CLI flags atomically — no inter-unit window.
+        # No NotImplementedError trip-wires: pyproject parsing AND
+        # CLI flags ship atomically — no inter-unit window.
         cli_disabled_raw = cli_overrides.get("disabled_rules")
         cli_disabled_rules: frozenset[str]
         if cli_disabled_raw is None:
@@ -2283,11 +2274,12 @@ class ResolvedLintConfig:
         # CONTRACT: every R9b input source must have a corresponding
         # _expand_custom_prefix call BEFORE _compute_r8b_contradiction_warnings
         # runs. Adding a sixth source (e.g., env-var-only directive) requires
-        # extending this block. The R8b warning emission compares post-expansion
-        # sets — partial expansion produces incorrect contradiction detection.
+        # extending this block. The contradiction-warning emission compares
+        # post-expansion sets — partial expansion produces incorrect
+        # contradiction detection.
         #
-        # Custom prefix expansion (KD-2): apply to every R9b set that
-        # may contain bare ``custom/<suffix>`` entries. The off-severity
+        # Custom prefix expansion: apply to every R9b set that may
+        # contain bare ``custom/<suffix>`` entries. The off-severity
         # set is also subject to expansion because [severities] keys
         # can name custom rules too.
         expanded_off = _expand_custom_prefix(
@@ -2305,10 +2297,10 @@ class ResolvedLintConfig:
         expanded_cli_enabled = _expand_custom_prefix(
             cli_enabled_rules, resolved_custom_annotation_rules,
         )
-        # R8b warnings: contradictory R9b directives. Computed BEFORE
-        # the unified-disable merge so the warning text can name BOTH
-        # the disable and enable mechanisms (post-merge, both lists
-        # would be flattened and attribution would be lost).
+        # Contradictory-R9b-directives warnings. Computed BEFORE the
+        # unified-disable merge so the warning text can name BOTH the
+        # disable and enable mechanisms (post-merge, both lists would
+        # be flattened and attribution would be lost).
         r8b_warnings = _compute_r8b_contradiction_warnings(
             off_severity_ids=expanded_off,
             pyproject_disabled=expanded_pyp_disabled,
@@ -2317,7 +2309,7 @@ class ResolvedLintConfig:
             cli_enabled=expanded_cli_enabled,
             non_off_severity_overrides=frozenset(resolved_severities.keys()),
         )
-        # Unified disabled_rules: merge ALL disable sources per KD-1
+        # Unified disabled_rules: merge ALL disable sources per the
         # sentinel propagation contract. cli.py subtracts this single
         # set from composed_profile.rule_ids to actuate the suppression
         # without exposing the three-source provenance externally.
@@ -2325,8 +2317,9 @@ class ResolvedLintConfig:
             expanded_off | expanded_pyp_disabled | expanded_cli_disabled
         )
         # enabled_rules: union of pyproject + CLI; kept distinct from
-        # disabled_rules (NOT merged into one effective set) so R8b
-        # warnings have the both-sides attribution they need.
+        # disabled_rules (NOT merged into one effective set) so
+        # contradiction warnings have the both-sides attribution they
+        # need.
         unified_enabled_rules = expanded_pyp_enabled | expanded_cli_enabled
 
         return cls(
@@ -2348,7 +2341,7 @@ class ResolvedLintConfig:
 
 
 # ---------------------------------------------------------------------------
-# pathspec compilation (D5 U3: R7-R10, R13, R13a)
+# pathspec compilation
 # ---------------------------------------------------------------------------
 
 
@@ -2361,14 +2354,14 @@ def compile_exclude_patterns(
     the CLI's `--exclude` flag and pyproject ``[tool.protokit.lint]
     exclude`` entries share a single compilation path. The returned
     spec is used to filter ``compile_result.root_files`` post-compile
-    and pre-``engine.run`` (per plan U3 approach).
+    and pre-``engine.run``.
 
-    The current call site (``protokit.schema.lint.cli`` U3 filter
-    block) guards on ``if resolved.exclude:`` before calling, so the
-    empty-pattern path is not exercised in production. An empty
-    iterable would return an empty PathSpec that matches nothing,
-    but callers should prefer the truthiness guard on a tuple over
-    calling with an empty input.
+    The current call site (the exclude-filter block in
+    ``protokit.schema.lint.cli``) guards on ``if resolved.exclude:``
+    before calling, so the empty-pattern path is not exercised in
+    production. An empty iterable would return an empty PathSpec
+    that matches nothing, but callers should prefer the truthiness
+    guard on a tuple over calling with an empty input.
 
     Args:
         patterns: An iterable of gitignore-style glob patterns. Each
@@ -2386,9 +2379,9 @@ def compile_exclude_patterns(
         pattern. The error code is distinct from
         ``pyproject-config-invalid`` because exclude patterns can
         come from CLI flags as well as pyproject — reusing the
-        pyproject-specific code would mis-attribute the source. Per
-        KTD-9, the rejected pattern is newline-sanitized before
-        being interpolated into the stderr message.
+        pyproject-specific code would mis-attribute the source. The
+        rejected pattern is newline-sanitized before being
+        interpolated into the stderr message.
     """
     # pathspec is highly permissive about gitignore-shaped input —
     # most invalid-looking patterns parse silently and just match
@@ -2396,10 +2389,10 @@ def compile_exclude_patterns(
     # DOES raise (a rare GitWildMatchPatternError, or any future
     # exception type), route the failure through the stable
     # ``error[lint-exclude-pattern-invalid]:`` prefix rather than
-    # letting an uncaught traceback escape. Per KTD-9, the exception
-    # message body is newline-sanitized before interpolation so a
-    # crafted pattern with embedded newlines cannot forge a fake
-    # second stderr line.
+    # letting an uncaught traceback escape. The exception message
+    # body is newline-sanitized before interpolation so a crafted
+    # pattern with embedded newlines cannot forge a fake second
+    # stderr line.
     try:
         return pathspec.PathSpec.from_lines("gitignore", patterns)
     except Exception as exc:  # noqa: BLE001 - intentional broad catch
