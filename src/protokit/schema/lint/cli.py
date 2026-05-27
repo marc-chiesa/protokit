@@ -1,26 +1,21 @@
-"""``protokit lint`` click subcommand — Delivery 3, Units 2 + 3.
+"""``protokit lint`` click subcommand.
 
-Single-command click subcommand (NOT a sub-group; per origin R1).
-Registered on the top-level ``protokit`` CLI group at
-``src/protokit/cli.py``.
+Single-command click subcommand (NOT a sub-group). Registered on
+the top-level ``protokit`` CLI group at ``src/protokit/cli.py``.
 
 This module imports ``protokit.formatters._builtin_lint`` at module
 top, which triggers the side-effect registration of the four lint
-formatters (``lint_human`` shipped in U1; ``lint_json`` /
-``lint_junit`` / ``lint_sarif`` land in U4b). Registration runs at
-``protokit.cli`` load time — i.e., on every ``protokit ...``
-invocation, regardless of which subcommand the user fires.
+formatters (``lint_human``, ``lint_json``, ``lint_junit``,
+``lint_sarif``). Registration runs at ``protokit.cli`` load time —
+i.e., on every ``protokit ...`` invocation, regardless of which
+subcommand the user fires.
 
 Cold-import contract: ``import protokit.schema`` does NOT
 transitively load this module. The contract is preserved by NOT
 adding ``_builtin_lint`` to ``formatters/__init__.py``'s eager-load
-tuple. See origin's R3 + R15 for the full rationale.
+tuple.
 
-U2 shipped the minimal end-to-end pipeline (descriptor-set + --proto
-input modes; auto-load BUILTIN_PACKS; default profile derived via
-LintProfile.from_pack; engine.run; lint_human render).
-
-U3 (this unit) adds:
+Pipeline overview:
     1. ``--rule-pack MODULE`` (repeatable) — load user-supplied rule
        packs on top of BUILTIN_PACKS via ``importlib.import_module``.
     2. ``--profile NAME`` (default ``"default"``) — select which
@@ -28,29 +23,26 @@ U3 (this unit) adds:
     3. ``--min-severity LEVEL`` — override the composed profile's
        severity floor. When the override is more lenient than the
        composed floor, a structured ``min_severity_relaxed`` runtime
-       warning is emitted in ``report.runtime_warnings`` (D5 U4
-       replaces the U3 stderr breadcrumb with structured emission).
-    4. R9 zero-rules loud failure (``error[lint-no-rules]:``).
-    5. R11 unknown-profile loud failure (``error[lint-unknown-profile]:``)
+       warning is emitted in ``report.runtime_warnings``.
+    4. Zero-rules loud failure (``error[lint-no-rules]:``).
+    5. Unknown-profile loud failure (``error[lint-unknown-profile]:``)
        with per-pack introspection of declared profile names.
-    6. R25 multi-pack composition stderr provenance line — gated on
-       ``len(loaded_packs) >= 2`` (single-pack default emits no line
-       per origin R25 revised).
+    6. Multi-pack composition stderr provenance line — gated on
+       ``len(loaded_packs) >= 2`` (single-pack default emits no line).
     7. Runtime-warning emission — engine warnings (``rule_exception``,
        ``unloaded_rule``) are captured in ``report.runtime_warnings``
-       and rendered by formatter dispatch. D5 U4 removed the
-       ``warning[lint-runtime]:`` stderr loop; warnings now surface
-       via the machine formatters (``--format=json`` /
-       ``--format=junit`` / ``--format=sarif``). D5 U5 adds a
-       post-format hook so ``--format=human`` re-emits to stderr.
+       and rendered by formatter dispatch. Warnings surface via the
+       machine formatters (``--format=json`` / ``--format=junit`` /
+       ``--format=sarif``); a post-format hook re-emits them to
+       stderr for ``--format=human``.
     8. Non-error compile diagnostics in ``--proto`` mode — info /
        warning level diagnostics from the protoxy/protoc backend
        surface to stderr alongside (or instead of) the
        ``compile-failed`` exit path.
 
-U4a wires the R20 exit-code ladder + ``--max-warnings`` /
-``--statistics`` / ``--quiet`` / ``--format``. U4b adds the three
-machine formatters.
+The exit-code ladder, ``--max-warnings``, ``--statistics``,
+``--quiet``, and ``--format`` are all wired through the resolved
+config carrier; see ``ResolvedLintConfig`` for the precedence rules.
 """
 
 from __future__ import annotations
@@ -120,20 +112,19 @@ _MIN_SEVERITY_CHOICES: dict[str, LintSeverity] = {
 }
 
 #: Per-category emit budget for the ``--format=human`` runtime-warning
-#: stderr hook (D5 U5 R21a). Once a category exceeds this count, the
-#: hook collapses the remainder into a single summarization line and
-#: stops emitting individual warnings for that category. Machine
-#: formatters (``json`` / ``junit`` / ``sarif``) always emit ALL
-#: warnings unconditionally — summarization is human-only per
-#: KTD-6.
+#: stderr hook. Once a category exceeds this count, the hook collapses
+#: the remainder into a single summarization line and stops emitting
+#: individual warnings for that category. Machine formatters
+#: (``json`` / ``junit`` / ``sarif``) always emit ALL warnings
+#: unconditionally — summarization is human-only.
 #:
 #: Tests pin behaviour against ``threshold`` / ``threshold + 1``
 #: boundaries via ``monkeypatch.setattr`` rather than the literal
-#: value, so D6+ tuning does not require coordinated test updates.
+#: value, so future tuning does not require coordinated test updates.
 _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 
 #: Pinned buf version for the parity CI job and ``tests/parity/``.
-#: D6a U8 Phase B+C contract: this constant and the corresponding
+#: This constant and the corresponding
 #: ``releases/download/v<X>/buf-Linux-x86_64.tar.gz`` URL in
 #: ``.github/workflows/ci.yml``'s parity job MUST reference the same
 #: version. Drift between the two is caught by
@@ -147,9 +138,10 @@ _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 #: the watcher surfaces the signal; a maintainer lands the bump as
 #: a discrete PR after fixture / parity-test review.
 #:
-#: Unit 9 wires this constant into ``protokit lint --version``
+#: This constant is also wired into ``protokit lint --version``
 #: output via ``_print_lint_version`` below so users can verify the
-#: parity reference without reading CI YAML.
+#: parity reference without reading CI YAML. CONTRIBUTING.md points
+#: readers here as the canonical source for the pinned buf version.
 _BUF_PARITY_PIN: str = "v1.69.0"
 
 
@@ -163,8 +155,8 @@ def _print_lint_version(
     ``protokit --version`` (via ``@click.version_option`` at
     ``src/protokit/cli.py:24``) outputs only the package version;
     this callback extends the lint subcommand with the buf-parity
-    pin surface per R13 of the D6a U8 plan so users can verify
-    the parity reference without reading CI YAML.
+    pin surface so users can verify the parity reference without
+    reading CI YAML.
 
     Implementation: standard Click eager-flag callback shape — if
     ``value`` is False (flag not set) or the resilient parsing pass
@@ -192,8 +184,7 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     """Emit ``report.runtime_warnings`` to stderr as human-format lines.
 
     Called only when ``resolved.format == "human"`` (the CLI-side
-    post-format hook per KTD-6). Each warning becomes a stderr line
-    of the form::
+    post-format hook). Each warning becomes a stderr line of the form::
 
         protokit lint: warning [{category}]: {message}
 
@@ -211,30 +202,25 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
 
     Both the ``{category}`` and ``{message}`` slots are passed
     through ``_safe_for_stderr`` before ``click.echo`` as a
-    defense-in-depth measure (per KTD-9): construction-time
-    sanitization in engine.py / cli.py already collapses control
-    characters in the message field, and the ``category`` field is
-    typed as a closed ``Literal[...]`` set whose five values are all
-    ASCII tokens — but Python does not enforce ``Literal`` at
-    runtime, so a future emission site that constructs a
-    ``LintRuntimeWarning`` with a control-character-bearing category
-    string would otherwise bypass the boundary. Sanitizing both
-    slots keeps the stderr boundary symmetric and immune to that
-    future-emission-site regression.
+    defense-in-depth measure: construction-time sanitization in
+    engine.py / cli.py already collapses control characters in the
+    message field, and the ``category`` field is typed as a closed
+    ``Literal[...]`` set whose five values are all ASCII tokens — but
+    Python does not enforce ``Literal`` at runtime, so a future
+    emission site that constructs a ``LintRuntimeWarning`` with a
+    control-character-bearing category string would otherwise bypass
+    the boundary. Sanitizing both slots keeps the stderr boundary
+    symmetric and immune to that future-emission-site regression.
 
     A non-positive ``_LINT_HUMAN_SUMMARIZATION_THRESHOLD`` is
     clamped to ``1`` at function entry so the summarization math
-    stays well-defined under accidental D6 tuning to ``0`` or
-    negative values (zero would fire summary on the first warning
-    with "and N more" framing implying prior emissions; negative
-    would overcount remaining by ``abs(threshold)``).
+    stays well-defined under accidental tuning to ``0`` or negative
+    values (zero would fire summary on the first warning with
+    "and N more" framing implying prior emissions; negative would
+    overcount remaining by ``abs(threshold)``).
 
-    This hook is **NOT** gated by ``--quiet`` (KTD-6): ``--quiet``
-    suppresses findings on stdout, not warnings on stderr. The
-    pre-U4 stderr breadcrumb had the same posture (an inline
-    comment on the deleted ``cli.py:498-503`` loop said as much).
-    Closes the D3-era silent-warning regression for
-    ``--format=human``.
+    This hook is **NOT** gated by ``--quiet``: ``--quiet``
+    suppresses findings on stdout, not warnings on stderr.
     """
     if not report.runtime_warnings:
         return
@@ -321,7 +307,7 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
         "  Inspect R9b runtime_warnings (unknown rule id / contradiction):\n\n"
         "    protokit lint --format=json --disable-rule custom/audit-required "
         "schema.descriptor_set\n\n"
-        "EXIT CODES (R20 ladder):\n\n"
+        "EXIT CODES:\n\n"
         "  0 = clean run (no findings, or only INFO findings, or "
         "WARNINGs with --max-warnings unset / not exceeded).\n\n"
         "  1 = ERROR-severity finding present, OR WARNING count "
@@ -443,7 +429,7 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     help="Append a per-severity finding-count footer to human "
          "output. Default OFF; pass --statistics to opt in. Footer "
          "is human-only — machine formats embed counts in their "
-         "structured payloads natively (in U4b). "
+         "structured payloads natively. "
          "Zero-count severity rows are suppressed; only non-zero "
          "severities appear below the `statistics:` marker.",
 )
@@ -453,8 +439,9 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     is_flag=True,
     default=False,
     help="Suppress findings on stdout; exit code still reflects "
-         "the R20 ladder (0 clean, 1 ERROR or WARNING > "
-         "--max-warnings, 2 lint-internal error). Hard mutex with "
+         "the standard exit-code ladder (0 clean, 1 ERROR or "
+         "WARNING > --max-warnings, 2 lint-internal error). Hard "
+         "mutex with "
          "--format=json/junit/sarif (click usage error). Soft "
          "mutex with --statistics — emits a stderr advisory line "
          "and --quiet wins (no footer). Runtime-warning stderr lines "
@@ -468,11 +455,11 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     default=None,
     metavar="PATH",
     type=click.Path(path_type=Path),
-    # Fix #2: expand `~` to the home directory at the Click input
-    # boundary (per the normalize-at-input-boundary-2026-05-07
-    # learning). Without this, `--config ~/config.toml` would fail
-    # with "does not exist" because Click's Path() does not expand
-    # tildes itself.
+    # Expand `~` to the home directory at the Click input boundary
+    # (per the normalize-at-input-boundary learning under
+    # docs/solutions/best-practices/). Without this,
+    # `--config ~/config.toml` would fail with "does not exist"
+    # because Click's Path() does not expand tildes itself.
     callback=lambda ctx, param, value: (
         value.expanduser() if value is not None else value
     ),
@@ -515,8 +502,8 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
          "Patterns use gitignore-style semantics including negation: "
          "`--exclude 'vendor/**' --exclude '!vendor/important.proto'` "
          "excludes everything under vendor/ except the named file. "
-         "The descriptor pool still loads all files (per R9: "
-         "filtering applies to findings emission, not pool loading); "
+         "The descriptor pool still loads all files (filtering "
+         "applies to findings emission, not pool loading); "
          "an --exclude'd file's symbols remain resolvable as "
          "transitive imports for other files.",
 )
@@ -538,10 +525,10 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     "no_builtin_rules",
     is_flag=True,
     default=False,
-    help="Skip loading BUILTIN_PACKS (D6a R9c). When set, the "
+    help="Skip loading BUILTIN_PACKS. When set, the "
          "lint engine starts empty and only user-supplied packs via "
          "--rule-pack MODULE contribute rules. Use cases: "
-         "(a) opt out of D6a's BUILTIN_PACKS expansion while triaging "
+         "(a) opt out of the built-in rule set while triaging "
          "newly-fired rules (pair with --min-severity warning to "
          "demote on a rule-by-rule basis via "
          "[tool.protokit.lint.severities]); (b) run a pure "
@@ -559,27 +546,27 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     metavar="RULE_ID",
     envvar="PROTOKIT_DISABLE_RULE",
     show_envvar=True,
-    help="Disable a specific rule_id for this invocation (D6f R6, "
-         "repeatable). Accepts canonical 'pack/rule-suffix' "
+    help="Disable a specific rule_id for this invocation "
+         "(repeatable). Accepts canonical 'pack/rule-suffix' "
          "(e.g., 'naming/snake-case-fields') and custom forms "
          "('custom/<suffix>' for all-kinds disable; "
          "'custom/<suffix>__<kind>' for per-kind disable). The "
          "rule is removed from the composed profile's rule_ids "
          "BEFORE the engine walks any descriptors, so it never "
          "fires. Pyproject equivalent: [tool.protokit.lint] "
-         "disabled_rules = [...]. R8 precedence: any disable from "
+         "disabled_rules = [...]. Precedence: any disable from "
          "any tier wins (polarity-first); within polarity, CLI > "
          "pyproject. Cross-tier --enable-rule R + pyproject "
          "disabled_rules ⊃ R emits a "
          "'contradictory_disable_config' runtime warning. The "
          "alternative '[tool.protokit.lint.severities] R = \"off\"' "
-         "produces the same effect (D6f R4 sentinel). "
+         "produces the same effect (severity-off sentinel). "
          "Env-var: PROTOKIT_DISABLE_RULE accepts space-separated "
          "rule_ids (e.g., PROTOKIT_DISABLE_RULE=\"naming/snake-case-fields "
          "imports/unused\"); comma-separation is NOT supported. "
          "Use --format=json to inspect runtime_warnings for "
          "'unknown_rule_id' (typo / removed-rule signal) and "
-         "'contradictory_disable_config' (R8 polarity conflict) "
+         "'contradictory_disable_config' (polarity conflict) "
          "diagnostics.",
 )
 @click.option(
@@ -590,25 +577,25 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     envvar="PROTOKIT_ENABLE_RULE",
     show_envvar=True,
     help="Prevent an R9b disable directive from suppressing the named "
-         "rule (D6f R6, repeatable). Accepts the same rule_id shapes "
+         "rule (repeatable). Accepts the same rule_id shapes "
          "as --disable-rule. Pyproject equivalent: "
          "[tool.protokit.lint] enabled_rules = [...]. Does NOT add "
          "rules to the profile — use --profile to select a profile "
          "that includes the rule, OR --rule-pack to load a rule pack. "
          "With --no-builtin-rules, the rule must come from a "
          "--rule-pack module; otherwise it remains unloaded and emits "
-         "an 'unknown_rule_id' warning. R8 polarity-first means any "
-         "disable (from any tier) wins — --enable-rule does NOT "
-         "override a pyproject 'disabled_rules' or '[severities] = "
-         "\"off\"' disable. To bypass pyproject entirely, use "
-         "--no-config (WARNING: --no-config drops ALL pyproject "
-         "configuration, not just disabled_rules). To partially "
-         "override, edit your pyproject directly. "
+         "an 'unknown_rule_id' warning. The polarity-first precedence "
+         "rule means any disable (from any tier) wins — --enable-rule "
+         "does NOT override a pyproject 'disabled_rules' or "
+         "'[severities] = \"off\"' disable. To bypass pyproject "
+         "entirely, use --no-config (WARNING: --no-config drops ALL "
+         "pyproject configuration, not just disabled_rules). To "
+         "partially override, edit your pyproject directly. "
          "Env-var: PROTOKIT_ENABLE_RULE accepts space-separated "
          "rule_ids; comma-separation is NOT supported. "
          "Use --format=json to inspect runtime_warnings for "
          "'unknown_rule_id' (typo / removed-rule signal) and "
-         "'contradictory_disable_config' (R8 polarity conflict) "
+         "'contradictory_disable_config' (polarity conflict) "
          "diagnostics.",
 )
 @click.option(
@@ -620,8 +607,7 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     help="Show ``protokit X.Y.Z (parity: buf v<PIN>)`` and exit. The "
          "buf-parity pin is the version that ``tests/parity/`` "
          "verifies against in CI; surfacing it here lets users "
-         "verify the parity reference without reading CI YAML "
-         "(D6a U8 R13).",
+         "verify the parity reference without reading CI YAML.",
 )
 @click.pass_context
 def main(
@@ -653,10 +639,10 @@ def main(
     with first-occurrence-wins deduplication on ``fd.name``.
 
     """
-    # D5 R5a + R13a-precedence: --config and --no-config are mutually
-    # exclusive. Click-level mutex emits the 'Usage:' prefix and exits
-    # 2 — distinct from --config's loader-side R5a errors which carry
-    # the error[lint-pyproject-config-load]: prefix.
+    # --config and --no-config are mutually exclusive. Click-level
+    # mutex emits the 'Usage:' prefix and exits 2 — distinct from
+    # --config's loader-side errors which carry the
+    # error[lint-pyproject-config-load]: prefix.
     if config_path is not None and no_config:
         raise click.UsageError(
             "--config and --no-config are mutually exclusive; pass one or "
@@ -670,31 +656,31 @@ def main(
             err=True,
         )
         effective_statistics = False
-    # D5 U3: --no-exclude wins over --exclude per KTD-10. When both are
-    # supplied, drop the --exclude patterns silently after announcing
-    # the override on stderr (mirrors the --quiet/--statistics
-    # soft-mutex pattern above).
+    # --no-exclude wins over --exclude. When both are supplied, drop
+    # the --exclude patterns silently after announcing the override on
+    # stderr (mirrors the --quiet/--statistics soft-mutex pattern
+    # above).
     if no_exclude and exclude_patterns:
         click.echo(
             "warning[lint-cli]: --no-exclude clears --exclude patterns "
             "(--no-exclude wins)",
             err=True,
         )
-    # D5 U1: load [tool.protokit.lint] from pyproject.toml.
-    # If load_pyproject_config raises SystemExit (any R5a shadow path,
+    # Load [tool.protokit.lint] from pyproject.toml. If
+    # load_pyproject_config raises SystemExit (any shadow path,
     # parse error), it never returns and the CLI exits 2 with the
     # error[lint-pyproject-config-load]: stable prefix.
     pyproject_config = load_pyproject_config(
         explicit_path=config_path,
         no_config=no_config,
     )
-    # D5 U2: validate the pyproject table (R3, R3a/KTD-5) and merge with
-    # CLI overrides into a single ResolvedLintConfig carrier. CLI-default
-    # values for --profile and --format are indistinguishable from
-    # explicit user choices by value alone (defaults: "default" and
-    # "human"), so we rely on Click's parameter-source detection to know
-    # whether the user actually typed the flag. COMMANDLINE, ENVIRONMENT,
-    # and DEFAULT_MAP all count as "explicit" — env vars like
+    # Validate the pyproject table and merge with CLI overrides into a
+    # single ResolvedLintConfig carrier. CLI-default values for
+    # --profile and --format are indistinguishable from explicit user
+    # choices by value alone (defaults: "default" and "human"), so we
+    # rely on Click's parameter-source detection to know whether the
+    # user actually typed the flag. COMMANDLINE, ENVIRONMENT, and
+    # DEFAULT_MAP all count as "explicit" — env vars like
     # PROTOKIT_FORMAT are first-class user intent, and programmatic
     # callers using ``click.Context(default_map=...)`` are similarly
     # asserting user-level override intent (e.g., embedding the CLI in
@@ -712,7 +698,7 @@ def main(
     format_explicit = (
         ctx.get_parameter_source("format_name") in explicit_sources
     )
-    # D5 U3: --exclude / --no-exclude → cli_overrides["exclude"]. See
+    # --exclude / --no-exclude → cli_overrides["exclude"]. See
     # ResolvedLintConfig.from_dict's docstring for the full
     # None/()/non-empty sentinel contract. Local note: click's
     # `multiple=True` default-empty-tuple is indistinguishable from
@@ -726,7 +712,7 @@ def main(
         cli_exclude_value = exclude_patterns
     else:
         cli_exclude_value = None
-    # D6a U9 R9c: --no-builtin-rules CLI flag. The flag is_flag=True with
+    # --no-builtin-rules CLI flag. The flag is_flag=True with
     # default=False; Click delivers True/False unambiguously. Use
     # parameter-source detection to distinguish "user typed --no-builtin-rules"
     # from "CLI default" — only honor it as an explicit override when the
@@ -736,15 +722,14 @@ def main(
     no_builtin_rules_explicit = (
         ctx.get_parameter_source("no_builtin_rules") in explicit_sources
     )
-    # D6f KD-5: click multiple=True natural empty-tuple sentinel
-    # (no ParameterSource needed). The user cannot produce `()` by
-    # typing the flag — Click requires a value with each
-    # ``--disable-rule`` invocation — so `not disable_rules` is a
-    # clean "user did not pass this flag" test. Passing the literal
-    # empty tuple to ResolvedLintConfig.from_dict would behave
-    # identically (the unified disable set unions in an empty
-    # frozenset); the ``None`` sentinel is preferred for symmetry
-    # with the other CLI overrides.
+    # Click multiple=True natural empty-tuple sentinel (no
+    # ParameterSource needed). The user cannot produce `()` by typing
+    # the flag — Click requires a value with each ``--disable-rule``
+    # invocation — so `not disable_rules` is a clean "user did not
+    # pass this flag" test. Passing the literal empty tuple to
+    # ResolvedLintConfig.from_dict would behave identically (the
+    # unified disable set unions in an empty frozenset); the ``None``
+    # sentinel is preferred for symmetry with the other CLI overrides.
     cli_disable_value = tuple(disable_rules) if disable_rules else None
     cli_enable_value = tuple(enable_rules) if enable_rules else None
     cli_overrides: dict[str, Any] = {
@@ -815,29 +800,28 @@ def _main_impl(
     ``RULES = (decorated_fn, ...)`` where each callable is
     ``@lint_rule``-decorated.
 
-    ``resolved`` (D5 U2) is a ``ResolvedLintConfig`` carrier: the
-    merged result of CLI flags + pyproject ``[tool.protokit.lint]`` +
-    built-in defaults, with per-key precedence already applied per
-    the plan's decision matrix. Consumers in this function:
+    ``resolved`` is a ``ResolvedLintConfig`` carrier: the merged
+    result of CLI flags + pyproject ``[tool.protokit.lint]`` +
+    built-in defaults, with per-key precedence already applied.
+    Consumers in this function:
 
     - ``resolved.profile`` — iterated to compose multi-profile
       pyproject configurations (single-profile is the common case).
     - ``resolved.min_severity`` + ``resolved.min_severity_source`` —
-      drives the relaxation breadcrumb (U4 replaces this with the
-      structured ``LintRuntimeWarning`` emission).
-    - ``resolved.max_warnings``, ``resolved.format`` — replace the
-      former CLI-flag-direct usage.
+      drives the relaxation diagnostic emitted as a structured
+      ``LintRuntimeWarning``.
+    - ``resolved.max_warnings``, ``resolved.format`` — drive the
+      exit-code ladder and formatter dispatch.
     """
     if use_proto:
-        # D6b U3a: ``include_source_info=True`` enables the D6b R6
-        # deprecated-replacement family (and any future comment-aware
-        # rules) to read proto-source leading comments via the
-        # U2-shipped ``leading_comment`` helper. Cost is ~10-30%
-        # descriptor-set size per the U1 cross-runtime measurement;
-        # paid universally on every proto-mode lint invocation. Non-
-        # lint consumers (``protokit compat``, codegen, direct Python
-        # API) keep the pre-D6b zero-cost contract via the parameter
-        # default.
+        # ``include_source_info=True`` enables the deprecated-replacement
+        # rule family (and any future comment-aware rules) to read
+        # proto-source leading comments via the ``leading_comment``
+        # helper. Cost is ~10-30% descriptor-set size per cross-runtime
+        # measurement; paid universally on every proto-mode lint
+        # invocation. Non-lint consumers (``protokit compat``, codegen,
+        # direct Python API) keep the zero-cost contract via the
+        # parameter default.
         result = compile_protos_to_result(
             paths=list(inputs),
             proto_paths=list(proto_paths),
@@ -845,10 +829,10 @@ def _main_impl(
         )
         # Surface non-error info/warning diagnostics to stderr so
         # protoxy fallback notices and import-resolution warnings
-        # don't get silently swallowed (closes U2 ce:review CLR-U2-04
-        # / ADV-05 — agents in --proto mode now see all backend
-        # diagnostics, not just errors). Error diagnostics are
-        # rendered below right before the exit-2 stable-prefix line.
+        # don't get silently swallowed — agents in --proto mode see
+        # all backend diagnostics, not just errors. Error diagnostics
+        # are rendered below right before the exit-2 stable-prefix
+        # line.
         info_warnings = [d for d in result.diagnostics if d.level != "error"]
         errors = [d for d in result.diagnostics if d.level == "error"]
         for diag in info_warnings:
@@ -882,16 +866,17 @@ def _main_impl(
     # user packs collide on rule_id with built-in packs surface as
     # DuplicateRuleError → error[lint-rule-collision]:.
     #
-    # D6a U9 R9c: when ``resolved.no_builtin_rules`` is True (CLI
+    # When ``resolved.no_builtin_rules`` is True (CLI
     # ``--no-builtin-rules`` or pyproject ``no_builtin_rules = true``),
     # skip the auto-load loop entirely. User packs supplied via
     # ``--rule-pack`` still load. If neither builtin packs nor user
     # packs are loaded, the engine starts empty and the no-rules
-    # exit-2 ladder (R20) catches it downstream.
+    # exit-2 ladder catches it downstream.
     engine = LintEngine()
     # Track every successfully-loaded pack (built-ins + user packs)
-    # so we can introspect declared profiles for R11 and contributing
-    # rule_ids for R25.
+    # so we can introspect declared profiles for the unknown-profile
+    # diagnostic and contributing rule_ids for the multi-pack
+    # provenance line.
     loaded_packs: list[ModuleType] = []
     if not resolved.no_builtin_rules:
         for pack in BUILTIN_PACKS:
@@ -905,15 +890,15 @@ def _main_impl(
                 )
             loaded_packs.append(pack)
 
-    # D6d U1: synthetic ``custom/<suffix>`` rules from
+    # Synthetic ``custom/<suffix>`` rules from
     # ``[[tool.protokit.lint.custom_annotation_rules]]``. Loaded BEFORE
     # ``--rule-pack`` modules so that a user pack that accidentally
-    # declares a ``custom/<suffix>`` rule_id (KD-8 violation) collides
-    # via the engine's DuplicateRuleError ladder, surfacing the
-    # mistake at load time with the existing rule-pack-load exit code.
-    # ``--no-builtin-rules`` does NOT gate this step — synthetic rules
-    # are user-declared, not built-in, so the no-builtin-rules flag's
-    # "skip BUILTIN_PACKS" semantics don't apply.
+    # declares a ``custom/<suffix>`` rule_id (reserved namespace)
+    # collides via the engine's DuplicateRuleError ladder, surfacing
+    # the mistake at load time with the existing rule-pack-load exit
+    # code. ``--no-builtin-rules`` does NOT gate this step — synthetic
+    # rules are user-declared, not built-in, so the no-builtin-rules
+    # flag's "skip BUILTIN_PACKS" semantics don't apply.
     synthetic_module: ModuleType | None = None
     if resolved.custom_annotation_rules:
         synthetic_module = build_synthetic_module(
@@ -933,10 +918,10 @@ def _main_impl(
 
     for module_name in rule_packs:
         # Stderr load-banner: every --rule-pack invocation emits
-        # an advisory line so the trust delegation is observable.
-        # Per the round-1 plan-review P1 finding on --rule-pack
-        # security mitigation. Stderr diagnostic; not gated by
-        # --quiet (which suppresses findings stdout only).
+        # an advisory line so the trust delegation is observable
+        # — a security mitigation for the arbitrary-Python-execution
+        # surface that --rule-pack opens. Stderr diagnostic; not
+        # gated by --quiet (which suppresses findings stdout only).
         # ``_safe_for_stderr`` (the project-wide sanitizer) covers the
         # full ASCII control range plus Unicode line terminators
         # U+0085/U+2028/U+2029. The earlier chained ``.replace()``
@@ -956,15 +941,16 @@ def _main_impl(
         # idempotency at ``engine.py:241-242``: when a user passes
         # ``--rule-pack=<pack>`` for a pack already in BUILTIN_PACKS,
         # the engine no-ops the second load, but ``loaded_packs``
-        # would still get a duplicate appended. That breaks the R25
-        # provenance line's ``zip(loaded_packs_tuple,
+        # would still get a duplicate appended. That breaks the
+        # multi-pack provenance line's ``zip(loaded_packs_tuple,
         # _active_rule_ids_per_pack(...).values(), strict=True)``
         # below — the helper dict is keyed by ``pack.__name__`` (so
         # it dedups), but the tuple would not, yielding mismatched
         # zip arguments. The dedup here keeps both data structures
-        # consistent. Bug surfaced at D6b U7's BUILTIN_PACKS flip
-        # of ``package_same`` per
-        # [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]].
+        # consistent. The latent helper bug was surfaced empirically
+        # when ``package_same`` flipped into BUILTIN_PACKS — a parity
+        # gate caught the helper's mismatched-zip assumption at
+        # implementation time, not in advance.
         if user_pack.__name__ not in {p.__name__ for p in loaded_packs}:
             loaded_packs.append(user_pack)
 
@@ -1002,10 +988,10 @@ def _main_impl(
         else LintProfile.compose(*profiles_per_name)
     )
 
-    # D6d U1 / R5 + KD-12: union synthetic rule_ids into the composed
-    # profile so the engine's profile filter activates them. Synthetic
-    # rules are always-on when configured — they don't participate in
-    # the per-profile membership table because they originate from
+    # Union synthetic rule_ids into the composed profile so the
+    # engine's profile filter activates them. Synthetic rules are
+    # always-on when configured — they don't participate in the
+    # per-profile membership table because they originate from
     # pyproject array-of-tables entries, not from packs declaring
     # profile membership via @lint_rule(profiles=...). The augmentation
     # happens AFTER profile composition (so the user's --profile choice
@@ -1019,22 +1005,19 @@ def _main_impl(
                 rule_ids=composed_profile.rule_ids | synthetic_ids,
             )
 
-    # Apply R9a severities overlay (D6a U9). User pyproject
+    # Apply the per-rule severities overlay. User pyproject
     # ``[tool.protokit.lint.severities]`` always wins on collision
-    # with the composed profile's rule_severity_overrides per KTD-2.
-    # The overlay must happen BEFORE min_severity replacement below
-    # so the engine sees the final composed profile shape; ordering
-    # does not affect correctness today since min_severity and
-    # rule_severity_overrides are independent fields, but pinning
-    # the order to "user severities first" makes the precedence
-    # explicit.
+    # with the composed profile's rule_severity_overrides. The overlay
+    # must happen BEFORE min_severity replacement below so the engine
+    # sees the final composed profile shape; ordering does not affect
+    # correctness today since min_severity and rule_severity_overrides
+    # are independent fields, but pinning the order to "user severities
+    # first" makes the precedence explicit.
     #
     # Keys in ``resolved.severities`` that don't match any rule_id
     # in the composed profile are diagnosed below (after engine.run)
-    # via a synthesized ``severities_unloaded_rule`` runtime warning
-    # (D6b U5 split this from the original ``unloaded_rule`` category
-    # per D6a U9 KTD-2's deferred resolution; see
-    # :class:`LintRuntimeWarning.category` docstring).
+    # via a synthesized ``severities_unloaded_rule`` runtime warning;
+    # see :class:`LintRuntimeWarning.category` docstring.
     if resolved.severities:
         composed_profile = dataclasses.replace(
             composed_profile,
@@ -1049,21 +1032,20 @@ def _main_impl(
     # composed profile — not rule_ids that exist but the user has
     # explicitly disabled. Without this snapshot, a user who sets
     # both ``disabled_rules = ["R"]`` AND ``[severities] R = "warning"``
-    # would receive TWO warnings (the R8b contradictory_disable_config
-    # from from_dict AND a spurious severities_unloaded_rule from
-    # below); the snapshot ensures the latter only fires for
+    # would receive TWO warnings (the contradictory_disable_config
+    # warning from from_dict AND a spurious severities_unloaded_rule
+    # from below); the snapshot ensures the latter only fires for
     # genuinely unknown rule_ids.
     pre_disable_rule_ids = composed_profile.rule_ids
-    # D6f KD-1 — load-bearing R9b profile-augmentation step.
-    # Subtract the unified disabled_rules set (severity-"off"
-    # sentinel + pyproject disabled_rules + CLI --disable-rule, with
-    # custom-prefix expansion already applied per KD-2) from the
-    # composed profile's rule_ids BEFORE handing the profile to the
-    # engine. This is the actuation of the KD-1 sentinel
-    # propagation contract: from_dict produced the unified set, and
-    # this is where the engine's profile filter loses the disabled
-    # rule_ids. Without this step the from_dict bookkeeping silently
-    # no-ops at runtime — caught by
+    # Load-bearing R9b profile-augmentation step. Subtract the unified
+    # disabled_rules set (severity-"off" sentinel + pyproject
+    # disabled_rules + CLI --disable-rule, with custom-prefix expansion
+    # already applied) from the composed profile's rule_ids BEFORE
+    # handing the profile to the engine. This is the actuation of the
+    # R9b disable-propagation contract: from_dict produced the unified
+    # set, and this is where the engine's profile filter loses the
+    # disabled rule_ids. Without this step the from_dict bookkeeping
+    # silently no-ops at runtime — caught by
     # ``tests/schema/lint/cli/test_cli_r9b_profile_augmentation.py``.
     if resolved.disabled_rules:
         composed_profile = dataclasses.replace(
@@ -1076,17 +1058,18 @@ def _main_impl(
     #    packs' rule_ids in the active profile BEFORE R9b disable
     #    subtraction): prevents a spurious severities_unloaded_rule
     #    for a rule the user explicitly disabled AND overrode in
-    #    [severities] — the from_dict R8b warning already attributes
-    #    the contradiction.
+    #    [severities] — the from_dict contradictory_disable_config
+    #    warning already attributes the contradiction.
     # 2. Also subtract ``resolved.disabled_rules``: when a rule_id
     #    appears in BOTH disabled_rules AND [severities] with a
     #    non-off value, the rule is genuinely unknown (not in the
     #    composed profile at all). Without this second guard, such a
-    #    rule fires BOTH R8b (contradictory_disable_config) AND
-    #    severities_unloaded_rule, which is redundant — R8b is the
-    #    canonical attribution. The subtraction ensures zero
+    #    rule fires BOTH contradictory_disable_config AND
+    #    severities_unloaded_rule, which is redundant — the
+    #    contradictory_disable_config warning is the canonical
+    #    attribution. The subtraction ensures zero
     #    severities_unloaded_rule warnings for rule_ids that are
-    #    already covered by R8b.
+    #    already covered.
     # Empty severities → empty tuple (no extra branch).
     severities_unloaded_rule_ids: tuple[str, ...] = tuple(
         sorted(
@@ -1095,16 +1078,14 @@ def _main_impl(
         ),
     )
 
-    # Apply min_severity override (R12, R19a). Pure numeric override
-    # that replaces the composed profile's min_severity. The R20
-    # relaxation message (if the override actually relaxes the floor)
-    # is computed HERE and emitted post-engine.run as a structured
-    # LintRuntimeWarning(category="min_severity_relaxed") per KTD-6 +
-    # R19a. The U2 stderr breadcrumb was removed in D5 U4 in favor of
-    # this structured emission; the R20 message templates now live on
-    # ResolvedLintConfig.relaxation_message per the
-    # cross-format-enum-string-parity learning so every formatter
-    # emits identical text.
+    # Apply min_severity override. Pure numeric override that
+    # replaces the composed profile's min_severity. The relaxation
+    # message (if the override actually relaxes the floor) is
+    # computed HERE and emitted post-engine.run as a structured
+    # LintRuntimeWarning(category="min_severity_relaxed"). The
+    # message templates live on ResolvedLintConfig.relaxation_message
+    # per the cross-format-enum-string-parity learning so every
+    # formatter emits identical text.
     relaxation_msg: str | None = None
     if resolved.min_severity is not None:
         composed_floor = composed_profile.min_severity
@@ -1116,7 +1097,7 @@ def _main_impl(
         # exceed the floor, in which case no warning fires.
         relaxation_msg = resolved.relaxation_message(composed_floor)
 
-    # Loud-failure checks per origin R9 + R11. R9 wins over R11 when
+    # Loud-failure checks: no-rules wins over unknown-profile when
     # both predicates would fire — the user can't meaningfully fix
     # profile selection without rules to select from.
     if not engine.has_rules:
@@ -1126,10 +1107,10 @@ def _main_impl(
             "exposing RULES, or rely on the built-in BUILTIN_PACKS "
             "(see protokit.schema.lint.rules.BUILTIN_PACKS).",
         )
-    # D6f COR-1: R9b directives disabled every rule in the resolved
-    # profile. This guard fires BEFORE the unknown-profile guard so
-    # the more specific error wins — the profile WAS declared, the
-    # user just disabled all its rules.
+    # R9b directives disabled every rule in the resolved profile.
+    # This guard fires BEFORE the unknown-profile guard so the more
+    # specific error wins — the profile WAS declared, the user just
+    # disabled all its rules.
     if pre_disable_rule_ids and not composed_profile.rule_ids:
         n = len(pre_disable_rule_ids)
         profile_display = _safe_for_stderr(
@@ -1181,9 +1162,9 @@ def _main_impl(
             f"profiles {profile_list} are not declared by any loaded pack",
         )
 
-    # R25 multi-pack composition stderr provenance line. Gated on
-    # len(loaded_packs) >= 2 per origin R25 revised — single-pack
-    # default emits no line (it's not composing anything).
+    # Multi-pack composition stderr provenance line. Gated on
+    # len(loaded_packs) >= 2 — single-pack default emits no line
+    # (it's not composing anything).
     if len(loaded_packs_tuple) >= 2:
         active_per_pack = _active_rule_ids_per_pack(
             loaded_packs_tuple, composed_profile.rule_ids,
@@ -1193,7 +1174,7 @@ def _main_impl(
         # from pyproject or --profile. Both flow into this stderr line via
         # f-string interpolation and would otherwise allow U+2028/U+2029
         # injection that bypasses chained `.replace()` and that `_safe_module_name`
-        # already addresses for the pack-name slot. Mirrors KTD-9's full-slot
+        # already addresses for the pack-name slot. Mirrors the full-slot
         # sanitization posture per the module-name-newline-injection learning.
         per_pack_segments = [
             (
@@ -1217,15 +1198,15 @@ def _main_impl(
             err=True,
         )
 
-    # D5 U3: file-level exclusion. Apply `resolved.exclude` patterns to
-    # the post-compile `result.root_files` BEFORE invoking the engine.
-    # Per R9, the descriptor POOL still loads every file (so transitive
+    # File-level exclusion. Apply `resolved.exclude` patterns to the
+    # post-compile `result.root_files` BEFORE invoking the engine.
+    # The descriptor POOL still loads every file (so transitive
     # imports resolve), but the engine only walks files that survive
     # the filter. When zero files survive AND the user passed inputs
     # at all, emit `LintRuntimeWarning(category="all_files_excluded")`
-    # CLI-side per KTD-4 + KTD-6 and short-circuit `engine.run` with
-    # an empty report; downstream rendering still fires so the
-    # warning surfaces in every formatter.
+    # CLI-side and short-circuit `engine.run` with an empty report;
+    # downstream rendering still fires so the warning surfaces in
+    # every formatter.
     all_files_excluded_warning: LintRuntimeWarning | None = None
     if resolved.exclude:
         exclude_spec = compile_exclude_patterns(resolved.exclude)
@@ -1237,12 +1218,11 @@ def _main_impl(
             len(filtered_root_files) == 0
             and len(result.root_files) > 0
         ):
-            # D5 U4 F-03 fold-in: the all_files_excluded message is
-            # now R20-source-attributed via
+            # The all_files_excluded message is source-attributed via
             # ResolvedLintConfig.all_files_excluded_message, so users
             # see whether the dropping patterns came from --exclude,
-            # pyproject, or both. Per KTD-9, patterns are
-            # newline-sanitized inside the helper.
+            # pyproject, or both. Patterns are newline-sanitized
+            # inside the helper.
             all_files_excluded_warning = LintRuntimeWarning(
                 category="all_files_excluded",
                 rule_id=None,
@@ -1270,13 +1250,13 @@ def _main_impl(
     else:
         report = engine.run(result, profile=composed_profile)
 
-    # D5 U4 R19a: post-engine append for `min_severity_relaxed`. Per
-    # KTD-4 alphabetical ordering, this comes AFTER any
-    # `all_files_excluded` already attached above
-    # (alphabetical: all_files_excluded < min_severity_relaxed).
-    # Engine-emitted categories (`rule_exception`, `unloaded_rule`)
-    # come first by emission order; CLI-emitted categories are
-    # appended in alphabetical sequence here.
+    # Post-engine append for `min_severity_relaxed`. By alphabetical
+    # ordering, this comes AFTER any `all_files_excluded` already
+    # attached above (alphabetical: all_files_excluded <
+    # min_severity_relaxed). Engine-emitted categories
+    # (`rule_exception`, `unloaded_rule`) come first by emission
+    # order; CLI-emitted categories are appended in alphabetical
+    # sequence here.
     if relaxation_msg is not None:
         relaxation_warning = LintRuntimeWarning(
             category="min_severity_relaxed",
@@ -1290,18 +1270,15 @@ def _main_impl(
             ),
         )
 
-    # R9a (D6a U9, split in D6b U5): synthesize
-    # ``severities_unloaded_rule`` runtime warnings for any
+    # Synthesize ``severities_unloaded_rule`` runtime warnings for any
     # ``severities`` keys that don't match a rule_id in the composed
-    # profile. The dedicated category landed in D6b U5 (resolved
-    # D6a U9 KTD-2's accepted conflation); see
-    # :class:`LintRuntimeWarning.category` docstring for the
-    # per-emit-site contract. The schema_version 0.2 → 0.3 bump in
-    # ``_LINT_JSON_SCHEMA_VERSION`` is the consumer-facing wire-format
-    # signal that switch tables need re-checking.
+    # profile. See :class:`LintRuntimeWarning.category` docstring for
+    # the per-emit-site contract. The schema_version 0.2 → 0.3 bump
+    # in ``_LINT_JSON_SCHEMA_VERSION`` is the consumer-facing
+    # wire-format signal that switch tables need re-checking.
     # Sanitize the rule_id (flows verbatim into lint_json/lint_sarif
     # wire formats; json.dumps does NOT escape U+2028/U+2029) per the
-    # dual-sanitization model established in D5 U5.
+    # dual-sanitization model.
     if severities_unloaded_rule_ids:
         new_warnings = tuple(
             LintRuntimeWarning(
@@ -1321,7 +1298,7 @@ def _main_impl(
             runtime_warnings=report.runtime_warnings + new_warnings,
         )
 
-    # D6f R8b — append the contradictory_disable_config warnings that
+    # Append the contradictory_disable_config warnings that
     # ``ResolvedLintConfig.from_dict`` accumulated during R9b
     # precedence resolution. They live on ``resolved.runtime_warnings``
     # (a frozen-dataclass-safe tuple snapshot per __post_init__) so
@@ -1335,17 +1312,17 @@ def _main_impl(
             ),
         )
 
-    # D6f R8c — synthesize ``unknown_rule_id`` warnings for any R9b
-    # directive (disabled_rules / enabled_rules from pyproject OR
+    # Synthesize ``unknown_rule_id`` warnings for any R9b directive
+    # (disabled_rules / enabled_rules from pyproject OR
     # --disable-rule / --enable-rule from CLI, post-normalization
     # and post-custom-prefix-expansion) naming a rule_id that does
     # not exist in the engine's ``_loaded_specs`` registry after
     # all rule-pack loading. Mirrors the existing
     # ``severities_unloaded_rule`` pattern above: the orchestration
     # layer has the full loaded-rule universe and is the natural
-    # site for the diff. Lenient-with-warning per the spec — the
-    # unknown id has already been silently dropped from the
-    # effective set by from_dict's R8 resolution, so no behavior
+    # site for the diff. Lenient-with-warning — the unknown id has
+    # already been silently dropped from the effective set by
+    # from_dict's polarity-precedence resolution, so no behavior
     # change beyond the diagnostic.
     loaded_rule_ids = engine.loaded_rule_ids
     unknown_r9b_rule_ids: tuple[str, ...] = tuple(
@@ -1359,7 +1336,7 @@ def _main_impl(
             # Detect mangled-custom-form misuse: first-kind synthetic rules
             # register under the BARE form ("custom/X"), not "custom/X__<first_kind>".
             # A user writing the mangled form expecting per-kind disable on the first
-            # kind silently fails; the R8c diagnostic should mention the convention.
+            # kind silently fails; the unknown_rule_id diagnostic should mention the convention.
             safe_rid = _safe_for_stderr(rid)
             if "__" in rid and rid.startswith("custom/"):
                 return (
@@ -1408,14 +1385,13 @@ def _main_impl(
     if output and not quiet:
         click.echo(output)
 
-    # D5 U5 R21a: CLI-side post-format hook for ``--format=human``.
-    # The machine formatters (``lint_json`` / ``lint_junit`` /
-    # ``lint_sarif``) embed ``runtime_warnings`` in their structured
-    # payloads; ``lint_human`` is intentionally pure (returns the
-    # findings string), so re-surfacing the warnings to stderr is
-    # CLI-layer policy per KTD-6. The hook is NOT gated by
-    # ``--quiet`` (warnings on stderr stay visible; ``--quiet``
-    # suppresses findings on stdout).
+    # CLI-side post-format hook for ``--format=human``. The machine
+    # formatters (``lint_json`` / ``lint_junit`` / ``lint_sarif``)
+    # embed ``runtime_warnings`` in their structured payloads;
+    # ``lint_human`` is intentionally pure (returns the findings
+    # string), so re-surfacing the warnings to stderr is CLI-layer
+    # policy. The hook is NOT gated by ``--quiet`` (warnings on
+    # stderr stay visible; ``--quiet`` suppresses findings on stdout).
     if resolved.format == "human":
         _emit_human_runtime_warnings(report)
 
@@ -1443,8 +1419,9 @@ def _emit_statistics_footer(report: LintReport) -> None:
     Empty rows (zero counts) are suppressed; the footer marker line
     always emits when --statistics is set. Agents can verify the flag
     was honored by checking for the `statistics:` marker line, but
-    should not parse individual rows as a stable contract — machine-readable
-    counts arrive in U4b's structured formats.
+    should not parse individual rows as a stable contract — use the
+    machine formats (``json`` / ``junit`` / ``sarif``) for
+    structured counts.
     """
     counts: Counter[LintSeverity] = Counter(
         finding.severity for finding in report.findings
