@@ -15,13 +15,14 @@
 #     System protoc is installed on EVERY cell so the protoc-only path
 #     always runs; the `has_protoxy` axis only controls protoxy.
 #
-# protoc is downloaded as a pinned binary release (v25.3) from the
-# protocolbuffers GitHub releases rather than apt's protobuf-compiler
-# package. The binary release ships well-known-type .proto files in
-# include/ adjacent to the binary; apt's split-package layout does
-# not, which broke cross-backend byte-equivalence tests on the first
-# CI run. Bumping the pinned version is a one-line edit to both
-# `Install system protoc` steps.
+# protoc is installed via apt (protobuf-compiler package) — keeps
+# the protoc binary version in lockstep with what protoxy 0.7.2
+# embeds, so descriptor-output behavior consumed by lint rules is
+# consistent across both backends. Apt's protoc places WKT files
+# at /usr/include/google/protobuf/ without adding /usr/include to
+# protoc's default search path; the 0.7.1 hotfix added runtime WKT
+# auto-discovery (_discover_wkt_include_paths in _cli_utils.py) so
+# this works without callers passing -I /usr/include themselves.
 
 name: ci
 
@@ -58,50 +59,22 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install system protoc
-        # Pinned binary release from the protocolbuffers repo (not
-        # apt's protobuf-compiler). The binary release ships the
-        # well-known-type .proto files in include/ adjacent to the
-        # binary, which protoc auto-finds — apt's split-package
-        # layout does NOT add /usr/include to protoc's search path
-        # and breaks cross-backend byte-equivalence tests that
-        # import google/protobuf/any.proto. (protokit also
-        # auto-discovers WKT include paths at runtime, but pinning
-        # the binary version makes the parity baseline reproducible
-        # across CI runs.)
+        # apt-installed protobuf-compiler (protoc 3.21.x on
+        # ubuntu-latest). Stays in lockstep with the protoc version
+        # embedded in protoxy 0.7.2, so descriptor-output behavior
+        # (which lint rules consume) is consistent across the
+        # protoxy and protoc backends. The protoc 25.3 binary
+        # release was tried briefly but introduced descriptor-
+        # encoding differences that broke ~10 lint-rule tests; the
+        # WKT auto-discovery added in 0.7.1 makes apt's
+        # split-package layout work correctly (WKT files at
+        # /usr/include/google/protobuf/ get found via the new
+        # _discover_wkt_include_paths helper without callers needing
+        # to pass -I /usr/include explicitly).
         run: |
-          PROTOC_VERSION=25.3
-          curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
-          sudo unzip -o -q /tmp/protoc.zip -d /usr/local
-          # Use a+rX (capital X = add execute only where some user
-          # already has it; gives directories traversal rights without
-          # marking ordinary files executable).
-          sudo chmod -R a+rX /usr/local/include/google
-          sudo chmod a+x /usr/local/bin/protoc
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
           protoc --version
-
-      - name: Sanity — protoc can resolve WKT imports from /usr/local/include
-        run: |
-          # Diagnostic that surfaces protoc stderr immediately rather
-          # than waiting for the test suite to fail with stderr buried
-          # inside a CalledProcessError repr. If this step fails the
-          # whole job aborts here with a clear error.
-          ls -ld /usr/local/include/google/protobuf
-          ls /usr/local/include/google/protobuf/any.proto
-          mkdir -p /tmp/protoc-sanity
-          cat > /tmp/protoc-sanity/demo.proto <<'EOF'
-          syntax = "proto3";
-          package demo;
-          import "google/protobuf/any.proto";
-          message Demo { google.protobuf.Any payload = 1; }
-          EOF
-          # protoc 25+ rejects the standard `--` end-of-options
-          # separator; pass file paths positionally instead.
-          protoc --descriptor_set_out /tmp/protoc-sanity/out.bin \
-                 --include_imports \
-                 -I /tmp/protoc-sanity \
-                 -I /usr/local/include \
-                 /tmp/protoc-sanity/demo.proto
-          ls -la /tmp/protoc-sanity/out.bin
 
       - name: Install package + dev deps (with protoxy)
         if: matrix.has_protoxy
@@ -230,17 +203,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install system protoc
-        # Mirrors the protoc install in the `test` job above. Pinned
-        # binary release ships well-known-type .proto files in
-        # include/ adjacent to the binary so cross-backend
-        # byte-equivalence tests that import google/protobuf/*.proto
-        # resolve cleanly.
+        # Mirrors the protoc install in the `test` job above:
+        # apt-installed protobuf-compiler so the protoc binary
+        # version matches what protoxy 0.7.2 embeds.
         run: |
-          PROTOC_VERSION=25.3
-          curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o /tmp/protoc.zip
-          sudo unzip -o -q /tmp/protoc.zip -d /usr/local
-          sudo chmod -R a+rX /usr/local/include/google
-          sudo chmod a+x /usr/local/bin/protoc
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
           protoc --version
 
       - name: Install package + dev deps (with compiler extra)

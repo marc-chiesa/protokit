@@ -475,13 +475,15 @@ mapping (the production-code-visible contract) is identical.
 No source-code change in production — only the test invariant
 was tightened to match the real contract.
 
-CI also switches from apt-installed `protobuf-compiler` (which
-ships protoc 3.21) to a pinned binary release (v25.3) from the
-protocolbuffers GitHub release bucket. The binary release ships
-WKTs in `include/` adjacent to the binary, gives protoc
-auto-resolution, and exercises the protoc-25+-compatible argv on
-every CI run so any future regression in either fix surfaces
-immediately.
+CI still installs protoc via apt's `protobuf-compiler` package
+(protoc 3.21.x on ubuntu-latest). The 0.7.1 runtime
+auto-discovery (Fix #1) makes apt's split-package WKT layout work
+correctly without callers needing to pass `-I /usr/include`
+explicitly. A pinned protoc 25.3 binary release was tried during
+the 0.7.1 development cycle but introduced descriptor-encoding
+differences from the older protoc embedded in protoxy 0.7.2 that
+caused subtle lint-rule behavior drift; apt's protoc keeps the
+two backends in lockstep.
 
 Tag: `v0.7.1`. PyPI: `pip install protokit==0.7.1`.
 
