@@ -106,7 +106,7 @@ The failure mode is the same shape as [[fail-closed-ci-matrix-coverage-meta-test
 
 ## Examples
 
-**Before** — `tests/schema/lint/test_perf_smoke.py` lines 145-151 at commit `313c8d8` (the D6a U4 feature commit, before this fix):
+**Before** — `tests/schema/lint/test_perf_smoke.py` lines 145-151 at commit `59fa1df` (the D6a U4 feature commit, before this fix):
 
 ```python
 engine = LintEngine()
@@ -118,7 +118,7 @@ profile = dataclasses.replace(
 )
 ```
 
-**After** — same file lines 145-162 at commit `1146e99` (the D6a U4 ce:review follow-up):
+**After** — same file lines 145-162 at commit `045b4e5` (the D6a U4 ce:review follow-up):
 
 ```python
 engine = LintEngine()

@@ -241,7 +241,7 @@ contract. Three institutional refinements have accumulated on top
 of the original dual-clause structure:
 
 1. **Closed-Literal vs open-ladder distinction** — landed at D6b U5
-   (commit `16b494f`) as the first closed-Literal-discriminator
+   (commit `c9dbaa2`) as the first closed-Literal-discriminator
    addition. Before U5 the docstring had a single blanket sentence
    ("enum-value additions don't bump") that was correct for
    `LintFinding.severity` (open ladder) but WRONG for

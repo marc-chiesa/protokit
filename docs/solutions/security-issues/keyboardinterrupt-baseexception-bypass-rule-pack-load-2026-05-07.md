@@ -196,7 +196,7 @@ subclass of `Exception`, `SystemExit`, or `KeyboardInterrupt`).
 Click's top-level handler would then render an unhandled-exception
 traceback and exit non-zero, which is not the `Aborted!` shape from
 the `KeyboardInterrupt` bypass but still violates the stable-prefix
-contract. As of commit `1249b10`, this surface is NOT explicitly
+contract. As of commit `94708dd`, this surface is NOT explicitly
 guarded; the deliberate decision is the same as for `GeneratorExit`
 (near-zero practical likelihood from a benign or even adversarial
 pack — `BaseExceptionGroup` is a contrived choice when simpler
@@ -248,7 +248,7 @@ assert the literal substring `"KeyboardInterrupt"` in stderr — that
 would couple the test to the exact wording of the message body and
 break for no behavioural reason if the message is later rephrased.
 
-(As of commit `1249b10`, the fixture and test do not yet exist —
+(As of commit `94708dd`, the fixture and test do not yet exist —
 covered in U4a or U5 hardening pass.)
 
 ### General Python pattern

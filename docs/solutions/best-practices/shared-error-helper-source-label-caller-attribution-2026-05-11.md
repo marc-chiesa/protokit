@@ -327,7 +327,7 @@ test.
   covers the I/O-boundary-exception-guard angle (spatial-scope audit
   for `OSError` on walk-up stat calls); this doc covers the
   caller-attribution angle (parameterized error messages for shared
-  helpers). Both fixes landed in commit `89d84ff`.
+  helpers). Both fixes landed in commit `24e688f`.
 - `docs/solutions/best-practices/apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.md` —
   this finding is itself an example: the gap was caught at
   ce:review, not at plan/brainstorm time, because plan reviewers

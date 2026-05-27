@@ -32,7 +32,7 @@ D6f U1's migration recipe for R6 promotion included a fourth path: listing all 5
 
 The flaw: `sad.proto` triggers only one of the five R6 rule_ids (`options/deprecated-field-must-have-replacement-comment`). A parser regression that silently dropped 4 of the 5 entries in `disabled_rules` — leaving only the FIELD rule in the effective disabled set — would have caused path4 to still pass. The single-kind fixture provided no more regression protection than a test that disabled only one rule.
 
-ce:review run `20260524-232840-29bb63be` surfaced this as a P2 finding with 3-reviewer agreement (correctness, testing, and maintainability reviewers all flagged the same gap independently). The fix (commit `55868cc`) replaced the fixture with `sad_multi_element.proto` carrying deprecated elements of all 5 ElementKinds and added a module-level baseline test pinning the pre-suppression signal.
+ce:review run `20260524-232840-29bb63be` surfaced this as a P2 finding with 3-reviewer agreement (correctness, testing, and maintainability reviewers all flagged the same gap independently). The fix (commit `4fb57a5`) replaced the fixture with `sad_multi_element.proto` carrying deprecated elements of all 5 ElementKinds and added a module-level baseline test pinning the pre-suppression signal.
 
 **Pattern precedent (not codified before):** the same gap was caught in D6b U6's ce:review for `test_parity_package_same.py` (May 18 session — `78c5dd64`). The fix there was the same shape — extend the parametrized fixture to cover all rules in the family. This learning codifies the discipline so the third occurrence doesn't have to wait for cross-reviewer convergence to surface it.
 
@@ -112,7 +112,7 @@ Not required for:
 
 `sad.proto` contains only a deprecated FIELD element. `test_path4_disabled_rules_family_unloads_all_five` used it and passed — but a parser bug dropping 4 of 5 entries in `disabled_rules` would also pass, because only 1 rule needed to be disabled to suppress the only finding.
 
-### After (multi-element fixture + baseline, commit `55868cc`)
+### After (multi-element fixture + baseline, commit `4fb57a5`)
 
 `sad_multi_element.proto` carries:
 - `LegacyUser.legacy_id` — deprecated FIELD
@@ -126,7 +126,7 @@ The path4 test now consumes `sad_multi_element.proto`. The baseline test asserts
 ### Source references
 
 - `tests/schema/lint/cli/test_cli_r6_migration_recipe.py:164-265` (post-fix line range)
-- `tests/schema/lint/cli/cli_fixtures/d6f_r6_migration/sad_multi_element.proto` (introduced in commit `55868cc`)
+- `tests/schema/lint/cli/cli_fixtures/d6f_r6_migration/sad_multi_element.proto` (introduced in commit `4fb57a5`)
 - D6b U6 precedent (session history): `test_parity_package_same.py` parametrized fixture extended for the package_same family at May 18 ce:review
 
 ## Related

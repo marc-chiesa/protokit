@@ -88,7 +88,7 @@ The discipline does not apply when:
 
 ## Examples
 
-The rule implementation in `/Users/marc/projects/python_message_differencer/src/protokit/schema/lint/rules/naming.py` (lines 226-275 after the D6a U3 commits):
+The rule implementation in `src/protokit/schema/lint/rules/naming.py` (lines 226-275 after the D6a U3 commits):
 
 ```python
 @lint_rule(
@@ -120,7 +120,7 @@ def check_snake_case_files(ctx: FileLintContext) -> None:
         )
 ```
 
-The verifying tests in `/Users/marc/projects/python_message_differencer/tests/schema/lint/rules/test_naming_extended.py`:
+The verifying tests in `tests/schema/lint/rules/test_naming_extended.py`:
 
 ```python
 def test_happy_path_snake_case_basename_clean(self, tmp_path):

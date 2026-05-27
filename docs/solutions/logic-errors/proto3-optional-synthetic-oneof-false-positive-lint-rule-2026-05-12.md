@@ -37,7 +37,7 @@ A new buf-parity ONEOF rule (`naming/snake-case-oneofs`) emitted false-positive 
 
 ## What Didn't Work
 
-The first cut of the rule walked oneofs naively (commit `74ccb28`):
+The first cut of the rule walked oneofs naively (commit `6026151`):
 
 ```python
 @lint_rule(
@@ -61,7 +61,7 @@ The regex correctly rejected `_email_address`, but the rule's *frame* was wrong:
 
 ## Solution
 
-Add a leading-underscore skip guard as the first statement in the rule body (commit `79428b2`):
+Add a leading-underscore skip guard as the first statement in the rule body (commit `9fae6e9`):
 
 ```python
 def check_snake_case_oneofs(ctx: OneofLintContext) -> None:

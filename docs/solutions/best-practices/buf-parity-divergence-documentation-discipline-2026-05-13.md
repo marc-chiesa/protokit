@@ -247,7 +247,7 @@ the canonical worked example. The rule:
      pins the buf-parity branch; both docstrings explain the
      branch they cover).
 
-The structured-field deferral is logged in commit `3469523`'s
+The structured-field deferral is logged in commit `5a97b9e`'s
 "Plan-deferred residual" section as advisory `AC2`: *"Adding a
 machine-readable `LintRuleSpec.parity_note` field is a D6b
 candidate when a 2nd divergence forces the question."* When D6b

@@ -57,7 +57,7 @@ never actually ran.
 
 ## What Didn't Work
 
-The Phase A harness (commit `c270489`) handled only the most-obvious
+The Phase A harness (commit `5300518`) handled only the most-obvious
 failure cases:
 
 ```python

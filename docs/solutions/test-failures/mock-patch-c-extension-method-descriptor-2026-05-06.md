@@ -159,7 +159,7 @@ Two seams were swapped together:
    test is specifically verifying a helper's `sys.exit` + stderr
    contract.
 
-Landed as commit `dd9cfe4` on `feat/d3-protokit-lint-cli` (D3 Unit
+Landed as commit `caf776a` on `feat/d3-protokit-lint-cli` (D3 Unit
 2 ce:review follow-ups).
 
 ## Why This Works

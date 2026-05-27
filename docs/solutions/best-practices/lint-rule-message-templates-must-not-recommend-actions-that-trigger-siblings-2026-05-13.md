@@ -35,7 +35,7 @@ following the advice produces a *new* finding instead of a clean run.
 The user has no proto-semantic escape.
 
 D6a U5 shipped `imports/unused` with exactly this trap. The original
-message_template (feature commit `16a39c3`):
+message_template (feature commit `e5e99cc`):
 
 > "File imports `'foo.proto'` but does not reference any of its
 > types — drop the import or mark it `public`/`weak` if the
@@ -65,7 +65,7 @@ new finding from a sibling rule with no further escape.
 
 The finding was caught during D6a U5 ce:review as ADV-U5-04
 (adversarial reviewer, confidence 0.95), classified P1, and
-resolved in fix commit `3bd23d7` by rewriting the message_template
+resolved in fix commit `98c2ebb` by rewriting the message_template
 to name only safe remediations + flagging the known D6a
 out-of-scope false-positive cases (custom options, proto2
 extensions tracked for D6b).
@@ -117,7 +117,7 @@ Safe recommendations:
   message acknowledges the boundary instead of suggesting a
   cascade-triggering remediation
 
-The corrected D6a U5 message_template (fix commit `3bd23d7`):
+The corrected D6a U5 message_template (fix commit `98c2ebb`):
 
 ```python
 message_template=(
@@ -209,7 +209,7 @@ Skip the discipline when:
 
 ## Examples
 
-**Before (D6a U5 feature commit `16a39c3`, `imports.py:121-125`)
+**Before (D6a U5 feature commit `e5e99cc`, `imports.py:121-125`)
 — the trapped message:**
 
 ```python
@@ -229,7 +229,7 @@ This message recommends `import public` / `import weak` as valid
 remediations. Both fire `imports/no-public` / `imports/no-weak` in
 the same `recommended`+`default` profile.
 
-**After (D6a U5 ce:review fix commit `3bd23d7`,
+**After (D6a U5 ce:review fix commit `98c2ebb`,
 `imports.py:121-128`) — safe remediations only:**
 
 ```python

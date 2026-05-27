@@ -26,7 +26,7 @@ tags:
 
 ## Context
 
-D6f U2 (commit `b8f0168`) implemented R9b per-rule disable for protokit-lint. One of the five disable mechanisms is `[tool.protokit.lint.severities] <rule_id> = "off"` — users who already have a `severities` table in their pyproject can suppress a rule by setting its severity to the sentinel string `"off"`.
+D6f U2 (commit `fea31b5`) implemented R9b per-rule disable for protokit-lint. One of the five disable mechanisms is `[tool.protokit.lint.severities] <rule_id> = "off"` — users who already have a `severities` table in their pyproject can suppress a rule by setting its severity to the sentinel string `"off"`.
 
 The naive implementation adds `LintSeverity.OFF` to the existing 3-member enum:
 
@@ -143,7 +143,7 @@ This pattern does NOT apply when:
 
 ### The `_CoercedSeverities` NamedTuple and interception
 
-`src/protokit/schema/lint/_config.py` (D6f U2, commit `b8f0168`):
+`src/protokit/schema/lint/_config.py` (D6f U2, commit `fea31b5`):
 
 ```python
 class _CoercedSeverities(NamedTuple):

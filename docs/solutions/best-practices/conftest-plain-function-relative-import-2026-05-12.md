@@ -305,9 +305,9 @@ imports work the standard way.
 
 ## Discovered During
 
-D6a U2 ce:review follow-ups (commit `1dea189`). The maintainability
+D6a U2 ce:review follow-ups (commit `739a0f2`). The maintainability
 reviewer (M3) surfaced the three-file `_expect_invalid` duplication
-during the 9-reviewer parallel pass on commit `a039a51`. The
+during the 9-reviewer parallel pass on commit `5a464e2`. The
 relative-import gotcha was discovered during the extraction itself:
 the first attempt at `expect_invalid` usage in the consuming test
 files failed with `NameError`, requiring the explicit `from

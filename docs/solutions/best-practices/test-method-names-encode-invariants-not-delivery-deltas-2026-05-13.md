@@ -103,7 +103,7 @@ Skip the discipline when:
 
 ## Examples
 
-**Before** — `tests/schema/lint/cli/test_cli_profile_resolution.py` at commit `313c8d8` (the D6a U4 feature commit, where the test was first inverted with the wrong name):
+**Before** — `tests/schema/lint/cli/test_cli_profile_resolution.py` at commit `59fa1df` (the D6a U4 feature commit, where the test was first inverted with the wrong name):
 
 ```python
 def test_builtin_default_emits_provenance_line_post_d6a_u4(
@@ -124,7 +124,7 @@ def test_builtin_default_emits_provenance_line_post_d6a_u4(
     """
 ```
 
-**After** — same file lines 276-306 at commit `1146e99` (the D6a U4 ce:review follow-up):
+**After** — same file lines 276-306 at commit `045b4e5` (the D6a U4 ce:review follow-up):
 
 ```python
 def test_builtin_default_emits_provenance_line_two_packs(

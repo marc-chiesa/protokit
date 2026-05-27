@@ -30,9 +30,9 @@ tags:
 
 D6e U3 shipped `package/no-import-cycle` per the user-selected Option B at ce:review session 2026-05-22: "byte-equivalent buf v1.69.0 parity at finding-set + line/column granularity." Implementation extended `FileLocation` with optional `line`/`column` fields, updated JSON + SARIF formatters to render them, and implemented `_import_source_position` to read `SourceCodeInfo.Location` for per-import line/column.
 
-The initial parity test (commit `e66f27c`) called the shared `assert_parity_multi_file` helper. Three reviewers (testing T1 at 0.97, adversarial ADV-002 at 0.99, agent-native Warning 2) flagged the same defect: the helper compares `(rule_id, normalized_path, message)` triples — line/column values from the BufFinding snapshots are PARSED THEN DISCARDED. The "byte-equivalent at line/column" design claim was documentation-only; the parity test would silently survive any regression in `_import_source_position` (off-by-one in the 0→1 conversion, wrong field number 3, missing include_source_info plumbing, span index arithmetic errors).
+The initial parity test (commit `13ac973`) called the shared `assert_parity_multi_file` helper. Three reviewers (testing T1 at 0.97, adversarial ADV-002 at 0.99, agent-native Warning 2) flagged the same defect: the helper compares `(rule_id, normalized_path, message)` triples — line/column values from the BufFinding snapshots are PARSED THEN DISCARDED. The "byte-equivalent at line/column" design claim was documentation-only; the parity test would silently survive any regression in `_import_source_position` (off-by-one in the 0→1 conversion, wrong field number 3, missing include_source_info plumbing, span index arithmetic errors).
 
-The fix (commit `eff3a80`) added a Tier 2 per-finding assertion to the test:
+The fix (commit `3ea93c8`) added a Tier 2 per-finding assertion to the test:
 
 ```python
 buf_position_map = {

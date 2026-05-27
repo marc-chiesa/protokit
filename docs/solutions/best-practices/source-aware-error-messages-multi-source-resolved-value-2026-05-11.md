@@ -223,7 +223,7 @@ Hard-coded `--format=` prefix. Accurate when only the CLI could
 supply the value. Became wrong in U2 when pyproject could supply
 `format`.
 
-### Intermediate — U2 initial (commit `3463691`), prefix dropped without source-awareness
+### Intermediate — U2 initial (commit `5e813c9`), prefix dropped without source-awareness
 
 ```python
 # Check moved after from_dict but message did not branch on source:
@@ -245,7 +245,7 @@ Flagged by 3-way convergence in ce:review:
   classify failures cannot route the message correctly when the
   source is ambiguous.
 
-### After — source-aware fix (commit `aa15f98`), as shipped
+### After — source-aware fix (commit `4c56fe7`), as shipped
 
 ```python
 # src/protokit/schema/lint/cli.py lines 394-407 (post-aa15f98)

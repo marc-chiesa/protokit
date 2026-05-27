@@ -65,7 +65,7 @@ ce:review caught two distinct downstream problems with this shape (2-way converg
 
 When a `@lint_rule` callable emits via two or more structurally distinct message shapes, use a **dict-shaped `message_template`** keyed by `violation_kind`. Pair it with a **dict-shaped `severity`** carrying the same keys. Emit each arm with a distinct `violation_kind` value. Define module-level constants for the kind strings + the per-kind template/severity dicts.
 
-### Concrete pattern (D6c U2 R8b post-fix, commit `808189b`)
+### Concrete pattern (D6c U2 R8b post-fix, commit `d1dc094`)
 
 ```python
 # Module-level constants for the kind strings.
@@ -252,7 +252,7 @@ The discriminator: does the message **structure** vary across arms, or only the 
 
 ## Examples
 
-### Before (identity-template anti-pattern, D6c U2 initial drop, commit `7eb5092`)
+### Before (identity-template anti-pattern, D6c U2 initial drop, commit `d28641f`)
 
 ```python
 @lint_rule(
@@ -280,7 +280,7 @@ def check_directory_same_package(ctx):
 }
 ```
 
-### After (dict-shaped templates per arm, commit `808189b`)
+### After (dict-shaped templates per arm, commit `d1dc094`)
 
 ```python
 _R8B_MESSAGE_TEMPLATES: dict[str, str] = {
@@ -345,7 +345,7 @@ class TestR8bRuleSpec:
 ## Related
 
 - [[sarif-rule-catalog-default-configuration-level-severity-contract-2026-05-25]] — same function (`_lint_rules_catalog` in `_builtin_lint.py`), different field. This learning covers `shortDescription` corruption from identity templates; the companion learning covers the absence of `defaultConfiguration.level` and the multi-kind dict-severity reduction (`max(values(), key=SEVERITY_RANK[__getitem__])`) needed at the catalog emit site. Two formatter-layer gaps in the same function shipped during the same closing arc (D6c → D6f). When extending `_lint_rules_catalog` in the future, audit BOTH fields.
-- [[expose-finding-params-lint-json-sarif-agent-native-2026-05-19]] — sibling agent-native discipline. Dict-shaped templates give agents the `violation_kind` discriminator; surfacing `params` in structured output gives them the per-finding semantic fields. Both ce:review findings (#6 + #8) shipped together at D6c U2 commit `808189b`.
+- [[expose-finding-params-lint-json-sarif-agent-native-2026-05-19]] — sibling agent-native discipline. Dict-shaped templates give agents the `violation_kind` discriminator; surfacing `params` in structured output gives them the per-finding semantic fields. Both ce:review findings (#6 + #8) shipped together at D6c U2 commit `d1dc094`.
 - [[closed-literal-discriminator-bump-trigger-2026-05-17]] — schema-evolution rules for `violation_kind` as a discriminator. Adding a new arm to a multi-kind rule is an open-ladder extension; consumers that branch on existing kinds and ignore unknowns are forward-compatible.
 - [[buf-parity-divergence-documentation-discipline-2026-05-13]] — four-site documentation discipline for parity divergences. Dict-shaped templates extend the discipline: each arm's message_template is one of the four sites, and the per-arm test methods are another.
 - [[lint-rule-message-templates-must-not-recommend-actions-that-trigger-siblings-2026-05-13]] — content discipline for message remediation prose. Multi-arm rules let each arm carry the right remediation steering for its arm-specific failure mode.

@@ -29,7 +29,7 @@ tags:
 
 ## Resolution (D6b U5 — 2026-05-17)
 
-**The specific D6a U9 KTD-2 deferred split has shipped.** D6b U5 (commit `16b494f`) added `"severities_unloaded_rule"` to the `LintRuntimeWarning.category` Literal and switched the CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` to the new value. Wire-format `_LINT_JSON_SCHEMA_VERSION` bumped 0.2 → 0.3 as the consumer-facing signal. The three-site documentation discipline was applied in reverse: the Literal docstring at `model.py:351-510` enumerates per-category contracts for all 5 values, the CLI emit-site comment was updated to acknowledge the resolution (`cli.py:877-882` post-ce:review-follow-up), and the TODOS.md backlog entry was retired in place.
+**The specific D6a U9 KTD-2 deferred split has shipped.** D6b U5 (commit `c9dbaa2`) added `"severities_unloaded_rule"` to the `LintRuntimeWarning.category` Literal and switched the CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` to the new value. Wire-format `_LINT_JSON_SCHEMA_VERSION` bumped 0.2 → 0.3 as the consumer-facing signal. The three-site documentation discipline was applied in reverse: the Literal docstring at `model.py:351-510` enumerates per-category contracts for all 5 values, the CLI emit-site comment was updated to acknowledge the resolution (`cli.py:877-882` post-ce:review-follow-up), and the TODOS.md backlog entry was retired in place.
 
 **The general pattern guidance in this doc is still applicable.** The conflation-vs-widening decision tree (when to reuse, when to widen, the three-site discipline) remains valid for FUTURE Literal-widening decisions on different fields. This Resolution annotation closes only the specific D6a U9 KTD-2 instance; the discipline framework lives on.
 

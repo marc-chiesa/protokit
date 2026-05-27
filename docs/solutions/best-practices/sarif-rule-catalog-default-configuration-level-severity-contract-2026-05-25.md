@@ -31,7 +31,7 @@ tags:
 
 D6f's R6 promotion flipped all 5 `options/deprecated_replacement` rules from WARNING to ERROR. After the promotion, a SARIF consumer (IDE integration, GitHub Advanced Security, CI agent) that wanted to distinguish R6 from lower-severity rules without inspecting individual findings had no way to do so — the `tool.driver.rules[]` catalog entries emitted by `_lint_rules_catalog` in `src/protokit/formatters/_builtin_lint.py` contained `id`, `name`, and `shortDescription` only. They omitted `defaultConfiguration.level`, the SARIF 2.1.0 field (§3.49.3) that declares a rule's default severity at the catalog level.
 
-This gap was not locally visible in the protokit test suite. Two SARIF tests that would have caught it (`test_d6d_custom_annotation_example.py::TestSarifFormatExposesCustomRule` and `test_builtin_lint_formatter.py::TestLintSarif`) had been broken by an earlier unrelated issue — multi-kind dict-severity rules were never handled at the catalog emit site at all, so the tests were already failing. The ce:review agent-native reviewer surfaced the discoverability gap as a P2 finding in run `20260524-232840-29bb63be`. The fix (commit `55868cc`) added the field and incidentally repaired the two pre-existing test failures.
+This gap was not locally visible in the protokit test suite. Two SARIF tests that would have caught it (`test_d6d_custom_annotation_example.py::TestSarifFormatExposesCustomRule` and `test_builtin_lint_formatter.py::TestLintSarif`) had been broken by an earlier unrelated issue — multi-kind dict-severity rules were never handled at the catalog emit site at all, so the tests were already failing. The ce:review agent-native reviewer surfaced the discoverability gap as a P2 finding in run `20260524-232840-29bb63be`. The fix (commit `4fb57a5`) added the field and incidentally repaired the two pre-existing test failures.
 
 This gap was known earlier: a D3 U4b ce:review (May 8) flagged a related `_lint_rules_catalog` else-branch conflation as P3 across three reviewers but assessed it as advisory at the time. The `defaultConfiguration.level` consequence sat unfixed until the D6f severity promotion made it user-visible.
 
@@ -98,7 +98,7 @@ The stub case (synthetic rule_id with no registered spec) — the rule's declare
 
 2. **Programmatic agents and CI pipelines.** An agent consuming SARIF output to decide which rules to disable, defer, or escalate operates on the rule catalog. After D6f's R6 promotion, an agent that used the catalog to identify ERROR-severity rules would have found none — the promotion would be invisible to the catalog consumer even though individual findings correctly carried `level: "error"`.
 
-The side effect of adding this field in commit `55868cc` was that 2 pre-existing SARIF tests that had been silently broken (by multi-kind dict-severity not being handled at the catalog emit site) became passing. This illustrates a secondary risk: when the field is absent, test coverage for the catalog shape is easy to miss or break without immediate feedback.
+The side effect of adding this field in commit `4fb57a5` was that 2 pre-existing SARIF tests that had been silently broken (by multi-kind dict-severity not being handled at the catalog emit site) became passing. This illustrates a secondary risk: when the field is absent, test coverage for the catalog shape is easy to miss or break without immediate feedback.
 
 Severity changes are catalog-level events. Emitting `defaultConfiguration.level` makes them immediately visible to any SARIF consumer — making severity changes and the catalog consistent is a discipline that becomes mandatory once IDE or agent consumers are in the picture.
 
@@ -137,7 +137,7 @@ Not critical for tools that:
 
 An IDE rule panel would show this rule without a severity badge. Post-D6f, it is ERROR-severity — but the catalog does not say so.
 
-### After (post-fix, commit `55868cc`)
+### After (post-fix, commit `4fb57a5`)
 
 ```json
 {
@@ -164,7 +164,7 @@ The IDE rule panel now renders this rule with the ERROR severity badge. An agent
 
 ### Code reference
 
-- `src/protokit/formatters/_builtin_lint.py:_lint_rules_catalog` (post-fix lines ~698-741), introduced in commit `55868cc` (D6f U1 ce:review follow-ups)
+- `src/protokit/formatters/_builtin_lint.py:_lint_rules_catalog` (post-fix lines ~698-741), introduced in commit `4fb57a5` (D6f U1 ce:review follow-ups)
 - SARIF spec: SARIF 2.1.0 §3.49.3 `reportingDescriptor.defaultConfiguration`
 
 ## Related

@@ -61,7 +61,7 @@ Click 8.x exposes `Context.get_parameter_source(name)` returning a
 represents "flag's own built-in default fired"; the rest represent
 explicit user intent of some kind.
 
-This pattern emerged during D5 U2 of protokit-lint (commit `3463691`,
+This pattern emerged during D5 U2 of protokit-lint (commit `5e813c9`,
 2026-05-11) and was reinforced by the ce:review follow-up commit
 `aa15f98`. Two reviewers — correctness (confidence 0.82) and
 adversarial (confidence 0.82) — independently flagged that
@@ -324,7 +324,7 @@ empirical demand. Under the current flat-config-only architecture, the two-sourc
 
 ## Examples
 
-### Before — initial D5 U2 implementation (commit `3463691`), missing `DEFAULT_MAP`
+### Before — initial D5 U2 implementation (commit `5e813c9`), missing `DEFAULT_MAP`
 
 ```python
 # src/protokit/schema/lint/cli.py (pre-aa15f98)
@@ -343,7 +343,7 @@ pyproject `profile = "strict"` would see `"strict"` (pyproject wins)
 rather than `"default"` (DEFAULT_MAP intent) — silent precedence
 inversion.
 
-### After — post-ce:review fix (commit `aa15f98`), as shipped
+### After — post-ce:review fix (commit `4c56fe7`), as shipped
 
 ```python
 # src/protokit/schema/lint/cli.py

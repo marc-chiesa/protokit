@@ -61,7 +61,7 @@ The iterative form uses an explicit work stack with `(node, iter(sorted(children
 
 The brainstorm + plan PD-6 originally bound the emission shape to "per-root-file fan-out: each root file in an SCC of size ≥ 2 gets one finding." Phase 0 of U3 empirically verified buf v1.69.0's actual behavior is **per-import-edge**: one finding per cycle-closing `import` statement, pointing at the import's line/column. Sibling "leaf" files in cyclic packages that don't have cycle-closing imports themselves do NOT emit findings.
 
-The plan was revised (commit `5643939`) to bind PD-6/PD-7/PD-8 to per-import-edge granularity. The `leaf_files_in_cyclic_pkg` fixture pins this as a regression guard.
+The plan was revised (commit `f5ab8c5`) to bind PD-6/PD-7/PD-8 to per-import-edge granularity. The `leaf_files_in_cyclic_pkg` fixture pins this as a regression guard.
 
 The general lesson: **buf-parity emission shape is empirical, not derivable from the rule name.** Phase 0 fixture authoring + capture of recorded snapshots is the cheap detection surface for emission-shape divergence from brainstorm assumptions.
 
@@ -71,7 +71,7 @@ Tarjan SCC returns members in reverse DFS-finish order. For a 3-package cycle `A
 
 The fix is a separate helper (`_walk_cycle_forward`) that does DFS within the SCC following the actual graph edges, starting at the source file's package and closing back to it. The helper is iterative (per the recursion-limit discipline above).
 
-D6e U3's commit `e66f27c` initially included a dead `_rotate_cycle_for_source` function from the design-phase rotation approach. ce:review flagged it as a future-author trap (5-way reviewer convergence at 0.95+ confidence) and the follow-up commit deleted it. **Dead design-phase helpers should be deleted, not preserved as "alternative implementations".**
+D6e U3's commit `13ac973` initially included a dead `_rotate_cycle_for_source` function from the design-phase rotation approach. ce:review flagged it as a future-author trap (5-way reviewer convergence at 0.95+ confidence) and the follow-up commit deleted it. **Dead design-phase helpers should be deleted, not preserved as "alternative implementations".**
 
 ## Architecture: the pre-walk accumulator pattern
 

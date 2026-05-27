@@ -91,9 +91,9 @@ The discipline does not apply when:
 
 ## Examples
 
-Both patterns landed in commit `79428b2` (D6a U3 ce:review follow-ups) as `safe_auto` fixes:
+Both patterns landed in commit `9fae6e9` (D6a U3 ce:review follow-ups) as `safe_auto` fixes:
 
-**Derivation** — `/Users/marc/projects/python_message_differencer/tests/schema/lint/rules/test_naming_extended.py`:
+**Derivation** — `tests/schema/lint/rules/test_naming_extended.py`:
 ```python
 # Rule_ids the naming pack registers — derived from RULES so a future
 # rule addition (or removal) auto-updates this constant rather than
@@ -107,7 +107,7 @@ _ALL_NAMING_RULE_IDS = frozenset(
 )
 ```
 
-**Class rename** — `/Users/marc/projects/python_message_differencer/tests/schema/lint/test_canary_naming.py`:
+**Class rename** — `tests/schema/lint/test_canary_naming.py`:
 ```python
 class TestCanaryPackShape:
     """The naming pack exposes RULES with the canary rule properly registered.

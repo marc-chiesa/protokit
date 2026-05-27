@@ -33,7 +33,7 @@ tags:
 
 R8b's design surfaced the gap materially: the rule has two structurally distinct emit arms (standard + empty-mixed) that an agent caller needs to branch on. The `packageless_present` boolean discriminator existed in the in-memory `LintFinding.params` but was unreachable through any wire-format surface — agents either had to regex-parse the rendered `message.text` (fragile against message rewording) or call back into the Python runtime (impossible from external tooling).
 
-ce:review's agent-native reviewer caught this as a P2 finding at D6c U2. The fix was a four-line formatter change documented in commit `808189b`. The pre-existing gap was latent until R8b made it load-bearing; future multi-arm rules would inherit the same hidden-discriminator problem if the formatter contract wasn't extended.
+ce:review's agent-native reviewer caught this as a P2 finding at D6c U2. The fix was a four-line formatter change documented in commit `d1dc094`. The pre-existing gap was latent until R8b made it load-bearing; future multi-arm rules would inherit the same hidden-discriminator problem if the formatter contract wasn't extended.
 
 ## Guidance
 
@@ -170,7 +170,7 @@ Both formatters call `json.dumps(payload, default=str)`. Non-JSON-serializable p
 
 Agent wanting to discriminate the standard arm from empty-mixed: must regex-parse the message text. Looking for `"file with no package"` substring is the only viable approach — and it breaks if the message is ever localized or rephrased.
 
-### After (params exposed, commit `808189b`)
+### After (params exposed, commit `d1dc094`)
 
 ```json
 {

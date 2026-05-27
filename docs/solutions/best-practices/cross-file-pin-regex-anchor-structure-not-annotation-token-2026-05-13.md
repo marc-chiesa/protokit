@@ -140,7 +140,7 @@ constant has three consumers:
    import the constant directly via Python attribute access; no
    regex required, so no annotation coupling at this consumer.
 
-Before (commit `f81f408`):
+Before (commit `a7ec9a8`):
 
 ```python
 # tests/test_buf_parity_pin_drift.py
@@ -155,7 +155,7 @@ _CLI_PIN_RE = re.compile(
 grep -E '^_BUF_PARITY_PIN\s*:\s*str\s*=\s*"v[^"]+"' src/protokit/schema/lint/cli.py
 ```
 
-After (commit `b425954`):
+After (commit `da3affb`):
 
 ```python
 # tests/test_buf_parity_pin_drift.py

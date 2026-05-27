@@ -209,7 +209,7 @@ class TestAccumulatorConstruction:
 
 ### Closest prior instance (session history)
 
-A milder cousin of this pattern was caught in D6b U3's ce:review (commit `94dd389`): the `test_control_chars_sanitized` test had a vacuous conditional assertion — the assertion only executed if a certain condition held, so the test passed vacuously when the condition was false. Caught by 2-way convergence (testing + kieran-python), fixed by making the assertion unconditional and adding U+2028 / U+2029 / U+0085 inputs. The D6b U4a `TestAccumulatorConstruction` case is the same family but more severe: the assertion path runs unconditionally, just on the wrong observable.
+A milder cousin of this pattern was caught in D6b U3's ce:review (commit `8496b88`): the `test_control_chars_sanitized` test had a vacuous conditional assertion — the assertion only executed if a certain condition held, so the test passed vacuously when the condition was false. Caught by 2-way convergence (testing + kieran-python), fixed by making the assertion unconditional and adding U+2028 / U+2029 / U+0085 inputs. The D6b U4a `TestAccumulatorConstruction` case is the same family but more severe: the assertion path runs unconditionally, just on the wrong observable.
 
 ## Related
 

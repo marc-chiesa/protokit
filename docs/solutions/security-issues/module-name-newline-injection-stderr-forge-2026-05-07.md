@@ -62,7 +62,7 @@ script that parses stderr by prefix.
 
 ## What Didn't Work
 
-The pre-fix implementation (commit `4a17632`, U3 rule-loading
+The pre-fix implementation (commit `924a263`, U3 rule-loading
 configurability) interpolated `pack.__name__` directly into
 `click.echo(..., err=True)` at three emission sites:
 
@@ -328,7 +328,7 @@ def test_pack_with_injected_newline_in_name_does_not_forge_stderr_lines(
     assert forged_lines == [], forged_lines
 ```
 
-(As of commit `1249b10`, the fixture and end-to-end test do not yet
+(As of commit `94708dd`, the fixture and end-to-end test do not yet
 exist — coverage is structural via the `_safe_module_name` helper
 being wired into all emission sites. The end-to-end fixture is the
 next defense-in-depth layer.)

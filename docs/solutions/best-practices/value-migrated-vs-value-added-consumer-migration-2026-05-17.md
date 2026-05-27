@@ -27,7 +27,7 @@ tags:
 
 ## Context
 
-D6b U5 (commit `16b494f`) split the `LintRuntimeWarning.category` Literal: the existing `"unloaded_rule"` value's CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` migrated to a new value `"severities_unloaded_rule"`. The engine-emitted site at `engine.py:387` kept emitting the original `"unloaded_rule"` unchanged.
+D6b U5 (commit `c9dbaa2`) split the `LintRuntimeWarning.category` Literal: the existing `"unloaded_rule"` value's CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` migrated to a new value `"severities_unloaded_rule"`. The engine-emitted site at `engine.py:387` kept emitting the original `"unloaded_rule"` unchanged.
 
 From a casual reading, this looks like a pure "value addition" — the new `severities_unloaded_rule` value joins the existing `unloaded_rule` in the Literal set. Consumers that "treat unknown values as forward-compatible" (per the documented wire-format contract in [[wire-format-schema-version-bump-contract-and-absence-semantic-2026-05-13]]) gracefully handle the new value via a default branch and move on. Right?
 
