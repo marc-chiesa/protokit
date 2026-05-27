@@ -479,21 +479,21 @@ walk against a ref where the importer has been updated.
 
 ## Schema Linting
 
-> **D6e positioning**: protokit targets buf BASIC coverage; defaults reflect Python-protobuf-developer ergonomics, not buf's defaults (see `proto2-strict` for opt-in proto2 strictness).
+> **Positioning**: protokit targets buf BASIC coverage; defaults reflect Python-protobuf-developer ergonomics, not buf's defaults (see `proto2-strict` for opt-in proto2 strictness).
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
 As of `protokit 0.6.0`, `protokit lint` covers **26 of 26 buf
-v1.69.0 BASIC rules** (the closing-arc headline — D6e U3 landed
-the 26th rule, `package/no-import-cycle`, via a Tarjan SCC
-pre-walk accumulator that detects package-level cycles where
-individual file imports are acyclic; file-level cycles are caught
-at the protobuf COMPILE phase by both buf and protokit's compiler).
-The proto2-only buf BASIC rule `FIELD_NOT_REQUIRED` ships in the
-opt-in `proto2-strict` profile as of 0.6.0 (D6e U1+U2) — outside
-the 26-rule baseline (which is proto-syntax-agnostic) but
-available to proto2 shops via `--profile proto2-strict` or
-pyproject `profile = ["default", "proto2-strict"]`. The built-in packs span single-language style +
+v1.69.0 BASIC rules**. The 26th rule, `package/no-import-cycle`,
+uses a Tarjan SCC pre-walk accumulator to detect package-level
+cycles where individual file imports are acyclic (file-level
+cycles are caught at the protobuf COMPILE phase by both buf and
+protokit's compiler). The proto2-only buf BASIC rule
+`FIELD_NOT_REQUIRED` ships in the opt-in `proto2-strict` profile
+as of 0.6.0 — outside the 26-rule baseline (which is
+proto-syntax-agnostic) but available to proto2 shops via
+`--profile proto2-strict` or pyproject
+`profile = ["default", "proto2-strict"]`. The built-in packs span single-language style +
 cross-language namespace consistency + cross-file directory/package
 layout + AIP-203 well-formedness: `naming` (AIP-122 +
 PascalCase/snake_case/UPPER_SNAKE conventions for messages, enums,
@@ -507,8 +507,8 @@ services, RPCs, oneofs, files, and packages), `enum`
 `options/field-behavior-consistent` (AIP-203 well-formedness), and
 (new in 0.6.0) `package/no-import-cycle` (Tarjan SCC pre-walk).
 **27 rules across 6 packs** in the `recommended` profile, **33
-rules** in `default` (+R6 deprecated-replacement 5-rule family +
-`options/field-behavior-consistent`). Plus, as of 0.5.0, users may
+rules** in `default` (adds the deprecated-replacement 5-rule
+family + `options/field-behavior-consistent`). Plus, as of 0.5.0, users may
 declare **`custom/<user-suffix>`** synthetic rules in
 `pyproject.toml` to enforce option-aware annotation requirements
 without writing Python (see
@@ -558,25 +558,24 @@ its target before rule-pack profile-name lookup.
 | Profile | Rules | Purpose |
 |---------|-------|---------|
 | `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.6.0. |
-| `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.69.0 BASIC rules — closing-arc complete as of 0.6.0 D6e U3). `naming` (9), `enum` (2), `imports` (3), `package` (5; +`package/no-import-cycle` in D6e U3 via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 D6e R4b — pragmatic-not-dogmatic about proto2), `package_same` (7). |
-| `default` | 33 | Buf BASIC parity (`recommended`'s 27 rules) + R6 deprecated-replacement family (5 **error-severity** option-aware rules in `options/deprecated_replacement` — promoted from WARNING in 0.7.0 D6f as a KD-1 demonstration; demotable via `[severities]` / `disabled_rules` / `--disable-rule`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
-| `proto2-strict` (0.6.0 D6e) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Per D6e KD-1, proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
+| `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.69.0 BASIC rules, complete as of 0.6.0). `naming` (9), `enum` (2), `imports` (3), `package` (5; includes `package/no-import-cycle` via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 — pragmatic-not-dogmatic about proto2), `package_same` (7). |
+| `default` | 33 | Buf BASIC parity (`recommended`'s 27 rules) + the deprecated-replacement family (5 **error-severity** option-aware rules in `options/deprecated_replacement` — promoted from WARNING in 0.7.0; demotable via `[severities]` / `disabled_rules` / `--disable-rule`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
+| `proto2-strict` (0.6.0+) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
 | `basic` (alias) | → `recommended` | Buf-compatibility alias resolved at `_coerce_profile`. |
 
 The buf-parity rule library ships at the `error` severity floor
-(matching buf's BASIC severity posture per KD-9), with one
-deliberate divergence: `file/syntax-specified` is demoted to
-`warning` in `recommended` + `default` as of 0.6.0 (D6e R4b)
-under the inverted UX philosophy — proto3-only shops who relied
-on the prior ERROR enforcement can re-promote via
+(matching buf's BASIC severity posture), with one deliberate
+divergence: `file/syntax-specified` is demoted to `warning` in
+`recommended` + `default` as of 0.6.0 under the
+pragmatic-not-dogmatic UX philosophy — proto3-only shops who
+relied on the prior ERROR enforcement can re-promote via
 `[tool.protokit.lint.severities] "file/syntax-specified" = "error"`.
-The R6 deprecated-replacement family in `default` originally
-shipped at `warning` to bound the leading-comment-regex
-heuristic's blast radius; the 0.7.0 D6f release flips it to
-`error` after Phase 0 empirical validation confirmed a 0.0%
-noisy hit-rate on a googleapis sample (see the
-`### D6f — 0.7.0` CHANGELOG entry). To soften the floor without
+The deprecated-replacement family in `default` originally shipped
+at `warning` to bound the leading-comment-regex heuristic's blast
+radius; the 0.7.0 release flips it to `error` after empirical
+validation confirmed a 0.0% noisy hit-rate on a googleapis sample
+(see the 0.7.0 entry in the CHANGELOG). To soften the floor without
 dropping rules: use `--min-severity=warning` globally, or
 `[tool.protokit.lint.severities]` per-rule (see below). To
 suppress one or more rules entirely, see the new
@@ -585,11 +584,11 @@ section.
 
 ### Disabling and re-enabling rules
 
-As of 0.7.0 (D6f R9b), `protokit lint` exposes a full per-rule
-disable / enable surface across three interfaces — pyproject,
-CLI, and programmatic `from_dict`. Five mechanisms total; all
-unified at the config-resolution layer so the engine hot path
-sees only an effective rule set.
+As of 0.7.0, `protokit lint` exposes a full per-rule disable /
+enable surface across three interfaces — pyproject, CLI, and
+programmatic `from_dict`. Five mechanisms total; all unified at
+the config-resolution layer so the engine hot path sees only an
+effective rule set.
 
 **Disable mechanisms:**
 
@@ -606,7 +605,7 @@ sees only an effective rule set.
 | `enabled_rules` list | `[tool.protokit.lint]` | `enabled_rules = ["package/no-import-cycle"]` |
 | `--enable-rule` flag | CLI (repeatable; env-var `PROTOKIT_ENABLE_RULE`) | `--enable-rule package/no-import-cycle` |
 
-**Composition (R8 precedence — polarity-first / tier-second):**
+**Composition precedence (polarity-first / tier-second):**
 
 1. Any disable at any tier wins over any enable (polarity-first).
    `--enable-rule R` does NOT override pyproject
@@ -646,11 +645,11 @@ issues are visible.
 
 ### Upgrade notes (0.4.x → 0.5.0)
 
-D6d ships option-aware pack expansion as the strategic-
+0.5.0 ships option-aware pack expansion as the strategic-
 differentiator headline: users now declare option-aware annotation
 requirements via `[[tool.protokit.lint.custom_annotation_rules]]`
 in `pyproject.toml` without writing Python (synthetic
-`custom/<user-suffix>` rules). D6d also adds the first AIP-203
+`custom/<user-suffix>` rules). 0.5.0 also adds the first AIP-203
 well-formedness validator (`options/field-behavior-consistent`) to
 the `default` profile.
 
@@ -667,13 +666,13 @@ Migration impact:
 
 The buf BASIC parity numerator at 0.5.0 ship time was **25 of 26 + 1
 scheduled** (the +1 scheduled rule was `FIELD_NOT_REQUIRED`,
-originally scoped for D6d but deferred to D6e+ per the
-2026-05-20 strategic-deferral note). D6e 0.6.0 closes both:
-`FIELD_NOT_REQUIRED` lands in the opt-in `proto2-strict` profile,
-and `PACKAGE_NO_IMPORT_CYCLE` (the 26th) lands in `recommended` +
-`default` — see the 0.5.x → 0.6.0 upgrade notes below.
+originally scoped for 0.5.0 but deferred to a later release).
+0.6.0 closes both: `FIELD_NOT_REQUIRED` lands in the opt-in
+`proto2-strict` profile, and `PACKAGE_NO_IMPORT_CYCLE` (the 26th)
+lands in `recommended` + `default` — see the 0.5.x → 0.6.0
+upgrade notes below.
 
-See `CHANGELOG.md` `### D6d — 0.5.0` section for:
+See the 0.5.0 entry in `CHANGELOG.md` for:
 
 - Full additions enumeration (`custom/<suffix>` synthetic rule
   infrastructure + `options/field-behavior-consistent` 3-arm
@@ -691,19 +690,19 @@ See `CHANGELOG.md` `### D6d — 0.5.0` section for:
 
 ### Upgrade notes (0.5.x → 0.6.0)
 
-D6e closes the buf-parity arc: `protokit lint` now covers
+0.6.0 closes the buf-parity arc: `protokit lint` now covers
 **26 of 26 buf v1.69.0 BASIC rules** + ships the
 `proto2-strict` opt-in profile + revises the UX philosophy.
 
 **New rules:**
 
-- **`package/no-import-cycle`** (D6e U3 — the 26th buf BASIC
-  rule). ERROR severity in `recommended` + `default` profiles.
-  Detects package-level import cycles where individual file
-  imports are acyclic (file-level cycles are caught at the
-  protobuf COMPILE phase). Emits one finding per cycle-closing
-  `import` statement at the import's line/column.
-- **`field/not-required`** (D6e U1+U2 — the proto2-only
+- **`package/no-import-cycle`** (the 26th buf BASIC rule).
+  ERROR severity in `recommended` + `default` profiles. Detects
+  package-level import cycles where individual file imports are
+  acyclic (file-level cycles are caught at the protobuf COMPILE
+  phase). Emits one finding per cycle-closing `import` statement
+  at the import's line/column.
+- **`field/not-required`** (the proto2-only
   `buf:FIELD_NOT_REQUIRED` rule). ERROR severity in the new
   opt-in `proto2-strict` profile only. Activate via
   `--profile proto2-strict` or pyproject
@@ -712,9 +711,9 @@ D6e closes the buf-parity arc: `protokit lint` now covers
 **Behavior changes:**
 
 - **`file/syntax-specified` demoted from ERROR to WARNING** in
-  `recommended` + `default` profiles (D6e R4b per KD-2
-  pragmatic-not-dogmatic about proto2). Re-promote via
-  `[tool.protokit.lint.severities] "file/syntax-specified" =
+  `recommended` + `default` profiles under the
+  pragmatic-not-dogmatic-about-proto2 UX philosophy. Re-promote
+  via `[tool.protokit.lint.severities] "file/syntax-specified" =
   "error"` if your project is proto3-only.
 
 **Migration impact by `--max-warnings` posture:**
@@ -725,8 +724,8 @@ D6e closes the buf-parity arc: `protokit lint` now covers
 | `--max-warnings 0` | proto2 file: exit 1 | proto2 file: exit 1 (counted as warning instead of error) |
 | `--min-severity error` | proto2 file: exit 1 (ERROR passes severity floor) | proto2 file: exit 0 (WARNING filtered by severity floor) |
 
-**Pre-upgrade migration recipe** (full text in `CHANGELOG.md`
-`### D6e — 0.6.0`):
+**Pre-upgrade migration recipe** (full text in the 0.6.0 entry of
+`CHANGELOG.md`):
 
 - Want explicit ERROR enforcement of `file/syntax-specified`?
   `[tool.protokit.lint.severities] "file/syntax-specified" = "error"`
@@ -740,59 +739,61 @@ D6e closes the buf-parity arc: `protokit lint` now covers
 
 ### Upgrade notes (0.6.x → 0.7.0)
 
-D6f ships two paired changes as a D6e KD-1 demonstration
-delivery: **R6 promotion** flips all 5 rules in
+0.7.0 ships two paired changes: a **deprecated-replacement
+promotion** that flips all 5 rules in
 `options/deprecated_replacement` from WARNING to ERROR in the
-`default` profile only, and **R9b** adds a full per-rule
-disable surface (see the new
+`default` profile only, and a **per-rule disable surface** (see
+the new
 [Disabling and re-enabling rules](#disabling-and-re-enabling-rules)
-section above). R9b shipped first as the safety net so the
-migration recipe is real on day one.
+section above). The per-rule disable surface shipped first as the
+safety net so the migration recipe is real on day one.
 
-**Behavior change — R6 promotion:**
+**Behavior change — deprecated-replacement promotion:**
 
 All 5 rules in `options/deprecated_replacement` now fire at
 `error` severity in the `default` profile. Deprecated elements
 MUST carry a replacement reference in their leading comment
-OR be explicitly suppressed via one of the R9b mechanisms.
-The heuristic regex is UNCHANGED — only the severity flips.
-`recommended` is unaffected (R6 has no buf BASIC analogue and
+OR be explicitly suppressed via one of the disable mechanisms
+above. The heuristic regex is UNCHANGED — only the severity
+flips. `recommended` is unaffected (the
+deprecated-replacement family has no buf BASIC analogue and
 ships `default`-only).
 
 **Migration impact by `--max-warnings` posture:**
 
 | Posture | Pre-0.7.0 | Post-0.7.0 |
 |---|---|---|
-| `--max-warnings` unset | R6 finding: exit 0 (WARNING; not counted) | R6 finding: exit 1 (ERROR; `has_error` short-circuits) — **silent CI-pass regression risk** |
-| `--max-warnings 0` | R6 finding: exit 1 (counted as warning) | R6 finding: exit 1 (ERROR; `has_error` short-circuits before `max_warnings` gate) |
-| `--min-severity error` | R6 finding: exit 0 (WARNING filtered by floor) | R6 finding: exit 1 (ERROR passes floor) |
+| `--max-warnings` unset | finding: exit 0 (WARNING; not counted) | finding: exit 1 (ERROR; `has_error` short-circuits) — **silent CI-pass regression risk** |
+| `--max-warnings 0` | finding: exit 1 (counted as warning) | finding: exit 1 (ERROR; `has_error` short-circuits before `max_warnings` gate) |
+| `--min-severity error` | finding: exit 0 (WARNING filtered by floor) | finding: exit 1 (ERROR passes floor) |
 
 The posture-1 row is the dominant concern: projects that
-previously ignored R6 WARNINGs will see CI flip from green to
-red on upgrade.
+previously ignored deprecated-replacement WARNINGs will see CI
+flip from green to red on upgrade.
 
-**Phase 0 empirical validation (KD-8 hard gate)**: 200 random
+**Empirical validation** (hard gate before promotion): 200 random
 `.proto` files from googleapis (`random.seed(42)`) returned
-19 R6 findings; manual classification per the KD-8 rubric
-returned 0 noisy hits (0.0%). Gate threshold was >10% OR >5
-absolute noisy hits → STOP. Result: gate passed with
-substantial margin. Full audit trail in the U1 commit message
-body + the `### D6f — 0.7.0` CHANGELOG entry.
+19 deprecated-replacement findings; manual classification per a
+documented noisy-vs-load-bearing rubric returned 0 noisy hits
+(0.0%). Gate threshold was >10% OR >5 absolute noisy hits → STOP.
+Result: gate passed with substantial margin. Full audit trail
+in the 0.7.0 CHANGELOG entry.
 
-**Pre-upgrade migration recipe** (full text in `CHANGELOG.md`
-`### D6f — 0.7.0`):
+**Pre-upgrade migration recipe** (full text in the 0.7.0 entry of
+`CHANGELOG.md`):
 
 1. **Fix the schema** (recommended). Add a replacement
    reference to the leading comment of every deprecated
    element.
 2. **Demote one rule back to WARNING**:
    `[tool.protokit.lint.severities] "options/deprecated-field-must-have-replacement-comment" = "warning"`
-3. **Disable one rule via `"off"`** (new in D6f):
+3. **Disable one rule via `"off"`** (new in 0.7.0):
    `[tool.protokit.lint.severities] "options/deprecated-field-must-have-replacement-comment" = "off"`
-4. **Disable the whole R6 family via `disabled_rules`** (new
-   in D6f): `[tool.protokit.lint] disabled_rules = [...]`
-   with the 5 R6 rule_ids. See the CHANGELOG for the full
-   5-rule family-list form.
+4. **Disable the whole deprecated-replacement family via
+   `disabled_rules`** (new in 0.7.0):
+   `[tool.protokit.lint] disabled_rules = [...]` with the 5
+   rule_ids. See the CHANGELOG for the full 5-rule family-list
+   form.
 5. **Pin to 0.6.0 indefinitely**: `pip install protokit==0.6.0`.
 
 **Wire-format change**: `_LINT_JSON_SCHEMA_VERSION` bumps
@@ -844,9 +845,9 @@ Fields:
   both on presence absence AND on values outside the set. Floats
   and mixed-type lists are rejected at config-load.
 - `severity` (optional) — `"error"` / `"warning"` / `"info"`;
-  defaults to `"warning"`. As of 0.7.0 (D6f R9b), `"off"` is
-  also accepted at `[tool.protokit.lint.severities]` and
-  unloads the rule entirely; equivalent to
+  defaults to `"warning"`. As of 0.7.0, `"off"` is also
+  accepted at `[tool.protokit.lint.severities]` and unloads the
+  rule entirely; equivalent to
   `disabled_rules = ["custom/<rule_suffix>"]`. See the
   [Disabling and re-enabling rules](#disabling-and-re-enabling-rules)
   section for multi-kind prefix-expansion semantics.
@@ -872,45 +873,48 @@ fixtures under `tests/schema/lint/cli/cli_fixtures/d6d_custom_annotation/`).
 
 ### Upgrade notes (0.3.x → 0.4.0)
 
-D6c adds the first cross-file lint dispatch infrastructure (Arch-D
-pre-walk accumulator) and two rules to consume it: R8
-`package/same-directory` and R8b `package/directory-same-package`.
+0.4.0 adds the first cross-file lint dispatch infrastructure
+(a pre-walk package-options accumulator) and two rules to consume
+it: `package/same-directory` and `package/directory-same-package`.
 Combined with the audit-trail correction of the inherited "buf
 BASIC = 18 rules" claim (actual: 26 rules), `protokit lint` now
 covers **25 of 26 buf BASIC rules**. Teams with cross-directory
 package scattering or mixed-package directories will see new
 error-severity findings on first 0.4.0 invocation.
 
-See `CHANGELOG.md` `### D6c — 0.4.0` section for:
+See the 0.4.0 entry in `CHANGELOG.md` for:
 
-- Full additions enumeration (R8 + R8b + Arch-D accumulator +
-  9-fixture parity gate + three-arm `assert_parity_multi_file`).
-- Audit-trail correction (`17 of 18` → `25 of 26`; D6b CHANGELOG
-  retains its original numerator framing as audit trail).
-- Behavior changes (R8 + R8b firing default-on as error severity;
-  wire format unchanged at `schema_version: "0.3"`).
+- Full additions enumeration (the two new rules + the pre-walk
+  accumulator + 9-fixture parity gate + three-arm
+  `assert_parity_multi_file`).
+- Audit-trail correction (`17 of 18` → `25 of 26`; the 0.3.0
+  CHANGELOG retains its original numerator framing as audit
+  trail).
+- Behavior changes (the two new rules firing default-on as error
+  severity; wire format unchanged at `schema_version: "0.3"`).
 - **Pre-upgrade migration recipe** with 5 numbered TOML demotion
   paths (path 5 covers Python API consumers via
   `LintProfile.rule_severity_overrides`).
 - Upgrade-notes triage recipe (5-step adoption walkthrough,
-  including the KTD-9 co-fire-resolution-order guidance).
+  including co-fire-resolution-order guidance).
 - Consumer migration (`FileLintContext.directory_packages` +
   `directory_packages_by_dir` + `LintEngine._build_directory_package_accumulator`
   INTERNAL classifications).
 
 ### Upgrade notes (0.2.x → 0.3.0)
 
-D6b adds the first option-aware rules (R6 deprecated-replacement
-family) + cross-language buf-BASIC parity (R7 PACKAGE_SAME_*
+0.3.0 adds the first option-aware rules (deprecated-replacement
+family) + cross-language buf-BASIC parity (PACKAGE_SAME_*
 family). Multi-language teams will see new error-severity findings
 on cross-file option disagreement.
 
-See `CHANGELOG.md` `### D6b — 0.3.0` section for:
+See the 0.3.0 entry in `CHANGELOG.md` for:
 
-- Full additions enumeration (R6 + R7 + R9 + parity gate + multi-
-  file harness).
+- Full additions enumeration (the two new rule families + a
+  runtime-warning addition + parity gate + multi-file harness).
 - Wire-format changes (`schema_version` `0.2` → `0.3`).
-- Behavior changes (R7 firing default-on as error severity).
+- Behavior changes (PACKAGE_SAME_* firing default-on as error
+  severity).
 - **Pre-upgrade migration recipe** with 4 numbered TOML demotion
   paths + worst-case adoption math (up to 140 findings on a 20-file
   no-package legacy corpus) + 3 accepted-tradeoff scenarios
@@ -1000,7 +1004,7 @@ Recognized keys (every key is optional):
 | `format` | string | Default output formatter (`"human"`, `"json"`, `"junit"`, `"sarif"`, or a `--formatter-module` name). |
 | `no_builtin_rules` | boolean | When `true`, skip loading `BUILTIN_PACKS` (the auto-loaded `naming` / `enum` / `imports` / `package` / `file` packs). User packs supplied via `--rule-pack MODULE` become load-bearing; an empty rule set exits 2 via the `no-rules` error code. |
 | `disabled_rules` (0.7.0+) | list of strings | Per-rule disable directives. Accepts canonical `pack/rule-suffix`, bare `custom/<suffix>`, or mangled `custom/<suffix>__<kind>` forms. Bare custom suffixes prefix-expand to every kind of the matching rule. See [Disabling and re-enabling rules](#disabling-and-re-enabling-rules). |
-| `enabled_rules` (0.7.0+) | list of strings | Per-rule enable directives. Same accepted formats as `disabled_rules`. Disable wins across all tiers per R8 polarity-first; a contradictory disable+enable fires a `contradictory_disable_config` runtime warning. |
+| `enabled_rules` (0.7.0+) | list of strings | Per-rule enable directives. Same accepted formats as `disabled_rules`. Disable wins across all tiers (polarity-first precedence); a contradictory disable+enable fires a `contradictory_disable_config` runtime warning. |
 | `[tool.protokit.lint.severities]` | table (rule_id → severity string) | Per-rule severity overrides applied AFTER profile composition. Accepted values: `"error"`, `"warning"`, `"info"`, and (0.7.0+) `"off"` (unloads the rule, equivalent to `disabled_rules`). User overrides always win on collision via post-compose dict-spread. Unknown rule_ids fire a `severities_unloaded_rule` runtime warning (typo surfacing without blocking the run). |
 
 Unknown keys and type mismatches produce a hard error (exit 2)
@@ -1043,7 +1047,7 @@ and agents. Top-level keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `schema_version` | string | Wire-format version (currently `"0.6"` as of 0.7.0 D6f; bumped from `"0.5"` for two new `LintRuntimeWarning.category` Literal values per [[closed-literal-discriminator-bump-trigger-2026-05-17]]). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
+| `schema_version` | string | Wire-format version (currently `"0.6"` as of 0.7.0; bumped from `"0.5"` for two new `LintRuntimeWarning.category` Literal values per the closed-Literal-discriminator bump policy). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
 | `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"` / `"contradictory_disable_config"` (0.7.0+) / `"unknown_rule_id"` (0.7.0+)), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`, `contradictory_disable_config`, `unknown_rule_id` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
@@ -1111,7 +1115,7 @@ a specific, vetted config) instead of the default walk-up.
 breaking changes to public Python APIs and machine output formats
 (JSON, JUnit, SARIF). Breaking changes are documented in the
 CHANGELOG — historically via `BREAKING:`-prefixed section
-headings (D2–D5), and from D6a (0.2.0) onward via plain
+headings (pre-0.2.0), and from 0.2.0 onward via plain
 delivery-named sections that describe the user-visible impact
 without a ceremonial prefix. The version bump itself is the
 authoritative signal; the CHANGELOG section is the communication
@@ -1133,28 +1137,28 @@ accumulation.
 | Surface | Element | Status |
 |---------|---------|--------|
 | Python dataclass | `LintReport` (fields, ordering, frozen-ness) | IN |
-| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved", "contradictory_disable_config", "unknown_rule_id"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-312`. Last two values added in 0.7.0 D6f. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
-| Python module | `BUILTIN_PACKS` (auto-loaded rule packs; includes `package_same` as of 0.3.0 → 7 R7 PACKAGE_SAME_* rules default-on under `recommended` + `default` profiles) | IN |
+| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved", "contradictory_disable_config", "unknown_rule_id"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger a `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-312`. Last two values added in 0.7.0. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
+| Python module | `BUILTIN_PACKS` (auto-loaded rule packs; includes `package_same` as of 0.3.0 → 7 `PACKAGE_SAME_*` rules default-on under `recommended` + `default` profiles) | IN |
 | Python function | `leading_comment(source_info_descriptors, file_name, path)` (free function in `protokit.schema.lint.rules.options._comments`; reads `[replaced-by: <X>]` and similar leading-comment annotations from the indexed source-info descriptors) | IN |
-| Python class field | `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] \| None` (D6b U2 R6b — the source-locations index built from `FileDescriptorSet` before `pool.Add()` discards `source_code_info`; consumed by leading-comment introspection) | INTERNAL |
-| Python class field | `FileLintContext.package_options: Mapping[str, Mapping[str, Mapping[str, str \| None]]] \| None` (D6b R7 — the Arch-D pre-walk accumulator for cross-file `PACKAGE_SAME_*` option-consistency rules; outer key `package_name`, second-level key `option_attr`, inner map `{file_name: value}`) | INTERNAL |
-| Python method | `LintEngine._build_package_options_accumulator` (D6b R7 — single-pass file-scan over `compile_result.pool_file_names` producing the per-package option-value view; threaded into `FileLintContext.package_options`) | INTERNAL |
-| Python class field | `FileLintContext.directory_packages: Mapping[str, Mapping[str, str]] \| None` (D6c U1 — per-package view of the Arch-D pre-walk accumulator; outer key `package_name`, inner map `{file_name: dirname}`; sibling-pattern reference to `FileLintContext.package_options`) | INTERNAL |
-| Python class field | `FileLintContext.directory_packages_by_dir: Mapping[str, Mapping[str, frozenset[str]]] \| None` (D6c U1 — inverted per-directory view of the Arch-D pre-walk accumulator; outer key `dirname`, inner map `{package_name: frozenset(file_names)}`; provides O(1) lookup for R8b `package/directory-same-package`) | INTERNAL |
-| Python method | `LintEngine._build_directory_package_accumulator` (D6c U1 — single-pass file-scan over `compile_result.root_files`; dual-view return shape may extend pre-1.0) | INTERNAL |
+| Python class field | `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] \| None` (the source-locations index built from `FileDescriptorSet` before `pool.Add()` discards `source_code_info`; consumed by leading-comment introspection) | INTERNAL |
+| Python class field | `FileLintContext.package_options: Mapping[str, Mapping[str, Mapping[str, str \| None]]] \| None` (the pre-walk accumulator for cross-file `PACKAGE_SAME_*` option-consistency rules; outer key `package_name`, second-level key `option_attr`, inner map `{file_name: value}`) | INTERNAL |
+| Python method | `LintEngine._build_package_options_accumulator` (single-pass file-scan over `compile_result.pool_file_names` producing the per-package option-value view; threaded into `FileLintContext.package_options`) | INTERNAL |
+| Python class field | `FileLintContext.directory_packages: Mapping[str, Mapping[str, str]] \| None` (per-package view of the pre-walk accumulator; outer key `package_name`, inner map `{file_name: dirname}`; sibling-pattern reference to `FileLintContext.package_options`) | INTERNAL |
+| Python class field | `FileLintContext.directory_packages_by_dir: Mapping[str, Mapping[str, frozenset[str]]] \| None` (inverted per-directory view of the pre-walk accumulator; outer key `dirname`, inner map `{package_name: frozenset(file_names)}`; provides O(1) lookup for `package/directory-same-package`) | INTERNAL |
+| Python method | `LintEngine._build_directory_package_accumulator` (single-pass file-scan over `compile_result.root_files`; dual-view return shape may extend pre-1.0) | INTERNAL |
 | Python dataclass | `LintFinding` (rule_id, severity, location, violation_kind, params) | IN |
 | Python dataclass | `LintProfile` (name, rule_ids, min_severity, rule_severity_overrides) | IN |
 | Python dataclass | `LintRuleSpec` (rule_id, severity, profiles, source_spec, element, message_template, fn) | IN |
 | Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
 | Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
 | JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
-| JSON wire | `lint_json["schema_version"]: "0.6"` (top-level wire-format version; absence → implicit "0.1"; bumped from `"0.5"` in 0.7.0 D6f for two new `LintRuntimeWarning.category` Literal values) | IN |
-| SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory; D6f adds `properties.rule_id` for `contradictory_disable_config` + `unknown_rule_id` categories only — pre-existing rule-scoped categories (`rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`) do NOT carry `rule_id` in the SARIF propertyBag despite being rule-scoped; SARIF consumers needing complete rule_id attribution should use `--format=json` where `rule_id` is populated uniformly) | IN |
+| JSON wire | `lint_json["schema_version"]: "0.6"` (top-level wire-format version; absence → implicit "0.1"; bumped from `"0.5"` in 0.7.0 for two new `LintRuntimeWarning.category` Literal values) | IN |
+| SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory; 0.7.0 adds `properties.rule_id` for `contradictory_disable_config` + `unknown_rule_id` categories only — pre-existing rule-scoped categories (`rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`) do NOT carry `rule_id` in the SARIF propertyBag despite being rule-scoped; SARIF consumers needing complete rule_id attribution should use `--format=json` where `rule_id` is populated uniformly) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
 | SARIF wire | `runs[].properties.lint_schema_version: "0.6"` (parity with `lint_json["schema_version"]`) | IN |
-| SARIF wire | `tool.driver.rules[].defaultConfiguration.level` (D6f-added; pre-flight rule severity for IDE consumers) | IN |
+| SARIF wire | `tool.driver.rules[].defaultConfiguration.level` (added in 0.7.0; pre-flight rule severity for IDE consumers) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
-| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with R6 deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 D6f — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
+| Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with the deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
 | CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--disable-rule` (0.7.0+), `--enable-rule` (0.7.0+), `--version` | IN |
 | Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
@@ -1167,8 +1171,8 @@ accumulation.
 The surface above is a working draft. Names and signatures may
 shift before 1.0; the version bump + CHANGELOG section for each
 delivery is the authoritative signal for any individual change.
-Historical `BREAKING:`-prefixed sections (D2–D5) carry the same
-weight as plain delivery sections (D6a onward).
+Historical `BREAKING:`-prefixed sections (pre-0.2.0) carry the
+same weight as plain delivery sections (0.2.0 onward).
 
 ## Output Formatters
 
@@ -1420,6 +1424,42 @@ whatever helps downstream filtering.
 - Python 3.10+
 - `protobuf` >= 4.21.0
 - `click` >= 8.0
+
+## Acknowledgments
+
+`protokit lint` tracks rule-set parity with [`buf lint`](https://buf.build/product/cli),
+the lint subcommand of the [buf](https://buf.build/) CLI by
+[Buf Technologies, Inc.](https://buf.build/) — a comprehensive protobuf
+tooling suite covering lint, formatting, breaking-change detection,
+code generation, the Buf Schema Registry, and the Connect RPC
+framework. protokit is an independent project, not affiliated with
+or endorsed by Buf Technologies.
+
+The functional overlap is intentionally narrow:
+
+- **`protokit lint` ↔ `buf lint`**: closely tracked. `protokit lint`
+  matches 26 of 26 buf v1.69.0 BASIC rules, with deliberate
+  divergences where Python-protobuf-developer ergonomics differ
+  (see the [Schema Linting](#schema-linting) section's positioning
+  statement).
+- **`protokit compat` ↔ `buf breaking`**: both detect schema
+  compatibility breaks, with different framing — protokit ships four
+  named profiles (`WIRE`, `CONSUMER_SAFE`, `PRODUCER_SAFE`, `STRICT`)
+  and a pluggable Python rule-pack API.
+- **`protokit diff`**: binary protobuf message diffing — no equivalent
+  in buf.
+- **Everything else buf provides** (`buf format`, `buf generate`,
+  `buf push`, the Buf Schema Registry, Connect, protovalidate, etc.):
+  protokit does not replicate.
+
+protokit uses Google's official `protobuf` Python library at runtime
+and does not depend on any Buf-authored Python package. The `buf` CLI
+itself is optional — install via `brew install buf` to cross-verify
+protokit's lint output against buf's reference implementation. The
+parity test suite (`tests/parity/`) uses an installed `buf` binary
+when available and skips cleanly when not.
+
+`buf` is open source under Apache 2.0.
 
 ## License
 
