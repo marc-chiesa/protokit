@@ -460,6 +460,21 @@ accepted by earlier protoc versions; the blast radius of dropping
 it is tiny (a proto path starting with `--` would now be
 misinterpreted as a flag — rare-to-nonexistent in practice).
 
+**Test update — cross-backend semantic equivalence (not byte
+equivalence).** The cross-backend test that pinned
+``source_code_info`` byte-equivalence between the protoxy and
+protoc backends now compares **semantic** equivalence of the
+``(descriptor-path → leading_comments, trailing_comments,
+leading_detached_comments)`` mapping that ``leading_comment()``
+actually consumes. The byte-equivalence assertion was a strong
+proxy that only held when both backends used the same protoc
+version; protoxy's embedded protoc is older than the
+protocolbuffers v25.3 binary release, so the two now produce
+different bytes for the same input even though the path→comments
+mapping (the production-code-visible contract) is identical.
+No source-code change in production — only the test invariant
+was tightened to match the real contract.
+
 CI also switches from apt-installed `protobuf-compiler` (which
 ships protoc 3.21) to a pinned binary release (v25.3) from the
 protocolbuffers GitHub release bucket. The binary release ships

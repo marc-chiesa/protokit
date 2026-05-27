@@ -142,27 +142,40 @@ class TestOptInParameterThreading:
         ), "expected the fixture's User-message comment to be captured"
 
 
-class TestSourceInfoDescriptorsCrossBackendByteEquivalence:
-    """``source_code_info.location`` arrays match byte-for-byte across backends.
+class TestSourceInfoDescriptorsCrossBackendSemanticEquivalence:
+    """``source_code_info.location`` comment payloads match across backends.
 
     Skipped when protoxy isn't installed (the [compiler] extra) — the
     cross-backend test needs both. When this guard skips, the
     single-backend tests above still pin the opt-in parameter contract
     against whichever backend the environment has.
+
+    Note: this used to assert full byte-equivalence on
+    ``source_code_info.SerializeToString()``, but protoc 25+ encodes
+    location spans slightly differently than the protoc embedded in
+    protoxy (older), producing different serialized bytes for the
+    same input even though the path→comments mapping the production
+    code consumes is unchanged. The test now asserts the semantic
+    contract the production code actually depends on — see the test
+    docstring below — rather than the strict-bytes contract that
+    only held when both backends shipped the same protoc version.
     """
 
-    def test_protoxy_and_protoc_produce_identical_source_code_info(
+    def test_protoxy_and_protoc_produce_equivalent_path_comment_mapping(
         self, tmp_path: Path
     ) -> None:
-        """Same .proto + same ``include_source_info=True`` → same SCI on both backends.
+        """Same .proto + same ``include_source_info=True`` → same comment payloads on both backends.
 
-        This pins the byte-equivalence-between-backends invariant that the
-        ``_cli_utils.py`` comments establish for the existing False path.
-        The True path must preserve the same property: if the two
-        backends ever diverge on ``source_code_info`` emission, the lint
-        engine's ``leading_comment(path)`` lookups would return different
-        results on different installations — a cross-runtime correctness
-        regression we want to catch at the boundary, not at rule runtime.
+        Pins the cross-backend invariant that the lint engine's
+        ``leading_comment(path)`` lookups return the same string on
+        any installation, regardless of which backend compiled the
+        descriptor. ``leading_comment`` consumes only the
+        ``(path → leading_comments)`` mapping; backends may differ on
+        ``span``, on internal location-tuple ordering, or on whether
+        they emit a Location for a path with no comments at all (the
+        protoc-version-specific encoding details). Those differences
+        are invisible to production code as long as the
+        comments-keyed-by-path mapping agrees.
         """
         if not _cli_utils._has_protoxy():
             pytest.skip(
@@ -170,9 +183,10 @@ class TestSourceInfoDescriptorsCrossBackendByteEquivalence:
                 "cross-backend test requires both"
             )
 
-        # Capture protoxy-emitted source_code_info bytes by calling the
-        # backend directly (sidesteps the dispatcher's _has_protoxy check
-        # which can't be reliably patched at compile.py's bound reference).
+        # Capture protoxy-emitted source_code_info by calling the
+        # backend directly (sidesteps the dispatcher's _has_protoxy
+        # check which can't be reliably patched at compile.py's bound
+        # reference).
         proto = _write_proto(tmp_path, "demo.proto", _PROTO_WITH_COMMENTS)
         _, _, protoxy_sl, _ = _cli_utils._compile_with_protoxy(
             [proto], (), include_source_info=True
@@ -188,14 +202,37 @@ class TestSourceInfoDescriptorsCrossBackendByteEquivalence:
         assert protoc_sl is not None
         # Same set of files.
         assert set(protoxy_sl.keys()) == set(protoc_sl.keys())
-        # Compare the source_code_info field specifically — backends may
-        # differ on metadata like syntax-empty handling, but
-        # source_code_info is what R6b's leading_comment helper consumes.
+
         protoxy_fd = protoxy_sl["demo.proto"]
         protoc_fd = protoc_sl["demo.proto"]
-        assert protoxy_fd.source_code_info.SerializeToString() == (
-            protoc_fd.source_code_info.SerializeToString()
-        )
+
+        def _path_comment_map(
+            fd: object,
+        ) -> dict[tuple[int, ...], tuple[str, str, tuple[str, ...]]]:
+            # Reduce source_code_info to the (path → comments) mapping
+            # that leading_comment / trailing_comment / detached_comment
+            # helpers actually consume. Both helpers strip whitespace at
+            # the call site; do the same normalization here so the
+            # comparison is invariant to backend-specific trailing-newline
+            # encoding decisions.
+            out: dict[tuple[int, ...], tuple[str, str, tuple[str, ...]]] = {}
+            for loc in fd.source_code_info.location:
+                key = tuple(loc.path)
+                value = (
+                    loc.leading_comments.strip(),
+                    loc.trailing_comments.strip(),
+                    tuple(s.strip() for s in loc.leading_detached_comments),
+                )
+                # Only record paths that carry any comment content; backends
+                # may differ on whether they emit empty Locations for
+                # comment-less spans.
+                if value != ("", "", ()):
+                    out[key] = value
+            return out
+
+        protoxy_map = _path_comment_map(protoxy_fd)
+        protoc_map = _path_comment_map(protoc_fd)
+        assert protoxy_map == protoc_map
 
 
 class TestEarlyReturnPaths:

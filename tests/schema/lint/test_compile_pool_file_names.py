@@ -26,9 +26,13 @@ Three contract pillars verified here:
    and resets ``pool_file_names`` to ``()`` so the engine pre-walk
    early-returns instead of mis-firing on partial state.
 
-Mirrors U1's
-:class:`tests.schema.lint.test_compile_include_source_info.TestSourceInfoDescriptorsCrossBackendByteEquivalence`
-for the cross-backend byte-equivalence pattern.
+Mirrors the cross-backend pattern in
+:class:`tests.schema.lint.test_compile_include_source_info.TestSourceInfoDescriptorsCrossBackendSemanticEquivalence`.
+``pool_file_names`` is a tuple of file-name strings (no
+version-sensitive encoding), so byte-equivalence still holds across
+protoc versions; ``source_code_info`` requires semantic-rather-than-
+byte comparison because protoc 25+ encodes location spans slightly
+differently than older versions.
 """
 
 from __future__ import annotations
@@ -292,7 +296,7 @@ class TestPoolFileNamesCrossBackendByteEquivalence:
     """``pool_file_names`` matches tuple-for-tuple across protoxy + protoc backends.
 
     Skipped when protoxy or protoc isn't available — the cross-backend
-    test needs both. Mirrors ``TestSourceInfoDescriptorsCrossBackendByteEquivalence``
+    test needs both. Mirrors ``TestSourceInfoDescriptorsCrossBackendSemanticEquivalence``
     in ``tests/schema/lint/test_compile_include_source_info.py``.
     """
 
