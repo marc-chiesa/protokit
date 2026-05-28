@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import warnings
 from pathlib import Path
 
 import click
@@ -157,6 +158,36 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
             checker.load_rule_pack(module)
         except (AttributeError, TypeError) as exc:
             error_exit(f"failed to load rule pack '{name}': {exc}")
+
+
+def _warn_rule_pack_deprecated(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Click callback: emit a UserWarning when the deprecated ``--rule-pack`` is used.
+
+    Compat's ``--rule-pack`` was renamed to ``--compat-rule-pack`` in
+    D7 (protokit 0.8.0) for cross-CLI symmetry with ``protokit lint
+    --rule-pack`` — the two flags loaded different rule systems while
+    sharing a name. The legacy flag still works as an alias and is
+    removed in 1.0. UserWarning (not DeprecationWarning) is the right
+    class here: DeprecationWarning is hidden by Python's default filter
+    and would be invisible to CLI users, and it gets promoted to an
+    exception under ``-W error::DeprecationWarning`` strict-warning CI
+    (which Click traps in its arg-parse pipeline).
+
+    Click invokes per-option callbacks once per option-collection
+    cycle, regardless of how many times the option appears on the
+    command line, so the warning fires exactly once per invocation
+    even if the user passes ``--rule-pack`` multiple times.
+    """
+    if value:
+        warnings.warn(
+            "--rule-pack is deprecated and will be removed in protokit 1.0; "
+            "use --compat-rule-pack instead.",
+            UserWarning,
+            stacklevel=2,
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -707,12 +738,21 @@ def main() -> None:
          "Import FormatterKind from protokit.formatters. Repeatable.",
 )
 @click.option(
-    "--rule-pack",
+    "--compat-rule-pack",
     "rule_packs",
     multiple=True,
     metavar="MODULE",
     help="Python module exposing a RULES list of (rule_id, plugin_fn) "
          "pairs (repeatable).",
+)
+@click.option(
+    "--rule-pack",
+    "rule_packs_legacy",
+    multiple=True,
+    metavar="MODULE",
+    hidden=True,
+    callback=_warn_rule_pack_deprecated,
+    help="Deprecated alias for --compat-rule-pack; removed in protokit 1.0.",
 )
 @click.option(
     "--ignore",
@@ -751,6 +791,7 @@ def check(
     output_format: str,
     formatter_modules: tuple[str, ...],
     rule_packs: tuple[str, ...],
+    rule_packs_legacy: tuple[str, ...],
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     quiet: bool,
@@ -784,6 +825,8 @@ def check(
     # points at the next thing they need to fix.
     # --------------------------------------------------------------
     load_formatter_packs(formatter_modules)
+    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
+    rule_packs = rule_packs + rule_packs_legacy
     reject_quiet_plus_structured(quiet=quiet, output_format=output_format)
     git_mode = since is not None or against_base is not None
     if git_mode and (old_input is not None or new_input is not None):
@@ -901,12 +944,21 @@ def check(
     help="Compatibility profile.",
 )
 @click.option(
-    "--rule-pack",
+    "--compat-rule-pack",
     "rule_packs",
     multiple=True,
     metavar="MODULE",
     help="Python module exposing a RULES list of (rule_id, plugin_fn) "
          "pairs (repeatable). Applied to every pair in the walk.",
+)
+@click.option(
+    "--rule-pack",
+    "rule_packs_legacy",
+    multiple=True,
+    metavar="MODULE",
+    hidden=True,
+    callback=_warn_rule_pack_deprecated,
+    help="Deprecated alias for --compat-rule-pack; removed in protokit 1.0.",
 )
 @click.option(
     "--ignore",
@@ -970,6 +1022,7 @@ def history(
     new_type: str | None,
     level_flag: str,
     rule_packs: tuple[str, ...],
+    rule_packs_legacy: tuple[str, ...],
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     fast: bool,
@@ -989,6 +1042,8 @@ def history(
     registered plugins).
     """
     load_formatter_packs(formatter_modules)
+    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
+    rule_packs = rule_packs + rule_packs_legacy
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1205,12 +1260,21 @@ def history(
     help="Compatibility profile.",
 )
 @click.option(
-    "--rule-pack",
+    "--compat-rule-pack",
     "rule_packs",
     multiple=True,
     metavar="MODULE",
     help="Python module exposing a RULES list of (rule_id, plugin_fn) "
          "pairs (repeatable). Applied at every commit in the walk.",
+)
+@click.option(
+    "--rule-pack",
+    "rule_packs_legacy",
+    multiple=True,
+    metavar="MODULE",
+    hidden=True,
+    callback=_warn_rule_pack_deprecated,
+    help="Deprecated alias for --compat-rule-pack; removed in protokit 1.0.",
 )
 @click.option(
     "--ignore",
@@ -1286,6 +1350,7 @@ def bisect(
     new_type: str | None,
     level_flag: str,
     rule_packs: tuple[str, ...],
+    rule_packs_legacy: tuple[str, ...],
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     keep_going: bool,
@@ -1309,6 +1374,8 @@ def bisect(
             from the registered plugins).
     """
     load_formatter_packs(formatter_modules)
+    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
+    rule_packs = rule_packs + rule_packs_legacy
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1539,12 +1606,21 @@ def bisect(
     help="Compatibility profile.",
 )
 @click.option(
-    "--rule-pack",
+    "--compat-rule-pack",
     "rule_packs",
     multiple=True,
     metavar="MODULE",
     help="Python module exposing a RULES list of (rule_id, plugin_fn) "
          "pairs (repeatable).",
+)
+@click.option(
+    "--rule-pack",
+    "rule_packs_legacy",
+    multiple=True,
+    metavar="MODULE",
+    hidden=True,
+    callback=_warn_rule_pack_deprecated,
+    help="Deprecated alias for --compat-rule-pack; removed in protokit 1.0.",
 )
 @click.option(
     "--ignore",
@@ -1596,6 +1672,7 @@ def ci(
     new_type: str | None,
     level_flag: str,
     rule_packs: tuple[str, ...],
+    rule_packs_legacy: tuple[str, ...],
     ignore_paths: tuple[str, ...],
     dedupe_by_type: bool,
     output_format: str,
@@ -1612,6 +1689,8 @@ def ci(
     a name that signals intent in pipeline yaml.
     """
     load_formatter_packs(formatter_modules)
+    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
+    rule_packs = rule_packs + rule_packs_legacy
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
