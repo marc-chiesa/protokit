@@ -349,7 +349,7 @@ Load via CLI:
 ```bash
 protokit compat old.descriptor_set new.descriptor_set \
   --type acme.User \
-  --rule-pack myorg.proto_rules
+  --compat-rule-pack myorg.proto_rules
 ```
 
 Or programmatically:
@@ -393,10 +393,16 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | `--level LEVEL` | `wire` \| `consumer-safe` (default) \| `producer-safe` \| `strict`. |
 | `--format NAME` | Output format (default: `human`). Built-in for compat: `human`, `json`, `junit`, `sarif`. See [Output Formatters](#output-formatters). |
 | `--formatter-module MODULE` | Python module exposing a `FORMATTERS = [(name, fn, kind), ...]` list (repeatable). See [Output Formatters](#output-formatters). |
-| `--rule-pack MODULE` | Dotted module name exposing a `RULES` list. Repeatable. |
+| `--compat-rule-pack MODULE` | Dotted module name exposing a `RULES` list. Repeatable. Renamed in 0.8.0 (D7); the old name `--rule-pack` is accepted as a deprecation alias and will be removed in protokit 1.0. |
 | `--ignore PATH` | Suppress findings at this dotted path prefix. Repeatable. |
 | `--dedupe-by-type` | Emit findings for each shared nested type only once (original behavior). Default is path-complete: findings appear at every path where the type is referenced. |
 | `--quiet` | Suppress output; return exit code only. Mutually exclusive with any non-`human` `--format`. |
+
+> **Stability.** `--compat-rule-pack` is part of `protokit compat`'s
+> 0.8.0+ public CLI surface; the legacy `--rule-pack` alias is accepted
+> as a deprecation path and removed in protokit 1.0. The Python API entry
+> point (`SchemaChecker.load_rule_pack`) is unchanged. See CHANGELOG D7
+> for the migration path.
 
 ### Git-integrated subcommands
 
@@ -422,7 +428,7 @@ Phase 2 workflows:
 All five support `--format json` (bisect's shape carries
 resolved `old` / `new` SHAs, `commits_walked`, and aggregated
 per-commit `diagnostics`), and `history` / `bisect` / `ci` accept
-the same `--rule-pack` / `--ignore` / `--dedupe-by-type` options
+the same `--compat-rule-pack` / `--ignore` / `--dedupe-by-type` options
 as `check`. `bisect` additionally accepts `--keep-going`, which
 walks every commit in the range even after the first break — one
 CI run surfaces everything rather than forcing multiple
@@ -1326,9 +1332,10 @@ A complete runnable example lives at `examples/custom_formatter.py`.
 
 ### Trust model
 
-`--formatter-module` follows the same trust model as `--rule-pack`:
-protokit imports the named module and reads its `FORMATTERS`
-attribute. **A formatter pack runs with your full process
+`--formatter-module` follows the same trust model as the rule-pack
+flags (`protokit lint --rule-pack` and `protokit compat
+--compat-rule-pack`): protokit imports the named module and reads
+its `FORMATTERS` attribute. **A formatter pack runs with your full process
 privileges.** It can:
 
 - Read environment variables (including `GITHUB_TOKEN`, AWS

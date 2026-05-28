@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -349,11 +350,11 @@ class TestRulePack:
             )
             old_path = _write_desc(tmp_path, "old", old, ["t.M"])
             new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-            result = CliRunner().invoke(main, ["check", 
+            result = CliRunner().invoke(main, ["check",
                 str(old_path), str(new_path), "--type", "t.M",
                 "--level", "wire",
-                "--rule-pack", pack_name,
-            ])
+                "--compat-rule-pack", pack_name,
+            ], catch_exceptions=False)
             assert result.exit_code == 1
             assert "every_field" in result.output
         finally:
@@ -381,10 +382,10 @@ class TestRulePack:
             )
             old_path = _write_desc(tmp_path, "old", old, ["t.M"])
             new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-            result = CliRunner().invoke(main, ["check", 
+            result = CliRunner().invoke(main, ["check",
                 str(old_path), str(new_path), "--type", "t.M",
-                "--rule-pack", pack_name,
-            ])
+                "--compat-rule-pack", pack_name,
+            ], catch_exceptions=False)
             assert result.exit_code == 2
             # Warning surfaces to stderr (via mix_stderr=True default).
             assert "boom_rule" in result.output
@@ -396,12 +397,218 @@ class TestRulePack:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
-            "--rule-pack", "definitely.not.a.real.module",
-        ])
+            "--compat-rule-pack", "definitely.not.a.real.module",
+        ], catch_exceptions=False)
         assert result.exit_code == 2
         assert "rule pack" in result.output
+
+    # D7 — `--compat-rule-pack` rename + `--rule-pack` deprecation alias.
+    # Each AE test wraps the invoke in `warnings.catch_warnings(record=True)
+    # + simplefilter("always")`. record=True is load-bearing: CliRunner
+    # intercepts stdout/stderr streams but does NOT route Python's warning
+    # machinery into result.output, so a warning fired by warnings.warn()
+    # without record=True is invisible to result.output assertions. With
+    # record=True the AE assertions inspect the captured warning objects
+    # directly (category, message text, count), which is also the in-repo
+    # idiom at tests/test_formatters_registry.py:265 for similar UserWarning
+    # checks. simplefilter("always") bypasses Python's per-message dedupe
+    # registry that earlier --rule-pack tests in this class would otherwise
+    # consume.
+
+    def test_compat_rule_pack_loads_pack_no_warning(self, tmp_path: Path) -> None:
+        """AE2 (R1, R5): `--compat-rule-pack` loads the pack and fires no deprecation warning."""
+        pack_name = "protokit_test_compat_rule_pack_canonical"
+
+        def every_field(ctx):
+            from protokit.schema.model import Direction, Severity
+            ctx.emit(
+                severity=Severity.WIRE,
+                message="every field flagged",
+                direction=Direction.BOTH,
+            )
+
+        module = types.ModuleType(pack_name)
+        module.RULES = [("every_field", every_field)]
+        sys.modules[pack_name] = module
+        try:
+            old, new = _simple_pair(
+                [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+                [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            )
+            old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+            new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = CliRunner().invoke(main, ["check",
+                    str(old_path), str(new_path), "--type", "t.M",
+                    "--level", "wire",
+                    "--compat-rule-pack", pack_name,
+                ], catch_exceptions=False)
+            assert result.exit_code == 1
+            assert "every_field" in result.output
+            # No --rule-pack deprecation warning on the canonical name.
+            assert not [w for w in caught if "--rule-pack" in str(w.message)]
+        finally:
+            sys.modules.pop(pack_name, None)
+
+    def test_rule_pack_legacy_emits_user_warning(self, tmp_path: Path) -> None:
+        """AE1 (R3, R4, R10): `--rule-pack` loads the pack and emits a UserWarning containing all four required tokens."""
+        pack_name = "protokit_test_rule_pack_legacy_warns"
+
+        def every_field(ctx):
+            from protokit.schema.model import Direction, Severity
+            ctx.emit(
+                severity=Severity.WIRE,
+                message="every field flagged",
+                direction=Direction.BOTH,
+            )
+
+        module = types.ModuleType(pack_name)
+        module.RULES = [("every_field", every_field)]
+        sys.modules[pack_name] = module
+        try:
+            old, new = _simple_pair(
+                [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+                [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            )
+            old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+            new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = CliRunner().invoke(main, ["check",
+                    str(old_path), str(new_path), "--type", "t.M",
+                    "--level", "wire",
+                    "--rule-pack", pack_name,
+                ], catch_exceptions=False)
+            assert result.exit_code == 1
+            assert "every_field" in result.output
+            # Exactly one UserWarning mentioning --rule-pack (R6 once-per-invocation).
+            rule_pack_warnings = [
+                w for w in caught
+                if issubclass(w.category, UserWarning) and "--rule-pack" in str(w.message)
+            ]
+            assert len(rule_pack_warnings) == 1, (
+                f"expected exactly 1 --rule-pack deprecation warning, got {len(rule_pack_warnings)}"
+            )
+            msg = str(rule_pack_warnings[0].message)
+            # R4 + R10 token presence (literal "1.0" pins the removal commitment).
+            for token in ("--rule-pack", "deprecated", "1.0", "--compat-rule-pack"):
+                assert token in msg, f"deprecation message missing token {token!r}: {msg!r}"
+        finally:
+            sys.modules.pop(pack_name, None)
+
+    def test_both_flags_accumulate_warn_once(self, tmp_path: Path) -> None:
+        """AE3 (R6): both flags supplied → both packs load AND deprecation warning fires exactly once."""
+        legacy_pack = "protokit_test_rule_pack_both_legacy"
+        canonical_pack = "protokit_test_rule_pack_both_canonical"
+
+        def emit_legacy(ctx):
+            from protokit.schema.model import Direction, Severity
+            ctx.emit(severity=Severity.WIRE, message="legacy fired",
+                     direction=Direction.BOTH)
+
+        def emit_canonical(ctx):
+            from protokit.schema.model import Direction, Severity
+            ctx.emit(severity=Severity.WIRE, message="canonical fired",
+                     direction=Direction.BOTH)
+
+        legacy_module = types.ModuleType(legacy_pack)
+        legacy_module.RULES = [("legacy_rule", emit_legacy)]
+        canonical_module = types.ModuleType(canonical_pack)
+        canonical_module.RULES = [("canonical_rule", emit_canonical)]
+        sys.modules[legacy_pack] = legacy_module
+        sys.modules[canonical_pack] = canonical_module
+        try:
+            old, new = _simple_pair(
+                [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+                [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            )
+            old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+            new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                result = CliRunner().invoke(main, ["check",
+                    str(old_path), str(new_path), "--type", "t.M",
+                    "--level", "wire",
+                    "--rule-pack", legacy_pack,
+                    "--compat-rule-pack", canonical_pack,
+                ], catch_exceptions=False)
+            assert result.exit_code == 1
+            # Both packs fired.
+            assert "legacy_rule" in result.output
+            assert "canonical_rule" in result.output
+            # Exactly one deprecation warning, not two.
+            rule_pack_warnings = [
+                w for w in caught
+                if issubclass(w.category, UserWarning) and "--rule-pack" in str(w.message)
+            ]
+            assert len(rule_pack_warnings) == 1, (
+                f"expected exactly 1 deprecation warning even with both flags, got {len(rule_pack_warnings)}"
+            )
+        finally:
+            sys.modules.pop(legacy_pack, None)
+            sys.modules.pop(canonical_pack, None)
+
+
+class TestCompatRulePackBinding:
+    """Smoke tests: --compat-rule-pack + --rule-pack alias are wired uniformly
+    across all 4 compat sub-subcommands.
+
+    Full pack-load semantics are exercised on `check` via TestRulePack
+    above. The parametrized tests here prove the decorator stack landed
+    uniformly (canonical option, hidden alias, deprecation callback) without
+    re-proving load depth on every sub-subcommand. A 5th sub-subcommand
+    added later that forgets any piece of the pattern will fail one of
+    these cases.
+    """
+
+    @pytest.mark.parametrize("subcommand", ["check", "history", "bisect", "ci"])
+    def test_compat_rule_pack_decorator_wiring(self, subcommand: str) -> None:
+        """Each compat sub-subcommand has --compat-rule-pack (visible) and
+        --rule-pack (hidden alias with _warn_rule_pack_deprecated callback)."""
+        from protokit.schema.cli import _warn_rule_pack_deprecated
+        cmd = main.get_command(None, subcommand)
+        canonical = next(
+            (p for p in cmd.params if "--compat-rule-pack" in getattr(p, "opts", [])),
+            None,
+        )
+        legacy = next(
+            (
+                p for p in cmd.params
+                if "--rule-pack" in getattr(p, "opts", [])
+                and "--compat-rule-pack" not in getattr(p, "opts", [])
+            ),
+            None,
+        )
+        assert canonical is not None, f"{subcommand}: --compat-rule-pack not registered"
+        assert canonical.hidden is False, f"{subcommand}: --compat-rule-pack should be visible"
+        assert legacy is not None, f"{subcommand}: --rule-pack alias not registered"
+        assert legacy.hidden is True, f"{subcommand}: --rule-pack alias should be hidden"
+        assert legacy.callback is _warn_rule_pack_deprecated, (
+            f"{subcommand}: --rule-pack alias missing _warn_rule_pack_deprecated callback"
+        )
+
+    @pytest.mark.parametrize("subcommand", ["check", "history", "bisect", "ci"])
+    def test_compat_rule_pack_visible_in_help(self, subcommand: str) -> None:
+        """--compat-rule-pack appears in --help; the hidden --rule-pack alias does not.
+
+        Per-line check is robust against Click's help wrapping — any line that
+        mentions --rule-pack must also mention --compat-rule-pack, so the hidden
+        legacy flag cannot slip through line-wrapped formatting.
+        """
+        result = CliRunner().invoke(
+            main, [subcommand, "--help"], catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "--compat-rule-pack" in result.output
+        for line in result.output.splitlines():
+            if "--rule-pack" in line:
+                assert "--compat-rule-pack" in line, (
+                    f"{subcommand}: --rule-pack appeared in --help without "
+                    f"--compat-rule-pack on the same line: {line!r}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +1088,7 @@ class TestBisect:
 
 class TestPluginParity:
     """Gap 2: history / bisect / ci all accept the full plugin
-    surface (--rule-pack, --ignore, --dedupe-by-type).
+    surface (--compat-rule-pack, --ignore, --dedupe-by-type).
     """
 
     def test_history_accepts_ignore(self, git_repo: Path) -> None:
