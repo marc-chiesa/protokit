@@ -398,6 +398,12 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | `--dedupe-by-type` | Emit findings for each shared nested type only once (original behavior). Default is path-complete: findings appear at every path where the type is referenced. |
 | `--quiet` | Suppress output; return exit code only. Mutually exclusive with any non-`human` `--format`. |
 
+> **Stability.** `--compat-rule-pack` is part of `protokit compat`'s
+> 0.8.0+ public CLI surface; the legacy `--rule-pack` alias is accepted
+> as a deprecation path and removed in protokit 1.0. The Python API entry
+> point (`SchemaChecker.load_rule_pack`) is unchanged. See CHANGELOG D7
+> for the migration path.
+
 ### Git-integrated subcommands
 
 `protokit compat` also exposes three git-aware subcommands for

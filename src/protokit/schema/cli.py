@@ -165,22 +165,17 @@ def _warn_rule_pack_deprecated(
 ) -> tuple[str, ...]:
     """Click callback: emit a UserWarning when the deprecated ``--rule-pack`` is used.
 
-    Compat's ``--rule-pack`` was renamed to ``--compat-rule-pack`` in
-    D7 (protokit 0.8.0) for cross-CLI symmetry with ``protokit lint
-    --rule-pack`` — the two flags loaded different rule systems while
-    sharing a name. The legacy flag still works as an alias and is
-    removed in 1.0. UserWarning (not DeprecationWarning) is the right
-    class here: DeprecationWarning is hidden by Python's default filter
-    and would be invisible to CLI users, and it gets promoted to an
-    exception under ``-W error::DeprecationWarning`` strict-warning CI
-    (which Click traps in its arg-parse pipeline).
+    ``UserWarning`` (not ``DeprecationWarning``) because Python's default
+    filter hides ``DeprecationWarning`` from CLI users and promotes it
+    to an exception under ``-W error::DeprecationWarning`` strict CI
+    (which Click traps during arg parsing).
 
-    Click invokes per-option callbacks once per option-collection
-    cycle, regardless of how many times the option appears on the
-    command line, so the warning fires exactly once per invocation
-    even if the user passes ``--rule-pack`` multiple times.
+    The ``if any(value):`` guard treats empty-string entries
+    (``--rule-pack=``) as not-supplied. Click invokes per-option
+    callbacks once per option-collection cycle regardless of repeats,
+    so the warning fires exactly once per invocation. See CHANGELOG D7.
     """
-    if value:
+    if any(value):
         warnings.warn(
             "--rule-pack is deprecated and will be removed in protokit 1.0; "
             "use --compat-rule-pack instead.",
@@ -825,8 +820,9 @@ def check(
     # points at the next thing they need to fix.
     # --------------------------------------------------------------
     load_formatter_packs(formatter_modules)
-    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
-    rule_packs = rule_packs + rule_packs_legacy
+    # Include packs from the deprecated --rule-pack alias; dedupe so the same
+    # module passed via both --rule-pack X and --compat-rule-pack X only loads once.
+    rule_packs = tuple(dict.fromkeys(rule_packs + rule_packs_legacy))
     reject_quiet_plus_structured(quiet=quiet, output_format=output_format)
     git_mode = since is not None or against_base is not None
     if git_mode and (old_input is not None or new_input is not None):
@@ -1042,8 +1038,9 @@ def history(
     registered plugins).
     """
     load_formatter_packs(formatter_modules)
-    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
-    rule_packs = rule_packs + rule_packs_legacy
+    # Include packs from the deprecated --rule-pack alias; dedupe so the same
+    # module passed via both --rule-pack X and --compat-rule-pack X only loads once.
+    rule_packs = tuple(dict.fromkeys(rule_packs + rule_packs_legacy))
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1374,8 +1371,9 @@ def bisect(
             from the registered plugins).
     """
     load_formatter_packs(formatter_modules)
-    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
-    rule_packs = rule_packs + rule_packs_legacy
+    # Include packs from the deprecated --rule-pack alias; dedupe so the same
+    # module passed via both --rule-pack X and --compat-rule-pack X only loads once.
+    rule_packs = tuple(dict.fromkeys(rule_packs + rule_packs_legacy))
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
@@ -1689,8 +1687,9 @@ def ci(
     a name that signals intent in pipeline yaml.
     """
     load_formatter_packs(formatter_modules)
-    # Merge D7 deprecation alias (--rule-pack) into the canonical name before downstream use.
-    rule_packs = rule_packs + rule_packs_legacy
+    # Include packs from the deprecated --rule-pack alias; dedupe so the same
+    # module passed via both --rule-pack X and --compat-rule-pack X only loads once.
+    rule_packs = tuple(dict.fromkeys(rule_packs + rule_packs_legacy))
     old_type_name, new_type_name, level = _resolve_common_flags(
         quiet=quiet, output_format=output_format,
         type_flag=type_flag, old_type=old_type, new_type=new_type,
