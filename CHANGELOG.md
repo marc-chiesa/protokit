@@ -432,6 +432,101 @@ consumers may need to parse:
   `use --format=json` so a grep-based consumer hitting the
   threshold knows where to find full-fidelity output.
 
+### D7 — Compat plugin-flag rename (0.8.0)
+
+`protokit compat`'s `--rule-pack` flag collided in name with the
+`protokit lint --rule-pack` flag added in D3 — they shared a name
+across subcommands but loaded different rule systems (compat's are
+`FieldPlugin`-shaped via `SchemaChecker.load_rule_pack`; lint's are
+`LintRuleSpec`-shaped). D7 renames compat's flag to
+`--compat-rule-pack` and keeps the old name as a deprecation alias.
+Both flags work today; the legacy name is removed in protokit 1.0.
+No behavior change for users who migrate to the new name; no break
+for users who don't.
+
+#### Added
+
+- `--compat-rule-pack MODULE` on every sub-subcommand within
+  `protokit compat` (`check`, `history`, `bisect`, `ci`). Same
+  semantics as the legacy `--rule-pack` (Python module exposing a
+  `RULES = [(rule_id, plugin_fn), ...]` list; repeatable; loaded via
+  `SchemaChecker.load_rule_pack`). The new name is the canonical
+  name going forward and resolves the cross-CLI naming collision
+  with `protokit lint --rule-pack` (which retains the unqualified
+  name).
+
+#### Deprecated
+
+- `--rule-pack` on `protokit compat {check,history,bisect,ci}` is now
+  a deprecation alias for `--compat-rule-pack`. The flag still loads
+  packs identically and remains accepted in 0.8.x, but each
+  invocation emits a `UserWarning` to stderr:
+  `"--rule-pack is deprecated and will be removed in protokit 1.0; use --compat-rule-pack instead."`
+  The flag is `hidden=True` in `--help` output to nudge new code
+  toward the canonical name.
+  - `UserWarning` (not `DeprecationWarning`) is the deliberate class
+    choice. `DeprecationWarning` is hidden from CLI users by
+    Python's default warning filter, and it gets promoted to an
+    exception under `-W error::DeprecationWarning` strict-warning CI
+    (which Click traps in its arg-parse pipeline). `UserWarning` is
+    visible by default and matches the in-repo precedent at
+    `src/protokit/formatters/_registry.py`.
+  - The warning fires exactly once per invocation regardless of how
+    many times `--rule-pack` is repeated on the command line (Click
+    invokes per-option callbacks once per option-collection cycle).
+    Mixing the old and new flag names in a single invocation
+    accumulates both sets of packs (per Click `multiple=True`
+    semantics, not last-wins) and emits exactly one warning.
+
+#### Migration note
+
+Old:
+
+```bash
+protokit compat check OLD NEW --type acme.User --rule-pack myorg.proto_rules
+```
+
+New:
+
+```bash
+protokit compat check OLD NEW --type acme.User --compat-rule-pack myorg.proto_rules
+```
+
+Mechanical search-and-replace of the flag name. No changes to the
+rule-pack module structure (`RULES = [(rule_id, plugin_fn), ...]`),
+no changes to plugin context APIs, no changes to other compat flags
+(`--formatter-module`, `--ignore`, `--dedupe-by-type`, `--quiet`,
+etc.). `protokit lint --rule-pack` is unchanged — only compat's
+flag is renamed.
+
+If you'd rather keep `--rule-pack` working until 1.0, you can — the
+deprecation warning is informational, not a CI break. Strict-warning
+test environments running `-W error::UserWarning` should wrap legacy
+`--rule-pack` invocations in `warnings.catch_warnings()` until the
+migration is complete.
+
+#### Test coverage
+
+Three AE-driven tests in `tests/schema/test_cli.py::TestRulePack`
+extend the existing class with coverage for the new flag's load path
+(`test_compat_rule_pack_loads_pack_no_warning`), the deprecation
+warning's exact-token presence
+(`test_rule_pack_legacy_emits_user_warning` — asserts `--rule-pack`,
+`deprecated`, `1.0`, and `--compat-rule-pack` are all present in the
+warning message), and the "exactly one warning when both flags
+supplied" semantics (`test_both_flags_accumulate_warn_once`). Three
+smoke binding tests in
+`tests/schema/test_cli.py::TestCompatRulePackBinding` assert the new
+flag is registered on `history`, `bisect`, and `ci` (one test each).
+All six tests use `warnings.catch_warnings(record=True) +
+warnings.simplefilter("always")` to bypass Python's per-message
+warning-dedupe registry, which would otherwise suppress the warning
+on second+ invocation in the same test session.
+
+Tag: `v0.8.0`. PyPI: `pip install protokit==0.8.0`.
+
+---
+
 ### 0.7.2 — scrub maintainer-side strays from public docs/solutions/
 
 No code change; no behavior change. Removes 27 maintainer-side

@@ -513,8 +513,8 @@ def _build_configured_checker(
 ) -> SchemaChecker:
     """Build a :class:`SchemaChecker` from CLI flag values.
 
-    Shared by every subcommand so ``--rule-pack`` / ``--ignore``
-    / ``--dedupe-by-type`` behave identically across
+    Shared by every subcommand so ``--compat-rule-pack`` /
+    ``--ignore`` / ``--dedupe-by-type`` behave identically across
     ``check`` / ``history`` / ``bisect`` / ``ci``. Any invalid
     input surfaces via ``error_exit`` (exit 2) so the caller
     never has to branch on it.
