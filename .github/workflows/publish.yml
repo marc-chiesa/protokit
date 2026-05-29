@@ -1,0 +1,61 @@
+name: publish
+
+# Publish protokit to PyPI via OIDC trusted publishing.
+#
+# Triggered when a GitHub Release is published (release-publish click is
+# the deliberate action; no separate approval gate). The `pypi`
+# environment scopes the OIDC token claim — PyPI's trusted-publisher
+# config must name this workflow file + this environment, otherwise
+# the token request fails with a clear error.
+#
+# Replaces the prior `protokit-publish` project-scoped API token path.
+# After the first successful OIDC publish lands, the legacy token can
+# be revoked at https://pypi.org/manage/account/token/.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # required for OIDC trusted publishing
+      contents: read
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
