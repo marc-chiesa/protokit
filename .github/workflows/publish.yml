@@ -15,6 +15,12 @@ name: publish
 on:
   release:
     types: [published]
+  # Manual fallback. Useful when the release-publish event doesn't fire
+  # (the gh-CLI `gh release create` path has been intermittently flaky
+  # at triggering `release: published` workflows; the web-UI release
+  # publish is the same surface). Dispatch with a tag ref (e.g.,
+  # refs/tags/v0.8.0) to publish the version that tag points at.
+  workflow_dispatch:
 
 jobs:
   build:
