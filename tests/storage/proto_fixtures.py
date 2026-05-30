@@ -1,10 +1,12 @@
-"""Shared descriptor fixtures for ``tests/storage/`` — programmatic
-``FileDescriptorProto`` / ``FileDescriptorSet`` builders.
+"""Shared fixtures for ``tests/storage/`` — programmatic descriptor builders and
+length-delimited frame helpers.
 
-Mirrors the ``_file`` / ``_fds`` helpers in ``tests/test_pools.py`` but lives in
-one importable module (no ``test_`` prefix, so pytest does not collect it) so
-the storage suite's many multi-file topo-sort and isolation fixtures are built
-the same way without per-file duplication.
+The descriptor builders mirror the ``_file`` / ``_fds`` helpers in
+``tests/test_pools.py`` but live in one importable module (no ``test_`` prefix,
+so pytest does not collect it) so the storage suite's many multi-file topo-sort
+and isolation fixtures are built the same way without per-file duplication. The
+framing helpers (``encode_varint`` / ``delimited``) build the byte streams the
+``length_delimited`` source reads.
 """
 
 from __future__ import annotations
@@ -51,6 +53,35 @@ def file_proto(
     return fdp
 
 
+def message_file(
+    name: str,
+    package: str,
+    message: str,
+    fields: dict[str, tuple[int, int]],
+    *,
+    syntax: str = "proto3",
+) -> descriptor_pb2.FileDescriptorProto:
+    """Build a proto3 ``FileDescriptorProto`` with one multi-field message.
+
+    Args:
+        name: File name (e.g. ``"a.proto"``).
+        package: Package (e.g. ``"a"``).
+        message: Message name (e.g. ``"A"``); fully-qualified as
+            ``package.message``.
+        fields: ``{field_name: (FieldDescriptorProto.TYPE_*, field_number)}``.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name=name, package=package, syntax=syntax)
+    mt = fdp.message_type.add()
+    mt.name = message
+    for field_name, (field_type, field_number) in fields.items():
+        f = mt.field.add()
+        f.name = field_name
+        f.number = field_number
+        f.type = field_type
+        f.label = f.LABEL_OPTIONAL
+    return fdp
+
+
 def fds(
     *files: descriptor_pb2.FileDescriptorProto,
 ) -> descriptor_pb2.FileDescriptorSet:
@@ -58,3 +89,21 @@ def fds(
     out = descriptor_pb2.FileDescriptorSet()
     out.file.extend(files)
     return out
+
+
+def encode_varint(n: int) -> bytes:
+    """Encode ``n`` as a base-128 varint (the length-delimited frame prefix)."""
+    out = bytearray()
+    while True:
+        byte = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def delimited(*payloads: bytes) -> bytes:
+    """Build a length-delimited stream (varint length prefix + body, repeated)."""
+    return b"".join(encode_varint(len(p)) + p for p in payloads)
