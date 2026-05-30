@@ -10,23 +10,17 @@ from __future__ import annotations
 import io
 
 import pytest
-from google.protobuf.message import Message
 
 from protokit.storage.engine import scan
-from protokit.storage.registry import StreamRegistry
-from protokit.storage.schema_source import FileDescriptorSetSchema
 from protokit.storage.source import FrameError
 from protokit.storage.sources import length_delimited, per_message_view
-from tests.storage.proto_fixtures import delimited, encode_varint, fds, file_proto
-
-
-def _registry_and_class(stream_id: str = "s") -> tuple[StreamRegistry, type[Message]]:
-    fdp = file_proto("a.proto", "a", message="A")
-    registry = StreamRegistry()
-    registry.register_stream(stream_id, FileDescriptorSetSchema(fds(fdp), "a.A"))
-    resolved = registry.get(stream_id)
-    assert resolved is not None
-    return registry, resolved.message_class
+from tests.storage.proto_fixtures import (
+    delimited,
+    encode_varint,
+)
+from tests.storage.proto_fixtures import (
+    registry_and_class as _registry_and_class,
+)
 
 
 class TestLengthDelimitedFraming:

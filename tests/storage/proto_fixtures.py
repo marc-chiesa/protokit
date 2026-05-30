@@ -12,6 +12,10 @@ framing helpers (``encode_varint`` / ``delimited``) build the byte streams the
 from __future__ import annotations
 
 from google.protobuf import descriptor_pb2
+from google.protobuf.message import Message
+
+from protokit.storage.registry import StreamRegistry
+from protokit.storage.schema_source import FileDescriptorSetSchema
 
 _TYPE_INT32 = descriptor_pb2.FieldDescriptorProto.TYPE_INT32
 
@@ -107,3 +111,22 @@ def encode_varint(n: int) -> bytes:
 def delimited(*payloads: bytes) -> bytes:
     """Build a length-delimited stream (varint length prefix + body, repeated)."""
     return b"".join(encode_varint(len(p)) + p for p in payloads)
+
+
+def registry_and_class(
+    stream_id: str = "s",
+    type_name: str = "a.A",
+    fdp: descriptor_pb2.FileDescriptorProto | None = None,
+) -> tuple[StreamRegistry, type[Message]]:
+    """Register one stream and return ``(registry, message_class)``.
+
+    Defaults to a single-field ``a.A {int32 x = 1}`` stream — the common
+    storage-test setup shared across the engine and source suites.
+    """
+    if fdp is None:
+        fdp = file_proto("a.proto", "a", message="A")
+    registry = StreamRegistry()
+    registry.register_stream(stream_id, FileDescriptorSetSchema(fds(fdp), type_name))
+    resolved = registry.get(stream_id)
+    assert resolved is not None
+    return registry, resolved.message_class

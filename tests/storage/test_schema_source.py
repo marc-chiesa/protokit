@@ -6,8 +6,9 @@ reusing Lane A (``_pools``). Error paths are driven with **real** malformed /
 incomplete descriptor sets — never ``mock.patch`` on a protobuf C-extension
 method, which silently no-ops and produces a false green.
 
-``_file`` / ``_fds`` mirror ``tests/test_pools.py`` so multi-file topo-sort and
-missing-dependency fixtures are built programmatically.
+``_file`` / ``_fds`` are the shared ``proto_fixtures`` builders (which mirror
+``tests/test_pools.py``), so multi-file topo-sort and missing-dependency
+fixtures are built programmatically.
 """
 
 from __future__ import annotations
@@ -25,44 +26,8 @@ from protokit.storage.schema_source import (
     FileDescriptorSetSchema,
     ResolvedSchema,
 )
-
-
-def _file(
-    name: str,
-    package: str,
-    *,
-    deps: tuple[str, ...] = (),
-    message: str | None = None,
-    ref_type: str | None = None,
-    field_name: str = "x",
-    field_type: int = descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
-) -> descriptor_pb2.FileDescriptorProto:
-    """Build a minimal proto3 FileDescriptorProto (see tests/test_pools.py)."""
-    fdp = descriptor_pb2.FileDescriptorProto()
-    fdp.name = name
-    fdp.package = package
-    fdp.syntax = "proto3"
-    for d in deps:
-        fdp.dependency.append(d)
-    if message is not None:
-        mt = fdp.message_type.add()
-        mt.name = message
-        f = mt.field.add()
-        f.name = field_name
-        f.number = 1
-        f.label = f.LABEL_OPTIONAL
-        if ref_type is not None:
-            f.type = f.TYPE_MESSAGE
-            f.type_name = ref_type
-        else:
-            f.type = field_type
-    return fdp
-
-
-def _fds(*files: descriptor_pb2.FileDescriptorProto) -> descriptor_pb2.FileDescriptorSet:
-    fds = descriptor_pb2.FileDescriptorSet()
-    fds.file.extend(files)
-    return fds
+from tests.storage.proto_fixtures import fds as _fds
+from tests.storage.proto_fixtures import file_proto as _file
 
 
 class TestFileDescriptorSetSchema:

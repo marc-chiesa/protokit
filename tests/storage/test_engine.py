@@ -21,23 +21,19 @@ from protokit.storage.engine import ScanRecord, ScanResult, scan
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.schema_source import FileDescriptorSetSchema
 from protokit.storage.source import FrameError
-from tests.storage.proto_fixtures import fds, file_proto
+from tests.storage.proto_fixtures import (
+    fds,
+    file_proto,
+)
+from tests.storage.proto_fixtures import (
+    registry_and_class as _registry_and_class,
+)
 
 _TYPE_STRING = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
 
 # A truncated frame for A{int32 x=1}: tag for field 1 (wire type 0), then EOF
 # where the varint value should be — a real DecodeError, not a mocked one.
 _TRUNCATED = b"\x08"
-
-
-def _registry_and_class(stream_id: str = "s") -> tuple[StreamRegistry, type[Message]]:
-    """Register one stream ``a.A`` with ``{int32 x = 1}``; return (registry, class)."""
-    fdp = file_proto("a.proto", "a", message="A")
-    registry = StreamRegistry()
-    registry.register_stream(stream_id, FileDescriptorSetSchema(fds(fdp), "a.A"))
-    resolved = registry.get(stream_id)
-    assert resolved is not None
-    return registry, resolved.message_class
 
 
 def _two_stream_registry() -> tuple[StreamRegistry, type[Message], type[Message]]:
