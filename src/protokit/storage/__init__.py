@@ -5,8 +5,8 @@ pybind11 library's per-message ``memoryview``, any buffer source — routes each
 record to its stream's **isolated** descriptor pool, parses it, and yields the
 materialized message. It is the data-at-rest counterpart to the message differ
 and schema-compatibility pillars: safe concurrent multi-version scanning built
-on protokit's cross-pool, name-based machinery, accepting any buffer source with
-zero-copy frame handoff.
+on protokit's cross-pool, name-based machinery, accepting any buffer source —
+a ``memoryview`` from a C++ buffer is a first-class record, not just files.
 
 The architecture is an **adapter boundary**: user code yields stream-tagged
 record bytes through a :class:`Source`; the engine owns routing, parsing, and

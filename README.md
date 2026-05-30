@@ -1470,7 +1470,7 @@ registry.register_stream("orders", FileDescriptorSetSchema(fds, "myapp.Order"))
 
 # A Source is any iterable of (stream_id, record_bytes). Two references ship:
 #   length_delimited(file, stream_id=...)   varint-prefixed file frames
-#   per_message_view(buffers, stream_id=...) zero-copy memoryview (pybind11)
+#   per_message_view(buffers, stream_id=...) memoryview source (pybind11)
 source = length_delimited(open("orders.bin", "rb"), stream_id="orders")
 
 for record in scan(source, registry, predicate=lambda m: m.total > 100):

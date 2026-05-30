@@ -22,6 +22,7 @@ closes the handle on both normal exhaustion and a mid-iteration exception.
 from __future__ import annotations
 
 import contextlib
+import sys
 from collections.abc import Iterator
 from typing import BinaryIO
 
@@ -161,7 +162,13 @@ def length_delimited(
             offset += len(body)
             yield (stream_id, body)
     finally:
-        # Close the owned handle, but never let a teardown error clobber an
-        # in-flight FrameError (a read source's close failure is non-actionable).
-        with contextlib.suppress(Exception):
+        # Close the owned handle. If a fault (a FrameError, or a GeneratorExit
+        # from an early close) is already propagating, suppress a close() error
+        # so it cannot clobber the actionable fault; on the clean exhaustion
+        # path let a close() error surface — it is the only signal the caller
+        # would otherwise get.
+        if sys.exc_info()[0] is None:
             file.close()
+        else:
+            with contextlib.suppress(Exception):
+                file.close()

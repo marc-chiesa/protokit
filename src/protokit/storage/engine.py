@@ -186,38 +186,56 @@ class ScanResult:
 
         Cleanup (KD-1): the source is closed on every exit — preferring the
         context-manager protocol, else ``close()`` — including a mid-iteration
-        exception. ``_state`` advances to ``_EXHAUSTED`` only on natural
-        completion; a propagating fault sets ``_ABORTED`` and an early
-        ``GeneratorExit`` (a ``break`` + GC, or explicit ``close()``) leaves
-        ``_RUNNING`` — in both non-completion cases the ``.errors`` guard stays
-        active so a partial report is never returned as if complete.
+        exception.
+
+        The terminal state is decided by whether the *record loop* completed
+        (the ``completed`` flag, set the instant ``_iterate`` returns), NOT by
+        whether teardown then succeeded:
+
+        - loop completed → ``_EXHAUSTED`` (``.errors`` readable), even if
+          ``close()`` / ``__exit__`` then raises (that error still propagates to
+          the caller — the report is simply complete);
+        - loop aborted mid-flight (a fault, or a ``with`` whose ``__exit__``
+          suppressed the fault) → ``_ABORTED`` (``.errors`` withheld);
+        - early ``GeneratorExit`` (``break`` + GC, or explicit ``close()``)
+          leaves ``_RUNNING``.
+
+        In every non-completion case the ``.errors`` guard stays active so a
+        partial report is never returned as if complete.
         """
         source = self._source
+        completed = False
         try:
             if _supports_context_manager(source):
                 with source:  # type: ignore[attr-defined]
                     yield from self._iterate(source)
+                    completed = True
             elif callable(getattr(source, "close", None)):
                 try:
                     yield from self._iterate(source)
+                    completed = True
                 finally:
                     source.close()  # type: ignore[attr-defined]
             else:
                 yield from self._iterate(source)
+                completed = True
         except GeneratorExit:
             # Closed before exhaustion — not a terminal state; keep the guard on.
             raise
         except BaseException:
-            # A propagated fault (raise-mode FrameError, predicate bug, a
-            # bad-buffer ValueError, or a true BaseException) ABORTED the scan:
-            # it did not run to completion, so .errors stays withheld — a
+            # The record loop's outcome decides the state, not teardown: a
+            # completed loop whose close()/__exit__ then raised is still
+            # _EXHAUSTED (report complete, teardown error still propagates); a
+            # fault that aborted the loop is _ABORTED (report withheld). A
             # frozen-at-abort partial is exactly the silent partial the guard
-            # forbids. (In raise mode .errors is empty anyway; withholding is
-            # more honest than reporting () as if complete.)
-            self._state = _ABORTED
+            # forbids. (In raise mode .errors is empty anyway.)
+            self._state = _EXHAUSTED if completed else _ABORTED
             raise
         else:
-            self._state = _EXHAUSTED
+            # No exception propagated. If the loop nonetheless did not complete,
+            # a context manager's __exit__ suppressed an in-flight fault — that
+            # is a partial scan, so withhold the report.
+            self._state = _EXHAUSTED if completed else _ABORTED
 
     def _iterate(self, source: Source) -> Iterator[ScanRecord]:
         registry = self._registry

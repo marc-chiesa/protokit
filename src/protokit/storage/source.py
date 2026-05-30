@@ -14,10 +14,10 @@ Why an adapter boundary
 Modelling the user's storage would couple protokit to one layout. Instead the
 engine names the *minimal* contract — a stream tag plus a record's bytes — and
 lets the caller own buffer lifetime and framing. A ``memoryview`` from a
-C++-owned buffer is a first-class record bytes value (zero-copy handoff): the
-engine parses it inside a confined step and never retains the live view, which
-is sound because upb copies into its arena on parse (see
-``protokit.storage.engine``). The two reference adapters in
+C++-owned buffer is a first-class record bytes value — the source need not
+materialize bytes up front: the engine takes one defensive copy at the parse
+boundary and never retains the live view, so the caller may free the buffer the
+instant a record is consumed (see ``protokit.storage.engine``). The two reference adapters in
 ``protokit.storage.sources`` are *examples* of the boundary, not protokit's
 framing taxonomy.
 
@@ -110,9 +110,9 @@ class Source(Protocol):
     Iterating a ``Source`` yields ``tuple[str, bytes | memoryview]`` pairs: a
     ``stream_id`` routing tag and the record's serialized protobuf bytes. The
     record bytes may be a ``memoryview`` over a caller-owned (e.g. C++-owned)
-    buffer — the engine parses it without copying it out, so handing off a view
-    is zero-copy and the caller may free or reuse the buffer once a record has
-    been consumed.
+    buffer — the source need not materialize bytes; the engine takes one
+    defensive copy at the parse boundary and never retains the view, so the
+    caller may free or reuse the buffer once a record has been consumed.
 
     Only ``__iter__`` is part of the structural contract, so a plain generator
     that yields the tuples satisfies ``Source``. Cleanup is *capability-probed,

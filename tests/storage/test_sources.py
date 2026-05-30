@@ -205,3 +205,10 @@ class TestCloseDoesNotMask:
         stream = _RaisingCloseStream(encode_varint(9) + b"\x08")
         with pytest.raises(FrameError):
             list(length_delimited(stream, stream_id="s"))  # type: ignore[arg-type]
+
+    def test_close_error_surfaces_on_clean_exhaustion(self) -> None:
+        # No framing fault: a close() error is the only signal, so it must
+        # surface (suppression applies only when masking an in-flight fault).
+        stream = _RaisingCloseStream(delimited(b"\x08\x01"))
+        with pytest.raises(OSError, match="close failed"):
+            list(length_delimited(stream, stream_id="s"))  # type: ignore[arg-type]

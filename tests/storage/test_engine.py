@@ -469,9 +469,74 @@ class _Unreprable:
 class TestMalformedItemReprGuard:
     def test_unreprable_malformed_item_does_not_leak_repr_exception(self) -> None:
         registry, _a_cls = _registry_and_class("s")
-        result = scan(iter([_Unreprable()]), registry, on_error="collect")
+        result = scan(iter([_Unreprable()]), registry, on_error="collect")  # type: ignore[arg-type]
         records = list(result)  # must not raise the RuntimeError from __repr__
         assert records == []
         errors = result.errors
         assert len(errors) == 1
         assert "unreprable" in errors[0].stream_id
+
+
+class _CloseRaisesAfterIterationSource:
+    """Iterable whose close() raises AFTER the loop fully completes."""
+
+    def __init__(self, items: list[tuple[str, bytes]]) -> None:
+        self._items = items
+
+    def __iter__(self) -> Iterator[tuple[str, bytes]]:
+        yield from self._items
+
+    def close(self) -> None:
+        raise RuntimeError("close failed")
+
+
+class _SuppressingContextManagerSource:
+    """Context-manager source whose __exit__ SUPPRESSES exceptions (returns True)."""
+
+    def __init__(self, items: list[tuple[str, bytes]]) -> None:
+        self._items = items
+
+    def __iter__(self) -> Iterator[tuple[str, bytes]]:
+        yield from self._items
+
+    def __enter__(self) -> _SuppressingContextManagerSource:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return True  # swallow any in-flight exception
+
+
+class TestTeardownVersusAbort:
+    def test_errors_readable_when_teardown_raises_after_full_iteration(self) -> None:
+        # The record loop completes; close() then raises. The teardown error
+        # propagates, but the report is COMPLETE so .errors stays readable
+        # (regression: the abort/exhaust split must key on loop completion).
+        registry, a_cls = _registry_and_class("s")
+        source = _CloseRaisesAfterIterationSource(
+            [("s", _TRUNCATED), ("s", a_cls(x=1).SerializeToString())]
+        )
+        result = scan(source, registry, on_error="collect")
+        records: list[ScanRecord] = []
+        with pytest.raises(RuntimeError, match="close failed"):
+            for record in result:
+                records.append(record)
+        assert [r.message.x for r in records] == [1]
+        errors = result.errors  # readable: the loop ran to completion
+        assert [e.record_index for e in errors] == [0]
+
+    def test_suppressing_context_manager_withholds_errors(self) -> None:
+        # __exit__ swallows the raise-mode FrameError, so the scan did NOT
+        # complete; .errors must be withheld rather than read () as if complete.
+        registry, a_cls = _registry_and_class("s")
+        source = _SuppressingContextManagerSource(
+            [
+                ("s", a_cls(x=1).SerializeToString()),
+                ("s", _TRUNCATED),
+                ("s", a_cls(x=9).SerializeToString()),
+            ]
+        )
+        result = scan(source, registry)  # raise mode
+        records = list(result)  # the FrameError is suppressed by __exit__
+        assert [r.message.x for r in records] == [1]  # partial, no exception
+        with pytest.raises(RuntimeError, match="aborted"):
+            _ = result.errors
