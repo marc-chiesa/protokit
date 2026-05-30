@@ -190,10 +190,18 @@ def _serialize_value(val: object) -> Any:
     return val
 
 
-#: Schema version for the ``protokit diff --format json`` output. Bump when the
-#: output shape changes; it next changes at protokit 1.0 when the deprecated
-#: ``old_value`` / ``new_value`` keys are removed.
-_DIFF_JSON_SCHEMA_VERSION = "0.1"
+#: Schema version for the ``protokit diff --format json`` output (single source
+#: of truth for the value).
+#:
+#: Bump on any output-shape change: a new or removed top-level key, or a changed
+#: key meaning. Open-ended additions a forward-compatible consumer can ignore do
+#: not bump. The next bump is at protokit 1.0, when the deprecated ``old_value``
+#: / ``new_value`` entry keys are removed.
+#:
+#: Absence semantic: output from protokit versions before this field existed
+#: carries no ``schema_version`` key. Consumers must treat a missing key as a
+#: known-older format (pre-this-release), not as a malformed response.
+_DIFF_JSON_SCHEMA_VERSION = "0.1"  # PROTO_1_0_REMOVE: bump when old/new keys drop
 
 
 def _set_value_keys(entry: dict[str, Any], left: Any, right: Any) -> None:

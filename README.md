@@ -103,6 +103,11 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 > Python attributes and the JSON keys) remain as deprecated aliases until
 > protokit 1.0; reading `diff.old_value`/`diff.new_value` emits a
 > `UserWarning`.
+>
+> The JSON object is **open/additive** — ignore unknown keys rather than
+> validating a closed set. Gate on the top-level `schema_version` to detect the
+> shape change when `old_value`/`new_value` are removed at 1.0; output from
+> protokit versions before `schema_version` existed simply omits the key.
 
 Quiet mode for CI (exit code only):
 

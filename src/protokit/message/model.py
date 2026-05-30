@@ -409,7 +409,7 @@ def _find_closing_bracket(s: str, open_pos: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _warn_value_alias(deprecated: str, canonical: str) -> None:
+def _warn_value_alias(deprecated: str, canonical: str) -> None:  # PROTO_1_0_REMOVE
     """Emit the deprecation warning for a ``Difference`` value alias.
 
     ``stacklevel`` call chain is caller -> property getter -> here, so

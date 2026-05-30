@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import warnings
+from typing import Any
 
 import pytest
 from google.protobuf.descriptor_pb2 import FieldDescriptorProto as F
@@ -36,16 +37,17 @@ def _modified_diff() -> tuple[DiffResult, Difference]:
 
 
 def _added() -> Difference:
-    # ADDED: right side has the value, left is None.
+    """An ADDED diff: the right side has the value, the left is None."""
     return Difference(path=FieldPath.parse("x"), change_type=ChangeType.ADDED, right_value="v")
 
 
 def _removed() -> Difference:
-    # REMOVED: left side has the value, right is None.
+    """A REMOVED diff: the left side has the value, the right is None."""
     return Difference(path=FieldPath.parse("x"), change_type=ChangeType.REMOVED, left_value="v")
 
 
-def _json(result: DiffResult) -> dict:
+def _json(result: DiffResult) -> dict[str, Any]:
+    """Render a DiffResult through the JSON formatter and parse the payload."""
     fn = get_formatter("json", FormatterKind.DIFF)
     return json.loads(fn(result, FormatterContext(subcommand="diff")))
 
@@ -98,9 +100,10 @@ class TestValueAliases:
 class TestConstruction:
     def test_old_kwargs_no_longer_accepted(self) -> None:
         # Construction via the old kwarg names is intentionally a hard break.
-        with pytest.raises(TypeError):
+        # match= pins the error to the rejected-kwarg TypeError, not some other.
+        with pytest.raises(TypeError, match="old_value"):
             Difference(path=FieldPath.parse("x"), change_type=ChangeType.REMOVED, old_value="v")  # type: ignore[call-arg]
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="new_value"):
             Difference(path=FieldPath.parse("x"), change_type=ChangeType.ADDED, new_value="v")  # type: ignore[call-arg]
 
 
@@ -111,18 +114,22 @@ class TestJsonDualEmit:
         assert entry["left_value"] == entry["old_value"] == "A"
         assert entry["right_value"] == entry["new_value"] == "B"
 
-    def test_schema_evolution_entry_has_all_four_value_keys_null(self) -> None:
-        d = Difference(
-            path=FieldPath.parse("f"),
-            change_type=ChangeType.TYPE_CHANGED,
-            left_type="TYPE_INT32",
-            right_type="TYPE_STRING",
-        )
+    @pytest.mark.parametrize(
+        ("change_type", "extra"),
+        [
+            (ChangeType.TYPE_CHANGED, {"left_type": "TYPE_INT32", "right_type": "TYPE_STRING"}),
+            (ChangeType.FIELD_NUMBER_CHANGED, {"left_field_number": 1, "right_field_number": 2}),
+            (ChangeType.CARDINALITY_CHANGED, {"left_label": "singular", "right_label": "repeated"}),
+        ],
+    )
+    def test_schema_evolution_entry_has_all_four_value_keys_null(
+        self, change_type: ChangeType, extra: dict[str, Any]
+    ) -> None:
+        # Every schema-evolution change type carries all four value keys, null.
+        d = Difference(path=FieldPath.parse("f"), change_type=change_type, **extra)
         entry = _json(DiffResult(differences=(d,)))["differences"][0]
         for key in ("left_value", "right_value", "old_value", "new_value"):
             assert key in entry and entry[key] is None
-        assert entry["left_type"] == "TYPE_INT32"
-        assert entry["right_type"] == "TYPE_STRING"
 
     def test_output_carries_schema_version(self) -> None:
         result, _ = _modified_diff()
@@ -149,4 +156,4 @@ class TestFormattersDoNotSelfWarn:
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             out = pytest_assertrepr_compare("==", cls(a="A"), cls(a="B"))
-        assert out is not None and any("~" in line for line in out)
+        assert out is not None and any(line.strip().startswith("~") for line in out)
