@@ -23,6 +23,7 @@ from typing import Any, NoReturn
 import click
 from google.protobuf import descriptor_pb2, descriptor_pool
 
+from protokit import _pools
 from protokit.formatters import (
     Formatter,
     FormatterContext,
@@ -164,24 +165,24 @@ def error_exit(message: str) -> NoReturn:
 def load_descriptor_pool(desc_path: Path) -> descriptor_pool.DescriptorPool:
     """Load a ``.descriptor_set`` file into a fresh ``DescriptorPool``.
 
-    The caller is responsible for validating the path exists; a
-    malformed file surfaces as a protobuf parse exception.
+    Delegates to :func:`protokit._pools.load_pool_from_path`, which adds
+    files in dependency order. A descriptor set whose files are not already
+    dependency-sorted therefore loads correctly instead of raising
+    unknown-dependency errors (``protoc --descriptor_set_out`` emits sorted
+    sets, but embedded/arbitrary sets may not be).
+
+    The caller is responsible for validating the path exists; a malformed
+    file surfaces as a protobuf parse exception, and an incomplete set
+    raises :class:`protokit._pools.MissingDependencyError`.
 
     Args:
-        desc_path: Path to a compiled ``.descriptor_set`` file (i.e.,
-            the output of ``protoc --descriptor_set_out``).
+        desc_path: Path to a compiled ``.descriptor_set`` file.
 
     Returns:
         A new ``DescriptorPool`` populated with every file descriptor
-        from the set.
+        from the set, added in dependency order.
     """
-    data = desc_path.read_bytes()
-    fds = descriptor_pb2.FileDescriptorSet()
-    fds.ParseFromString(data)
-    pool = descriptor_pool.DescriptorPool()
-    for fd in fds.file:
-        pool.Add(fd)
-    return pool
+    return _pools.load_pool_from_path(desc_path)
 
 
 def _has_protoxy() -> bool:

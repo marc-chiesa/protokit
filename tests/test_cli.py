@@ -171,6 +171,29 @@ class TestSameSchemaMode:
         ])
         assert result.exit_code == 2
 
+    def test_malformed_descriptor_set_exit_2_not_traceback(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path,
+    ) -> None:
+        # A descriptor set carrying two files with the same name (e.g. two
+        # concatenated sets) must fail loudly with exit 2, not silently drop a
+        # definition or surface a traceback. Exercises message/cli._safe_load_pool.
+        fds = descriptor_pb2.FileDescriptorSet()
+        for _ in range(2):
+            fp = fds.file.add()
+            fp.name = "dup.proto"
+            fp.package = "dup"
+            fp.syntax = "proto3"
+            fp.message_type.add().name = "M"
+        dup = tmp_path / "dup.descriptor_set"
+        dup.write_bytes(fds.SerializeToString())
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(dup),
+            "--message-type", "dup.M",
+        ])
+        assert result.exit_code == 2  # clean exit-2, not an uncaught traceback
+
 
 # ---------------------------------------------------------------------------
 # Output formats
