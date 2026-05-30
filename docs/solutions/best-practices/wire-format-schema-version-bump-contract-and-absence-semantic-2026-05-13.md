@@ -1,7 +1,7 @@
 ---
 title: "Document both the bump contract and the field-absence semantic when introducing a wire-format schema_version"
 date: 2026-05-13
-last_updated: 2026-05-25
+last_updated: 2026-05-30
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -450,3 +450,16 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   wire-format analog (both convert "absence of signal / absence of
   bump" into a positive contract that distinguishes the silent-pass
   case from the actual valid case).
+- [[neutral-field-rename-with-deprecation-window]] (2026-05-30) —
+  SECOND instance of this contract in the repo. The message differ's
+  JSON output gained its own `_DIFF_JSON_SCHEMA_VERSION = "0.1"`
+  constant (`src/protokit/formatters/_builtin_diff.py`), independent
+  of the `_LINT_JSON_SCHEMA_VERSION` this doc is written around. It
+  applies the same absence semantic (missing key = known-older
+  format) and the same bump triggers. Its next bump is at protokit
+  1.0 under clause (c) — removal of the deprecated `old_value` /
+  `new_value` entry keys that the differ currently dual-emits
+  alongside the canonical `left_value` / `right_value`. Note for
+  future readers: there are now TWO schema_version constants under
+  this contract, so this doc's lint-only framing is no longer the
+  whole picture.
