@@ -143,6 +143,30 @@ class TestBuildPool:
         assert {fld.name for fld in d1.fields} == {"x"}
         assert {fld.name for fld in d2.fields} == {"y"}
 
+    def test_dangling_symbol_raises_typed_error_not_raw_typeerror(self) -> None:
+        # A field references a symbol no file in the set defines (a dangling
+        # symbol with no *missing-file* dependency, so the topo-sort passes).
+        # pool.Add raises a bare TypeError; build_pool must re-raise it as the
+        # typed DescriptorPoolError family.
+        a = _file("a.proto", "a", message="A", ref_type=".a.DoesNotExist")
+        with pytest.raises(_pools.DescriptorPoolError):
+            _pools.build_pool(_fds(a))
+
+
+class TestLoadPoolFromBytes:
+    def test_valid_bytes_round_trip(self) -> None:
+        a = _file("a.proto", "a", message="A")
+        pool = _pools.load_pool_from_bytes(_fds(a).SerializeToString())
+        assert pool.FindMessageTypeByName("a.A").full_name == "a.A"
+
+    def test_corrupt_bytes_raise_typed_error_not_raw_decodeerror(self) -> None:
+        # A truncated/corrupt FileDescriptorSet must surface as the typed family,
+        # not a raw protobuf DecodeError, so the register boundary stays typed.
+        a = _file("a.proto", "a", message="A")
+        corrupt = _fds(a).SerializeToString()[:-1]  # drop the trailing byte
+        with pytest.raises(_pools.DescriptorPoolError):
+            _pools.load_pool_from_bytes(corrupt)
+
     def test_load_pool_from_bytes_roundtrip(self) -> None:
         a = _file("a.proto", "a", message="A")
         b = _file("b.proto", "b", deps=("a.proto",), message="B", ref_type=".a.A")

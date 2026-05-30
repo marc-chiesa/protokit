@@ -1192,6 +1192,17 @@ accumulation.
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
 | Internal module | `protokit.schema.lint._cli_utils` | INTERNAL |
 | Threshold constants | `_LINT_HUMAN_SUMMARIZATION_THRESHOLD` (per-category human-stderr summarization) | INTERNAL |
+| Python function | `protokit.storage.scan(source, registry, *, predicate=None, on_error='raise') -> ScanResult` (the data-at-rest scan engine; eager `on_error` validation) | IN |
+| Python protocol | `protokit.storage.Source` (`runtime_checkable`; `__iter__` yields `(stream_id, bytes \| memoryview)`; optional `close()`/context-manager cleanup. **`isinstance` is presence-only** — not a record-shape gate) | IN |
+| Python dataclass | `protokit.storage.ScanRecord` (frozen: `stream_id: str`, `record_index: int` (GLOBAL feed position), `message: Message`) | IN |
+| Python class | `protokit.storage.ScanResult` (iterate once for `ScanRecord`s; `.errors -> tuple[FrameError, ...]` readable only AFTER exhaustion, else `RuntimeError`) | IN |
+| Python type alias | `protokit.storage.OnError` = `Literal['raise', 'skip', 'collect']` (`'route'` + `error_sink` deferred to PR1.5) | IN |
+| Python class | `protokit.storage.StreamRegistry` (`register_stream(stream_id, schema_source)` resolves once into an isolated pool; `get(stream_id) -> ResolvedSchema \| None`; `stream_id in registry`) | IN |
+| Python protocol | `protokit.storage.SchemaSource` (`resolve() -> ResolvedSchema`, self-contained — no `name` arg) + `ResolvedSchema` NamedTuple `(pool, message_class)` | IN |
+| Python class | `protokit.storage.FileDescriptorSetSchema(fds, message_type_name)` / `EmbeddedSchema((fds_bytes, fq_name))` (the two PR1 schema forms; `.proto`-compile form deferred to PR1.5) | IN |
+| Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` | IN |
+| Python function | `protokit.storage.sources.length_delimited(file, *, stream_id, max_frame_size=64*1024*1024)` / `per_message_view(buffers, *, stream_id)` (reference frame adapters — examples of the boundary, not protokit's framing taxonomy) | IN |
+| Internal modules | `protokit.storage.{engine,source,registry,schema_source}` (implementation modules; import the names above from `protokit.storage`, never these directly) | INTERNAL |
 
 The surface above is a working draft. Names and signatures may
 shift before 1.0; the version bump + CHANGELOG section for each
@@ -1435,6 +1446,59 @@ whatever helps downstream filtering.
 > existing non-built-in name unless `replace=True` is passed
 > explicitly. This makes accidental name collisions loud rather
 > than silent.
+
+## Storage (data-at-rest scan engine)
+
+`protokit.storage` scans **stored** protobuf — a file of length-delimited
+frames, a pybind11 library's per-message `memoryview`, any buffer source —
+routing each record to its stream's **isolated** descriptor pool, parsing it,
+and yielding the materialized message. It is the data-at-rest counterpart to
+the message differ and schema-compatibility pillars. **PR1 is library-only**
+(no CLI yet); the API is the dogfooding surface.
+
+The architecture is an *adapter boundary*: your code yields stream-tagged
+record bytes through a `Source` (any iterable of `(stream_id, record_bytes)`);
+the engine owns routing, parsing, and filtering.
+
+```python
+from protokit.storage import StreamRegistry, FileDescriptorSetSchema, scan
+from protokit.storage.sources import length_delimited, per_message_view
+
+# Register each stream's schema up front (resolved once into an isolated pool).
+registry = StreamRegistry()
+registry.register_stream("orders", FileDescriptorSetSchema(fds, "myapp.Order"))
+
+# A Source is any iterable of (stream_id, record_bytes). Two references ship:
+#   length_delimited(file, stream_id=...)   varint-prefixed file frames
+#   per_message_view(buffers, stream_id=...) memoryview source (pybind11)
+source = length_delimited(open("orders.bin", "rb"), stream_id="orders")
+
+for record in scan(source, registry, predicate=lambda m: m.total > 100):
+    print(record.stream_id, record.record_index, record.message)
+```
+
+**Multi-version scanning is safe by construction.** Register two streams whose
+schemas define the same fully-qualified type *differently* — each resolves into
+its own isolated pool, so a single interleaved `scan` routes every record to the
+right definition with no cross-contamination. Records carry their `stream_id`,
+so correlating across related channels is a join on that tag plus a domain key.
+
+**Error policy is fail-loud by default** (`on_error='raise'`). Opt into
+tolerance explicitly:
+
+```python
+result = scan(source, registry, on_error="collect")
+clean = list(result)            # every well-formed record
+errors = result.errors          # tuple[FrameError, ...] — read AFTER exhausting
+```
+
+`on_error` is `'raise'` (propagate the first `FrameError`), `'skip'` (drop
+faulting records), or `'collect'` (drop them but report each in
+`result.errors`). Reading `.errors` before the iterator is exhausted raises
+`RuntimeError` rather than returning a silent partial. The raw record bytes (a
+`memoryview` may come straight from a C++-owned buffer) are parsed inside a
+confined step and never retained — upb copies into its arena, so the caller may
+free the buffer the instant a record is consumed.
 
 ## Supported Field Types
 
