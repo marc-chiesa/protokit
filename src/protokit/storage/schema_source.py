@@ -43,6 +43,7 @@ from __future__ import annotations
 from typing import NamedTuple, Protocol
 
 from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf.message import Message
 
 from protokit._pools import build_pool, get_message_class, load_pool_from_bytes
 
@@ -55,11 +56,12 @@ class ResolvedSchema(NamedTuple):
             concurrent streams may hold conflicting versions of the same
             fully-qualified type without collision.
         message_class: The generated message class for this stream's records,
-            bound to ``pool``.
+            bound to ``pool`` (a ``type[Message]`` — instantiate it, or read its
+            ``DESCRIPTOR``).
     """
 
     pool: descriptor_pool.DescriptorPool
-    message_class: type
+    message_class: type[Message]
 
 
 class SchemaSource(Protocol):
