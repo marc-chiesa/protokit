@@ -211,7 +211,7 @@ class TestFieldPresenceEvolution:
         result = MessageDifferencer().compare(msg1, msg2)
         added = [d for d in result if d.change_type == ChangeType.ADDED]
         assert len(added) == 1
-        assert added[0].new_value == "alice@example.com"
+        assert added[0].right_value == "alice@example.com"
 
     def test_set_proto2_field_reported_as_removed(self) -> None:
         """A proto2 field that exists only in the left schema and IS set
@@ -228,7 +228,7 @@ class TestFieldPresenceEvolution:
         result = MessageDifferencer().compare(msg1, msg2)
         removed = [d for d in result if d.change_type == ChangeType.REMOVED]
         assert len(removed) == 1
-        assert removed[0].old_value == "alice@example.com"
+        assert removed[0].left_value == "alice@example.com"
 
 
 class TestMapRepeatedMismatch:

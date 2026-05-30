@@ -46,8 +46,8 @@ class TestBytesDifferences:
         assert len(result) == 1
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
-        assert d.old_value == b"hello"
-        assert d.new_value == b"world"
+        assert d.left_value == b"hello"
+        assert d.right_value == b"world"
 
     def test_different_length(self) -> None:
         b = _make_bytes_builder()

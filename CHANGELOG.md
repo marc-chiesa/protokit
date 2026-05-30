@@ -15,6 +15,25 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Changed — message differ left/right value terminology
+
+- Renamed `Difference.old_value`/`new_value` → `left_value`/`right_value` in the
+  message differ. The two compared messages are not a before/after pair, so the
+  value pair now matches the dataclass's other `left_*`/`right_*` fields, the
+  rule context (`ctx.left_value`), and the CLI (`--left-*`). `old_value`/
+  `new_value` remain as deprecated read-only property aliases that emit
+  `UserWarning`; removed in protokit 1.0. Note: constructing
+  `Difference(old_value=...)` is no longer accepted — `Difference` is an output
+  type produced by the differ, not normally hand-built.
+- `protokit diff --format json` now emits `left_value`/`right_value`;
+  `old_value`/`new_value` are retained as deprecated duplicate keys, removed in
+  protokit 1.0.
+- Schema compatibility (`protokit compat`) keeps `old`/`new` unchanged — it is a
+  directional before→after version check where `old`/`new` is semantically
+  correct. The diff-vs-compat terminology split is intentional and documented.
+- Fixed a stale README JSON example that showed a `"warnings"` key; the diff JSON
+  emits `"diagnostics"`.
+
 ### Added
 - `protokit.schema` — descriptor-level compatibility checker with 17 built-in
   rules, four compatibility profiles (`WIRE`, `CONSUMER_SAFE`,

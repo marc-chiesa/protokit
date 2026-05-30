@@ -888,7 +888,7 @@ class MessageDifferencer:
                     diffs.append(Difference(
                         path=path,
                         change_type=ChangeType.ADDED,
-                        new_value=self._wrap_value(right_val, right_fd),
+                        right_value=self._wrap_value(right_val, right_fd),
                         field_type=type_name(right_fd.type),
                     ))
                     return
@@ -896,7 +896,7 @@ class MessageDifferencer:
                     diffs.append(Difference(
                         path=path,
                         change_type=ChangeType.REMOVED,
-                        old_value=self._wrap_value(left_val, left_fd),
+                        left_value=self._wrap_value(left_val, left_fd),
                         field_type=type_name(left_fd.type),
                     ))
                     return
@@ -908,8 +908,8 @@ class MessageDifferencer:
                 diffs.append(Difference(
                     path=path,
                     change_type=ChangeType.MODIFIED,
-                    old_value=self._wrap_value(left_val, left_fd),
-                    new_value=self._wrap_value(right_val, right_fd),
+                    left_value=self._wrap_value(left_val, left_fd),
+                    right_value=self._wrap_value(right_val, right_fd),
                     field_type=type_name(left_fd.type),
                 ))
             return
@@ -943,7 +943,7 @@ class MessageDifferencer:
                 diff = Difference(
                     path=path,
                     change_type=ChangeType.ADDED,
-                    new_value=self._wrap_value(right_val, right_fd),
+                    right_value=self._wrap_value(right_val, right_fd),
                     field_type=type_name(right_fd.type),
                 )
                 self._emit_with_report(
@@ -954,7 +954,7 @@ class MessageDifferencer:
                 diff = Difference(
                     path=path,
                     change_type=ChangeType.REMOVED,
-                    old_value=self._wrap_value(left_val, left_fd),
+                    left_value=self._wrap_value(left_val, left_fd),
                     field_type=type_name(left_fd.type),
                 )
                 self._emit_with_report(
@@ -980,8 +980,8 @@ class MessageDifferencer:
         diff = Difference(
             path=path,
             change_type=ChangeType.MODIFIED,
-            old_value=self._wrap_value(left_val, left_fd),
-            new_value=self._wrap_value(right_val, right_fd),
+            left_value=self._wrap_value(left_val, left_fd),
+            right_value=self._wrap_value(right_val, right_fd),
             field_type=type_name(left_fd.type),
         )
         self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
@@ -1018,7 +1018,7 @@ class MessageDifferencer:
         if is_new:
             diff = Difference(
                 path=path, change_type=ChangeType.ADDED,
-                new_value=self._wrap_value(value, value_fd),
+                right_value=self._wrap_value(value, value_fd),
                 field_type=type_name(value_fd.type),
             )
             ctx_left_value: Any = None
@@ -1026,7 +1026,7 @@ class MessageDifferencer:
         else:
             diff = Difference(
                 path=path, change_type=ChangeType.REMOVED,
-                old_value=self._wrap_value(value, value_fd),
+                left_value=self._wrap_value(value, value_fd),
                 field_type=type_name(value_fd.type),
             )
             ctx_left_value = value
@@ -1092,8 +1092,8 @@ class MessageDifferencer:
                 diffs.append(Difference(
                     path=path,
                     change_type=ChangeType.MODIFIED,
-                    old_value=self._wrap_value(left_val, left_fd),
-                    new_value=self._wrap_value(right_val, right_fd),
+                    left_value=self._wrap_value(left_val, left_fd),
+                    right_value=self._wrap_value(right_val, right_fd),
                     field_type=type_name(left_fd.type),
                 ))
             return
@@ -1123,8 +1123,8 @@ class MessageDifferencer:
         diff = Difference(
             path=path,
             change_type=ChangeType.MODIFIED,
-            old_value=self._wrap_value(left_val, left_fd),
-            new_value=self._wrap_value(right_val, right_fd),
+            left_value=self._wrap_value(left_val, left_fd),
+            right_value=self._wrap_value(right_val, right_fd),
             field_type=type_name(left_fd.type),
         )
         self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
@@ -1202,13 +1202,13 @@ class MessageDifferencer:
         *,
         is_new: bool,
     ) -> Difference:
-        """Build a leaf Difference, placing the value in old_value or new_value."""
+        """Build a leaf Difference, placing the value in left_value or right_value."""
         wrapped = self._wrap_value(value, fd)
         return Difference(
             path=path,
             change_type=change_type,
-            old_value=None if is_new else wrapped,
-            new_value=wrapped if is_new else None,
+            left_value=None if is_new else wrapped,
+            right_value=wrapped if is_new else None,
             field_type=type_name(fd.type),
         )
 
@@ -1631,8 +1631,8 @@ class MessageDifferencer:
             path: The path prefix for the emitted differences.
             change_type: ``ChangeType.ADDED`` or ``ChangeType.REMOVED``.
             diffs: Accumulator list for Difference objects.
-            is_new: If True, values go into ``new_value``; otherwise
-                ``old_value``.
+            is_new: If True, values go into ``right_value``; otherwise
+                ``left_value``.
             depth: Current comparison depth for max_depth enforcement.
             warnings: Accumulator list for Diagnostic objects (truncation).
             truncated_paths: Accumulator list for truncated FieldPaths.

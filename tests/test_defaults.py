@@ -68,8 +68,8 @@ class TestProto3Defaults:
         assert result.has_changes()
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
-        assert d.old_value == 42
-        assert d.new_value == 0
+        assert d.left_value == 42
+        assert d.right_value == 0
 
 
 class TestProto3MessageDefaults:

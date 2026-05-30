@@ -23,7 +23,7 @@ result = diff_messages(msg1, msg2)
 
 if result.has_changes():
     for diff in result:
-        print(f"{diff.path}: {diff.old_value} -> {diff.new_value}")
+        print(f"{diff.path}: {diff.left_value} -> {diff.right_value}")
 
 # Filter by path prefix
 user_changes = result.filter(path="user.address")
@@ -81,14 +81,27 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
     {
       "path": "user.name",
       "change_type": "MODIFIED",
+      "left_value": "Alice",
+      "right_value": "Bob",
       "old_value": "Alice",
       "new_value": "Bob",
       "field_type": "TYPE_STRING"
     }
   ],
-  "warnings": []
+  "diagnostics": []
 }
 ```
+
+> **Terminology — left/right vs old/new.** The message differ uses
+> **left/right** (`diff.left_value`/`diff.right_value`, JSON keys `left_value`/
+> `right_value`): two arbitrary messages are compared and neither side is
+> privileged, so there is no inherent "old" or "new". The schema compatibility
+> checker (`protokit compat`) uses **old/new** because it answers a directional
+> question — is the *new* schema a safe successor to the *old* one. The split is
+> intentional. The differ's previous `old_value`/`new_value` names (both the
+> Python attributes and the JSON keys) remain as deprecated aliases until
+> protokit 1.0; reading `diff.old_value`/`diff.new_value` emits a
+> `UserWarning`.
 
 Quiet mode for CI (exit code only):
 

@@ -55,8 +55,8 @@ class TestMapModified:
         assert len(result) == 1
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
-        assert d.old_value == "prod"
-        assert d.new_value == "staging"
+        assert d.left_value == "prod"
+        assert d.right_value == "staging"
         assert '"env"' in str(d.path)
 
 
@@ -69,7 +69,7 @@ class TestMapAddedRemoved:
         assert len(result) == 1
         d = result.differences[0]
         assert d.change_type == ChangeType.ADDED
-        assert d.new_value == "web"
+        assert d.right_value == "web"
 
     def test_key_removed(self) -> None:
         b = _make_string_map_builder()
@@ -115,7 +115,7 @@ class TestMapCrossSchema:
         assert len(added) == 1
         path_str = str(added[0].path)
         assert '"env"' in path_str
-        assert added[0].new_value == "prod"
+        assert added[0].right_value == "prod"
 
     def test_map_only_on_left_uses_key_paths(self) -> None:
         """A map field removed in the right schema should use key-based paths."""
@@ -134,7 +134,7 @@ class TestMapCrossSchema:
         assert len(removed) == 1
         path_str = str(removed[0].path)
         assert '"env"' in path_str
-        assert removed[0].old_value == "prod"
+        assert removed[0].left_value == "prod"
 
 
 def _make_message_value_map_builder() -> ProtoBuilder:

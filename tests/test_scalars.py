@@ -54,8 +54,8 @@ class TestScalarDifferentValues:
         assert len(result) == 1
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
-        assert d.old_value == "Alice"
-        assert d.new_value == "Bob"
+        assert d.left_value == "Alice"
+        assert d.right_value == "Bob"
         assert str(d.path) == "name"
 
     def test_int_changed(self) -> None:
@@ -67,8 +67,8 @@ class TestScalarDifferentValues:
         assert result.has_changes()
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
-        assert d.old_value == 1
-        assert d.new_value == 2
+        assert d.left_value == 1
+        assert d.right_value == 2
 
     def test_bool_changed(self) -> None:
         builder = ProtoBuilder()
@@ -86,8 +86,8 @@ class TestScalarDifferentValues:
         result = diff_messages(msg1, msg2)
         assert result.has_changes()
         d = result.differences[0]
-        assert d.old_value == b"hello"
-        assert d.new_value == b"world"
+        assert d.left_value == b"hello"
+        assert d.right_value == b"world"
 
     def test_multiple_fields_changed(self) -> None:
         builder = ProtoBuilder()

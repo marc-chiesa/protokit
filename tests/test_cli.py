@@ -290,7 +290,8 @@ class TestInputFormats:
         ])
         assert result.exit_code == 1
         data = json.loads(result.output)
-        assert data["differences"][0]["old_value"] == "Alice"
+        assert data["differences"][0]["left_value"] == "Alice"
+        assert data["differences"][0]["old_value"] == "Alice"  # deprecated alias key
 
     def test_json_input(self, runner: CliRunner, tmp_path: Path) -> None:
         desc_bytes = _make_descriptor_set("test", "Msg", {

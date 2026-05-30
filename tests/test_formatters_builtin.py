@@ -140,6 +140,9 @@ class TestDiffFormatters:
         diff = payload["differences"][0]
         assert diff["path"] == "name"
         assert diff["change_type"] == "MODIFIED"
+        assert diff["left_value"] == "A"
+        assert diff["right_value"] == "B"
+        # deprecated alias keys still emitted (removed in protokit 1.0)
         assert diff["old_value"] == "A"
         assert diff["new_value"] == "B"
         assert diff["field_type"] == "TYPE_STRING"
