@@ -200,9 +200,26 @@ class ScanResult:
     def _iterate(self, source: Source) -> Iterator[ScanRecord]:
         registry = self._registry
         predicate = self._predicate
+        iterator = iter(source)
         record_index = -1
-        for item in source:
+        while True:
             record_index += 1
+
+            # Pull the next record. A source may raise FrameError from its own
+            # framing (e.g. a length_delimited truncated length prefix); that is
+            # a per-record fault like any other, so route it through on_error
+            # rather than letting it bypass skip/collect. For a single source
+            # the source's record_index matches this global counter, so the
+            # error is dispatched as-is (preserving its offset). A generator
+            # source is finished after raising, so the next loop pass ends the
+            # scan; a resilient source may keep yielding.
+            try:
+                item = next(iterator)
+            except StopIteration:
+                return
+            except FrameError as framing_error:
+                self._dispatch(framing_error)
+                continue
 
             # Per-record element guard (runs every record — a malformed item may
             # appear at any index). Converts a bad shape into a FrameError rather

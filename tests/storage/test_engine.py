@@ -294,6 +294,59 @@ class TestExceptionPropagation:
             list(scan(raising_source(), registry, on_error="collect"))
 
 
+class _FramingFaultSource:
+    """Yields good records, then raises ``FrameError`` from its own framing —
+    the shape a ``length_delimited`` source has on a truncated trailing frame.
+    """
+
+    def __init__(
+        self, stream_id: str, good: list[bytes], *, offset: int = 99
+    ) -> None:
+        self._stream_id = stream_id
+        self._good = good
+        self._offset = offset
+
+    def __iter__(self) -> Iterator[tuple[str, bytes]]:
+        for payload in self._good:
+            yield (self._stream_id, payload)
+        raise FrameError(
+            self._stream_id, len(self._good), self._offset, "truncated frame"
+        )
+
+
+class TestSourceRaisedFrameError:
+    def test_raise_mode_propagates_source_framing_fault(self) -> None:
+        registry, a_cls = _registry_and_class("s")
+        source = _FramingFaultSource("s", [a_cls(x=1).SerializeToString()])
+        it = iter(scan(source, registry))
+        assert next(it).message.x == 1
+        with pytest.raises(FrameError) as exc:
+            next(it)
+        assert exc.value.reason == "truncated frame"
+        assert exc.value.offset == 99
+
+    def test_skip_mode_drops_source_framing_fault(self) -> None:
+        registry, a_cls = _registry_and_class("s")
+        source = _FramingFaultSource(
+            "s", [a_cls(x=1).SerializeToString(), a_cls(x=2).SerializeToString()]
+        )
+        result = scan(source, registry, on_error="skip")
+        records = list(result)
+        assert [r.message.x for r in records] == [1, 2]
+        assert result.errors == ()
+
+    def test_collect_mode_captures_source_framing_fault_with_offset(self) -> None:
+        registry, a_cls = _registry_and_class("s")
+        source = _FramingFaultSource("s", [a_cls(x=1).SerializeToString()], offset=42)
+        result = scan(source, registry, on_error="collect")
+        records = list(result)
+        assert [r.message.x for r in records] == [1]
+        errors = result.errors
+        assert len(errors) == 1
+        assert errors[0].offset == 42
+        assert errors[0].reason == "truncated frame"
+
+
 class TestSourceCleanup:
     def test_close_called_after_normal_exhaustion(self) -> None:
         registry, a_cls = _registry_and_class("s")
