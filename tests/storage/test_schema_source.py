@@ -15,7 +15,11 @@ from __future__ import annotations
 import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool
 
-from protokit._pools import MessageTypeNotFoundError, MissingDependencyError
+from protokit._pools import (
+    DescriptorPoolError,
+    MessageTypeNotFoundError,
+    MissingDependencyError,
+)
 from protokit.storage.schema_source import (
     EmbeddedSchema,
     FileDescriptorSetSchema,
@@ -109,13 +113,14 @@ class TestEmbeddedSchema:
 
     def test_channelized_field_order_is_read_as_documented(self) -> None:
         # Cross-check the pinned format: index 0 is the serialized FDS, index 1
-        # is the message name. Transposing them must NOT resolve (proves the
-        # order is load-bearing, not coincidental).
+        # is the message name. Transposing them is rejected loudly at
+        # construction (index 0 must be bytes-like), proving the order is
+        # load-bearing, not coincidental.
         a = _file("a.proto", "a", message="A")
         fds_bytes = _fds(a).SerializeToString()
         EmbeddedSchema((fds_bytes, "a.A")).resolve()  # correct order resolves
-        with pytest.raises(Exception):  # noqa: B017 - transposed bytes/name is malformed
-            EmbeddedSchema(("a.A", fds_bytes)).resolve()  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="fds_bytes must be bytes-like"):
+            EmbeddedSchema(("a.A", fds_bytes))  # type: ignore[arg-type]
 
     def test_out_of_order_embedded_set_resolves(self) -> None:
         a = _file("a.proto", "a", message="A")
@@ -137,6 +142,33 @@ class TestEmbeddedSchema:
             EmbeddedSchema((b"only-one-element",))  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="2-tuple"):
             EmbeddedSchema((b"a", "b.B", "extra"))  # type: ignore[arg-type]
+
+    def test_non_sequence_channel_rejected_with_value_error(self) -> None:
+        # A non-Sized input must raise the documented ValueError, not a raw
+        # TypeError from len().
+        for bad in (None, 42, object()):
+            with pytest.raises(ValueError, match="2-tuple"):
+                EmbeddedSchema(bad)  # type: ignore[arg-type]
+
+    def test_two_character_str_channel_rejected(self) -> None:
+        # A 2-char str is a 2-length sequence but NOT the pinned (bytes, str)
+        # shape — it must be rejected, not sneak through len()==2.
+        with pytest.raises(ValueError, match="2-tuple"):
+            EmbeddedSchema("ab")  # type: ignore[arg-type]
+
+    def test_wrong_element_types_rejected_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="fds_bytes must be bytes-like"):
+            EmbeddedSchema((123, "a.A"))  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="message_name must be str"):
+            EmbeddedSchema((b"fds", 123))  # type: ignore[arg-type]
+
+    def test_corrupt_channel_bytes_raise_typed_error(self) -> None:
+        # A truncated/corrupt FDS surfaces as the typed DescriptorPoolError
+        # family at the resolve (register) boundary, never a raw DecodeError.
+        a = _file("a.proto", "a", message="A")
+        corrupt = _fds(a).SerializeToString()[:-1]  # drop the last byte
+        with pytest.raises(DescriptorPoolError):
+            EmbeddedSchema((corrupt, "a.A")).resolve()
 
 
 class TestResolvedSchema:

@@ -132,19 +132,37 @@ class EmbeddedSchema:
                 format.
 
         Raises:
-            ValueError: ``channelized`` is not a 2-element sequence (a
-                malformed channel fails loudly here, not mid-scan).
+            ValueError: ``channelized`` is not a ``(bytes-like, str)`` 2-tuple
+                (a malformed channel fails loudly here, not mid-scan). A bare
+                2-character ``str`` or ``bytes`` is rejected — it is a 2-length
+                sequence but not the pinned shape.
         """
-        # Validate arity at the boundary, then unpack the pinned order — index
-        # 0 is the serialized FDS, index 1 is the dotless FQ name (the format is
-        # defined here, locally, and cross-checked by the round-trip test). A
-        # wrong-arity channel fails loudly here rather than mid-scan.
-        if len(channelized) != 2:
+        # Validate type, arity, AND element types at the boundary so the pinned
+        # (fds_bytes, name) shape is enforced here, not deferred to a confusing
+        # mid-scan TypeError. Index 0 is the serialized FDS, index 1 the dotless
+        # FQ name (the format is defined here, locally, cross-checked by tests).
+        # `isinstance(..., (tuple, list))` deliberately rejects a 2-char str.
+        if not isinstance(channelized, (tuple, list)) or len(channelized) != 2:
             raise ValueError(
                 f"channelized schema must be a (fds_bytes, message_name) "
-                f"2-tuple, got {len(channelized)} elements"
+                f"2-tuple, got {type(channelized).__name__}"
             )
-        self._fds_bytes, self._message_type_name = channelized
+        fds_bytes, message_type_name = channelized
+        if not isinstance(fds_bytes, (bytes, bytearray, memoryview)):
+            raise ValueError(
+                f"channelized fds_bytes must be bytes-like, got "
+                f"{type(fds_bytes).__name__}"
+            )
+        if not isinstance(message_type_name, str):
+            raise ValueError(
+                f"channelized message_name must be str, got "
+                f"{type(message_type_name).__name__}"
+            )
+        # Normalize to bytes (no-op for a bytes input; one small copy for a
+        # bytearray/memoryview) so the stored channel is owned and resolve()'s
+        # bytes contract holds even if the caller's buffer is later released.
+        self._fds_bytes = bytes(fds_bytes)
+        self._message_type_name = message_type_name
 
     def resolve(self) -> ResolvedSchema:
         pool = load_pool_from_bytes(self._fds_bytes)

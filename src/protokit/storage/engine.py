@@ -6,12 +6,15 @@ exception taxonomy — so the safety properties are pinned in code, not left
 implicit:
 
 - **Parse-confinement (D5).** The raw record bytes (possibly a ``memoryview``
-  over a caller-owned buffer) are handed straight to ``MergeFromString`` and
-  never stored on the yielded message. upb copies into its arena during the
-  parse, so the caller may free or overwrite the buffer the instant a record is
-  consumed; the engine relies on that arena copy rather than making a defensive
-  copy of its own (zero-copy frame handoff). The view is local to one loop
-  iteration and never escapes.
+  over a caller-owned buffer) are materialized with ``bytes(raw)`` and parsed
+  inside one loop iteration; the view is never stored on the yielded message.
+  ``bytes(raw)`` is a no-op for a ``bytes`` input and a single copy for a
+  ``memoryview``, and upb copies again into its arena during the parse, so the
+  caller may free or overwrite the buffer the instant a record is consumed. The
+  defensive copy is also a safety boundary: an invalid or already-released
+  ``memoryview`` raises a catchable ``ValueError`` here (which propagates
+  fail-loud) instead of letting upb dereference freed memory and crash the
+  whole process.
 - **Fail-loud default (D15).** ``on_error='raise'`` propagates the first
   ``FrameError``; ``skip`` / ``collect`` are opt-in and never produce silent
   partial results.
@@ -49,11 +52,15 @@ OnError = Literal["raise", "skip", "collect"]
 _VALID_ON_ERROR: tuple[OnError, ...] = ("raise", "skip", "collect")
 
 # ScanResult lifecycle. The states gate the .errors loud guard: errors are
-# readable only once the scan has reached a terminal state (exhausted or a
-# propagated fault), never while still running or after an early close.
+# readable ONLY after the scan ran to completion (_EXHAUSTED). They are withheld
+# while still running, after an early close (_RUNNING stays set on GeneratorExit),
+# and after a propagated fault aborted the scan (_ABORTED) — in those cases the
+# collected report is partial, and returning it silently is the very
+# silent-partial the loud guard forbids.
 _READY = "ready"
 _RUNNING = "running"
 _EXHAUSTED = "exhausted"
+_ABORTED = "aborted"
 
 
 @dataclass(frozen=True)
@@ -107,10 +114,8 @@ def scan(
         ValueError: ``on_error`` is not one of ``'raise'``, ``'skip'``,
             ``'collect'``.
     """
-    if on_error not in _VALID_ON_ERROR:
-        raise ValueError(
-            f"on_error must be one of {_VALID_ON_ERROR!r}, got {on_error!r}"
-        )
+    # Validation is eager and lives in ScanResult.__init__ (so the exported
+    # ScanResult constructor enforces it too); constructing here runs it now.
     return ScanResult(source, registry, predicate, on_error)
 
 
@@ -131,6 +136,10 @@ class ScanResult:
         predicate: Callable[[Message], bool] | None,
         on_error: OnError,
     ) -> None:
+        if on_error not in _VALID_ON_ERROR:
+            raise ValueError(
+                f"on_error must be one of {_VALID_ON_ERROR!r}, got {on_error!r}"
+            )
         self._source = source
         self._registry = registry
         self._predicate = predicate
@@ -152,11 +161,19 @@ class ScanResult:
         """The ``FrameError``s captured under ``on_error='collect'``.
 
         Raises:
-            RuntimeError: read before the scan iterator is exhausted — iterate
-                to completion (or call ``list(result)``) first. A silent partial
-                tuple would be exactly the R2 silent-partial-results risk that
+            RuntimeError: read before the scan ran to completion — either still
+                mid-iteration / not yet started (iterate to completion or call
+                ``list(result)`` first), or aborted by a propagating exception
+                (the report is partial and withheld). A silent partial tuple
+                would be exactly the R2 silent-partial-results risk that
                 fail-loud forbids.
         """
+        if self._state == _ABORTED:
+            raise RuntimeError(
+                "the scan was aborted by a propagating exception before "
+                "completion; ScanResult.errors is a partial report and is "
+                "withheld"
+            )
         if self._state != _EXHAUSTED:
             raise RuntimeError(
                 "read ScanResult.errors only after the scan iterator is "
@@ -169,10 +186,11 @@ class ScanResult:
 
         Cleanup (KD-1): the source is closed on every exit — preferring the
         context-manager protocol, else ``close()`` — including a mid-iteration
-        exception. ``_state`` advances to ``_EXHAUSTED`` on natural completion or
-        a propagating fault, but **not** on an early ``GeneratorExit`` (a
-        ``break`` + GC, or explicit ``close()``), so the ``.errors`` guard stays
-        active when the scan did not actually run to completion.
+        exception. ``_state`` advances to ``_EXHAUSTED`` only on natural
+        completion; a propagating fault sets ``_ABORTED`` and an early
+        ``GeneratorExit`` (a ``break`` + GC, or explicit ``close()``) leaves
+        ``_RUNNING`` — in both non-completion cases the ``.errors`` guard stays
+        active so a partial report is never returned as if complete.
         """
         source = self._source
         try:
@@ -190,9 +208,13 @@ class ScanResult:
             # Closed before exhaustion — not a terminal state; keep the guard on.
             raise
         except BaseException:
-            # A propagated fault (raise-mode FrameError, predicate bug, or a
-            # BaseException) ends the scan: errors are now readable.
-            self._state = _EXHAUSTED
+            # A propagated fault (raise-mode FrameError, predicate bug, a
+            # bad-buffer ValueError, or a true BaseException) ABORTED the scan:
+            # it did not run to completion, so .errors stays withheld — a
+            # frozen-at-abort partial is exactly the silent partial the guard
+            # forbids. (In raise mode .errors is empty anyway; withholding is
+            # more honest than reporting () as if complete.)
+            self._state = _ABORTED
             raise
         else:
             self._state = _EXHAUSTED
@@ -237,11 +259,14 @@ class ScanResult:
                 )
                 continue
 
-            # Parse-confined step (D5): hand the raw view straight to upb, which
-            # copies into its arena. `raw` is never stored or yielded.
+            # Parse-confined step (D5): materialize with bytes(raw) — a no-op
+            # for a bytes input, one safe copy for a memoryview — then parse.
+            # `raw` is never stored or yielded. The bytes(raw) boundary turns an
+            # invalid/released view into a catchable ValueError (which propagates
+            # fail-loud) instead of a upb dereference-of-freed-memory crash.
             message = resolved.message_class()
             try:
-                message.MergeFromString(raw)
+                message.MergeFromString(bytes(raw))
             except DecodeError as exc:
                 self._dispatch(
                     FrameError(
@@ -292,8 +317,15 @@ def _as_record(
         and isinstance(item[1], (bytes, memoryview))
     ):
         return item[0], item[1]
+    # The reporting path must not crash while describing the fault, so guard the
+    # repr of a possibly-hostile item (a __repr__ that raises would otherwise
+    # leak past on_error).
+    try:
+        tag = repr(item)[:80]
+    except Exception:
+        tag = f"<unreprable {type(item).__name__}>"
     raise FrameError(
-        repr(item)[:80],
+        tag,
         record_index,
         None,
         "source yielded a malformed record (expected a "

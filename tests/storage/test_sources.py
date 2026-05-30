@@ -134,3 +134,74 @@ class TestEngineIntegration:
         assert [r.message.x for r in file_records] == [10, 20, 30]
         assert [r.message.x for r in view_records] == [10, 20, 30]
         assert [r.stream_id for r in file_records] == [r.stream_id for r in view_records]
+
+
+class _ShortReadStream:
+    """A binary stream whose ``read(n)`` returns at most ``cap`` bytes per call,
+    modelling a ``RawIOBase`` / pipe / socket that legitimately short-reads.
+    """
+
+    def __init__(self, data: bytes, cap: int) -> None:
+        self._data = data
+        self._pos = 0
+        self._cap = cap
+        self.closed = False
+
+    def read(self, n: int = -1) -> bytes:
+        want = (len(self._data) - self._pos) if n < 0 else min(n, self._cap)
+        end = min(self._pos + want, len(self._data))
+        out = self._data[self._pos:end]
+        self._pos = end
+        return out
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _RaisingCloseStream:
+    """Wraps a BytesIO but raises from close()."""
+
+    def __init__(self, data: bytes) -> None:
+        self._bio = io.BytesIO(data)
+
+    def read(self, n: int = -1) -> bytes:
+        return self._bio.read(n)
+
+    def close(self) -> None:
+        raise OSError("close failed")
+
+
+class TestShortReads:
+    def test_short_reads_do_not_cause_false_truncation(self) -> None:
+        # read() returns 1 byte at a time; the read-exact loop must reassemble
+        # multi-byte bodies instead of declaring a false truncation.
+        payloads = [b"\x08\x01\x10\x02", b"\x08\x03"]
+        stream = _ShortReadStream(delimited(*payloads), cap=1)
+        records = list(length_delimited(stream, stream_id="s"))  # type: ignore[arg-type]
+        assert [r[1] for r in records] == payloads
+
+    def test_genuine_truncation_still_detected_under_short_reads(self) -> None:
+        # Declares a 4-byte body but only 2 bytes exist; a 0-byte read ends the
+        # accumulation and the length mismatch is a real truncation.
+        stream = _ShortReadStream(encode_varint(4) + b"\x08\x01", cap=1)
+        with pytest.raises(FrameError) as exc:
+            list(length_delimited(stream, stream_id="s"))  # type: ignore[arg-type]
+        assert "truncated frame body" in exc.value.reason
+
+
+class TestVarintOverflow:
+    def test_over_64_bit_length_prefix_rejected_as_malformed(self) -> None:
+        # Ten 0xFF bytes: the 10th carries value bits beyond bit 63 -> overflow.
+        blob = b"\xff" * 10
+        with pytest.raises(FrameError) as exc:
+            list(length_delimited(io.BytesIO(blob), stream_id="s"))
+        assert "exceeds 64 bits" in exc.value.reason
+
+
+class TestCloseDoesNotMask:
+    def test_close_error_does_not_clobber_in_flight_frame_error(self) -> None:
+        # Truncated body raises FrameError; close() also raises, but the
+        # FrameError (the actionable fault) must be what propagates.
+        stream = _RaisingCloseStream(encode_varint(9) + b"\x08")
+        with pytest.raises(FrameError):
+            list(length_delimited(stream, stream_id="s"))  # type: ignore[arg-type]

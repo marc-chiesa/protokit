@@ -27,6 +27,7 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
+from google.protobuf.message import DecodeError
 
 
 class DescriptorPoolError(Exception):
@@ -147,14 +148,36 @@ def build_pool(
     """
     pool = descriptor_pool.DescriptorPool()
     for fd in sort_files_by_dependency(list(fds.file)):
-        pool.Add(fd)
+        try:
+            pool.Add(fd)
+        except TypeError as exc:
+            # upb raises a bare TypeError when a descriptor cannot be built into
+            # the pool — e.g. a field referencing a symbol no file in the set
+            # defines (a dangling symbol with no *missing-file* dependency, which
+            # the topo-sort cannot detect). Re-raise as the typed family so the
+            # documented "typed library exceptions, never raw" contract holds for
+            # every caller, including the storage register boundary.
+            raise DescriptorPoolError(
+                f"could not build file {fd.name!r} into the descriptor pool: {exc}"
+            ) from exc
     return pool
 
 
 def load_pool_from_bytes(data: bytes) -> descriptor_pool.DescriptorPool:
-    """Parse serialized ``FileDescriptorSet`` bytes and build an isolated pool."""
+    """Parse serialized ``FileDescriptorSet`` bytes and build an isolated pool.
+
+    Raises:
+        DescriptorPoolError: ``data`` is not a parseable ``FileDescriptorSet``
+            (a corrupt/truncated channel surfaces as the typed family, not a raw
+            protobuf ``DecodeError``), or the parsed set cannot build a pool.
+    """
     fds = descriptor_pb2.FileDescriptorSet()
-    fds.ParseFromString(data)
+    try:
+        fds.ParseFromString(data)
+    except DecodeError as exc:
+        raise DescriptorPoolError(
+            f"could not parse FileDescriptorSet bytes: {exc}"
+        ) from exc
     return build_pool(fds)
 
 

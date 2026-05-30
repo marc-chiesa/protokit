@@ -17,7 +17,7 @@ import pytest
 from google.protobuf import descriptor_pb2
 from google.protobuf.message import Message
 
-from protokit.storage.engine import ScanRecord, scan
+from protokit.storage.engine import ScanRecord, ScanResult, scan
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.schema_source import FileDescriptorSetSchema
 from protokit.storage.source import FrameError
@@ -382,3 +382,96 @@ class TestEagerValidationAndLifecycle:
         list(result)
         with pytest.raises(RuntimeError, match="once"):
             list(result)
+
+    def test_scan_result_constructor_validates_on_error(self) -> None:
+        # The exported ScanResult constructor enforces on_error too (not only
+        # scan()), so a bad value can never reach the silent-skip fall-through.
+        registry, _a_cls = _registry_and_class("s")
+        with pytest.raises(ValueError, match="on_error"):
+            ScanResult(iter([]), registry, None, "bogus")  # type: ignore[arg-type]
+
+
+class _ReleasedViewSource:
+    """Yields a ``memoryview`` that is RELEASED before the engine parses it — a
+    caller contract violation that must fail catchably, never SIGSEGV.
+    """
+
+    def __init__(self, stream_id: str, payloads: list[bytes]) -> None:
+        self._stream_id = stream_id
+        self._payloads = payloads
+
+    def __iter__(self) -> Iterator[tuple[str, memoryview]]:
+        for payload in self._payloads:
+            view = memoryview(bytearray(payload))
+            view.release()
+            yield (self._stream_id, view)
+
+
+class TestReleasedViewIsCatchableNotCrash:
+    def test_released_view_raises_value_error_not_segfault(self) -> None:
+        # bytes(raw) converts the released/dangling view into a catchable
+        # ValueError; if this regressed to MergeFromString(raw) the process
+        # would SIGSEGV and this test (and the run) would die.
+        registry, a_cls = _registry_and_class("s")
+        source = _ReleasedViewSource("s", [a_cls(x=1).SerializeToString()])
+        with pytest.raises(ValueError):
+            list(scan(source, registry))
+
+    def test_released_view_aborts_collect_and_withholds_errors(self) -> None:
+        registry, a_cls = _registry_and_class("s")
+        source = _ReleasedViewSource("s", [a_cls(x=1).SerializeToString()])
+        result = scan(source, registry, on_error="collect")
+        with pytest.raises(ValueError):
+            list(result)
+        # The scan aborted via a propagating fault -> .errors is withheld.
+        with pytest.raises(RuntimeError, match="aborted"):
+            _ = result.errors
+
+
+class TestErrorsWithheldAfterAbort:
+    def test_collect_errors_withheld_after_source_raises(self) -> None:
+        registry, a_cls = _registry_and_class("s")
+
+        def raising_after_collect() -> Iterator[tuple[str, bytes]]:
+            yield ("s", _TRUNCATED)  # collected FrameError (collect mode)
+            yield ("s", a_cls(x=1).SerializeToString())
+            raise ValueError("source blew up")
+
+        result = scan(raising_after_collect(), registry, on_error="collect")
+        with pytest.raises(ValueError, match="source blew up"):
+            list(result)
+        # A FrameError was collected before the abort, but the report is partial
+        # -> withheld, never a silent partial.
+        with pytest.raises(RuntimeError, match="aborted"):
+            _ = result.errors
+
+    def test_collect_errors_withheld_after_predicate_raises(self) -> None:
+        registry, a_cls = _registry_and_class("s")
+
+        def boom(_m: Message) -> bool:
+            raise ValueError("predicate blew up")
+
+        src = [("s", _TRUNCATED), ("s", a_cls(x=1).SerializeToString())]
+        result = scan(iter(src), registry, on_error="collect", predicate=boom)
+        with pytest.raises(ValueError, match="predicate blew up"):
+            list(result)
+        with pytest.raises(RuntimeError, match="aborted"):
+            _ = result.errors
+
+
+class _Unreprable:
+    """An item whose ``__repr__`` raises (not a valid record)."""
+
+    def __repr__(self) -> str:
+        raise RuntimeError("repr boom")
+
+
+class TestMalformedItemReprGuard:
+    def test_unreprable_malformed_item_does_not_leak_repr_exception(self) -> None:
+        registry, _a_cls = _registry_and_class("s")
+        result = scan(iter([_Unreprable()]), registry, on_error="collect")
+        records = list(result)  # must not raise the RuntimeError from __repr__
+        assert records == []
+        errors = result.errors
+        assert len(errors) == 1
+        assert "unreprable" in errors[0].stream_id

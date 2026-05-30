@@ -21,13 +21,17 @@ closes the handle on both normal exhaustion and a mid-iteration exception.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterator
 from typing import BinaryIO
 
 from protokit.storage.source import FrameError
 
 _DEFAULT_MAX_FRAME_SIZE = 64 * 1024 * 1024  # 64 MiB safety cap
-_VARINT_MAX_BITS = 64
+# A 64-bit varint is at most 10 base-128 bytes; the 10th byte may carry only
+# bit 63 (value 0x00 or 0x01). Anything beyond overflows 64 bits.
+_MAX_VARINT_BYTES = 10
+_VARINT_FINAL_BYTE_MAX = 0x01
 
 
 class _IncompleteVarintError(Exception):
@@ -42,8 +46,9 @@ def _read_varint(file: BinaryIO) -> tuple[int, int] | None:
     """Read one base-128 varint from ``file``.
 
     Returns ``(value, bytes_consumed)``; returns ``None`` for a clean EOF at a
-    frame boundary (zero bytes available). Raises :class:`_IncompleteVarintError` if
-    the stream ends partway through a varint or the varint overflows 64 bits.
+    frame boundary (zero bytes available). Raises
+    :class:`_IncompleteVarintError` if the stream ends partway through a varint
+    or the varint overflows 64 bits.
     """
     result = 0
     shift = 0
@@ -55,13 +60,39 @@ def _read_varint(file: BinaryIO) -> tuple[int, int] | None:
                 return None  # clean EOF — no partial frame in progress
             raise _IncompleteVarintError("stream ended mid length-prefix varint")
         byte = chunk[0]
-        result |= (byte & 0x7F) << shift
         consumed += 1
+        if consumed > _MAX_VARINT_BYTES or (
+            consumed == _MAX_VARINT_BYTES and byte & 0x7F > _VARINT_FINAL_BYTE_MAX
+        ):
+            raise _IncompleteVarintError(
+                "length-prefix varint exceeds 64 bits (malformed)"
+            )
+        result |= (byte & 0x7F) << shift
         if not byte & 0x80:
             return result, consumed
         shift += 7
-        if shift >= _VARINT_MAX_BITS:
-            raise _IncompleteVarintError("length-prefix varint exceeds 64 bits (malformed)")
+
+
+def _read_exact(file: BinaryIO, n: int) -> bytes:
+    """Read exactly ``n`` bytes, tolerating short reads.
+
+    ``file.read(n)`` may legitimately return fewer than ``n`` bytes on an
+    unbuffered (``RawIOBase``) stream, a pipe, or a socket even when more data is
+    still coming, so accumulate until ``n`` bytes are collected or a 0-byte read
+    marks a genuine EOF. The caller compares ``len(result)`` to ``n`` to detect
+    real truncation.
+    """
+    if n == 0:
+        return b""
+    chunks: list[bytes] = []
+    remaining = n
+    while remaining > 0:
+        chunk = file.read(remaining)
+        if not chunk:  # 0-byte read = genuine EOF / truncation
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def length_delimited(
@@ -118,7 +149,7 @@ def length_delimited(
                     f"{max_frame_size} (raise max_frame_size to allow)",
                 )
 
-            body = file.read(length)
+            body = _read_exact(file, length)
             if len(body) != length:
                 raise FrameError(
                     stream_id,
@@ -130,4 +161,7 @@ def length_delimited(
             offset += len(body)
             yield (stream_id, body)
     finally:
-        file.close()
+        # Close the owned handle, but never let a teardown error clobber an
+        # in-flight FrameError (a read source's close failure is non-actionable).
+        with contextlib.suppress(Exception):
+            file.close()
