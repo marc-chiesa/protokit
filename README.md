@@ -76,6 +76,7 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 
 ```json
 {
+  "schema_version": "0.1",
   "equal": false,
   "differences": [
     {

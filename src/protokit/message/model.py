@@ -409,6 +409,20 @@ def _find_closing_bracket(s: str, open_pos: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _warn_value_alias(deprecated: str, canonical: str) -> None:
+    """Emit the deprecation warning for a ``Difference`` value alias.
+
+    ``stacklevel`` call chain is caller -> property getter -> here, so
+    ``stacklevel=3`` attributes the warning to the consumer's call site.
+    """
+    warnings.warn(  # PROTO_1_0_REMOVE (with the old_value/new_value properties)
+        f"Difference.{deprecated} is deprecated and will be removed in "
+        f"protokit 1.0; use Difference.{canonical} instead.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 @dataclass(frozen=True)
 class Difference:
     """A single difference between two protobuf messages.
@@ -475,7 +489,7 @@ class Difference:
     annotations: tuple[str, ...] = ()
 
     @property
-    def old_value(self) -> object | None:
+    def old_value(self) -> object | None:  # PROTO_1_0_REMOVE
         """Deprecated read-only alias for :attr:`left_value`.
 
         Removed in protokit 1.0. The message differ compares two arbitrary
@@ -483,24 +497,23 @@ class Difference:
         ``left_value`` / ``right_value`` for consistency with the dataclass's
         other ``left_*`` / ``right_*`` pairs, the rule context
         (``ctx.left_value``), and the CLI (``--left-*``).
+
+        Note: reading this property emits a ``UserWarning``. Under
+        ``warnings.simplefilter("error")`` (a strict-warnings CI), the read
+        *raises* instead of returning -- migrate to ``left_value``.
         """
-        warnings.warn(
-            "Difference.old_value is deprecated and will be removed in "
-            "protokit 1.0; use Difference.left_value instead.",
-            UserWarning,
-            stacklevel=2,
-        )
+        _warn_value_alias("old_value", "left_value")
         return self.left_value
 
     @property
-    def new_value(self) -> object | None:
-        """Deprecated read-only alias for :attr:`right_value` (removed in 1.0)."""
-        warnings.warn(
-            "Difference.new_value is deprecated and will be removed in "
-            "protokit 1.0; use Difference.right_value instead.",
-            UserWarning,
-            stacklevel=2,
-        )
+    def new_value(self) -> object | None:  # PROTO_1_0_REMOVE
+        """Deprecated read-only alias for :attr:`right_value`.
+
+        Removed in protokit 1.0. The mirror of :attr:`old_value`; use
+        ``right_value`` instead. Reading this property emits a ``UserWarning``
+        (and *raises* under a strict-warnings CI).
+        """
+        _warn_value_alias("new_value", "right_value")
         return self.right_value
 
     def __str__(self) -> str:

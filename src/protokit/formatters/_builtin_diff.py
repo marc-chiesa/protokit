@@ -190,12 +190,35 @@ def _serialize_value(val: object) -> Any:
     return val
 
 
+#: Schema version for the ``protokit diff --format json`` output. Bump when the
+#: output shape changes; it next changes at protokit 1.0 when the deprecated
+#: ``old_value`` / ``new_value`` keys are removed.
+_DIFF_JSON_SCHEMA_VERSION = "0.1"
+
+
+def _set_value_keys(entry: dict[str, Any], left: Any, right: Any) -> None:
+    """Populate the value-pair keys on a JSON diff entry.
+
+    Canonical keys are ``left_value`` / ``right_value``. ``old_value`` /
+    ``new_value`` are deprecated duplicate keys, removed in protokit 1.0. Every
+    entry carries all four (``None`` for schema-evolution change types) so the
+    shape is uniform across change types.
+    """
+    entry["left_value"] = left
+    entry["right_value"] = right
+    entry["old_value"] = left  # PROTO_1_0_REMOVE
+    entry["new_value"] = right  # PROTO_1_0_REMOVE
+
+
 def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
     """Render a DiffResult as pretty-printed JSON.
 
-    Returns the same shape the message CLI has emitted since v1:
-    ``equal`` (bool), ``differences`` (list of dicts whose shape
-    depends on ``change_type``), ``diagnostics`` (list of dicts).
+    Top-level keys: ``schema_version`` (str), ``equal`` (bool),
+    ``differences`` (list of dicts whose shape depends on ``change_type``),
+    ``diagnostics`` (list of dicts). The object is open/additive -- consumers
+    should ignore unknown keys. Each entry carries canonical ``left_value`` /
+    ``right_value`` plus deprecated ``old_value`` / ``new_value`` (removed at
+    1.0; gate on ``schema_version`` to detect the change).
 
     Args:
         result: The DiffResult to render.
@@ -213,41 +236,28 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
             "path": str(d.path) if d.path else "",
             "change_type": d.change_type.value,
         }
-        # `old_value` / `new_value` are deprecated duplicate keys retained for
-        # one release; canonical keys are `left_value` / `right_value`. Both
-        # are emitted until protokit 1.0, when the old pair is dropped. Read the
-        # real fields (not the deprecated `.old_value` / `.new_value`
+        # _set_value_keys writes all four value keys (canonical left/right +
+        # deprecated old/new) so every entry's shape is uniform across change
+        # types. Read the real fields (not the deprecated .old_value/.new_value
         # properties) so the renderer doesn't trip its own deprecation warning.
         match d.change_type:
             case ChangeType.ADDED | ChangeType.REMOVED | ChangeType.MODIFIED:
-                left = _serialize_value(d.left_value)
-                right = _serialize_value(d.right_value)
-                entry["left_value"] = left
-                entry["right_value"] = right
-                entry["old_value"] = left
-                entry["new_value"] = right
+                _set_value_keys(
+                    entry, _serialize_value(d.left_value), _serialize_value(d.right_value)
+                )
                 entry["field_type"] = d.field_type
             case ChangeType.TYPE_CHANGED:
-                entry["left_value"] = None
-                entry["right_value"] = None
-                entry["old_value"] = None
-                entry["new_value"] = None
+                _set_value_keys(entry, None, None)
                 entry["field_type"] = None
                 entry["left_type"] = d.left_type
                 entry["right_type"] = d.right_type
             case ChangeType.FIELD_NUMBER_CHANGED:
-                entry["left_value"] = None
-                entry["right_value"] = None
-                entry["old_value"] = None
-                entry["new_value"] = None
+                _set_value_keys(entry, None, None)
                 entry["field_type"] = d.field_type
                 entry["left_field_number"] = d.left_field_number
                 entry["right_field_number"] = d.right_field_number
             case ChangeType.CARDINALITY_CHANGED:
-                entry["left_value"] = None
-                entry["right_value"] = None
-                entry["old_value"] = None
-                entry["new_value"] = None
+                _set_value_keys(entry, None, None)
                 entry["field_type"] = d.field_type
                 entry["left_label"] = d.left_label
                 entry["right_label"] = d.right_label
@@ -258,6 +268,7 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
         for d in result.diagnostics
     ]
     output = {
+        "schema_version": _DIFF_JSON_SCHEMA_VERSION,
         "equal": not result.has_changes(),
         "differences": diffs,
         "diagnostics": diagnostics,

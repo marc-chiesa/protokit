@@ -154,7 +154,12 @@ class TestDiffFormatters:
         result = MessageDifferencer().compare(cls(), cls())
         fn = get_formatter("json", FormatterKind.DIFF)
         payload = json.loads(fn(result, FormatterContext(subcommand="diff")))
-        assert payload == {"equal": True, "differences": [], "diagnostics": []}
+        assert payload == {
+            "schema_version": "0.1",
+            "equal": True,
+            "differences": [],
+            "diagnostics": [],
+        }
 
 
 # ---------------------------------------------------------------------------
