@@ -46,6 +46,25 @@ All notable changes to `protokit` are documented here. Format loosely follows
   emits `"diagnostics"`.
 
 ### Added
+- **`protokit.storage` — schema-aware scan/filter engine for protobuf data at
+  rest (API-only, PR1).** `scan(source, registry, *, predicate, on_error)`
+  routes each `(stream_id, record_bytes)` record to its stream's **isolated**
+  descriptor pool, parses it, and yields a tagged
+  `ScanRecord(stream_id, record_index, message)`. A `Source` is any iterable of
+  `(stream_id, bytes | memoryview)` — a `memoryview` from a C++ buffer is a
+  first-class record, not just files. `StreamRegistry.register_stream` resolves
+  each stream's schema up front (`FileDescriptorSetSchema`, or the channelized
+  `EmbeddedSchema`) into an isolated pool, so concurrent streams may hold
+  conflicting versions of the same fully-qualified type without collision.
+  `on_error` is fail-loud by default (`raise`); `skip` / `collect` are opt-in
+  and never produce silent partial results — `ScanResult.errors` is withheld
+  (raises `RuntimeError`) until the scan runs to completion. Two reference
+  adapters ship in `protokit.storage.sources`: `length_delimited`
+  (varint-prefixed file frames) and `per_message_view` (the pybind11 per-message
+  `memoryview` source). The raw record bytes are parsed inside a confined step
+  and never retained (upb arena copy), with a defensive `bytes()` boundary so an
+  invalid/released view fails catchably rather than crashing the process. CLI,
+  projection, and columnar sinks are deferred to follow-up PRs.
 - `protokit.schema` — descriptor-level compatibility checker with 17 built-in
   rules, four compatibility profiles (`WIRE`, `CONSUMER_SAFE`,
   `PRODUCER_SAFE`, `STRICT`), and a pluggable rule API.
