@@ -51,8 +51,8 @@ class TestEnumDifferences:
         assert d.change_type == ChangeType.MODIFIED
         assert str(d.path) == "status"
         # Values should be wrapped as EnumValue
-        assert "ACTIVE" in str(d.old_value)
-        assert "INACTIVE" in str(d.new_value)
+        assert "ACTIVE" in str(d.left_value)
+        assert "INACTIVE" in str(d.right_value)
 
     def test_default_to_set(self) -> None:
         b = _make_enum_builder()

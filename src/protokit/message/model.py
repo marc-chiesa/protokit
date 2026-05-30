@@ -7,6 +7,7 @@ lives in differ.py.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
@@ -25,11 +26,11 @@ class ChangeType(Enum):
 
     Members:
         ADDED: A field is set on the right side and unset on the left.
-            ``Difference.new_value`` carries the value.
+            ``Difference.right_value`` carries the value.
         REMOVED: A field is set on the left side and unset on the
-            right. ``Difference.old_value`` carries the value.
+            right. ``Difference.left_value`` carries the value.
         MODIFIED: Both sides have the field but the values differ.
-            Both ``old_value`` and ``new_value`` are populated.
+            Both ``left_value`` and ``right_value`` are populated.
         TYPE_CHANGED: Same field name on both sides but the field
             type differs. ``left_type`` and ``right_type`` are
             populated; only fires under cross-pool comparison.
@@ -53,7 +54,7 @@ class ChangeType(Enum):
 class EnumValue:
     """A protobuf enum value carrying both its name and its number.
 
-    Used in ``Difference.old_value`` / ``Difference.new_value`` for
+    Used in ``Difference.left_value`` / ``Difference.right_value`` for
     enum fields so consumers can render either or both without
     re-resolving from the descriptor pool.
 
@@ -408,6 +409,20 @@ def _find_closing_bracket(s: str, open_pos: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _warn_value_alias(deprecated: str, canonical: str) -> None:  # PROTO_1_0_REMOVE
+    """Emit the deprecation warning for a ``Difference`` value alias.
+
+    ``stacklevel`` call chain is caller -> property getter -> here, so
+    ``stacklevel=3`` attributes the warning to the consumer's call site.
+    """
+    warnings.warn(  # PROTO_1_0_REMOVE (with the old_value/new_value properties)
+        f"Difference.{deprecated} is deprecated and will be removed in "
+        f"protokit 1.0; use Difference.{canonical} instead.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 @dataclass(frozen=True)
 class Difference:
     """A single difference between two protobuf messages.
@@ -415,23 +430,30 @@ class Difference:
     Which of the optional fields are populated depends on
     ``change_type``:
 
-    - ``ADDED``: ``new_value`` set; ``field_type`` describes the
+    - ``ADDED``: ``right_value`` set; ``field_type`` describes the
       field's type.
-    - ``REMOVED``: ``old_value`` set; ``field_type`` describes it.
-    - ``MODIFIED``: both ``old_value`` and ``new_value`` set.
+    - ``REMOVED``: ``left_value`` set; ``field_type`` describes it.
+    - ``MODIFIED``: both ``left_value`` and ``right_value`` set.
     - ``TYPE_CHANGED``: ``left_type`` / ``right_type`` set.
     - ``FIELD_NUMBER_CHANGED``: ``left_field_number`` /
       ``right_field_number`` set.
     - ``CARDINALITY_CHANGED``: ``left_label`` / ``right_label`` set.
+
+    Terminology: the message differ uses ``left`` / ``right`` (two
+    arbitrary messages, neither side privileged); the schema
+    compatibility checker uses ``old`` / ``new`` (a directional
+    before-after version diff). The split is intentional.
+    ``old_value`` / ``new_value`` remain as deprecated read-only
+    aliases for ``left_value`` / ``right_value`` until protokit 1.0.
 
     Attributes:
         path: ``FieldPath`` to the field that differs. The empty
             path means the difference is at the root message.
         change_type: One of ``ChangeType`` — controls which optional
             attributes carry meaningful values.
-        old_value: Value on the left/old side. Set for ``REMOVED``
+        left_value: Value on the left side. Set for ``REMOVED``
             and ``MODIFIED``; ``None`` otherwise.
-        new_value: Value on the right/new side. Set for ``ADDED``
+        right_value: Value on the right side. Set for ``ADDED``
             and ``MODIFIED``; ``None`` otherwise.
         field_type: Human-readable protobuf type name (e.g.
             ``"TYPE_STRING"``) for ``ADDED`` / ``REMOVED`` /
@@ -451,8 +473,8 @@ class Difference:
 
     path: FieldPath
     change_type: ChangeType
-    old_value: object | None = None
-    new_value: object | None = None
+    left_value: object | None = None
+    right_value: object | None = None
     field_type: str | None = None
 
     # Schema evolution extra fields
@@ -465,6 +487,34 @@ class Difference:
 
     # Phase 1.5 differ hook annotations
     annotations: tuple[str, ...] = ()
+
+    @property
+    def old_value(self) -> object | None:  # PROTO_1_0_REMOVE
+        """Deprecated read-only alias for :attr:`left_value`.
+
+        Removed in protokit 1.0. The message differ compares two arbitrary
+        messages, neither privileged as "old", so the value pair was renamed
+        ``left_value`` / ``right_value`` for consistency with the dataclass's
+        other ``left_*`` / ``right_*`` pairs, the rule context
+        (``ctx.left_value``), and the CLI (``--left-*``).
+
+        Note: reading this property emits a ``UserWarning``. Under
+        ``warnings.simplefilter("error")`` (a strict-warnings CI), the read
+        *raises* instead of returning -- migrate to ``left_value``.
+        """
+        _warn_value_alias("old_value", "left_value")
+        return self.left_value
+
+    @property
+    def new_value(self) -> object | None:  # PROTO_1_0_REMOVE
+        """Deprecated read-only alias for :attr:`right_value`.
+
+        Removed in protokit 1.0. The mirror of :attr:`old_value`; use
+        ``right_value`` instead. Reading this property emits a ``UserWarning``
+        (and *raises* under a strict-warnings CI).
+        """
+        _warn_value_alias("new_value", "right_value")
+        return self.right_value
 
     def __str__(self) -> str:
         """Render a single-line summary using a per-change-type prefix.
@@ -482,11 +532,11 @@ class Difference:
         path_str = str(self.path) if self.path else "(root)"
         match self.change_type:
             case ChangeType.ADDED:
-                base = f"+ {path_str}: {self.new_value}"
+                base = f"+ {path_str}: {self.right_value}"
             case ChangeType.REMOVED:
-                base = f"- {path_str}: {self.old_value}"
+                base = f"- {path_str}: {self.left_value}"
             case ChangeType.MODIFIED:
-                base = f"~ {path_str}: {self.old_value} -> {self.new_value}"
+                base = f"~ {path_str}: {self.left_value} -> {self.right_value}"
             case ChangeType.TYPE_CHANGED:
                 base = f"T {path_str}: {self.left_type} -> {self.right_type}"
             case ChangeType.FIELD_NUMBER_CHANGED:

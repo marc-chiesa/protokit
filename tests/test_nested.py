@@ -50,8 +50,8 @@ class TestNestedDifferences:
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
         assert str(d.path) == "address.street"
-        assert d.old_value == "1st"
-        assert d.new_value == "2nd"
+        assert d.left_value == "1st"
+        assert d.right_value == "2nd"
 
     def test_nested_message_added(self) -> None:
         b = _make_person_builder()

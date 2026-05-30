@@ -15,6 +15,36 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Changed — BREAKING — message differ left/right value terminology
+
+- Renamed `Difference.old_value`/`new_value` → `left_value`/`right_value` in the
+  message differ. The two compared messages are not a before/after pair, so the
+  value pair now matches the dataclass's other `left_*`/`right_*` fields, the
+  rule context (`ctx.left_value`), and the CLI (`--left-*`). `old_value`/
+  `new_value` remain as deprecated read-only property aliases that emit
+  `UserWarning`; removed in protokit 1.0.
+- **BREAKING (construction):** `Difference(old_value=..., new_value=...)` is no
+  longer accepted and raises `TypeError` immediately — there is no deprecation
+  window for *constructing* with the old kwargs (only *reading* the old
+  attribute names is aliased). Use `left_value=`/`right_value=`. This is
+  asymmetric with the read aliases by design: `Difference` is an output type the
+  differ produces, and the audit found no callers that hand-build it.
+- **Strict-warnings note:** reading the deprecated `diff.old_value`/`new_value`
+  emits a `UserWarning`. Under `warnings.simplefilter("error")` (a strict CI
+  warnings policy) or inside a broad `except Exception`, that read now *raises*
+  where it previously returned a value. Migrate to `left_value`/`right_value`.
+- `protokit diff --format json` now emits `left_value`/`right_value`;
+  `old_value`/`new_value` are retained as deprecated duplicate keys, removed in
+  protokit 1.0. The output gains a top-level `schema_version` field (`"0.1"`) so
+  consumers can detect the shape change programmatically; it bumps when the
+  deprecated keys are dropped at 1.0. The JSON object is open/additive —
+  consumers should ignore unknown keys rather than validate a closed set.
+- Schema compatibility (`protokit compat`) keeps `old`/`new` unchanged — it is a
+  directional before→after version check where `old`/`new` is semantically
+  correct. The diff-vs-compat terminology split is intentional and documented.
+- Fixed a stale README JSON example that showed a `"warnings"` key; the diff JSON
+  emits `"diagnostics"`.
+
 ### Added
 - `protokit.schema` — descriptor-level compatibility checker with 17 built-in
   rules, four compatibility profiles (`WIRE`, `CONSUMER_SAFE`,

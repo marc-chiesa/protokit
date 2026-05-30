@@ -61,8 +61,8 @@ class TestRepeatedModified:
         assert len(result) == 1
         d = result.differences[0]
         assert d.change_type == ChangeType.MODIFIED
-        assert d.old_value == "b"
-        assert d.new_value == "X"
+        assert d.left_value == "b"
+        assert d.right_value == "X"
         assert "[1]" in str(d.path)
 
     def test_multiple_elements_changed(self) -> None:

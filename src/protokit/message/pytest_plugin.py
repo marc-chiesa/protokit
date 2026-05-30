@@ -84,12 +84,12 @@ def pytest_assertrepr_compare(op: str, left: Any, right: Any) -> list[str] | Non
         path_str = str(diff.path) if diff.path else "(root)"
         match diff.change_type:
             case ChangeType.ADDED:
-                lines.append(f"  + {path_str}: {_format_value(diff.new_value)}")
+                lines.append(f"  + {path_str}: {_format_value(diff.right_value)}")
             case ChangeType.REMOVED:
-                lines.append(f"  - {path_str}: {_format_value(diff.old_value)}")
+                lines.append(f"  - {path_str}: {_format_value(diff.left_value)}")
             case ChangeType.MODIFIED:
                 lines.append(
-                    f"  ~ {path_str}: {_format_value(diff.old_value)} -> {_format_value(diff.new_value)}"
+                    f"  ~ {path_str}: {_format_value(diff.left_value)} -> {_format_value(diff.right_value)}"
                 )
             case ChangeType.TYPE_CHANGED:
                 lines.append(f"  T {path_str}: {diff.left_type} -> {diff.right_type}")
