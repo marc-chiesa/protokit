@@ -19,7 +19,6 @@ import click
 from google.protobuf import (
     descriptor_pool,
     json_format,
-    message_factory,
     text_format,
 )
 from google.protobuf.message import DecodeError, Message
@@ -33,12 +32,20 @@ from protokit._cli_utils import (
     resolve_and_validate_formatter,
     run_formatter_safely,
 )
+from protokit._pools import (
+    MessageTypeNotFoundError as _MessageTypeNotFoundError,
+    get_message_class as _resolve_message_class,
+)
 from protokit.formatters import FormatterContext, FormatterKind
 from protokit.message.differ import MessageDifferencer
 
 
 def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> type:
     """Look up a message class by fully-qualified name.
+
+    Thin CLI wrapper over :func:`protokit._pools.get_message_class`: it
+    translates the library-level :class:`MessageTypeNotFoundError` into a
+    clean exit-code-2 error so the diff CLI never surfaces a traceback.
 
     Args:
         pool: The DescriptorPool to search.
@@ -48,10 +55,26 @@ def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> 
         The generated message class for the given type.
     """
     try:
-        desc = pool.FindMessageTypeByName(type_name)
-    except KeyError:
-        _error(f"Message type '{type_name}' not found in descriptor pool.")
-    return message_factory.GetMessageClass(desc)
+        return _resolve_message_class(pool, type_name)
+    except _MessageTypeNotFoundError as exc:
+        _error(str(exc))
+
+
+def _safe_load_pool(path: Path) -> descriptor_pool.DescriptorPool:
+    """Load a descriptor set, translating failures to a clean exit-code-2.
+
+    Mirrors :func:`protokit.schema.cli._safe_load_pool` so the diff CLI gives
+    the same exit-2 behavior as compat on an unreadable, malformed, or
+    incomplete descriptor set — a missing transitive import or a duplicate
+    file name now surfaces as a typed
+    :class:`protokit._pools.DescriptorPoolError` — instead of a traceback.
+    """
+    try:
+        return _load_descriptor_pool(path)
+    except (OSError, PermissionError) as exc:
+        _error(f"cannot read descriptor set ({path}): {exc}")
+    except Exception as exc:  # protobuf DecodeError + typed pool errors
+        _error(f"failed to load descriptor set ({path}): {exc}")
 
 
 def _parse_message(
@@ -259,12 +282,12 @@ def main(
 
     # Resolve descriptor pools and message classes
     if group == "A":
-        pool = _load_descriptor_pool(Path(desc))  # type: ignore[arg-type]
+        pool = _safe_load_pool(Path(desc))  # type: ignore[arg-type]
         left_cls = _get_message_class(pool, message_type)  # type: ignore[arg-type]
         right_cls = left_cls
     elif group == "B":
-        left_pool = _load_descriptor_pool(Path(left_desc))  # type: ignore[arg-type]
-        right_pool = _load_descriptor_pool(Path(right_desc))  # type: ignore[arg-type]
+        left_pool = _safe_load_pool(Path(left_desc))  # type: ignore[arg-type]
+        right_pool = _safe_load_pool(Path(right_desc))  # type: ignore[arg-type]
         left_cls = _get_message_class(left_pool, left_type)  # type: ignore[arg-type]
         right_cls = _get_message_class(right_pool, right_type)  # type: ignore[arg-type]
     else:  # group C
