@@ -23,8 +23,74 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Release-readiness guard. Runs before build/publish and fails the
+  # workflow on the silent version-hygiene mistakes (see the formal
+  # version-bump rule: protokit-internal TODOS Design Decision Log
+  # 2026-05-30 + learnings/best-practices/formal-version-bump-rule-*):
+  #   - the release tag does not match pyproject's version (forgot to
+  #     bump pyproject before tagging);
+  #   - the version is already on PyPI (accidental republish — PyPI
+  #     rejects it too, but failing here is earlier and clearer);
+  #   - CHANGELOG '## Unreleased' was not folded into the versioned
+  #     section before release.
+  # The minor-bump-for-breaking magnitude rule stays human-enforced
+  # (documented); this guard catches the mechanical mistakes.
+  release-guard:
+    name: Release readiness guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read pyproject version
+        id: ver
+        run: |
+          V=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "pyproject version: $V"
+
+      - name: Release tag must match pyproject version
+        if: github.event_name == 'release'
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          if [ "$TAG" != "v${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::release tag '$TAG' != 'v${{ steps.ver.outputs.version }}' (pyproject). Bump pyproject.version before tagging the release."
+            exit 1
+          fi
+
+      - name: Version must not already be published on PyPI
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/protokit/${V}/json")
+          if [ "$CODE" != "404" ]; then
+            echo "::error::protokit ${V} already exists on PyPI (HTTP $CODE). Bump the version before releasing (pre-1.0: an Unreleased BREAKING entry requires at least a minor bump)."
+            exit 1
+          fi
+          echo "PyPI has no protokit ${V} yet — OK to publish."
+
+      - name: CHANGELOG '## Unreleased' must be folded at release time
+        run: |
+          python - <<'PY'
+          import re, sys, pathlib
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(r"^## Unreleased[ \t]*$(.*?)(^## |\Z)", text, re.M | re.S)
+          body = m.group(1).strip() if m else ""
+          if body:
+              print("::error::CHANGELOG '## Unreleased' is non-empty at release time. "
+                    "Fold its entries into the versioned section (e.g. '## 0.9.0 — <date>') before tagging.")
+              print(body[:800])
+              sys.exit(1)
+          print("CHANGELOG '## Unreleased' is folded (empty) — OK.")
+          PY
+
   build:
     name: Build sdist + wheel
+    needs: release-guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
