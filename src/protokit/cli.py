@@ -6,9 +6,10 @@ defined in its own subpackage so that ``protokit diff``,
 testable and importable.
 
 Usage:
-    protokit diff   ...  # message comparison
-    protokit compat ...  # schema compatibility check
-    protokit lint   ...  # schema linting (D3+)
+    protokit diff    ...  # message comparison
+    protokit compat  ...  # schema compatibility check
+    protokit lint    ...  # schema linting (D3+)
+    protokit storage ...  # scan/head/count stored proto (PR1.5)
 """
 
 from __future__ import annotations
@@ -18,14 +19,16 @@ import click
 from protokit.message.cli import main as _diff_command
 from protokit.schema.cli import main as _compat_command
 from protokit.schema.lint.cli import main as _lint_command
+from protokit.storage.cli import main as _storage_command
 
 
 @click.group()
 @click.version_option(package_name="protokit")
 def main() -> None:
-    """Protocol Buffers toolkit: message diffing, schema compatibility, schema linting."""
+    """Protocol Buffers toolkit: diff, compat, lint, and data-at-rest scanning."""
 
 
 main.add_command(_diff_command, name="diff")
 main.add_command(_compat_command, name="compat")
 main.add_command(_lint_command, name="lint")
+main.add_command(_storage_command, name="storage")
