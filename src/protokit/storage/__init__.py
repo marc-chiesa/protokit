@@ -23,10 +23,11 @@ Public surface:
   iterable result (``.errors`` carries the ``collect``-mode report).
 - :class:`StreamRegistry` — register each stream's schema up front.
 - :class:`SchemaSource` / :class:`ResolvedSchema` and the concrete
-  :class:`FileDescriptorSetSchema` / :class:`EmbeddedSchema` — schema resolution.
-- :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` —
-  the typed exception hierarchy.
-- ``OnError`` — the ``Literal['raise', 'skip', 'collect']`` policy type.
+  :class:`FileDescriptorSetSchema` / :class:`EmbeddedSchema` / :class:`ProtoFileSchema`
+  — schema resolution (the last compiles ``.proto`` source).
+- :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
+  :class:`SchemaCompileError` / :class:`WhereError` — the typed exception hierarchy.
+- ``OnError`` — the ``Literal['raise', 'skip', 'collect', 'route']`` policy type.
 
 The reference frame adapters live in :mod:`protokit.storage.sources`
 (``length_delimited``, ``per_message_view``) — they are *examples* of the
@@ -36,12 +37,15 @@ rather than re-exported here.
 
 from __future__ import annotations
 
+from protokit.storage._where import WhereError
 from protokit.storage.engine import OnError, ScanRecord, ScanResult, scan
 from protokit.storage.registry import DuplicateStreamError, StreamRegistry
 from protokit.storage.schema_source import (
     EmbeddedSchema,
     FileDescriptorSetSchema,
+    ProtoFileSchema,
     ResolvedSchema,
+    SchemaCompileError,
     SchemaSource,
 )
 from protokit.storage.source import FrameError, Source, StorageError
@@ -52,12 +56,15 @@ __all__ = [
     "FileDescriptorSetSchema",
     "FrameError",
     "OnError",
+    "ProtoFileSchema",
     "ResolvedSchema",
     "ScanRecord",
     "ScanResult",
+    "SchemaCompileError",
     "SchemaSource",
     "Source",
     "StorageError",
     "StreamRegistry",
+    "WhereError",
     "scan",
 ]

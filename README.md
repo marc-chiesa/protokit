@@ -1192,17 +1192,18 @@ accumulation.
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
 | Internal module | `protokit.schema.lint._cli_utils` | INTERNAL |
 | Threshold constants | `_LINT_HUMAN_SUMMARIZATION_THRESHOLD` (per-category human-stderr summarization) | INTERNAL |
-| Python function | `protokit.storage.scan(source, registry, *, predicate=None, on_error='raise') -> ScanResult` (the data-at-rest scan engine; eager `on_error` validation) | IN |
+| Python function | `protokit.storage.scan(source, registry, *, predicate=None, on_error='raise', error_sink=None) -> ScanResult` (the data-at-rest scan engine; eager `on_error`/`error_sink` validation) | IN |
 | Python protocol | `protokit.storage.Source` (`runtime_checkable`; `__iter__` yields `(stream_id, bytes \| memoryview)`; optional `close()`/context-manager cleanup. **`isinstance` is presence-only** — not a record-shape gate) | IN |
 | Python dataclass | `protokit.storage.ScanRecord` (frozen: `stream_id: str`, `record_index: int` (GLOBAL feed position), `message: Message`) | IN |
 | Python class | `protokit.storage.ScanResult` (iterate once for `ScanRecord`s; `.errors -> tuple[FrameError, ...]` readable only AFTER exhaustion, else `RuntimeError`) | IN |
-| Python type alias | `protokit.storage.OnError` = `Literal['raise', 'skip', 'collect']` (`'route'` + `error_sink` deferred to PR1.5) | IN |
+| Python type alias | `protokit.storage.OnError` = `Literal['raise', 'skip', 'collect', 'route']` (`route` pairs with a required `error_sink` callback; a raising sink propagates) | IN |
 | Python class | `protokit.storage.StreamRegistry` (`register_stream(stream_id, schema_source)` resolves once into an isolated pool; `get(stream_id) -> ResolvedSchema \| None`; `stream_id in registry`) | IN |
 | Python protocol | `protokit.storage.SchemaSource` (`resolve() -> ResolvedSchema`, self-contained — no `name` arg) + `ResolvedSchema` NamedTuple `(pool, message_class)` | IN |
-| Python class | `protokit.storage.FileDescriptorSetSchema(fds, message_type_name)` / `EmbeddedSchema((fds_bytes, fq_name))` (the two PR1 schema forms; `.proto`-compile form deferred to PR1.5) | IN |
-| Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` | IN |
+| Python class | `protokit.storage.FileDescriptorSetSchema(fds, message_type_name)` / `EmbeddedSchema((fds_bytes, fq_name))` / `ProtoFileSchema(proto_path, message_type_name, *, proto_paths=())` (the three schema forms; the last compiles `.proto` via the non-exiting compile path) | IN |
+| Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` / `SchemaCompileError(proto_path, detail)` / `WhereError(expr, reason)` | IN |
 | Python function | `protokit.storage.sources.length_delimited(file, *, stream_id, max_frame_size=64*1024*1024)` / `per_message_view(buffers, *, stream_id)` (reference frame adapters — examples of the boundary, not protokit's framing taxonomy) | IN |
-| Internal modules | `protokit.storage.{engine,source,registry,schema_source}` (implementation modules; import the names above from `protokit.storage`, never these directly) | INTERNAL |
+| CLI | `protokit storage scan\|head\|count <file> (--desc\|--proto) --type <fqn> [--where EXPR] [--on-error raise\|skip\|warn]` — `scan`/`head` add `--format human\|json`, `head` adds `-n`, `count` adds `--quiet`. Exit `0`/`2` (+ `count --quiet` grep-like `1`) | IN |
+| Internal modules | `protokit.storage.{engine,source,registry,schema_source,cli,_where}` (implementation modules; import the public names from `protokit.storage`, never these directly; `_where.compile_where` is internal — only `WhereError` is public) | INTERNAL |
 
 The surface above is a working draft. Names and signatures may
 shift before 1.0; the version bump + CHANGELOG section for each
@@ -1453,8 +1454,8 @@ whatever helps downstream filtering.
 frames, a pybind11 library's per-message `memoryview`, any buffer source —
 routing each record to its stream's **isolated** descriptor pool, parsing it,
 and yielding the materialized message. It is the data-at-rest counterpart to
-the message differ and schema-compatibility pillars. **PR1 is library-only**
-(no CLI yet); the API is the dogfooding surface.
+the message differ and schema-compatibility pillars, exposed as both a Python
+API and the `protokit storage` command line (see below).
 
 The architecture is an *adapter boundary*: your code yields stream-tagged
 record bytes through a `Source` (any iterable of `(stream_id, record_bytes)`);
@@ -1493,12 +1494,60 @@ errors = result.errors          # tuple[FrameError, ...] — read AFTER exhausti
 ```
 
 `on_error` is `'raise'` (propagate the first `FrameError`), `'skip'` (drop
-faulting records), or `'collect'` (drop them but report each in
-`result.errors`). Reading `.errors` before the iterator is exhausted raises
+faulting records), `'collect'` (drop them but report each in `result.errors`),
+or `'route'` (deliver each `FrameError` live to a required `error_sink`
+callback and continue — a raising sink propagates, and `.errors` raises since
+nothing is collected). Reading `.errors` before the iterator is exhausted raises
 `RuntimeError` rather than returning a silent partial. The raw record bytes (a
 `memoryview` may come straight from a C++-owned buffer) are parsed inside a
 confined step and never retained — upb copies into its arena, so the caller may
 free the buffer the instant a record is consumed.
+
+### Command line: `protokit storage`
+
+`scan` / `head` / `count` put a command line over the engine — the `protoc
+--decode` replacement (many records, pipeable, filterable):
+
+```bash
+# Dump every record readably (text), or as compact JSONL.
+protokit storage scan orders.bin --desc orders.desc --type myapp.Order
+protokit storage scan orders.bin --proto order.proto -I proto/ \
+    --type myapp.Order --format json
+
+# Filter with the minimal --where grammar.
+protokit storage count orders.bin --desc orders.desc --type myapp.Order \
+    --where 'header.error_code != 0'
+protokit storage head orders.bin --desc orders.desc --type myapp.Order -n 5
+
+# Tolerate corruption: warn reports each bad record to stderr and continues.
+# For a large sweep, lead with --on-error warn (the default is fail-loud raise).
+protokit storage scan big.bin --desc s.desc --type myapp.Event --on-error warn
+```
+
+**Schema source:** one of `--desc` (a `FileDescriptorSet`) or `--proto`
+(compiled, with `--proto-path`/`-I` import dirs), plus `--type` (the
+fully-qualified message name; `--message-type` is an alias).
+
+**`--where`** is deliberately minimal — `path == scalar` / `path != scalar`
+(enums by name or number) and `has:path` for field presence. Anything richer
+(`and`/`or`, `<`/`>`, functions) is rejected with a pointer back to the Python
+`predicate=` API. Traversal through an unset intermediate message reads
+defaults, so `header.code == 0` matches a record with no `header`.
+
+**`--on-error`** is `raise` (default, fail-loud), `skip`, or `warn` (report each
+fault to stderr and continue). **Recovery limit:** with the length-delimited
+reader a *framing* fault (a truncated/oversized frame) ends the scan even under
+`skip`/`warn` — only *decode* and *unknown-stream* faults are recovered past.
+
+**Exit codes:** `0` success, `2` error (a bad flag, an unresolved schema, a
+malformed `--where`, or a data fault under `--on-error raise`). `count --quiet`
+adds the grep-like signal — `1` when zero records match, `0` otherwise
+(mirroring `diff --quiet`); a bare `count` always prints the number (including
+`0`) and exits `0`.
+
+Cross-channel correlation (one `scan` over multiple related streams) is a
+library capability — register several streams and read `record.stream_id` — and
+is not yet exposed on the single-stream CLI.
 
 ## Supported Field Types
 
