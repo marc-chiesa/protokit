@@ -74,7 +74,30 @@ class TestNoTopLevelReExport:
             assert not hasattr(protokit, name), f"protokit.{name} leaked to top level"
 
 
+class TestPr15SurfaceAdditions:
+    def test_new_public_symbols_resolve(self) -> None:
+        for name in ("ProtoFileSchema", "SchemaCompileError", "WhereError"):
+            assert hasattr(storage, name), name
+            assert name in storage.__all__, name
+
+    def test_compile_where_is_internal_not_exported(self) -> None:
+        # The --where compiler is CLI sugar; only its error type is public.
+        assert "compile_where" not in storage.__all__
+        assert not hasattr(storage, "compile_where")
+
+    def test_onerror_includes_route(self) -> None:
+        import typing
+
+        from protokit.storage import OnError
+
+        assert "route" in typing.get_args(OnError)
+
+
 class TestReadmeDocsPresence:
     def test_readme_mentions_storage_surface(self) -> None:
         readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
         assert "protokit.storage" in readme
+
+    def test_readme_documents_storage_cli(self) -> None:
+        readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        assert "protokit storage scan" in readme

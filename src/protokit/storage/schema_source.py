@@ -36,16 +36,28 @@ Public surface:
 - ``ResolvedSchema`` — the ``(pool, message_class)`` result NamedTuple.
 - ``FileDescriptorSetSchema`` — resolve from an in-memory ``FileDescriptorSet``.
 - ``EmbeddedSchema`` — resolve from the channelized ``(fds_bytes, name)`` form.
+- ``ProtoFileSchema`` — resolve by compiling ``.proto`` source.
+- ``SchemaCompileError`` — a ``.proto`` compile failed (typed, never ``SystemExit``).
+
+``ProtoFileSchema`` is the one source that reaches a sibling pillar
+(``protokit.schema.compile``) rather than the shared ``_pools`` leaf. The import
+is import-safe (no compiler backend is touched at import time — only
+``resolve()`` invokes protoc/protoxy), so ``import protokit.storage`` stays
+backend-free as it was in PR1.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import NamedTuple, Protocol
 
 from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.message import Message
 
 from protokit._pools import build_pool, get_message_class, load_pool_from_bytes
+from protokit.schema.compile import compile_protos_to_result
+from protokit.storage.source import StorageError
 
 
 class ResolvedSchema(NamedTuple):
@@ -168,3 +180,69 @@ class EmbeddedSchema:
         pool = load_pool_from_bytes(self._fds_bytes)
         message_class = get_message_class(pool, self._message_type_name)
         return ResolvedSchema(pool, message_class)
+
+
+class SchemaCompileError(StorageError):
+    """Compiling a stream's ``.proto`` source failed.
+
+    Raised by :meth:`ProtoFileSchema.resolve` when the compile produced
+    error-level diagnostics. It is a *typed library exception* — never a
+    ``SystemExit`` — so a CLI layer can catch it and translate to an exit code.
+
+    Attributes:
+        proto_path: The ``.proto`` file that failed to compile.
+        detail: The joined, human-readable text of every error-level diagnostic.
+    """
+
+    def __init__(self, proto_path: Path, detail: str) -> None:
+        self.proto_path = proto_path
+        self.detail = detail
+        super().__init__(f"failed to compile {proto_path}: {detail}")
+
+
+class ProtoFileSchema:
+    """Resolve a stream's schema by compiling ``.proto`` source.
+
+    Wraps :func:`protokit.schema.compile.compile_protos_to_result` — the
+    **non-exiting** compile path (it returns diagnostics rather than calling
+    ``sys.exit``, unlike ``_cli_utils.compile_proto``) — and reuses its WKT
+    include-path auto-discovery and protoc-version argv handling. A compile
+    failure surfaces as :class:`SchemaCompileError`; a clean compile that does
+    not define ``message_type_name`` surfaces a typed
+    ``MessageTypeNotFoundError`` from Lane A (the failure/empty pool carries no
+    error diagnostics, so the type lookup is what reports the miss).
+    """
+
+    def __init__(
+        self,
+        proto_path: Path | str,
+        message_type_name: str,
+        *,
+        proto_paths: Sequence[str] = (),
+    ) -> None:
+        """Store the input ``.proto`` path, the dotless FQ name, and include dirs.
+
+        Args:
+            proto_path: Path to the ``.proto`` file to compile.
+            message_type_name: Dotless fully-qualified message name (e.g.
+                ``"myapp.Order"``).
+            proto_paths: Additional ``-I`` include directories (each input's
+                parent dir is added automatically by the compile path).
+        """
+        self._proto_path = Path(proto_path)
+        self._message_type_name = message_type_name
+        self._proto_paths = tuple(proto_paths)
+
+    def resolve(self) -> ResolvedSchema:
+        result = compile_protos_to_result([self._proto_path], self._proto_paths)
+        error_diagnostics = [d for d in result.diagnostics if d.level == "error"]
+        if error_diagnostics:
+            raise SchemaCompileError(
+                self._proto_path,
+                "; ".join(str(d) for d in error_diagnostics),
+            )
+        # A clean-but-empty compile (message-less .proto) leaves no error
+        # diagnostics and an empty pool, so the type miss is reported here as a
+        # typed MessageTypeNotFoundError, never a bare pool KeyError.
+        message_class = get_message_class(result.pool, self._message_type_name)
+        return ResolvedSchema(result.pool, message_class)

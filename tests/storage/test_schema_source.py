@@ -13,6 +13,8 @@ fixtures are built programmatically.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool
 
@@ -24,10 +26,20 @@ from protokit._pools import (
 from protokit.storage.schema_source import (
     EmbeddedSchema,
     FileDescriptorSetSchema,
+    ProtoFileSchema,
     ResolvedSchema,
+    SchemaCompileError,
 )
+from protokit.storage.source import StorageError
 from tests.storage.proto_fixtures import fds as _fds
 from tests.storage.proto_fixtures import file_proto as _file
+
+
+def _write(tmp_path: Path, name: str, source: str) -> Path:
+    p = tmp_path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(source)
+    return p
 
 
 class TestFileDescriptorSetSchema:
@@ -165,3 +177,120 @@ class TestIsolation:
         assert {f.name for f in c2.DESCRIPTOR.fields} == {"y"}
         assert c1(x=7).x == 7
         assert c2(y="hi").y == "hi"
+
+
+# --- ProtoFileSchema (.proto -> compile) -----------------------------------
+
+_ONE_MESSAGE = """\
+syntax = "proto3";
+package demo;
+message Order { int32 id = 1; }
+"""
+
+_MAIN_IMPORTS_DEP = """\
+syntax = "proto3";
+package demo;
+import "dep.proto";
+message Order { dep.Item item = 1; }
+"""
+
+_DEP = """\
+syntax = "proto3";
+package dep;
+message Item { string sku = 1; }
+"""
+
+_IMPORTS_WKT = """\
+syntax = "proto3";
+package demo;
+import "google/protobuf/timestamp.proto";
+message Event { google.protobuf.Timestamp created_at = 1; }
+"""
+
+_INVALID = """\
+syntax = "proto3";
+package demo;
+message Broken { int32 id = ; }
+"""
+
+_MESSAGE_LESS = """\
+syntax = "proto3";
+package demo;
+"""
+
+
+class TestProtoFileSchema:
+    def test_resolves_one_message_proto(self, tmp_path: Path) -> None:
+        proto = _write(tmp_path, "demo.proto", _ONE_MESSAGE)
+        resolved = ProtoFileSchema(proto, "demo.Order").resolve()
+        assert isinstance(resolved, ResolvedSchema)
+        assert resolved.message_class(id=7).id == 7
+
+    def test_resolves_sibling_import(self, tmp_path: Path) -> None:
+        _write(tmp_path, "dep.proto", _DEP)
+        main = _write(tmp_path, "main.proto", _MAIN_IMPORTS_DEP)
+        # The sibling dep.proto resolves via the input's auto-added parent dir.
+        resolved = ProtoFileSchema(main, "demo.Order").resolve()
+        instance = resolved.message_class()
+        instance.item.sku = "abc"
+        assert instance.item.sku == "abc"
+
+    def test_resolves_import_via_explicit_proto_path(self, tmp_path: Path) -> None:
+        # dep.proto lives in inc/, NOT a sibling of main.proto -> needs -I inc.
+        _write(tmp_path, "inc/dep.proto", _DEP)
+        main = _write(tmp_path, "main.proto", _MAIN_IMPORTS_DEP)
+        resolved = ProtoFileSchema(
+            main, "demo.Order", proto_paths=(str(tmp_path / "inc"),)
+        ).resolve()
+        assert resolved.message_class().item.sku == ""
+
+    def test_missing_include_dir_raises_typed_not_crash(self, tmp_path: Path) -> None:
+        # dep.proto is in inc/ but no -I inc given: the import can't resolve.
+        _write(tmp_path, "inc/dep.proto", _DEP)
+        main = _write(tmp_path, "main.proto", _MAIN_IMPORTS_DEP)
+        with pytest.raises(SchemaCompileError):
+            ProtoFileSchema(main, "demo.Order").resolve()
+
+    def test_resolves_wkt_import_and_field_is_usable(self, tmp_path: Path) -> None:
+        proto = _write(tmp_path, "event.proto", _IMPORTS_WKT)
+        resolved = ProtoFileSchema(proto, "demo.Event").resolve()
+        instance = resolved.message_class()
+        instance.created_at.seconds = 5  # the WKT field is usable, not just present
+        assert instance.created_at.seconds == 5
+
+    def test_invalid_proto_raises_schema_compile_error_not_systemexit(
+        self, tmp_path: Path
+    ) -> None:
+        proto = _write(tmp_path, "broken.proto", _INVALID)
+        # pytest.raises(SchemaCompileError) would NOT catch a SystemExit, so this
+        # also asserts the no-sys.exit-in-storage contract.
+        with pytest.raises(SchemaCompileError) as exc:
+            ProtoFileSchema(proto, "demo.Broken").resolve()
+        assert isinstance(exc.value, StorageError)
+        assert exc.value.proto_path == proto
+        assert exc.value.detail  # carries the compiler diagnostic text
+
+    def test_message_less_proto_raises_message_type_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        # A clean compile with no messages -> empty pool, no error diagnostics;
+        # the type miss must surface as a typed MessageTypeNotFoundError.
+        proto = _write(tmp_path, "empty.proto", _MESSAGE_LESS)
+        with pytest.raises(MessageTypeNotFoundError):
+            ProtoFileSchema(proto, "demo.Nope").resolve()
+
+    def test_valid_proto_wrong_type_raises_message_type_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        proto = _write(tmp_path, "demo.proto", _ONE_MESSAGE)
+        with pytest.raises(MessageTypeNotFoundError):
+            ProtoFileSchema(proto, "demo.DoesNotExist").resolve()
+
+    def test_construction_is_backend_free(self, tmp_path: Path) -> None:
+        # Constructing the source compiles nothing (only resolve() invokes a
+        # backend), so it cannot fail for a nonexistent path or a missing
+        # backend. Importing the module already succeeded (top of file), proving
+        # `import protokit.storage` stays backend-free after the schema.compile
+        # dependency was added.
+        schema = ProtoFileSchema(tmp_path / "nope.proto", "demo.Order")
+        assert schema is not None
