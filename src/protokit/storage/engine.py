@@ -33,7 +33,7 @@ Public surface:
 - ``scan`` — build a ``ScanResult`` over a ``Source`` + ``StreamRegistry``.
 - ``ScanRecord`` — a yielded ``(stream_id, record_index, message)`` triple.
 - ``ScanResult`` — the iterable result, plus ``.errors`` for ``collect`` mode.
-- ``OnError`` — the ``Literal['raise', 'skip', 'collect']`` policy type.
+- ``OnError`` — the ``Literal['raise', 'skip', 'collect', 'route']`` policy type.
 """
 
 from __future__ import annotations
@@ -47,9 +47,9 @@ from google.protobuf.message import DecodeError, Message
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.source import FrameError, Source
 
-OnError = Literal["raise", "skip", "collect"]
+OnError = Literal["raise", "skip", "collect", "route"]
 
-_VALID_ON_ERROR: tuple[OnError, ...] = ("raise", "skip", "collect")
+_VALID_ON_ERROR: tuple[OnError, ...] = ("raise", "skip", "collect", "route")
 
 # ScanResult lifecycle. The states gate the .errors loud guard: errors are
 # readable ONLY after the scan ran to completion (_EXHAUSTED). They are withheld
@@ -90,6 +90,7 @@ def scan(
     *,
     predicate: Callable[[Message], bool] | None = None,
     on_error: OnError = "raise",
+    error_sink: Callable[[FrameError], None] | None = None,
 ) -> ScanResult:
     """Scan ``source``, routing each record through ``registry`` and yielding
     the matching, materialized records.
@@ -103,20 +104,29 @@ def scan(
             that raises propagates (it is programmer error, not a data fault).
         on_error: ``'raise'`` (default) propagates the first ``FrameError``;
             ``'skip'`` drops faulting records; ``'collect'`` drops them but
-            records each in :attr:`ScanResult.errors`.
+            records each in :attr:`ScanResult.errors`; ``'route'`` delivers each
+            ``FrameError`` live to ``error_sink`` and continues.
+        error_sink: ``(FrameError) -> None`` callback invoked once per fault
+            under ``on_error='route'``, before the scan continues. **Required by
+            and exclusive to** ``'route'``: passing it with any other mode, or
+            omitting it under ``'route'``, raises ``ValueError`` at call entry. A
+            raising ``error_sink`` propagates (a sink bug is caller code, like a
+            predicate bug — not absorbed). Under ``'route'`` faults are not
+            collected, so :attr:`ScanResult.errors` raises.
 
     Returns:
         A :class:`ScanResult` — iterate it for :class:`ScanRecord`s. Argument
         validation is eager (this call raises ``ValueError`` for a bad
-        ``on_error`` before any record is read).
+        ``on_error`` or a route/sink mismatch before any record is read).
 
     Raises:
         ValueError: ``on_error`` is not one of ``'raise'``, ``'skip'``,
-            ``'collect'``.
+            ``'collect'``, ``'route'``; or the route/``error_sink`` pairing is
+            violated.
     """
     # Validation is eager and lives in ScanResult.__init__ (so the exported
     # ScanResult constructor enforces it too); constructing here runs it now.
-    return ScanResult(source, registry, predicate, on_error)
+    return ScanResult(source, registry, predicate, on_error, error_sink=error_sink)
 
 
 class ScanResult:
@@ -135,15 +145,25 @@ class ScanResult:
         registry: StreamRegistry,
         predicate: Callable[[Message], bool] | None,
         on_error: OnError,
+        *,
+        error_sink: Callable[[FrameError], None] | None = None,
     ) -> None:
         if on_error not in _VALID_ON_ERROR:
             raise ValueError(
                 f"on_error must be one of {_VALID_ON_ERROR!r}, got {on_error!r}"
             )
+        # route <-> error_sink are mutually required-and-exclusive. Eager so a
+        # misuse fails at the call site, not mid-scan. `error_sink` is keyword-
+        # only so the public positional constructor contract is unchanged.
+        if on_error == "route" and error_sink is None:
+            raise ValueError("on_error='route' requires an error_sink")
+        if on_error != "route" and error_sink is not None:
+            raise ValueError("error_sink is only valid with on_error='route'")
         self._source = source
         self._registry = registry
         self._predicate = predicate
         self._on_error = on_error
+        self._error_sink = error_sink
         self._errors: list[FrameError] = []
         self._state = _READY
 
@@ -161,13 +181,23 @@ class ScanResult:
         """The ``FrameError``s captured under ``on_error='collect'``.
 
         Raises:
-            RuntimeError: read before the scan ran to completion — either still
-                mid-iteration / not yet started (iterate to completion or call
-                ``list(result)`` first), or aborted by a propagating exception
-                (the report is partial and withheld). A silent partial tuple
-                would be exactly the R2 silent-partial-results risk that
-                fail-loud forbids.
+            RuntimeError: under ``on_error='route'`` (faults stream to
+                ``error_sink``, nothing is collected — a silent ``()`` here would
+                be indistinguishable from "zero faults"); or read before the scan
+                ran to completion — either still mid-iteration / not yet started
+                (iterate to completion or call ``list(result)`` first), or aborted
+                by a propagating exception (the report is partial and withheld). A
+                silent partial tuple would be exactly the R2 silent-partial-results
+                risk that fail-loud forbids.
         """
+        if self._on_error == "route":
+            # route never populates _errors; returning () would read as "zero
+            # faults" even when the sink saw many. Raise, with a message distinct
+            # from the pre-exhaustion guard so the two are test-distinguishable.
+            raise RuntimeError(
+                "on_error='route' streams faults to error_sink; "
+                ".errors is not collected"
+            )
         if self._state == _ABORTED:
             raise RuntimeError(
                 "the scan was aborted by a propagating exception before "
@@ -305,10 +335,18 @@ class ScanResult:
         """Apply the ``on_error`` policy to a per-record ``FrameError``.
 
         Returns normally (the caller then ``continue``s to the next record) for
-        ``skip`` / ``collect``; ``raise`` re-raises the error so it propagates.
+        ``skip`` / ``collect`` / ``route``; ``raise`` re-raises the error so it
+        propagates.
         """
         if self._on_error == "raise":
             raise error
+        if self._on_error == "route":
+            # Deliver live, OUTSIDE any catch: a raising sink propagates (a sink
+            # bug is caller code, like a predicate bug), and route collects
+            # nothing. error_sink is non-None here (validated at construction).
+            assert self._error_sink is not None
+            self._error_sink(error)
+            return
         if self._on_error == "collect":
             self._errors.append(error)
         # 'skip': drop the record and continue.
