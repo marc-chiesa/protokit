@@ -32,7 +32,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import BinaryIO, NamedTuple
 
 import click
 from google.protobuf import descriptor_pb2, json_format, text_format
@@ -42,6 +42,7 @@ from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
 from protokit.storage import (
     FrameError,
+    OnError,
     ScanRecord,
     ScanResult,
     Source,
@@ -54,6 +55,11 @@ from protokit.storage.schema_source import FileDescriptorSetSchema, ProtoFileSch
 from protokit.storage.sources.length_delimited import length_delimited
 
 _TYPED_CLI_ERRORS = (StorageError, DescriptorPoolError)
+
+# The non-tolerant CLI --on-error values map directly to engine OnError values;
+# 'warn' is handled separately (route + a stderr sink). An explicit, typed map
+# keeps the translation exhaustive and avoids a cast at the scan() boundary.
+_CLI_TO_ENGINE: dict[str, OnError] = {"raise": "raise", "skip": "skip"}
 
 
 class _Setup(NamedTuple):
@@ -215,7 +221,7 @@ def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
         source,
         setup.registry,
         predicate=setup.predicate,
-        on_error=on_error,  # type: ignore[arg-type]  # validated Choice (raise/skip)
+        on_error=_CLI_TO_ENGINE[on_error],
     )
     return _Run(result, None)
 
@@ -238,9 +244,28 @@ def _render(record: ScanRecord, output_format: str) -> str:
     return f"# stream={record.stream_id} record={record.record_index}\n{body.rstrip()}"
 
 
-def _emit_warn_summary(on_error: str, scanned: int, run: _Run) -> None:
+def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:
+    # "matched", not "scanned": this counter is the records that passed the
+    # predicate and were emitted/counted, NOT the total read from the source
+    # (which the engine does not expose). Under --where / head -n the two
+    # differ, so calling it "scanned" would misstate the scan volume.
     if on_error == "warn" and run.faults is not None:
-        click.echo(f"scanned {scanned} records, {run.faults[0]} faults", err=True)
+        click.echo(f"matched {matched} records, {run.faults[0]} faults", err=True)
+
+
+def _open_data(path: Path) -> BinaryIO:
+    """Open the data file, translating an OS read error to a clean exit-2.
+
+    ``click.Path(exists=True)`` checks existence but not readability, and the
+    file can vanish or become unreadable between the check and the open
+    (TOCTOU). Those raise ``OSError``, which is not a ``StorageError`` — without
+    this guard it would escape as an exit-1 traceback, breaking the 0/2 exit
+    contract this layer owns.
+    """
+    try:
+        return open(path, "rb")
+    except OSError as exc:
+        error_exit(f"cannot read {path}: {exc}")
 
 
 @main.command(name="scan")
@@ -259,7 +284,7 @@ def scan_cmd(
     """Dump every (matching) record readably — the protoc --decode replacement."""
     setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr)
     yielded = 0
-    with open(data_file, "rb") as handle:
+    with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:
@@ -296,7 +321,7 @@ def head_cmd(
     """Show the first N (matching) records (default N=10)."""
     setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr)
     yielded = 0
-    with open(data_file, "rb") as handle:
+    with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         # limit == 0 pulls nothing (and shows nothing); the `with` closes the file.
@@ -339,7 +364,7 @@ def count_cmd(
     """
     setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr)
     matched = 0
-    with open(data_file, "rb") as handle:
+    with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:

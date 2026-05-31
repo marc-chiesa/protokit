@@ -233,6 +233,21 @@ class TestParsingEdges:
         with pytest.raises(WhereError, match="empty"):
             _pred("   ", event_cls)
 
+    def test_bad_int_literal_is_error(self, event_cls: type) -> None:
+        with pytest.raises(WhereError, match="not an integer"):
+            _pred("n == abc", event_cls)
+
+    def test_bad_float_literal_is_error(self, event_cls: type) -> None:
+        with pytest.raises(WhereError, match="not a valid number"):
+            _pred("ratio == notanumber", event_cls)
+
+    def test_single_quoted_string_literal(self, event_cls: type) -> None:
+        assert _pred("name == 'hi'", event_cls)(event_cls(name="hi")) is True
+
+    def test_unterminated_single_quote(self, event_cls: type) -> None:
+        with pytest.raises(WhereError, match="unterminated"):
+            _pred("name == 'x", event_cls)
+
 
 class TestUnsetTraversalSemantics:
     def test_unset_intermediate_message_traverses_to_default(

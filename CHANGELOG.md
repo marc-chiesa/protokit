@@ -63,8 +63,25 @@ All notable changes to `protokit` are documented here. Format loosely follows
   (varint-prefixed file frames) and `per_message_view` (the pybind11 per-message
   `memoryview` source). The raw record bytes are parsed inside a confined step
   and never retained (upb arena copy), with a defensive `bytes()` boundary so an
-  invalid/released view fails catchably rather than crashing the process. CLI,
-  projection, and columnar sinks are deferred to follow-up PRs.
+  invalid/released view fails catchably rather than crashing the process.
+  Projection and columnar sinks are deferred to a follow-up PR.
+- **`protokit storage` CLI + `.proto` schema source + `on_error='route'` (PR1.5).**
+  A command line over the scan engine — `protokit storage scan` / `head` /
+  `count` — reads a file of length-delimited frames, resolves the message type
+  via `--desc` (a `FileDescriptorSet`) or `--proto` (compiled, with
+  `--proto-path`/`-I`) + `--type` (alias `--message-type`), optionally filters
+  with the minimal `--where` grammar (`path == scalar` / `!=` / `has:path`;
+  richer expressions are rejected with a pointer at the Python `predicate=` API),
+  and dumps (`--format human`/`json`), heads (`-n`), or counts (`--quiet` adds a
+  grep-like `1`=no-match exit). `--on-error` is `raise` (default), `skip`, or
+  `warn` (report each fault to stderr and continue). Exit `0`/`2` (`2` = bad
+  flag, unresolved schema, malformed `--where`, or a data fault under `raise`).
+  New public surface: `on_error='route'` + an `error_sink` callback on `scan()`
+  (a strictly non-breaking widening — a raising sink propagates, and
+  `ScanResult.errors` raises under `route`); `ProtoFileSchema` (compiles `.proto`
+  via the non-exiting compile path; never `SystemExit`); and the typed
+  `SchemaCompileError` / `WhereError` exceptions. Cross-channel correlation
+  (multi-stream scan) remains a library capability; the CLI is single-stream.
 - `protokit.schema` — descriptor-level compatibility checker with 17 built-in
   rules, four compatibility profiles (`WIRE`, `CONSUMER_SAFE`,
   `PRODUCER_SAFE`, `STRICT`), and a pluggable rule API.

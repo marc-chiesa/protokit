@@ -83,6 +83,22 @@ def test_proto_source_resolves_and_scans(
     assert "id: 7" in result.output
 
 
+def test_broken_proto_source_is_exit_2(
+    runner: CliRunner, tmp_path: Path, data_file_factory: Callable[..., Path]
+) -> None:
+    # A syntactically invalid .proto -> SchemaCompileError (a StorageError) ->
+    # error_exit, exercising the CLI error-translation path (not just library).
+    proto = tmp_path / "broken.proto"
+    proto.write_text('syntax = "proto3";\npackage demo;\nmessage X { int32 id = ; }\n')
+    data = data_file_factory([])
+    result = _run(
+        runner,
+        ["storage", "count", str(data), "--proto", str(proto), "--type", "demo.X"],
+    )
+    assert result.exit_code == 2
+    assert "Error:" in result.stderr
+
+
 def test_unknown_type_is_exit_2(
     runner: CliRunner, desc_and_cls: tuple[Path, type], data_file_factory: Callable[..., Path]
 ) -> None:
