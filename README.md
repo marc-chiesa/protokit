@@ -1,10 +1,14 @@
 # protokit
 
-Python toolkit for Protocol Buffers: message diffing and schema compatibility checking.
+Python toolkit for Protocol Buffers — four pillars: message diffing, schema compatibility, linting (buf BASIC parity), and data-at-rest scan/filter.
 
 `protokit diff` — structural, filterable message diffs with cross-descriptor-pool comparison, schema evolution detection, and a pytest hook.
 
 `protokit compat` — descriptor-level schema compatibility checks with 17 built-in rules, four profiles, and a pluggable rule API.
+
+`protokit lint` — descriptor-level linting with full **buf BASIC parity** (26/26 rules), AIP-122 naming, a `[tool.protokit.lint]` pyproject table, and pluggable rule packs.
+
+`protokit storage` — schema-aware scan/filter over **stored** protobuf (length-delimited files, a pybind11 `memoryview`, any buffer source): `scan` / `head` / `count` with a minimal `--where` filter and safe concurrent multi-version scanning via isolated per-stream descriptor pools.
 
 ## Installation
 
