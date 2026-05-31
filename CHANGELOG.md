@@ -15,6 +15,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+## 0.9.0 — 2026-05-31
+
 ### Changed — BREAKING — message differ left/right value terminology
 
 - Renamed `Difference.old_value`/`new_value` → `left_value`/`right_value` in the
@@ -82,6 +84,16 @@ All notable changes to `protokit` are documented here. Format loosely follows
   via the non-exiting compile path; never `SystemExit`); and the typed
   `SchemaCompileError` / `WhereError` exceptions. Cross-channel correlation
   (multi-stream scan) remains a library capability; the CLI is single-stream.
+
+## 0.8.0 — 2026-05-28 (and earlier — cumulative pre-fold record)
+
+> This section is the cumulative changelog for every release through 0.8.0,
+> preserved verbatim from the pre-0.9.0 `## Unreleased` accumulation. Per-release
+> subsections below carry their own version markers (`### D7 … (0.8.0)`,
+> `### 0.7.2 …`, `### D6a … (0.2.0)`, etc.). From 0.9.0 onward, each delivery is
+> folded into its own `## <version>` section at release time.
+
+### Added
 - `protokit.schema` — descriptor-level compatibility checker with 17 built-in
   rules, four compatibility profiles (`WIRE`, `CONSUMER_SAFE`,
   `PRODUCER_SAFE`, `STRICT`), and a pluggable rule API.
@@ -213,21 +225,6 @@ All notable changes to `protokit` are documented here. Format loosely follows
 - `protokit.schema.Diagnostic` is now exported from
   `protokit.schema.__all__` (was importable only via the
   `protokit.message` path).
-
-### Changed — BREAKING
-- **Distribution name renamed** from `proto-differ` to `protokit`.
-- **Import root renamed** from `proto_differ` to `protokit`. The
-  top-level package is now intentionally empty — import from the two
-  subpackages directly:
-  - `proto_differ.*` → `protokit.message.*`
-  - (no `protokit` top-level re-exports; explicit namespacing only)
-- **CLI entry point renamed** from `pbdiff` to `protokit`, now with
-  subcommands:
-  - `pbdiff [args]` → `protokit diff [args]`
-  - `protokit compat [args]` — new schema compatibility command.
-- **pytest plugin import path** changed:
-  - `from proto_differ.pytest_plugin import pytest_assertrepr_compare`
-    → `from protokit.message.pytest_plugin import pytest_assertrepr_compare`
 
 ### Changed — BREAKING
 - **Distribution name renamed** from `proto-differ` to `protokit`.
