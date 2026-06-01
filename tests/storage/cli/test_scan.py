@@ -93,3 +93,26 @@ class TestScanEdgeInputs:
         result = _run(runner, cmd("scan", garbage, desc))
         assert result.exit_code == 2
         assert "Error:" in result.stderr
+
+
+class TestScanHumanAllDefaultBackCompat:
+    def test_all_default_record_human_preserves_trailing_newline(
+        self,
+        runner: CliRunner,
+        desc_and_cls: tuple[Path, type],
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P2-2: an all-default record (x at its default 0 -> empty text_format
+        # body) in human mode WITHOUT --fields must preserve PR1.5's (R8)
+        # `# stream=...\n` trailing-newline shape, not collapse to a bare header.
+        desc, cls = desc_and_cls
+        data = data_file_factory([cls().SerializeToString()])  # x unset -> empty body
+        result = _run(
+            runner,
+            ["storage", "scan", str(data), "--desc", str(desc), "--type", "a.A"],
+        )
+        assert result.exit_code == 0, result.stderr
+        # _render returns "# stream=...\n" for the empty body; click.echo adds a
+        # second newline -> the header line is followed by a blank line, matching
+        # PR1.5 (which always emitted "# stream=...\n{rstripped-empty-body}").
+        assert result.output == "# stream=data.bin record=0\n\n"

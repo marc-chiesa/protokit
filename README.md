@@ -1205,10 +1205,10 @@ accumulation.
 | Python protocol | `protokit.storage.SchemaSource` (`resolve() -> ResolvedSchema`, self-contained — no `name` arg) + `ResolvedSchema` NamedTuple `(pool, message_class)` | IN |
 | Python class | `protokit.storage.FileDescriptorSetSchema(fds, message_type_name)` / `EmbeddedSchema((fds_bytes, fq_name))` / `ProtoFileSchema(proto_path, message_type_name, *, proto_paths=())` (the three schema forms; the last compiles `.proto` via the non-exiting compile path) | IN |
 | Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` / `SchemaCompileError(proto_path, detail)` / `WhereError(expr, reason)` / `FieldSelectionError(spec, reason)` | IN |
-| Python function | `protokit.storage.project(message, selection) -> dict` (the `--fields` render-time projection: faithful nested view — snake_case keys; no-presence fields filled, presence-bearing by presence. The `selection` is compiled against a message descriptor; an invalid path raises `FieldSelectionError`) | IN |
+| Python function | `protokit.storage.compile_fields(spec, descriptor) -> CompiledSelection` then `protokit.storage.project(message, selection) -> dict` (the two-step `--fields` projection: `compile_fields` validates a comma-separated dotted-path spec against a message descriptor — an invalid path raises `FieldSelectionError`; `project` prunes a parsed message to the faithful nested view — snake_case keys; no-presence fields filled, presence-bearing by presence) | IN |
 | Python function | `protokit.storage.sources.length_delimited(file, *, stream_id, max_frame_size=64*1024*1024)` / `per_message_view(buffers, *, stream_id)` (reference frame adapters — examples of the boundary, not protokit's framing taxonomy) | IN |
 | CLI | `protokit storage scan\|head\|count <file> (--desc\|--proto) --type <fqn> [--where EXPR] [--on-error raise\|skip\|warn]` — `scan`/`head` add `--format human\|json`, `--fields PATHS` (snake_case faithful view), `--explicit-defaults` (JSON-only dense full record, camelCase; mutually exclusive with `--fields`); `head` adds `-n`, `count` adds `--quiet`. Exit `0`/`2` (+ `count --quiet` grep-like `1`) | IN |
-| Internal modules | `protokit.storage.{engine,source,registry,schema_source,cli,_where,_fields}` (implementation modules; import the public names from `protokit.storage`, never these directly; `_where.compile_where` + `_fields.compile_fields` are internal — only `WhereError` / `FieldSelectionError` + `project` are public) | INTERNAL |
+| Internal modules | `protokit.storage.{engine,source,registry,schema_source,cli,_where,_fields}` (implementation modules; import the public names from `protokit.storage`, never these directly; `_where.compile_where` is internal — only `WhereError` is public for `--where` — whereas the `--fields` projection exports `compile_fields` / `CompiledSelection` / `project` / `FieldSelectionError`) | INTERNAL |
 
 The surface above is a working draft. Names and signatures may
 shift before 1.0; the version bump + CHANGELOG section for each
@@ -1509,12 +1509,21 @@ confined step and never retained — upb copies into its arena, so the caller ma
 free the buffer the instant a record is consumed.
 
 **Field selection is available to Python too.** The CLI's `--fields` view is
-backed by a public `protokit.storage.project(message, selection) -> dict` helper:
-it returns the same faithful nested view (snake_case keys; no-presence fields
-filled at their default, presence-bearing fields by presence) for a parsed
-message. The selection is compiled against a message descriptor (the `--fields`
-paths are validated up front), and an invalid path raises the typed
-`protokit.storage.FieldSelectionError`.
+backed by a public two-step projection API. First compile a comma-separated
+dotted-path spec against a message descriptor with
+`protokit.storage.compile_fields(spec, descriptor) -> CompiledSelection` (paths
+are validated up front; an invalid path raises the typed
+`protokit.storage.FieldSelectionError`). Then prune a parsed message with
+`protokit.storage.project(message, selection) -> dict`, which returns the same
+faithful nested view as the CLI (snake_case keys; no-presence fields filled at
+their default, presence-bearing fields by presence):
+
+```python
+from protokit.storage import compile_fields, project
+
+selection = compile_fields("header.error_code,source", Order.DESCRIPTOR)
+view = project(order, selection)  # {"header": {"error_code": 0}, "source": "svc"}
+```
 
 ### Command line: `protokit storage`
 

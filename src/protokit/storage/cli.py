@@ -210,7 +210,7 @@ def _prepare(
     where_expr: str | None,
     fields: str | None = None,
     explicit_defaults: bool = False,
-    output_format: str = "json",
+    output_format: str = "human",  # matches the Click default; count_cmd omits it
 ) -> _Setup:
     """Validate flags, resolve the schema, and compile the predicate (exit 2 on fault).
 
@@ -218,10 +218,11 @@ def _prepare(
     (``--explicit-defaults`` is JSON only) are enforced here up front — before any
     record is read — so they fail cleanly with exit 2 regardless of how many
     records the data file holds (an empty file must not silently no-op R9).
-    ``count_cmd`` has neither flag and passes the JSON default, so neither check
-    fires for it.
+    ``count_cmd`` intentionally omits ``output_format`` (it has no output rows to
+    densify): it passes neither flag, so the ``explicit_defaults`` + ``human``
+    guard never fires for it regardless of this default.
     """
-    if fields and explicit_defaults:
+    if fields is not None and explicit_defaults:
         error_exit("--fields and --explicit-defaults are mutually exclusive")
     if explicit_defaults and output_format == "human":
         error_exit("--explicit-defaults is JSON only; use --format json")
@@ -251,7 +252,10 @@ def _prepare(
             error_exit(str(exc))
 
     selection: CompiledSelection | None = None
-    if fields:
+    if fields is not None:
+        # `is not None` (not truthiness): an empty/whitespace --fields '' must
+        # reach compile_fields so it raises the "empty selection" error (exit 2)
+        # rather than falling through to a full-record dump.
         try:
             selection = compile_fields(fields, resolved.message_class.DESCRIPTOR)
         except FieldSelectionError as exc:
@@ -297,30 +301,37 @@ def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
 def _flatten_view(view: dict[str, object], prefix: str = "") -> list[str]:
     """Flatten a projected dict into ``path: value`` lines (R13, human mode).
 
-    Nested dicts produced by *descending* a selected path (a singular submessage
-    along a dotted path, e.g. ``header.code``) are flattened to dotted-path keys
-    so the output mirrors the ``--fields`` paths. A *terminal* whose value is
-    itself a list or dict (a selected whole submessage, repeated field, or map)
-    is not a path to descend — it is one selected field's value — so it is
-    rendered compactly as JSON on a single ``path: <json>`` line. Scalar leaves
-    render plainly.
+    The line format per terminal kind:
 
-    Note that a flattened ``header.code`` line and a compact ``header: {...}``
-    line are unambiguous: descent only ever produces nested dicts from a
-    *non-terminal* path segment, and ``_graft`` only nests dicts for those
-    segments, so a terminal dict value always belongs to a whole-submessage/map
-    selection and is shown compactly. (The two cannot both occur for the same
-    key in one selection, since a path is either descended through or selected
-    whole.)
+    - A **non-empty dict** (either a descended dotted path like ``header.code``
+      or a selected whole submessage/map) is flattened recursively to
+      dotted-path keys, so the output mirrors the ``--fields`` paths.
+    - An **empty dict** renders as ``path: {}`` — a selected-but-empty submessage
+      or map stays visible instead of vanishing (it would otherwise contribute no
+      lines).
+    - A **non-empty list** (a selected repeated terminal) renders as compact JSON
+      on one ``path: [..]`` line.
+    - An **empty list** renders as ``path: []`` — a selected-but-empty repeated
+      field stays visible (same vanishing-terminal fix as the empty dict).
+    - A **scalar** leaf renders plainly as ``path: value``.
+
+    Note that a flattened ``header.code`` line and a whole-submessage ``header``
+    selection are unambiguous: a path is either descended through or selected
+    whole, so the two cannot both occur for the same key in one selection.
     """
     lines: list[str] = []
     for key, value in view.items():
         path = f"{prefix}{key}"
         if isinstance(value, dict):
-            # A nested dict from descending a dotted path -> keep flattening.
-            lines.extend(_flatten_view(value, f"{path}."))
+            if not value:
+                # A selected-but-empty submessage/map: keep it visible.
+                lines.append(f"{path}: {{}}")
+            else:
+                # A nested dict (descended dotted path or whole-submessage/map)
+                # -> keep flattening to dotted-path keys.
+                lines.extend(_flatten_view(value, f"{path}."))
         elif isinstance(value, list):
-            # A repeated terminal -> compact JSON (deferred line format, R13).
+            # A repeated terminal -> compact JSON (empty list stays visible as []).
             lines.append(f"{path}: {json.dumps(value, separators=(',', ':'))}")
         else:
             lines.append(f"{path}: {value}")
@@ -380,7 +391,9 @@ def _render(
     except Exception as exc:
         error_exit(f"failed to render record {record.record_index}: {exc}")
     header = f"# stream={record.stream_id} record={record.record_index}"
-    return f"{header}\n{body}" if body else header
+    # Preserve PR1.5's (R8) trailing-newline shape for an all-default (empty-body)
+    # record: `# stream=...\n`, not a bare header with no newline.
+    return f"{header}\n{body}" if body else f"{header}\n"
 
 
 def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:

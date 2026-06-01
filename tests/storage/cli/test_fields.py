@@ -39,6 +39,8 @@ message Event {
   int32 n = 3;
   optional int32 opt = 4;
   bool internal_flag = 5;
+  repeated int32 tags = 8;
+  map<string, int32> labels = 9;
   oneof choice {
     int32 a = 6;
     string b = 7;
@@ -52,10 +54,8 @@ def _run(runner: CliRunner, args: list[str]):  # noqa: ANN202
 
 
 @pytest.fixture(scope="module")
-def event_cls() -> type:
-    import tempfile
-
-    d = Path(tempfile.mkdtemp(prefix="cli_fields_"))
+def event_cls(tmp_path_factory: pytest.TempPathFactory) -> type:
+    d = tmp_path_factory.mktemp("cli_fields")
     p = d / "event.proto"
     p.write_text(_PROTO)
     return ProtoFileSchema(p, "demo.Event").resolve().message_class
@@ -308,3 +308,171 @@ class TestHumanFields:
         assert "header.code: 3" in result.output
         assert "source: svc" in result.output
         assert "n: 7" in result.output
+
+    def test_human_repeated_scalar_terminal_compact_json(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P2-1: a whole repeated-scalar terminal renders as compact JSON.
+        m = event_cls()
+        m.tags.extend([1, 2])
+        data = data_file_factory([m.SerializeToString()])
+        result = _run(
+            runner,
+            _argv("scan", data, proto_file, "--fields", "tags", "--format", "human"),
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "tags: [1,2]" in result.output
+
+    def test_human_map_terminal_flattened(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P2-1: a selected map terminal flattens to dotted-path keys.
+        m = event_cls()
+        m.labels["k"] = 3
+        data = data_file_factory([m.SerializeToString()])
+        result = _run(
+            runner,
+            _argv("scan", data, proto_file, "--fields", "labels", "--format", "human"),
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "labels.k: 3" in result.output
+
+    def test_human_empty_repeated_terminal_visible(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P2-1: a selected-but-empty repeated field stays visible as `path: []`
+        # (it is a no-presence field, filled empty) rather than vanishing.
+        data = data_file_factory([event_cls().SerializeToString()])
+        result = _run(
+            runner,
+            _argv("scan", data, proto_file, "--fields", "tags", "--format", "human"),
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "tags: []" in result.output
+
+    def test_human_empty_map_terminal_visible(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P2-1: a selected-but-empty map (a no-presence field, filled empty) stays
+        # visible as `path: {}` rather than contributing no lines and vanishing.
+        data = data_file_factory([event_cls().SerializeToString()])
+        result = _run(
+            runner,
+            _argv(
+                "scan", data, proto_file, "--fields", "labels", "--format", "human"
+            ),
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "labels: {}" in result.output
+
+    def test_human_empty_submessage_terminal_visible(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P2-1: a present-but-empty singular submessage (header set, code at its
+        # default 0 -> {code: 0}) flattens; but an empty submessage dict (no
+        # subfields rendered) would surface as `header: {}`. Header has only the
+        # no-presence scalar code, so a present header is {code: 0}; assert the
+        # selected whole-submessage path renders a visible line either way.
+        m = event_cls()
+        m.header.SetInParent()
+        data = data_file_factory([m.SerializeToString()])
+        result = _run(
+            runner,
+            _argv(
+                "scan", data, proto_file, "--fields", "header", "--format", "human"
+            ),
+        )
+        assert result.exit_code == 0, result.stderr
+        # header is present and its only field (code) is no-presence -> filled.
+        assert "header.code: 0" in result.output
+
+
+class TestEmptyFieldsSpec:
+    def test_empty_fields_is_exit_2_not_full_dump(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P1-1: --fields '' must reach compile_fields and raise "empty selection"
+        # (exit 2), NOT fall through to a full-record dump.
+        m = event_cls(source="svc", n=7)
+        data = data_file_factory([m.SerializeToString()])
+        result = _run(
+            runner,
+            _argv("scan", data, proto_file, "--fields", "", "--format", "json"),
+        )
+        assert result.exit_code == 2
+        assert "Error:" in result.stderr
+        assert "empty selection" in result.stderr
+        # Not a full dump: nothing rendered to stdout.
+        assert result.stdout == ""
+
+    def test_whitespace_fields_is_exit_2(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P1-1: whitespace-only --fields is equally an empty selection (exit 2).
+        m = event_cls(source="svc")
+        data = data_file_factory([m.SerializeToString()])
+        result = _run(
+            runner,
+            _argv("scan", data, proto_file, "--fields", "   ", "--format", "json"),
+        )
+        assert result.exit_code == 2
+        assert "Error:" in result.stderr
+        assert "empty selection" in result.stderr
+        assert result.stdout == ""
+
+    def test_empty_fields_with_explicit_defaults_is_exit_2(
+        self,
+        runner: CliRunner,
+        event_cls: type,
+        proto_file: Path,
+        data_file_factory: Callable[..., Path],
+    ) -> None:
+        # P1-1: --fields '' --explicit-defaults still fails cleanly with exit 2
+        # (the R14 mutual-exclusion guard fires on `fields is not None`, or the
+        # empty-selection error fires — either clean exit 2 is acceptable).
+        m = event_cls(source="svc")
+        data = data_file_factory([m.SerializeToString()])
+        result = _run(
+            runner,
+            _argv(
+                "scan",
+                data,
+                proto_file,
+                "--fields",
+                "",
+                "--explicit-defaults",
+                "--format",
+                "json",
+            ),
+        )
+        assert result.exit_code == 2
+        assert "Error:" in result.stderr
+        assert result.stdout == ""

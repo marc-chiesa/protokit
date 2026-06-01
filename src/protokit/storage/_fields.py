@@ -31,10 +31,13 @@ empty paths, empty or non-identifier segments, and unknown field names are all
 rejected up front with the sorted available-field-names message, exactly like
 ``_where``.
 
-``compile_fields`` and :class:`CompiledSelection` stay internal (``--fields`` is
-CLI sugar, mirroring how ``compile_where`` is internal); only :func:`project` and
-:class:`FieldSelectionError` are exported from ``protokit.storage`` (R11/R12 —
-library parity without widening the engine contract).
+``compile_fields``, :class:`CompiledSelection`, :func:`project`, and
+:class:`FieldSelectionError` are all exported from ``protokit.storage`` (R11/R12).
+Unlike ``--where`` (whose ``compile_where`` stays internal because the public API
+takes a ``predicate=`` callable directly), the ``--fields`` projection has no
+other public entry point: :func:`project` needs a :class:`CompiledSelection`, so
+``compile_fields`` and the dataclass are exported too — otherwise a library
+consumer could not build one without importing this private module.
 """
 
 from __future__ import annotations
@@ -134,6 +137,10 @@ def _walk_path(
     segment lists the sorted available field names. Mirrors
     ``_where._walk_path``, minus the terminal-kind rejection.
     """
+    if not path_str:
+        # Defense-in-depth (mirrors _where._walk_path); compile_fields already
+        # guards the empty-path case before calling, so this is belt-and-suspenders.
+        raise FieldSelectionError(spec, "empty field path")
     segments = path_str.split(".")
     fields: list[_d.FieldDescriptor] = []
     current = descriptor
@@ -293,16 +300,25 @@ def _graft(
     ``result`` at the nested path, creating intermediate dicts as needed. Every
     non-terminal segment is a singular submessage key (R2 forbids descent into
     repeated/map elements, enforced by ``compile_fields``), so each intermediate
-    is a ``dict``.
+    is normally a ``dict``.
+
+    The ``isinstance(src, dict)`` guards cover one exception: a non-terminal
+    segment whose ``message_type`` is a well-known type (Timestamp, Duration,
+    Value, ...) that ``MessageToDict`` renders as a *non-dict* (a string or
+    scalar) rather than a nested object. A path descending *into* such a WKT
+    (e.g. ``ts.seconds``) cannot be grafted, so it resolves to "absent" — no
+    crash, no wrong key — exactly like an unset presence-bearing ancestor.
     """
     src: dict[str, Any] = dense
     for seg in path[:-1]:
-        if seg not in src:
-            return  # presence-bearing ancestor unset -> nothing to graft
+        if not isinstance(src, dict) or seg not in src:
+            # Unset presence-bearing ancestor, or a WKT rendered as a non-dict
+            # that this dotted path tries to descend into -> nothing to graft.
+            return
         src = src[seg]
     terminal = path[-1]
-    if terminal not in src:
-        return  # presence-bearing terminal unset
+    if not isinstance(src, dict) or terminal not in src:
+        return  # presence-bearing terminal unset, or non-dict (WKT) parent
     dst = result
     for seg in path[:-1]:
         dst = dst.setdefault(seg, {})

@@ -57,10 +57,8 @@ def _run(runner: CliRunner, args: list[str]):  # noqa: ANN202
 
 
 @pytest.fixture(scope="module")
-def event_cls() -> type:
-    import tempfile
-
-    d = Path(tempfile.mkdtemp(prefix="cli_explicit_defaults_"))
+def event_cls(tmp_path_factory: pytest.TempPathFactory) -> type:
+    d = tmp_path_factory.mktemp("cli_explicit_defaults")
     p = d / "event.proto"
     p.write_text(_PROTO)
     return ProtoFileSchema(p, "demo.Event").resolve().message_class

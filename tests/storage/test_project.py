@@ -37,6 +37,8 @@ _PROTO = """\
 syntax = "proto3";
 package demo;
 
+import "google/protobuf/timestamp.proto";
+
 enum Color { RED = 0; GREEN = 1; BLUE = 2; }
 
 message Sub {
@@ -66,16 +68,14 @@ message Event {
     Sub sub_choice = 13;
   }
   string source = 14;
+  google.protobuf.Timestamp ts = 15;
 }
 """
 
 
 @pytest.fixture(scope="module")
-def event_cls() -> type:
-    import tempfile
-    from pathlib import Path
-
-    d = Path(tempfile.mkdtemp(prefix="project_"))
+def event_cls(tmp_path_factory: pytest.TempPathFactory) -> type:
+    d = tmp_path_factory.mktemp("project")
     p = d / "event.proto"
     p.write_text(_PROTO)
     return ProtoFileSchema(p, "demo.Event").resolve().message_class
@@ -195,6 +195,37 @@ class TestNonScalarTerminalsRecursiveFill:
         m.singular_sub.sopt = 0
         out = project(m, _sel("singular_sub", event_cls))
         assert out == {"singular_sub": {"si": 0, "sopt": 0}}
+
+
+# --- WKT descent: non-dict submessage render (P1-3) -------------------------
+
+
+class TestWellKnownTypeDescent:
+    """A WKT submessage (Timestamp) renders as a *non-dict* (a string) under
+    ``MessageToDict``. Descending *into* it (``ts.seconds``) must resolve to
+    "absent" — no crash, no wrong key — while selecting the whole ``ts`` shows
+    the WKT's string form."""
+
+    def test_descent_into_wkt_is_absent_not_crash(self, event_cls: type) -> None:
+        m = event_cls()
+        m.ts.seconds = 5  # ts is set, but it renders as a string, not a dict
+        out = project(m, _sel("ts.seconds", event_cls))
+        assert out == {}  # the descent finds a non-dict parent -> absent
+
+    def test_descent_into_wkt_when_unset_is_absent(self, event_cls: type) -> None:
+        # ts unset: presence-bearing ancestor missing -> also absent (same result).
+        out = project(event_cls(), _sel("ts.seconds", event_cls))
+        assert out == {}
+
+    def test_whole_wkt_terminal_renders_string_form(self, event_cls: type) -> None:
+        # Selecting the whole ts (a top-level terminal) renders the WKT's string
+        # form (RFC 3339), proving the guard only blocks *descent*, not selection.
+        m = event_cls()
+        m.ts.seconds = 5
+        out = project(m, _sel("ts", event_cls))
+        assert "ts" in out
+        assert isinstance(out["ts"], str)
+        assert out["ts"].startswith("1970-01-01T00:00:05")
 
 
 # --- Leaf type-mapping reused from proto ------------------------------------

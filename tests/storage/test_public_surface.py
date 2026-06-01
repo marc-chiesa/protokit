@@ -95,25 +95,39 @@ class TestPr15SurfaceAdditions:
 
 class TestPr2SurfaceAdditions:
     def test_new_public_symbols_resolve(self) -> None:
-        # U2 adds the projection helper + its resolver error type.
-        for name in ("project", "FieldSelectionError"):
+        # U2 adds the projection helper + its resolver error type; the PR2
+        # review widened the contract to also export the compiler + its
+        # compiled-selection dataclass (so a consumer can build a selection
+        # without reaching into the private _fields module).
+        for name in (
+            "project",
+            "FieldSelectionError",
+            "compile_fields",
+            "CompiledSelection",
+        ):
             assert hasattr(storage, name), name
             assert name in storage.__all__, name
 
     def test_all_stays_sorted(self) -> None:
         assert storage.__all__ == sorted(storage.__all__)
 
-    def test_compile_fields_and_selection_stay_internal(self) -> None:
-        # Mirror compile_where: only the error type + projection helper are
-        # public; the compiler and its compiled-selection dataclass are not.
-        for name in ("compile_fields", "CompiledSelection"):
-            assert name not in storage.__all__
-            assert not hasattr(storage, name)
-
     def test_field_selection_error_is_storage_error(self) -> None:
         from protokit.storage import FieldSelectionError, StorageError
 
         assert issubclass(FieldSelectionError, StorageError)
+
+    def test_full_projection_path_via_public_surface_only(self) -> None:
+        # The public contract is compile_fields(spec, descriptor) -> selection;
+        # project(message, selection) -> dict. Exercise the FULL path using ONLY
+        # the package-top imports (no private _fields module).
+        from protokit.storage import compile_fields, project
+
+        fdp = file_proto("a.proto", "a", message="A")
+        schema = FileDescriptorSetSchema(fds(fdp), "a.A")
+        message_cls = schema.resolve().message_class
+        selection = compile_fields("x", message_cls.DESCRIPTOR)
+        view = project(message_cls(x=7), selection)
+        assert view == {"x": 7}
 
 
 class TestReadmeDocsPresence:
