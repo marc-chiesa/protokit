@@ -15,6 +15,38 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Added
+- **`protokit storage` field selection (`--fields`) + dense full-record JSON
+  (`--explicit-defaults`) (PR2).** `protokit storage scan` / `head` (not `count`)
+  gain `--fields a,b.c` — a comma-separated list of dotted field paths that emits
+  a *faithful nested view* of just the named fields with **snake_case** keys (the
+  keys match the paths you typed). Faithfulness is split by presence class:
+  **no-presence fields** (implicit proto3 scalars, repeated, map, enum) are shown
+  at their default when defaulted — so `--fields error_code` emits
+  `{"error_code": 0}` rather than dropping the field — while **presence-bearing
+  fields** (proto3 `optional`, `oneof` members, singular submessages) are shown
+  only when actually set and are never fabricated. Selecting a whole submessage
+  (`--fields header`) emits a dense-filled nested object (every no-presence
+  sub-field at its default), not a sparse echo, and the same rule applies
+  recursively; leaf values reuse proto's JSON type-mapping (enums by name, int64
+  as string, bytes as base64). A path may name a scalar, a whole singular
+  submessage, a whole repeated/map field, or a `oneof` member, but may not descend
+  into repeated/map elements (rejected up front, exit 2). `--fields` composes with
+  `--where` (the predicate runs on the full message first, so it may reference
+  unselected fields); under `--format human` the view renders as `path: value`
+  lines. A new `--explicit-defaults` flag (**JSON only**) makes a *full* record
+  dense — every no-presence field filled at its default, presence-bearing fields
+  still by presence — keeping **camelCase** keys as a density variant of the
+  default `--format json`; under `--format human` it is a clean error (exit 2).
+  The snake_case-vs-camelCase split is deliberate: `--fields` matches the dotted
+  paths, `--explicit-defaults` stays byte-aligned with the plain JSON it densifies.
+  `--fields` and `--explicit-defaults` are mutually exclusive (clean error, exit
+  2). New public library surface: `protokit.storage.project(message, selection) ->
+  dict` (the render-time projection that produces the faithful view; the
+  `selection` is compiled against a message descriptor) and the typed
+  `protokit.storage.FieldSelectionError`. The scan engine is unchanged —
+  selection/projection is a render-layer concern.
+
 ## 0.9.0 — 2026-05-31
 
 ### Changed — BREAKING — message differ left/right value terminology

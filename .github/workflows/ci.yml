@@ -155,6 +155,61 @@ jobs:
         run: pytest tests/ -v
 
   # =====================================================================
+  # Storage protobuf-floor job — pin the lower bound and verify storage.
+  # =====================================================================
+  #
+  # PR2 (`protokit storage --fields` / `--explicit-defaults`) fills
+  # no-presence fields via a json_format kwarg that was RENAMED across
+  # the supported `protobuf>=4.21.0,<6` range:
+  # `including_default_value_fields` (4.21–5.26) became
+  # `always_print_fields_with_no_presence` (5.27+), and the old name
+  # raises TypeError on 5.27+. The storage shim (`no_presence_kwarg` in
+  # src/protokit/storage/_fields.py) detects the supported name at
+  # import. The `test` job above always resolves the latest in-range
+  # protobuf (5.x → new name), so without this job the old-name path
+  # would ship untested. This cell pins the floor (protobuf 4.25.x, the
+  # newest 4.x line) and runs the storage suite — including the
+  # no-presence-fill characterization tests — so the old-kwarg path
+  # stays verified. Scoped to tests/storage: PR2 introduced the only
+  # version-sensitive surface. (Verified locally before landing: 4.25's
+  # old kwarg produces fill output identical to 5.27's new kwarg for
+  # every presence class — no-presence filled, presence-bearing omitted.)
+  storage-protobuf-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system protoc
+        # apt protobuf-compiler — the ProtoFileSchema-backed storage
+        # tests compile .proto via protoc (the 0.7.1 WKT auto-discovery
+        # makes apt's split-package layout work). Mirrors the `test` job.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install package + dev deps
+        run: pip install -e ".[dev]"
+
+      - name: Pin protobuf to the supported floor (4.25.x)
+        # Force the lower bound so the no-presence-fill shim's old-kwarg
+        # (`including_default_value_fields`) path is the one under test.
+        run: |
+          pip install "protobuf==4.25.*"
+          python -c "import google.protobuf as g; v = g.__version__; assert v.startswith('4.25.'), v; print('protobuf', v)"
+
+      - name: Run storage suite on the protobuf floor
+        run: pytest tests/storage -v
+
+  # =====================================================================
   # Parity job — buf v1.69.0 cross-tool parity checks.
   # =====================================================================
   #

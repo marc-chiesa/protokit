@@ -29,6 +29,7 @@ the grep-like signal: 1 = zero matches, 0 = at least one (mirroring ``diff
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -50,6 +51,13 @@ from protokit.storage import (
     StreamRegistry,
     scan,
 )
+from protokit.storage._fields import (
+    CompiledSelection,
+    FieldSelectionError,
+    compile_fields,
+    no_presence_kwarg,
+    project,
+)
 from protokit.storage._where import WhereError, compile_where
 from protokit.storage.schema_source import FileDescriptorSetSchema, ProtoFileSchema
 from protokit.storage.sources.length_delimited import length_delimited
@@ -68,6 +76,8 @@ class _Setup(NamedTuple):
     registry: StreamRegistry
     stream_id: str
     predicate: Callable[[Message], bool] | None
+    selection: CompiledSelection | None
+    explicit_defaults: bool
 
 
 def _common_options(command: Callable[..., None]) -> Callable[..., None]:
@@ -132,6 +142,42 @@ def _format_option(command: Callable[..., None]) -> Callable[..., None]:
     )(command)
 
 
+def _fields_option(command: Callable[..., None]) -> Callable[..., None]:
+    """Add ``--fields`` to a command (scan/head ONLY — never ``count``).
+
+    Deliberately *not* part of ``_common_options``: ``count_cmd`` shares that
+    decorator but declares no ``fields`` parameter, so a common ``--fields``
+    option would make Click raise ``TypeError`` on a plain ``protokit storage
+    count``. Keeping ``--fields`` off ``count`` also gives R1's "count rejects
+    --fields" for free (Click emits ``No such option: --fields``, exit 2).
+    """
+    return click.option(
+        "--fields",
+        "fields",
+        metavar="PATHS",
+        help="Project to these comma-separated dotted field paths "
+        "(e.g. 'header.code,source'). snake_case keys; faithful nested view.",
+    )(command)
+
+
+def _explicit_defaults_option(command: Callable[..., None]) -> Callable[..., None]:
+    """Add ``--explicit-defaults`` to a command (scan/head ONLY — never ``count``).
+
+    A JSON-only density flag (R7/R9): with ``--format json`` it renders each
+    full record with no-presence fields filled at their default (camelCase keys),
+    a density variant of the shipped PR1.5 JSON. Kept off ``count`` (which has no
+    output rows to densify) the same way ``--fields`` is, and mutually exclusive
+    with ``--fields`` (R14, enforced in :func:`_prepare`).
+    """
+    return click.option(
+        "--explicit-defaults",
+        "explicit_defaults",
+        is_flag=True,
+        help="JSON only: emit a dense full record — fill no-presence fields at "
+        "their default (camelCase keys). Mutually exclusive with --fields.",
+    )(command)
+
+
 @click.group()
 def main() -> None:
     """Scan, head, and count stored protobuf (length-delimited frames)."""
@@ -162,8 +208,24 @@ def _prepare(
     proto_paths: tuple[str, ...],
     type_name: str | None,
     where_expr: str | None,
+    fields: str | None = None,
+    explicit_defaults: bool = False,
+    output_format: str = "human",  # matches the Click default; count_cmd omits it
 ) -> _Setup:
-    """Validate flags, resolve the schema, and compile the predicate (exit 2 on fault)."""
+    """Validate flags, resolve the schema, and compile the predicate (exit 2 on fault).
+
+    R14 (``--fields`` + ``--explicit-defaults`` mutually exclusive) and R9
+    (``--explicit-defaults`` is JSON only) are enforced here up front — before any
+    record is read — so they fail cleanly with exit 2 regardless of how many
+    records the data file holds (an empty file must not silently no-op R9).
+    ``count_cmd`` intentionally omits ``output_format`` (it has no output rows to
+    densify): it passes neither flag, so the ``explicit_defaults`` + ``human``
+    guard never fires for it regardless of this default.
+    """
+    if fields is not None and explicit_defaults:
+        error_exit("--fields and --explicit-defaults are mutually exclusive")
+    if explicit_defaults and output_format == "human":
+        error_exit("--explicit-defaults is JSON only; use --format json")
     chosen = [name for name, val in (("--desc", desc), ("--proto", proto)) if val]
     if not chosen:
         error_exit("a schema source is required: --desc or --proto")
@@ -188,7 +250,17 @@ def _prepare(
             predicate = compile_where(where_expr, resolved.message_class.DESCRIPTOR)
         except WhereError as exc:
             error_exit(str(exc))
-    return _Setup(registry, stream_id, predicate)
+
+    selection: CompiledSelection | None = None
+    if fields is not None:
+        # `is not None` (not truthiness): an empty/whitespace --fields '' must
+        # reach compile_fields so it raises the "empty selection" error (exit 2)
+        # rather than falling through to a full-record dump.
+        try:
+            selection = compile_fields(fields, resolved.message_class.DESCRIPTOR)
+        except FieldSelectionError as exc:
+            error_exit(str(exc))
+    return _Setup(registry, stream_id, predicate, selection, explicit_defaults)
 
 
 class _Run(NamedTuple):
@@ -226,22 +298,102 @@ def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
     return _Run(result, None)
 
 
-def _render(record: ScanRecord, output_format: str) -> str:
-    """Render one record; convert ANY render failure to a typed exit-2 (KD-6)."""
+def _flatten_view(view: dict[str, object], prefix: str = "") -> list[str]:
+    """Flatten a projected dict into ``path: value`` lines (R13, human mode).
+
+    The line format per terminal kind:
+
+    - A **non-empty dict** (either a descended dotted path like ``header.code``
+      or a selected whole submessage/map) is flattened recursively to
+      dotted-path keys, so the output mirrors the ``--fields`` paths.
+    - An **empty dict** renders as ``path: {}`` — a selected-but-empty submessage
+      or map stays visible instead of vanishing (it would otherwise contribute no
+      lines).
+    - A **non-empty list** (a selected repeated terminal) renders as compact JSON
+      on one ``path: [..]`` line.
+    - An **empty list** renders as ``path: []`` — a selected-but-empty repeated
+      field stays visible (same vanishing-terminal fix as the empty dict).
+    - A **scalar** leaf renders plainly as ``path: value``.
+
+    Note that a flattened ``header.code`` line and a whole-submessage ``header``
+    selection are unambiguous: a path is either descended through or selected
+    whole, so the two cannot both occur for the same key in one selection.
+    """
+    lines: list[str] = []
+    for key, value in view.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            if not value:
+                # A selected-but-empty submessage/map: keep it visible.
+                lines.append(f"{path}: {{}}")
+            else:
+                # A nested dict (descended dotted path or whole-submessage/map)
+                # -> keep flattening to dotted-path keys.
+                lines.extend(_flatten_view(value, f"{path}."))
+        elif isinstance(value, list):
+            # A repeated terminal -> compact JSON (empty list stays visible as []).
+            lines.append(f"{path}: {json.dumps(value, separators=(',', ':'))}")
+        else:
+            lines.append(f"{path}: {value}")
+    return lines
+
+
+def _render(
+    record: ScanRecord,
+    output_format: str,
+    selection: CompiledSelection | None,
+    explicit_defaults: bool = False,
+) -> str:
+    """Render one record; convert ANY render failure to a typed exit-2 (KD-6).
+
+    With ``selection`` (``--fields``): project the message to the selected paths
+    (the faithful nested view, KTD1) and render that view — compact JSONL for
+    ``--format json``, ``path: value`` lines for ``--format human`` (R13).
+
+    With ``explicit_defaults`` (``--explicit-defaults``, JSON only): render the
+    full record dense — no-presence fields filled at their default, presence-
+    bearing fields still by presence — in camelCase, a density variant of the
+    shipped PR1.5 JSON (R7/R8/R10, KTD4). The JSON-only rule (R9) and mutual
+    exclusivity with ``--fields`` (R14) are enforced up front in :func:`_prepare`,
+    so by the time a record reaches here ``explicit_defaults`` only ever pairs
+    with ``--format json`` and never with a selection.
+
+    Without either: the shipped PR1.5 full-record render.
+    """
     message = record.message
     if output_format == "json":
         try:
-            rendered: str = json_format.MessageToJson(message, indent=None)
+            if selection is not None:
+                view = project(message, selection)
+                rendered: str = json.dumps(view, separators=(",", ":"))
+            elif explicit_defaults:
+                # Dense full record: fill no-presence fields at their default,
+                # leave presence-bearing fields by presence. camelCase keys
+                # (no preserving_proto_field_name) keep it a density variant of
+                # the plain PR1.5 JSON below (R8/R10, KTD4). The fill kwarg is
+                # the KTD2 shim, reused — not re-detected.
+                rendered = json_format.MessageToJson(
+                    message, indent=None, **{no_presence_kwarg(): True}
+                )
+            else:
+                rendered = json_format.MessageToJson(message, indent=None)
         except Exception as exc:  # defensive: render errors are outside the taxonomy
             error_exit(
                 f"failed to render record {record.record_index} as JSON: {exc}"
             )
         return rendered
     try:
-        body: str = text_format.MessageToString(message)
+        if selection is not None:
+            view = project(message, selection)
+            body = "\n".join(_flatten_view(view))
+        else:
+            body = text_format.MessageToString(message).rstrip()
     except Exception as exc:
         error_exit(f"failed to render record {record.record_index}: {exc}")
-    return f"# stream={record.stream_id} record={record.record_index}\n{body.rstrip()}"
+    header = f"# stream={record.stream_id} record={record.record_index}"
+    # Preserve PR1.5's (R8) trailing-newline shape for an all-default (empty-body)
+    # record: `# stream=...\n`, not a bare header with no newline.
+    return f"{header}\n{body}" if body else f"{header}\n"
 
 
 def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:
@@ -271,6 +423,8 @@ def _open_data(path: Path) -> BinaryIO:
 @main.command(name="scan")
 @_common_options
 @_format_option
+@_fields_option
+@_explicit_defaults_option
 def scan_cmd(
     data_file: Path,
     desc: Path | None,
@@ -280,16 +434,32 @@ def scan_cmd(
     where_expr: str | None,
     on_error: str,
     output_format: str,
+    fields: str | None,
+    explicit_defaults: bool,
 ) -> None:
     """Dump every (matching) record readably — the protoc --decode replacement."""
-    setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr)
+    setup = _prepare(
+        data_file,
+        desc,
+        proto,
+        proto_paths,
+        type_name,
+        where_expr,
+        fields,
+        explicit_defaults,
+        output_format,
+    )
     yielded = 0
     with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:
             for record in run.result:
-                click.echo(_render(record, output_format))
+                click.echo(
+                    _render(
+                        record, output_format, setup.selection, setup.explicit_defaults
+                    )
+                )
                 yielded += 1
         except _TYPED_CLI_ERRORS as exc:
             error_exit(str(exc))
@@ -300,6 +470,8 @@ def scan_cmd(
 @main.command(name="head")
 @_common_options
 @_format_option
+@_fields_option
+@_explicit_defaults_option
 @click.option(
     "-n",
     "limit",
@@ -316,10 +488,22 @@ def head_cmd(
     where_expr: str | None,
     on_error: str,
     output_format: str,
+    fields: str | None,
+    explicit_defaults: bool,
     limit: int,
 ) -> None:
     """Show the first N (matching) records (default N=10)."""
-    setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr)
+    setup = _prepare(
+        data_file,
+        desc,
+        proto,
+        proto_paths,
+        type_name,
+        where_expr,
+        fields,
+        explicit_defaults,
+        output_format,
+    )
     yielded = 0
     with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
@@ -328,7 +512,14 @@ def head_cmd(
         if limit > 0:
             try:
                 for record in run.result:
-                    click.echo(_render(record, output_format))
+                    click.echo(
+                        _render(
+                            record,
+                            output_format,
+                            setup.selection,
+                            setup.explicit_defaults,
+                        )
+                    )
                     yielded += 1
                     if yielded >= limit:
                         break

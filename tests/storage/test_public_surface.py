@@ -93,6 +93,43 @@ class TestPr15SurfaceAdditions:
         assert "route" in typing.get_args(OnError)
 
 
+class TestPr2SurfaceAdditions:
+    def test_new_public_symbols_resolve(self) -> None:
+        # U2 adds the projection helper + its resolver error type; the PR2
+        # review widened the contract to also export the compiler + its
+        # compiled-selection dataclass (so a consumer can build a selection
+        # without reaching into the private _fields module).
+        for name in (
+            "project",
+            "FieldSelectionError",
+            "compile_fields",
+            "CompiledSelection",
+        ):
+            assert hasattr(storage, name), name
+            assert name in storage.__all__, name
+
+    def test_all_stays_sorted(self) -> None:
+        assert storage.__all__ == sorted(storage.__all__)
+
+    def test_field_selection_error_is_storage_error(self) -> None:
+        from protokit.storage import FieldSelectionError, StorageError
+
+        assert issubclass(FieldSelectionError, StorageError)
+
+    def test_full_projection_path_via_public_surface_only(self) -> None:
+        # The public contract is compile_fields(spec, descriptor) -> selection;
+        # project(message, selection) -> dict. Exercise the FULL path using ONLY
+        # the package-top imports (no private _fields module).
+        from protokit.storage import compile_fields, project
+
+        fdp = file_proto("a.proto", "a", message="A")
+        schema = FileDescriptorSetSchema(fds(fdp), "a.A")
+        message_cls = schema.resolve().message_class
+        selection = compile_fields("x", message_cls.DESCRIPTOR)
+        view = project(message_cls(x=7), selection)
+        assert view == {"x": 7}
+
+
 class TestReadmeDocsPresence:
     def test_readme_mentions_storage_surface(self) -> None:
         readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")

@@ -8,7 +8,7 @@ Python toolkit for Protocol Buffers — four pillars: message diffing, schema co
 
 `protokit lint` — descriptor-level linting with full **buf BASIC parity** (26/26 rules), AIP-122 naming, a `[tool.protokit.lint]` pyproject table, and pluggable rule packs.
 
-`protokit storage` — schema-aware scan/filter over **stored** protobuf (length-delimited files, a pybind11 `memoryview`, any buffer source): `scan` / `head` / `count` with a minimal `--where` filter and safe concurrent multi-version scanning via isolated per-stream descriptor pools.
+`protokit storage` — schema-aware scan/filter over **stored** protobuf (length-delimited files, a pybind11 `memoryview`, any buffer source): `scan` / `head` / `count` with a minimal `--where` filter, presence-faithful field selection (`--fields`), dense full-record JSON (`--explicit-defaults`), and safe concurrent multi-version scanning via isolated per-stream descriptor pools.
 
 ## Installation
 
@@ -1204,10 +1204,11 @@ accumulation.
 | Python class | `protokit.storage.StreamRegistry` (`register_stream(stream_id, schema_source)` resolves once into an isolated pool; `get(stream_id) -> ResolvedSchema \| None`; `stream_id in registry`) | IN |
 | Python protocol | `protokit.storage.SchemaSource` (`resolve() -> ResolvedSchema`, self-contained — no `name` arg) + `ResolvedSchema` NamedTuple `(pool, message_class)` | IN |
 | Python class | `protokit.storage.FileDescriptorSetSchema(fds, message_type_name)` / `EmbeddedSchema((fds_bytes, fq_name))` / `ProtoFileSchema(proto_path, message_type_name, *, proto_paths=())` (the three schema forms; the last compiles `.proto` via the non-exiting compile path) | IN |
-| Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` / `SchemaCompileError(proto_path, detail)` / `WhereError(expr, reason)` | IN |
+| Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` / `SchemaCompileError(proto_path, detail)` / `WhereError(expr, reason)` / `FieldSelectionError(spec, reason)` | IN |
+| Python function | `protokit.storage.compile_fields(spec, descriptor) -> CompiledSelection` then `protokit.storage.project(message, selection) -> dict` (the two-step `--fields` projection: `compile_fields` validates a comma-separated dotted-path spec against a message descriptor — an invalid path raises `FieldSelectionError`; `project` prunes a parsed message to the faithful nested view — snake_case keys; no-presence fields filled, presence-bearing by presence) | IN |
 | Python function | `protokit.storage.sources.length_delimited(file, *, stream_id, max_frame_size=64*1024*1024)` / `per_message_view(buffers, *, stream_id)` (reference frame adapters — examples of the boundary, not protokit's framing taxonomy) | IN |
-| CLI | `protokit storage scan\|head\|count <file> (--desc\|--proto) --type <fqn> [--where EXPR] [--on-error raise\|skip\|warn]` — `scan`/`head` add `--format human\|json`, `head` adds `-n`, `count` adds `--quiet`. Exit `0`/`2` (+ `count --quiet` grep-like `1`) | IN |
-| Internal modules | `protokit.storage.{engine,source,registry,schema_source,cli,_where}` (implementation modules; import the public names from `protokit.storage`, never these directly; `_where.compile_where` is internal — only `WhereError` is public) | INTERNAL |
+| CLI | `protokit storage scan\|head\|count <file> (--desc\|--proto) --type <fqn> [--where EXPR] [--on-error raise\|skip\|warn]` — `scan`/`head` add `--format human\|json`, `--fields PATHS` (snake_case faithful view), `--explicit-defaults` (JSON-only dense full record, camelCase; mutually exclusive with `--fields`); `head` adds `-n`, `count` adds `--quiet`. Exit `0`/`2` (+ `count --quiet` grep-like `1`) | IN |
+| Internal modules | `protokit.storage.{engine,source,registry,schema_source,cli,_where,_fields}` (implementation modules; import the public names from `protokit.storage`, never these directly; `_where.compile_where` is internal — only `WhereError` is public for `--where` — whereas the `--fields` projection exports `compile_fields` / `CompiledSelection` / `project` / `FieldSelectionError`) | INTERNAL |
 
 The surface above is a working draft. Names and signatures may
 shift before 1.0; the version bump + CHANGELOG section for each
@@ -1507,6 +1508,23 @@ nothing is collected). Reading `.errors` before the iterator is exhausted raises
 confined step and never retained — upb copies into its arena, so the caller may
 free the buffer the instant a record is consumed.
 
+**Field selection is available to Python too.** The CLI's `--fields` view is
+backed by a public two-step projection API. First compile a comma-separated
+dotted-path spec against a message descriptor with
+`protokit.storage.compile_fields(spec, descriptor) -> CompiledSelection` (paths
+are validated up front; an invalid path raises the typed
+`protokit.storage.FieldSelectionError`). Then prune a parsed message with
+`protokit.storage.project(message, selection) -> dict`, which returns the same
+faithful nested view as the CLI (snake_case keys; no-presence fields filled at
+their default, presence-bearing fields by presence):
+
+```python
+from protokit.storage import compile_fields, project
+
+selection = compile_fields("header.error_code,source", Order.DESCRIPTOR)
+view = project(order, selection)  # {"header": {"error_code": 0}, "source": "svc"}
+```
+
 ### Command line: `protokit storage`
 
 `scan` / `head` / `count` put a command line over the engine — the `protoc
@@ -1542,6 +1560,66 @@ defaults, so `header.code == 0` matches a record with no `header`.
 fault to stderr and continue). **Recovery limit:** with the length-delimited
 reader a *framing* fault (a truncated/oversized frame) ends the scan even under
 `skip`/`warn` — only *decode* and *unknown-stream* faults are recovered past.
+
+#### Project to specific fields: `--fields`
+
+`--fields` (on `scan` / `head`; not `count`) emits a faithful nested view of just
+the named fields — a comma-separated list of dotted paths — with snake_case keys
+that match the paths you typed:
+
+```bash
+# Just two fields, as compact JSONL.
+protokit storage scan orders.bin --desc orders.desc --type myapp.Order \
+    --fields header.error_code,source --format json
+# {"header":{"error_code":0},"source":"web"}
+
+# --fields composes with --where (the predicate runs on the FULL message first,
+# so it may reference fields you didn't select).
+protokit storage scan orders.bin --desc orders.desc --type myapp.Order \
+    --fields source --where 'internal_flag == true' --format json
+```
+
+**Defaulted fields survive selection (the key point).** Faithfulness is split by
+*presence class*. **No-presence fields** — implicit (proto3) scalars, repeated,
+map, and enum fields — are shown at their default when defaulted, so
+`--fields error_code` emits `{"error_code": 0}` rather than dropping the field and
+returning `{}`. **Presence-bearing fields** — proto3 `optional` scalars, `oneof`
+members, and singular submessages — are shown only when actually set, and are
+never fabricated: an unset `optional`, an inactive `oneof` member, or a leaf under
+an unset submessage simply does not appear.
+
+**Selecting a whole submessage** (`--fields header`) emits a *dense-filled* nested
+object — every no-presence sub-field at its default — not a sparse echo of only
+the set sub-fields. The same presence-class rule applies recursively inside it
+(nested no-presence fields fill; nested presence-bearing fields appear only when
+set). Leaf values reuse proto's JSON type-mapping (enums by name, int64 as string,
+bytes as base64). `--fields` may name a scalar, a whole singular submessage, a
+whole repeated or map field, or a `oneof` member, but may not descend into
+repeated/map *elements* (e.g. `tags.0` is rejected, exit 2). Under
+`--format human`, the view renders as `path: value` lines built from the same
+projection — so a selected defaulted field is visible there too.
+
+#### Dense full records: `--explicit-defaults`
+
+`--explicit-defaults` (on `scan` / `head`; **JSON only**) makes a *full* record
+dense: every no-presence field is filled at its default; presence-bearing fields
+stay by presence. It is a density variant of the default `--format json` — keys
+stay **camelCase**, matching the plain JSON it densifies:
+
+```bash
+protokit storage scan orders.bin --desc orders.desc --type myapp.Order \
+    --explicit-defaults --format json
+# {"errorCode":0,"source":"web",...}   every no-presence field present
+```
+
+Without the flag, full-record JSON is unchanged (camelCase, defaults omitted).
+Under `--format human` it is a clean error (exit 2), not a silent no-op.
+
+**Key casing differs between the two flags by design:** the `--fields` view is
+**snake_case** (so rendered keys match the dotted paths you select);
+`--explicit-defaults` is **camelCase** (so it stays byte-aligned with the default
+JSON). `--fields` and `--explicit-defaults` are **mutually exclusive** — passing
+both is a clean error (exit 2).
 
 **Exit codes:** `0` success, `2` error (a bad flag, an unresolved schema, a
 malformed `--where`, or a data fault under `--on-error raise`). `count --quiet`

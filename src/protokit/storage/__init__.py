@@ -25,8 +25,15 @@ Public surface:
 - :class:`SchemaSource` / :class:`ResolvedSchema` and the concrete
   :class:`FileDescriptorSetSchema` / :class:`EmbeddedSchema` / :class:`ProtoFileSchema`
   — schema resolution (the last compiles ``.proto`` source).
+- :func:`compile_fields` / :class:`CompiledSelection` / :func:`project` — the
+  ``--fields`` projection API: ``compile_fields(spec, descriptor)`` validates a
+  comma-separated dotted-path spec into a :class:`CompiledSelection`, and
+  ``project(message, selection)`` prunes a parsed message to it, yielding the
+  faithful nested view. Both are exported so a library consumer can build a
+  selection without reaching into the private ``_fields`` module.
 - :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
-  :class:`SchemaCompileError` / :class:`WhereError` — the typed exception hierarchy.
+  :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError`
+  — the typed exception hierarchy.
 - ``OnError`` — the ``Literal['raise', 'skip', 'collect', 'route']`` policy type.
 
 The reference frame adapters live in :mod:`protokit.storage.sources`
@@ -37,6 +44,12 @@ rather than re-exported here.
 
 from __future__ import annotations
 
+from protokit.storage._fields import (
+    CompiledSelection,
+    FieldSelectionError,
+    compile_fields,
+    project,
+)
 from protokit.storage._where import WhereError
 from protokit.storage.engine import OnError, ScanRecord, ScanResult, scan
 from protokit.storage.registry import DuplicateStreamError, StreamRegistry
@@ -51,8 +64,10 @@ from protokit.storage.schema_source import (
 from protokit.storage.source import FrameError, Source, StorageError
 
 __all__ = [
+    "CompiledSelection",
     "DuplicateStreamError",
     "EmbeddedSchema",
+    "FieldSelectionError",
     "FileDescriptorSetSchema",
     "FrameError",
     "OnError",
@@ -66,5 +81,7 @@ __all__ = [
     "StorageError",
     "StreamRegistry",
     "WhereError",
+    "compile_fields",
+    "project",
     "scan",
 ]
