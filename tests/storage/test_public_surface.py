@@ -93,6 +93,29 @@ class TestPr15SurfaceAdditions:
         assert "route" in typing.get_args(OnError)
 
 
+class TestPr2SurfaceAdditions:
+    def test_new_public_symbols_resolve(self) -> None:
+        # U2 adds the projection helper + its resolver error type.
+        for name in ("project", "FieldSelectionError"):
+            assert hasattr(storage, name), name
+            assert name in storage.__all__, name
+
+    def test_all_stays_sorted(self) -> None:
+        assert storage.__all__ == sorted(storage.__all__)
+
+    def test_compile_fields_and_selection_stay_internal(self) -> None:
+        # Mirror compile_where: only the error type + projection helper are
+        # public; the compiler and its compiled-selection dataclass are not.
+        for name in ("compile_fields", "CompiledSelection"):
+            assert name not in storage.__all__
+            assert not hasattr(storage, name)
+
+    def test_field_selection_error_is_storage_error(self) -> None:
+        from protokit.storage import FieldSelectionError, StorageError
+
+        assert issubclass(FieldSelectionError, StorageError)
+
+
 class TestReadmeDocsPresence:
     def test_readme_mentions_storage_surface(self) -> None:
         readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
