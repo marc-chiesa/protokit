@@ -55,6 +55,7 @@ from protokit.storage._fields import (
     CompiledSelection,
     FieldSelectionError,
     compile_fields,
+    no_presence_kwarg,
     project,
 )
 from protokit.storage._where import WhereError, compile_where
@@ -76,6 +77,7 @@ class _Setup(NamedTuple):
     stream_id: str
     predicate: Callable[[Message], bool] | None
     selection: CompiledSelection | None
+    explicit_defaults: bool
 
 
 def _common_options(command: Callable[..., None]) -> Callable[..., None]:
@@ -158,6 +160,24 @@ def _fields_option(command: Callable[..., None]) -> Callable[..., None]:
     )(command)
 
 
+def _explicit_defaults_option(command: Callable[..., None]) -> Callable[..., None]:
+    """Add ``--explicit-defaults`` to a command (scan/head ONLY — never ``count``).
+
+    A JSON-only density flag (R7/R9): with ``--format json`` it renders each
+    full record with no-presence fields filled at their default (camelCase keys),
+    a density variant of the shipped PR1.5 JSON. Kept off ``count`` (which has no
+    output rows to densify) the same way ``--fields`` is, and mutually exclusive
+    with ``--fields`` (R14, enforced in :func:`_prepare`).
+    """
+    return click.option(
+        "--explicit-defaults",
+        "explicit_defaults",
+        is_flag=True,
+        help="JSON only: emit a dense full record — fill no-presence fields at "
+        "their default (camelCase keys). Mutually exclusive with --fields.",
+    )(command)
+
+
 @click.group()
 def main() -> None:
     """Scan, head, and count stored protobuf (length-delimited frames)."""
@@ -189,8 +209,22 @@ def _prepare(
     type_name: str | None,
     where_expr: str | None,
     fields: str | None = None,
+    explicit_defaults: bool = False,
+    output_format: str = "json",
 ) -> _Setup:
-    """Validate flags, resolve the schema, and compile the predicate (exit 2 on fault)."""
+    """Validate flags, resolve the schema, and compile the predicate (exit 2 on fault).
+
+    R14 (``--fields`` + ``--explicit-defaults`` mutually exclusive) and R9
+    (``--explicit-defaults`` is JSON only) are enforced here up front — before any
+    record is read — so they fail cleanly with exit 2 regardless of how many
+    records the data file holds (an empty file must not silently no-op R9).
+    ``count_cmd`` has neither flag and passes the JSON default, so neither check
+    fires for it.
+    """
+    if fields and explicit_defaults:
+        error_exit("--fields and --explicit-defaults are mutually exclusive")
+    if explicit_defaults and output_format == "human":
+        error_exit("--explicit-defaults is JSON only; use --format json")
     chosen = [name for name, val in (("--desc", desc), ("--proto", proto)) if val]
     if not chosen:
         error_exit("a schema source is required: --desc or --proto")
@@ -222,7 +256,7 @@ def _prepare(
             selection = compile_fields(fields, resolved.message_class.DESCRIPTOR)
         except FieldSelectionError as exc:
             error_exit(str(exc))
-    return _Setup(registry, stream_id, predicate, selection)
+    return _Setup(registry, stream_id, predicate, selection, explicit_defaults)
 
 
 class _Run(NamedTuple):
@@ -294,14 +328,26 @@ def _flatten_view(view: dict[str, object], prefix: str = "") -> list[str]:
 
 
 def _render(
-    record: ScanRecord, output_format: str, selection: CompiledSelection | None
+    record: ScanRecord,
+    output_format: str,
+    selection: CompiledSelection | None,
+    explicit_defaults: bool = False,
 ) -> str:
     """Render one record; convert ANY render failure to a typed exit-2 (KD-6).
 
     With ``selection`` (``--fields``): project the message to the selected paths
     (the faithful nested view, KTD1) and render that view — compact JSONL for
     ``--format json``, ``path: value`` lines for ``--format human`` (R13).
-    Without a selection: the shipped PR1.5 full-record render.
+
+    With ``explicit_defaults`` (``--explicit-defaults``, JSON only): render the
+    full record dense — no-presence fields filled at their default, presence-
+    bearing fields still by presence — in camelCase, a density variant of the
+    shipped PR1.5 JSON (R7/R8/R10, KTD4). The JSON-only rule (R9) and mutual
+    exclusivity with ``--fields`` (R14) are enforced up front in :func:`_prepare`,
+    so by the time a record reaches here ``explicit_defaults`` only ever pairs
+    with ``--format json`` and never with a selection.
+
+    Without either: the shipped PR1.5 full-record render.
     """
     message = record.message
     if output_format == "json":
@@ -309,6 +355,15 @@ def _render(
             if selection is not None:
                 view = project(message, selection)
                 rendered: str = json.dumps(view, separators=(",", ":"))
+            elif explicit_defaults:
+                # Dense full record: fill no-presence fields at their default,
+                # leave presence-bearing fields by presence. camelCase keys
+                # (no preserving_proto_field_name) keep it a density variant of
+                # the plain PR1.5 JSON below (R8/R10, KTD4). The fill kwarg is
+                # the KTD2 shim, reused — not re-detected.
+                rendered = json_format.MessageToJson(
+                    message, indent=None, **{no_presence_kwarg(): True}
+                )
             else:
                 rendered = json_format.MessageToJson(message, indent=None)
         except Exception as exc:  # defensive: render errors are outside the taxonomy
@@ -356,6 +411,7 @@ def _open_data(path: Path) -> BinaryIO:
 @_common_options
 @_format_option
 @_fields_option
+@_explicit_defaults_option
 def scan_cmd(
     data_file: Path,
     desc: Path | None,
@@ -366,16 +422,31 @@ def scan_cmd(
     on_error: str,
     output_format: str,
     fields: str | None,
+    explicit_defaults: bool,
 ) -> None:
     """Dump every (matching) record readably — the protoc --decode replacement."""
-    setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr, fields)
+    setup = _prepare(
+        data_file,
+        desc,
+        proto,
+        proto_paths,
+        type_name,
+        where_expr,
+        fields,
+        explicit_defaults,
+        output_format,
+    )
     yielded = 0
     with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:
             for record in run.result:
-                click.echo(_render(record, output_format, setup.selection))
+                click.echo(
+                    _render(
+                        record, output_format, setup.selection, setup.explicit_defaults
+                    )
+                )
                 yielded += 1
         except _TYPED_CLI_ERRORS as exc:
             error_exit(str(exc))
@@ -387,6 +458,7 @@ def scan_cmd(
 @_common_options
 @_format_option
 @_fields_option
+@_explicit_defaults_option
 @click.option(
     "-n",
     "limit",
@@ -404,10 +476,21 @@ def head_cmd(
     on_error: str,
     output_format: str,
     fields: str | None,
+    explicit_defaults: bool,
     limit: int,
 ) -> None:
     """Show the first N (matching) records (default N=10)."""
-    setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr, fields)
+    setup = _prepare(
+        data_file,
+        desc,
+        proto,
+        proto_paths,
+        type_name,
+        where_expr,
+        fields,
+        explicit_defaults,
+        output_format,
+    )
     yielded = 0
     with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
@@ -416,7 +499,14 @@ def head_cmd(
         if limit > 0:
             try:
                 for record in run.result:
-                    click.echo(_render(record, output_format, setup.selection))
+                    click.echo(
+                        _render(
+                            record,
+                            output_format,
+                            setup.selection,
+                            setup.explicit_defaults,
+                        )
+                    )
                     yielded += 1
                     if yielded >= limit:
                         break
