@@ -46,6 +46,27 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `selection` is compiled against a message descriptor) and the typed
   `protokit.storage.FieldSelectionError`. The scan engine is unchanged —
   selection/projection is a render-layer concern.
+- **`protokit storage` columnar / Parquet output (PR3).** New optional
+  `protokit[parquet]` extra (Rust-backed [ptars](https://github.com/0x26res/ptars)
+  + pyarrow) adds a **library-first** proto→Arrow→Parquet path that consumes the
+  existing `scan()` stream and skips the proto→JSON→Parquet double-encode. Two
+  public functions: `protokit.storage.to_arrow_batches(source, registry, *,
+  stream_id, ...)` yields bounded Apache Arrow `RecordBatch`es (peak memory
+  O(batch)), and `protokit.storage.to_parquet(source, registry, destination, *,
+  stream_id, ...)` streams one row group per batch to a Parquet file. The entry
+  points own scan construction (`on_error='collect'` hard-wired): a scan that hits
+  any record fault fails loud and discards the partial file rather than writing a
+  complete-looking Parquet over a truncated scan, and an empty result still writes
+  a valid zero-row Parquet carrying the full descriptor-derived schema. v1 converts
+  a single message type per pass (a record of a different type raises
+  `SchemaMismatchError`); value mapping is Arrow-native (bytes→binary, enum→int,
+  well-known types like `Timestamp` map correctly on the engine's isolated
+  descriptor pools), `oneof` arms become independent nullable columns, and
+  `Any`/`Struct` map to lossless structs. Using the API without the extra raises
+  `protokit.storage.ParquetExtraNotInstalledError` (naming the install), never a
+  raw `ImportError`. New typed exceptions: `ParquetExtraNotInstalledError`,
+  `SchemaMismatchError`, `HandlerBuildError`, `IncompleteScanError`. The CLI
+  `--format parquet` flag is a separate later effort; the scan engine is unchanged.
 
 ## 0.9.0 — 2026-05-31
 
