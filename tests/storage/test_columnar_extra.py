@@ -44,12 +44,12 @@ def test_ae6_missing_extra_raises_actionable_error(monkeypatch):
 
 
 def test_ae6_missing_pyarrow_named(monkeypatch):
-    real = importlib.util.find_spec
-
+    # ptars present, pyarrow absent -> the guard names pyarrow. Fake ptars as
+    # *present* (non-None) so this is independent of whether the [parquet] extra
+    # is installed in the test env: in a bare env ptars is also absent and the
+    # guard, which probes ptars first, would otherwise report it instead.
     def fake(name, *a, **k):
-        if name == "pyarrow":
-            return None
-        return real(name, *a, **k)
+        return None if name == "pyarrow" else object()
 
     monkeypatch.setattr(importlib.util, "find_spec", fake)
     with pytest.raises(ParquetExtraNotInstalledError) as exc:
