@@ -34,13 +34,13 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf.descriptor import Descriptor, FileDescriptor
 from google.protobuf.message import Message
 
-from protokit.storage.engine import scan
+from protokit.storage.engine import ScanRecord, scan
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.source import Source, StorageError
 
@@ -138,10 +138,11 @@ def _require_parquet() -> None:
 
 def has_parquet() -> bool:
     """Return whether the ``protokit[parquet]`` extra is importable."""
-    return (
-        importlib.util.find_spec("ptars") is not None
-        and importlib.util.find_spec("pyarrow") is not None
-    )
+    try:
+        _require_parquet()
+        return True
+    except ParquetExtraNotInstalledError:
+        return False
 
 
 def transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]:
@@ -219,8 +220,24 @@ def _resolve_descriptor(registry: StreamRegistry, stream_id: str) -> Descriptor:
         raise SchemaMismatchError(
             f"a registered stream_id (got unknown {stream_id!r})", stream_id
         )
-    descriptor: Descriptor = resolved.message_class.DESCRIPTOR
-    return descriptor
+    return resolved.message_class.DESCRIPTOR
+
+
+def _batched(records: Iterable[ScanRecord], batch_size: int) -> Iterator[list[Message]]:
+    """Group a ``ScanRecord`` stream into message batches of at most ``batch_size``.
+
+    Shared by both entry points so the slicing arithmetic lives in one place.
+    Peak memory is O(``batch_size``) — a flushed batch is dropped before the next
+    accumulates.
+    """
+    batch: list[Message] = []
+    for record in records:
+        batch.append(record.message)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def to_arrow_batches(
@@ -244,14 +261,8 @@ def to_arrow_batches(
     descriptor = _resolve_descriptor(registry, stream_id)
     adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=timestamp_unit)
     result = scan(source, registry, predicate=predicate, on_error="collect")
-    batch: list[Message] = []
-    for record in result:
-        batch.append(record.message)
-        if len(batch) >= batch_size:
-            yield adapter.to_record_batch(batch)
-            batch = []
-    if batch:
-        yield adapter.to_record_batch(batch)
+    for chunk in _batched(result, batch_size):
+        yield adapter.to_record_batch(chunk)
     faults = result.errors
     if faults:
         raise IncompleteScanError(len(faults))
@@ -286,24 +297,17 @@ def to_parquet(
     descriptor = _resolve_descriptor(registry, stream_id)
     adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=timestamp_unit)
     result = scan(source, registry, predicate=predicate, on_error="collect")
-
     path = os.fspath(destination)
+
     writer: pq.ParquetWriter | None = None
     rows = 0
     try:
-        batch: list[Message] = []
-        for record in result:
-            batch.append(record.message)
-            if len(batch) >= batch_size:
-                writer = _write_batch(writer, path, adapter, batch)
-                rows += len(batch)
-                batch = []
-        if batch:
-            writer = _write_batch(writer, path, adapter, batch)
-            rows += len(batch)
-        # Zero-record result still gets a valid, descriptor-schema'd file (R13).
-        if writer is None:
-            writer = pq.ParquetWriter(path, adapter.schema)
+        # Open up front from the descriptor-derived schema: an empty result then
+        # still yields a valid zero-row Parquet (R13), with no first-batch case.
+        writer = pq.ParquetWriter(path, adapter.schema)
+        for chunk in _batched(result, batch_size):
+            writer.write_batch(adapter.to_record_batch(chunk))
+            rows += len(chunk)
         # Completion honesty (R14): withhold a complete-looking file on any fault.
         faults = result.errors
         if faults:
@@ -312,30 +316,13 @@ def to_parquet(
         writer = None
         return rows
     except BaseException:
-        # Partial-file disposition: close the writer and discard the file so a
-        # truncated Parquet is never left looking complete (R14 / R12 extended to
-        # the write phase). Covers a fail-loud IncompleteScanError and any
+        # Partial-file disposition (R14 / R12 extended to the write phase): close
+        # the writer and discard the file so a truncated Parquet is never left
+        # looking complete. Covers a fail-loud IncompleteScanError and any
         # mid-stream propagating exception (e.g. a non-FrameError source abort).
         if writer is not None:
-            # Teardown is best-effort; the original error wins. Close the writer
-            # (so the file handle is released) and unlink the partial file.
             with contextlib.suppress(Exception):
                 writer.close()
             with contextlib.suppress(OSError):
                 os.unlink(path)
         raise
-
-
-def _write_batch(
-    writer: pq.ParquetWriter | None,
-    path: str,
-    adapter: _PtarsConversionAdapter,
-    messages: list[Message],
-) -> pq.ParquetWriter:
-    import pyarrow.parquet as pq  # lazy
-
-    batch = adapter.to_record_batch(messages)
-    if writer is None:
-        writer = pq.ParquetWriter(path, adapter.schema)
-    writer.write_batch(batch)
-    return writer
