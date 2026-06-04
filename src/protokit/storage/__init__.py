@@ -31,8 +31,13 @@ Public surface:
   ``project(message, selection)`` prunes a parsed message to it, yielding the
   faithful nested view. Both are exported so a library consumer can build a
   selection without reaching into the private ``_fields`` module.
+- :func:`to_arrow_batches` / :func:`to_parquet` — the columnar output path
+  (optional ``protokit[parquet]`` extra): convert a scan stream to Apache Arrow
+  ``RecordBatch``es, or stream it to a Parquet file one row group per batch.
 - :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
-  :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError`
+  :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError` /
+  :class:`ParquetExtraNotInstalledError` / :class:`SchemaMismatchError` /
+  :class:`HandlerBuildError` / :class:`IncompleteScanError`
   — the typed exception hierarchy.
 - ``OnError`` — the ``Literal['raise', 'skip', 'collect', 'route']`` policy type.
 
@@ -44,6 +49,14 @@ rather than re-exported here.
 
 from __future__ import annotations
 
+from protokit.storage._columnar import (
+    HandlerBuildError,
+    IncompleteScanError,
+    ParquetExtraNotInstalledError,
+    SchemaMismatchError,
+    to_arrow_batches,
+    to_parquet,
+)
 from protokit.storage._fields import (
     CompiledSelection,
     FieldSelectionError,
@@ -70,12 +83,16 @@ __all__ = [
     "FieldSelectionError",
     "FileDescriptorSetSchema",
     "FrameError",
+    "HandlerBuildError",
+    "IncompleteScanError",
     "OnError",
+    "ParquetExtraNotInstalledError",
     "ProtoFileSchema",
     "ResolvedSchema",
     "ScanRecord",
     "ScanResult",
     "SchemaCompileError",
+    "SchemaMismatchError",
     "SchemaSource",
     "Source",
     "StorageError",
@@ -84,4 +101,6 @@ __all__ = [
     "compile_fields",
     "project",
     "scan",
+    "to_arrow_batches",
+    "to_parquet",
 ]

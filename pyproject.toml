@@ -53,6 +53,19 @@ dependencies = [
 compiler = [
     "protoxy>=0.7",
 ]
+# Columnar output: convert scanned protobuf to Apache Arrow / Parquet.
+# ptars (Rust/PyO3, prost-based) is EXACT-pinned — it is 0.0.x with no API
+# stability promise, and its Rust core bundles a specific arrow-rs that must
+# stay ABI-compatible with the resolved pyarrow (verified against pyarrow 24).
+# ptars is decoupled from the protobuf Python API (it reads descriptors only),
+# so it composes with the base ``protobuf>=4.21,<6`` pin without conflict.
+# Neither package is a base dependency — the core install is unaffected when
+# this extra is absent (a missing extra raises ParquetExtraNotInstalledError,
+# never a raw ImportError).
+parquet = [
+    "ptars==0.0.17",
+    "pyarrow>=16.0.0,<25",
+]
 # Development / test-only dependencies.
 #  - xmlschema validates JUnit XML output against the vendored
 #    Apache Ant JUnit xsd in tests/fixtures/junit-xml/.
@@ -124,8 +137,20 @@ warn_unused_configs = true
 # py.typed). Ignoring missing imports here keeps the strict-mode
 # signal-to-noise ratio useful for the protokit code itself.
 [[tool.mypy.overrides]]
-module = ["google.protobuf.*", "protoxy"]
+# ptars ships py.typed (and its precise Literal signatures are useful — they
+# catch e.g. a bad timestamp_unit). ignore_missing_imports covers the
+# extra-absent env where `import ptars` (lazy, inside functions) is unresolvable.
+module = ["google.protobuf.*", "protoxy", "ptars"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pyarrow ships py.typed but its stubs are incomplete (untyped ParquetWriter /
+# write_batch / close trip --strict's disallow_untyped_calls). It is an optional
+# ([parquet]) dependency; skip following its imports so its symbols type as Any
+# rather than flooding strict mode with third-party no-untyped-call noise.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 # `tomli` is a conditional dep (py<3.11 only); on py3.11+ environments
 # it is NOT installed and mypy cannot find the import. The import is
