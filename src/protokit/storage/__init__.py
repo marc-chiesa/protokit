@@ -37,7 +37,8 @@ Public surface:
 - :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
   :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError` /
   :class:`ParquetExtraNotInstalledError` / :class:`SchemaMismatchError` /
-  :class:`HandlerBuildError` / :class:`IncompleteScanError`
+  :class:`UnknownStreamError` / :class:`HandlerBuildError` /
+  :class:`IncompleteScanError`
   — the typed exception hierarchy.
 - ``OnError`` — the ``Literal['raise', 'skip', 'collect', 'route']`` policy type.
 
@@ -54,6 +55,7 @@ from protokit.storage._columnar import (
     IncompleteScanError,
     ParquetExtraNotInstalledError,
     SchemaMismatchError,
+    UnknownStreamError,
     to_arrow_batches,
     to_parquet,
 )
@@ -97,6 +99,7 @@ __all__ = [
     "Source",
     "StorageError",
     "StreamRegistry",
+    "UnknownStreamError",
     "WhereError",
     "compile_fields",
     "project",

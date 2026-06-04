@@ -246,11 +246,13 @@ jobs:
       - name: Install package + dev + parquet extras
         run: pip install -e ".[dev,parquet]"
 
-      - name: Sanity — ptars + pyarrow must be present (with-extra path)
-        # Insurance that the extra resolved, so the columnar conversion
-        # tests actually run rather than silently importorskip-ing.
+      - name: Sanity — ptars + pyarrow present, ptars pinned (with-extra path)
+        # Insurance that the extra resolved, so the columnar conversion tests
+        # actually run rather than silently importorskip-ing. Assert the exact
+        # ptars pin (the ABI-sensitive package) like storage-protobuf-floor does
+        # for protobuf — a resolver drift on the ABI-load-bearing dep fails here.
         run: |
-          python -c "import ptars, pyarrow; print('pyarrow', pyarrow.__version__)"
+          python -c "import importlib.metadata as m, ptars, pyarrow; v = m.version('ptars'); assert v == '0.0.17', v; print('ptars', v, 'pyarrow', pyarrow.__version__)"
 
       - name: Run storage suite with the parquet extra
         run: pytest tests/storage -v

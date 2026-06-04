@@ -131,15 +131,14 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 
-# Third-party libs without published type stubs. Both are tracked
-# upstream (google.protobuf via types-protobuf which we deliberately
-# DON'T pull in to avoid stub/runtime drift; protoxy 0.7+ ships no
-# py.typed). Ignoring missing imports here keeps the strict-mode
-# signal-to-noise ratio useful for the protokit code itself.
+# Third-party libs we ignore for missing/partial stubs. google.protobuf's
+# types-protobuf stubs are deliberately NOT pulled in (avoids stub/runtime
+# drift); protoxy 0.7+ ships no py.typed. ptars DOES ship py.typed and its
+# precise Literal signatures are useful (they catch e.g. a bad timestamp_unit),
+# so they're kept — ignore_missing_imports here only covers the
+# [parquet]-extra-absent env where `import ptars` (lazy, in functions) is
+# unresolvable. Keeps strict-mode signal useful for protokit's own code.
 [[tool.mypy.overrides]]
-# ptars ships py.typed (and its precise Literal signatures are useful — they
-# catch e.g. a bad timestamp_unit). ignore_missing_imports covers the
-# extra-absent env where `import ptars` (lazy, inside functions) is unresolvable.
 module = ["google.protobuf.*", "protoxy", "ptars"]
 ignore_missing_imports = true
 

@@ -130,6 +130,62 @@ class TestPr2SurfaceAdditions:
         assert view == {"x": 7}
 
 
+class TestPr3SurfaceAdditions:
+    def test_new_public_symbols_resolve(self) -> None:
+        # PR3 adds the columnar entry points + their typed exception family.
+        for name in (
+            "to_arrow_batches",
+            "to_parquet",
+            "ParquetExtraNotInstalledError",
+            "SchemaMismatchError",
+            "UnknownStreamError",
+            "HandlerBuildError",
+            "IncompleteScanError",
+        ):
+            assert hasattr(storage, name), name
+            assert name in storage.__all__, name
+
+    def test_all_stays_sorted(self) -> None:
+        assert storage.__all__ == sorted(storage.__all__)
+
+    def test_new_exceptions_are_storage_errors(self) -> None:
+        from protokit.storage import (
+            HandlerBuildError,
+            IncompleteScanError,
+            ParquetExtraNotInstalledError,
+            SchemaMismatchError,
+            StorageError,
+            UnknownStreamError,
+        )
+
+        for exc in (
+            ParquetExtraNotInstalledError,
+            SchemaMismatchError,
+            UnknownStreamError,
+            HandlerBuildError,
+            IncompleteScanError,
+        ):
+            assert issubclass(exc, StorageError), exc
+
+    def test_columnar_internals_not_exported(self) -> None:
+        # The conversion backend + helpers + tuning constants are internal; only
+        # the two entry points and the typed exceptions are public surface.
+        for name in (
+            "_has_parquet",
+            "_transitive_file_descriptors",
+            "_PtarsConversionAdapter",
+            "DEFAULT_BATCH_SIZE",
+            "TimestampUnit",
+        ):
+            assert name not in storage.__all__, name
+
+    def test_new_symbols_not_leaked_to_top_level(self) -> None:
+        import protokit
+
+        for name in ("to_arrow_batches", "to_parquet", "ParquetExtraNotInstalledError"):
+            assert not hasattr(protokit, name), f"protokit.{name} leaked to top level"
+
+
 class TestReadmeDocsPresence:
     def test_readme_mentions_storage_surface(self) -> None:
         readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")

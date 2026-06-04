@@ -59,8 +59,8 @@ def test_ae6_missing_pyarrow_named(monkeypatch):
 
 
 def test_has_parquet_reflects_find_spec(monkeypatch):
-    assert _columnar.has_parquet() in (True, False)
+    assert _columnar._has_parquet() in (True, False)
     monkeypatch.setattr(
         importlib.util, "find_spec", lambda name, *a, **k: None
     )
-    assert _columnar.has_parquet() is False
+    assert _columnar._has_parquet() is False

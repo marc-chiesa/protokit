@@ -16,8 +16,10 @@ import pyarrow.parquet as pq  # noqa: E402 - after importorskip by design
 from google.protobuf import any_pb2, descriptor_pb2, timestamp_pb2  # noqa: E402
 
 from protokit.storage import (  # noqa: E402
+    HandlerBuildError,
     IncompleteScanError,
     SchemaMismatchError,
+    UnknownStreamError,
     to_arrow_batches,
     to_parquet,
 )
@@ -281,5 +283,161 @@ def test_to_arrow_batches_respects_batch_size():
 
 def test_unknown_stream_id_raises():
     reg = _registry()
-    with pytest.raises(SchemaMismatchError):
+    with pytest.raises(UnknownStreamError):
         list(to_arrow_batches(_source("events", []), reg, stream_id="missing"))
+
+
+# --- AE4 / R2: bounded — the sink pulls O(batch), not the whole source --------
+
+def test_ae4_sink_pulls_bounded_not_whole_source():
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    pulled = 0
+    payload = msg_cls(id=1).SerializeToString()
+
+    def counting_source(n):
+        nonlocal pulled
+        for _ in range(n):
+            pulled += 1
+            yield ("events", payload)
+
+    gen = to_arrow_batches(
+        counting_source(10_000), reg, stream_id="events", batch_size=1000
+    )
+    first = next(gen)  # consume only the first batch
+    assert first.num_rows == 1000
+    # bounded: the sink pulled ~one batch worth, NOT the whole 10k source
+    assert pulled <= 1001, pulled
+    gen.close()
+
+
+# --- R14: non-FrameError mid-stream abort still discards the partial file ------
+
+def test_to_parquet_mid_stream_type_mismatch_discards_file(tmp_path):
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    other_cls = reg.get("others").message_class
+    out = tmp_path / "mid.parquet"
+    # batch_size=2: first batch [E,E] writes a row group (file created); the
+    # second batch hits an 'others'-type record -> SchemaMismatchError mid-stream.
+    src = _source("events", [msg_cls(id=1), msg_cls(id=2)]) + [
+        ("others", other_cls(v=9).SerializeToString()),
+        ("events", msg_cls(id=3).SerializeToString()),
+    ]
+    with pytest.raises(SchemaMismatchError):
+        to_parquet(src, reg, out, stream_id="events", batch_size=2)
+    assert not out.exists()  # partial file discarded on mid-stream abort
+
+
+# --- R15: a memoryview-backed source converts (sink consumes parsed messages) --
+
+def test_memoryview_source_converts(tmp_path):
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    out = tmp_path / "mv.parquet"
+    # record bytes as a memoryview over a bytearray (a C++-style buffer): the
+    # engine takes its defensive copy and the sink consumes only parsed messages,
+    # so a memoryview-backed source converts without issue (R15).
+    src = [
+        ("events", memoryview(bytearray(msg_cls(id=i).SerializeToString())))
+        for i in range(50)
+    ]
+    rows = to_parquet(src, reg, out, stream_id="events")
+    assert rows == 50
+    assert pq.read_table(out).num_rows == 50
+
+
+# --- to_arrow_batches surfaces a collected fault after exhaustion -------------
+
+def test_to_arrow_batches_fault_raises_after_exhaustion():
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    src = _source("events", [msg_cls(id=1)]) + [("nope", b"\x00")]
+    with pytest.raises(IncompleteScanError):
+        list(to_arrow_batches(src, reg, stream_id="events"))
+
+
+# --- AE3 Any value round-trip (lossless struct, not just shape) ---------------
+
+def test_ae3_any_value_roundtrip():
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    e = msg_cls(id=1)
+    e.detail.type_url = "type.googleapis.com/ev.Event"
+    e.detail.value = b"\x08\x07"
+    table = pa.Table.from_batches(
+        list(to_arrow_batches(_source("events", [e]), reg, stream_id="events"))
+    )
+    detail = table.to_pydict()["detail"][0]
+    assert detail["type_url"] == "type.googleapis.com/ev.Event"
+    assert detail["value"] == b"\x08\x07"
+
+
+# --- AE7 nested WKT value round-trip ------------------------------------------
+
+def test_ae7_nested_wkt_value_roundtrip():
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    e = msg_cls(id=1)
+    e.meta.ts.seconds = 1_700_000_000
+    e.meta.n = 5
+    table = pa.Table.from_batches(
+        list(to_arrow_batches(_source("events", [e]), reg, stream_id="events"))
+    )
+    meta = table.to_pydict()["meta"][0]
+    assert int(meta["ts"].timestamp()) == 1_700_000_000
+    assert meta["n"] == 5
+
+
+# --- HandlerBuildError fires before the writer opens (no orphan file) ---------
+
+def test_handler_build_error_before_file_created(tmp_path, monkeypatch):
+    import ptars
+
+    reg = _registry()
+    out = tmp_path / "hb.parquet"
+
+    class _BoomPool:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(ptars, "HandlerPool", _BoomPool)
+    with pytest.raises(HandlerBuildError):
+        to_parquet(_source("events", []), reg, out, stream_id="events")
+    assert not out.exists()  # adapter built before the writer opens -> no file
+
+
+# --- cross-batch schema drift is an internal invariant breach (RuntimeError) --
+
+def test_cross_batch_schema_drift_raises_runtime_error():
+    from protokit.storage._columnar import _PtarsConversionAdapter
+
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    desc = reg.get("events").message_class.DESCRIPTOR
+    adapter = _PtarsConversionAdapter(desc)
+
+    drifted = pa.record_batch({"x": pa.array([1], type=pa.int64())})
+
+    class _DriftPool:
+        def messages_to_record_batch(self, messages, descriptor):
+            return drifted
+
+    adapter._pool = _DriftPool()
+    with pytest.raises(RuntimeError, match="drifted"):
+        adapter.to_record_batch([msg_cls(id=1)])
+
+
+# --- _transitive_file_descriptors: deduped + dependency-ordered ---------------
+
+def test_transitive_file_descriptors_deduped_and_ordered():
+    from protokit.storage._columnar import _transitive_file_descriptors
+
+    reg = _registry()
+    desc = reg.get("events").message_class.DESCRIPTOR
+    names = [f.name for f in _transitive_file_descriptors(desc)]
+    assert len(names) == len(set(names))  # deduped by name
+    assert "ev.proto" in names
+    assert "google/protobuf/timestamp.proto" in names
+    # dependency precedes dependent: the WKT files come before the importer
+    assert names.index("google/protobuf/timestamp.proto") < names.index("ev.proto")

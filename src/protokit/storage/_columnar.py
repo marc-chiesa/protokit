@@ -107,6 +107,22 @@ class SchemaMismatchError(StorageError):
         )
 
 
+class UnknownStreamError(StorageError):
+    """The requested ``stream_id`` is not registered in the ``StreamRegistry``.
+
+    A caller-side configuration error (the stream was never registered) — distinct
+    from :class:`SchemaMismatchError`, which is a *record* whose type differs from
+    the bound type mid-scan.
+    """
+
+    def __init__(self, stream_id: str) -> None:
+        self.stream_id = stream_id
+        super().__init__(
+            f"stream_id {stream_id!r} is not registered; register it on the "
+            f"StreamRegistry before converting"
+        )
+
+
 class IncompleteScanError(StorageError):
     """The scan did not complete cleanly, so the Parquet output is withheld.
 
@@ -120,8 +136,10 @@ class IncompleteScanError(StorageError):
         self.fault_count = fault_count
         super().__init__(
             f"scan did not complete cleanly: {fault_count} record fault(s) were "
-            f"collected; the Parquet output is withheld (use on_error='skip' on a "
-            f"plain scan() if partial output is acceptable)"
+            f"collected (a framing fault can also truncate the scan, so further "
+            f"records may be missing beyond the count); the Parquet output is "
+            f"withheld (use on_error='skip' on a plain scan() if partial output "
+            f"is acceptable)"
         )
 
 
@@ -136,8 +154,8 @@ def _require_parquet() -> None:
             raise ParquetExtraNotInstalledError(name)
 
 
-def has_parquet() -> bool:
-    """Return whether the ``protokit[parquet]`` extra is importable."""
+def _has_parquet() -> bool:
+    """Return whether the ``protokit[parquet]`` extra is importable (internal)."""
     try:
         _require_parquet()
         return True
@@ -145,7 +163,7 @@ def has_parquet() -> bool:
         return False
 
 
-def transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]:
+def _transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]:
     """Return the descriptor's file plus its transitive dependency files.
 
     ptars's ``HandlerPool`` needs the full file set to resolve every referenced
@@ -182,22 +200,18 @@ class _PtarsConversionAdapter:
         import ptars  # lazy: only when the extra is present (R8)
 
         self._descriptor = descriptor
-        files = transitive_file_descriptors(descriptor)
+        files = _transitive_file_descriptors(descriptor)
         try:
             self._pool = ptars.HandlerPool(
                 files, ptars.PtarsConfig(timestamp_unit=timestamp_unit)
             )
             # Canonical schema, descriptor-derived and record-independent (R13):
             # an empty conversion yields the full schema used to open the writer.
-            self._schema = self._pool.messages_to_record_batch(
+            self.schema: pa.Schema = self._pool.messages_to_record_batch(
                 [], descriptor
             ).schema
         except Exception as exc:  # noqa: BLE001 - any ptars build failure is one fault class
             raise HandlerBuildError(descriptor.full_name, str(exc)) from exc
-
-    @property
-    def schema(self) -> pa.Schema:
-        return self._schema
 
     def to_record_batch(self, messages: list[Message]) -> pa.RecordBatch:
         for message in messages:
@@ -206,10 +220,15 @@ class _PtarsConversionAdapter:
                     self._descriptor.full_name, message.DESCRIPTOR.full_name
                 )
         batch = self._pool.messages_to_record_batch(messages, self._descriptor)
-        if not batch.schema.equals(self._schema):
-            raise SchemaMismatchError(
-                f"{self._descriptor.full_name} (canonical schema)",
-                f"{self._descriptor.full_name} (drifted batch schema)",
+        if not batch.schema.equals(self.schema):
+            # A drift between the canonical (empty-conversion) schema and a
+            # populated batch's schema can only be a ptars/pyarrow regression,
+            # not a data fault — surface it as an internal invariant breach, not
+            # a SchemaMismatchError (whose expected/got hold real type names).
+            raise RuntimeError(
+                f"ptars produced a schema that drifted from the canonical "
+                f"descriptor schema for {self._descriptor.full_name!r}; this "
+                f"indicates a ptars/pyarrow regression"
             )
         return batch
 
@@ -217,9 +236,7 @@ class _PtarsConversionAdapter:
 def _resolve_descriptor(registry: StreamRegistry, stream_id: str) -> Descriptor:
     resolved = registry.get(stream_id)
     if resolved is None:
-        raise SchemaMismatchError(
-            f"a registered stream_id (got unknown {stream_id!r})", stream_id
-        )
+        raise UnknownStreamError(stream_id)
     return resolved.message_class.DESCRIPTOR
 
 
@@ -256,6 +273,11 @@ def to_arrow_batches(
     :class:`SchemaMismatchError` (R11). After the stream is exhausted, any
     collected fault raises :class:`IncompleteScanError` (R14). Peak memory is
     O(``batch_size``).
+
+    The fault check runs only after the stream is fully consumed, so a caller
+    that breaks early will not observe :class:`IncompleteScanError` — exhaust the
+    iterator, or use :func:`to_parquet` (all-or-nothing), when completeness
+    matters.
     """
     _require_parquet()
     descriptor = _resolve_descriptor(registry, stream_id)
@@ -317,12 +339,15 @@ def to_parquet(
         return rows
     except BaseException:
         # Partial-file disposition (R14 / R12 extended to the write phase): close
-        # the writer and discard the file so a truncated Parquet is never left
-        # looking complete. Covers a fail-loud IncompleteScanError and any
-        # mid-stream propagating exception (e.g. a non-FrameError source abort).
+        # the writer, then discard ANY file the writer may have created so a
+        # truncated Parquet is never left looking complete. Covers a fail-loud
+        # IncompleteScanError, any mid-stream propagating exception (e.g. a
+        # non-FrameError source abort), AND a ParquetWriter() constructor failure
+        # that created the file before raising (writer stays None there). The
+        # unlink is unconditional; a missing file raises OSError, suppressed.
         if writer is not None:
             with contextlib.suppress(Exception):
                 writer.close()
-            with contextlib.suppress(OSError):
-                os.unlink(path)
+        with contextlib.suppress(OSError):
+            os.unlink(path)
         raise
