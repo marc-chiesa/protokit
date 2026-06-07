@@ -210,6 +210,54 @@ jobs:
         run: pytest tests/storage -v
 
   # =====================================================================
+  # Storage parquet-extra job — verify the columnar/Parquet sink (PR3).
+  # =====================================================================
+  #
+  # The `[parquet]` extra (exact-pinned ptars + pyarrow) is NOT installed
+  # by the `test` matrix above (it installs `.[dev]`), so on that matrix
+  # the columnar conversion tests importorskip and the extra-ABSENT path
+  # is what runs — ParquetExtraNotInstalledError and has_parquet()==False,
+  # exactly the R9/AE6 no-extra coverage we want exercised on every cell.
+  # This standalone job installs the extra and runs the storage suite so
+  # the with-extra conversion path (ptars on the engine's isolated pools)
+  # is verified and the pinned ptars↔pyarrow ABI pairing is exercised.
+  # Mirrors the storage-protobuf-floor job shape.
+  storage-parquet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system protoc
+        # ProtoFileSchema-backed storage tests compile .proto via protoc;
+        # mirrors the test / storage-protobuf-floor jobs.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install package + dev + parquet extras
+        run: pip install -e ".[dev,parquet]"
+
+      - name: Sanity — ptars + pyarrow present, ptars pinned (with-extra path)
+        # Insurance that the extra resolved, so the columnar conversion tests
+        # actually run rather than silently importorskip-ing. Assert the exact
+        # ptars pin (the ABI-sensitive package) like storage-protobuf-floor does
+        # for protobuf — a resolver drift on the ABI-load-bearing dep fails here.
+        run: |
+          python -c "import importlib.metadata as m, ptars, pyarrow; v = m.version('ptars'); assert v == '0.0.17', v; print('ptars', v, 'pyarrow', pyarrow.__version__)"
+
+      - name: Run storage suite with the parquet extra
+        run: pytest tests/storage -v
+
+  # =====================================================================
   # Parity job — buf v1.69.0 cross-tool parity checks.
   # =====================================================================
   #
