@@ -66,6 +66,16 @@ parquet = [
     "ptars==0.0.17",
     "pyarrow>=16.0.0,<25",
 ]
+# PyHamcrest adapter: `equals_proto(expected)` returns a hamcrest.BaseMatcher
+# usable with `assert_that(...)`. PyHamcrest is NOT a base dependency — the core
+# install and the framework-agnostic matcher (proto_match / expect_proto) are
+# unaffected when this extra is absent. `equals_proto` is importable without it
+# (the BaseMatcher subclass is built lazily, behind a find_spec guard), and using
+# it raises HamcrestExtraNotInstalledError naming this install, never a raw
+# ImportError. Mirrors the [parquet] optional-extra idiom.
+hamcrest = [
+    "pyhamcrest>=2.0",
+]
 # Development / test-only dependencies.
 #  - xmlschema validates JUnit XML output against the vendored
 #    Apache Ant JUnit xsd in tests/fixtures/junit-xml/.
@@ -159,3 +169,17 @@ follow_imports = "skip"
 [[tool.mypy.overrides]]
 module = ["tomli"]
 ignore_missing_imports = true
+
+# PyHamcrest is an optional ([hamcrest]) dependency, imported lazily inside the
+# guarded factory in src/protokit/message/hamcrest.py. The adapter subclasses
+# `BaseMatcher`; we want that base to type as Any (so the subclass needn't carry
+# a generic parameter, and `_matches`/`describe_*` overrides type cleanly under
+# --strict) regardless of whether the extra is installed in the type-check env.
+# `ignore_missing_imports` covers the extra-ABSENT env; `follow_imports = "skip"`
+# forces Any even when pyhamcrest IS installed (it ships py.typed + GENERIC stubs
+# that would otherwise demand a type argument and reject untyped overrides).
+# Mirrors the pyarrow optional-extra override above (same install/strict tension).
+[[tool.mypy.overrides]]
+module = ["hamcrest", "hamcrest.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
