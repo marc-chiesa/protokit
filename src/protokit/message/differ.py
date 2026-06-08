@@ -22,7 +22,7 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
-from protokit.message._selector import FieldSelector, SelectorSpec
+from protokit.message._selector import FieldSelector, SelectorSpec, should_visit
 from protokit.message._setmatch import greedy_multiset_pairing
 from protokit.message.comparators import (
     FloatComparison,
@@ -132,12 +132,22 @@ def _same_pool(left_msg: Message, right_msg: Message) -> bool:
 
 @dataclass
 class _WorkItem:
-    """A unit of comparison work for the stack-based engine."""
+    """A unit of comparison work for the stack-based engine.
+
+    Attributes:
+        force_emit: When True, a one-sided (added/removed) subtree is emitted
+            in full even under partial scope. Set for subtrees produced by a
+            ``treat_as_set`` comparison: partial deliberately does NOT descend
+            into set fields (KTD-8 carve-out), so an actual-only set *message*
+            element — pushed here by ``_compare_treat_as_set`` — must still be
+            reported as ADDED. Default False; the ordinary partial gate applies.
+    """
 
     left_msg: Message | None
     right_msg: Message | None
     path: FieldPath
     depth: int
+    force_emit: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +207,12 @@ class MessageDifferencer:
         # compared order-independently as multisets via greedy pairing, rather
         # than the default index pairing. Distinct from keyed ``treat_as_map``.
         self._treat_as_set_selectors: list[FieldSelector] = []
+        # Partial / sub-shape scope (KTD-11/U4). When True, only fields present
+        # on the EXPECTED (left) side are compared: extra fields on the actual
+        # (right) side produce no ADDED difference, while left-only (REMOVED)
+        # fields and value differences are STILL reported. Directional and
+        # recursive; default off keeps full comparison behavior unchanged (R12).
+        self._partial: bool = False
         self._float_config = FloatConfig()
         self.max_depth: int | None = None
         self.strict_schema: bool = False
@@ -651,6 +667,72 @@ class MessageDifferencer:
 
         self._treat_as_set_selectors.append(field_selector)
 
+    def set_partial(self, partial: bool = True) -> None:
+        """Enable (or disable) partial / sub-shape comparison (R5/U4).
+
+        Partial matching is **directional**: ``compare(left, right)`` treats
+        ``left`` as the expected side and ``right`` as the actual side. With
+        partial enabled, only fields present on the EXPECTED (left) side
+        participate in comparison:
+
+        * A field (or whole sub-message) present ONLY on the actual (right)
+          side — an ADDED difference in full mode — is **suppressed**: extra
+          fields on actual are not differences.
+        * A field present on the expected (left) side but MISSING on actual —
+          a REMOVED difference — is **still reported**. Partial does not relax
+          the requirement that expected fields be present.
+        * A field present on both sides whose values DIFFER is **still
+          reported** (a value difference).
+
+        The rule recurses: within a nested message present on the expected
+        side, the same expected-defines-the-shape rule applies to its fields,
+        so extra nested actual fields are likewise ignored while missing or
+        differing expected nested fields still report.
+
+        **``treat_as_set`` carve-out (KTD-8):** partial does NOT descend into a
+        repeated field marked :meth:`treat_as_set`. Set-element equality stays
+        STRICT exact equality so the multiset partition remains an equivalence
+        relation; a set element present only on the actual side is therefore
+        still reported even under partial. Partial relaxes the *field-shape*,
+        never set membership.
+
+        Default is full comparison (``partial=False``); the default behavior is
+        unchanged and every existing comparison is unaffected (R12).
+
+        Args:
+            partial: ``True`` to enable partial / sub-shape scope, ``False`` to
+                restore full comparison. Defaults to ``True`` so
+                ``set_partial()`` reads as "turn partial on".
+        """
+        self._partial = partial
+
+    @staticmethod
+    def _present_on_expected(msg, left_fd, default_msg):
+        """Whether ``left_fd`` is "present" on the expected (left) side (U4).
+
+        Partial / sub-shape matching treats the expected message's set fields
+        as the shape to check. Presence here means:
+
+        - repeated / map fields: non-empty on the expected side;
+        - presence-bearing singular fields (messages, proto3 ``optional``,
+          oneof members, all proto2 fields): ``HasField`` is true;
+        - proto3 implicit-presence scalars/enums: a non-default value — they
+          carry no presence bit, so a defaulted expected field is
+          indistinguishable from unset and is treated as "not in the sub-shape"
+          (the documented proto3 limitation). Without this, such a field is
+          both-present and would surface as MODIFIED, defeating partial.
+
+        ``default_msg`` is a once-per-message default instance used to read each
+        implicit field's zero value; built lazily if not supplied.
+        """
+        if left_fd.label == left_fd.LABEL_REPEATED:  # repeated + map
+            return len(getattr(msg, left_fd.name)) > 0
+        if left_fd.has_presence:
+            return msg.HasField(left_fd.name)
+        if default_msg is None:
+            default_msg = type(msg)()
+        return getattr(msg, left_fd.name) != getattr(default_msg, left_fd.name)
+
     def set_float_comparison(
         self,
         mode: FloatComparison,
@@ -742,9 +824,20 @@ class MessageDifferencer:
 
                 # Unset -> set (or vice versa) for message fields
                 if item.left_msg is None and item.right_msg is not None:
-                    self._emit_all_fields(item.right_msg, item.path, ChangeType.ADDED,
-                                          differences, is_new=True, depth=item.depth,
-                                          warnings=warnings, truncated_paths=truncated_paths)
+                    # Direction-conditioned partial gate (U4): a whole
+                    # sub-message present only on the actual (right) side is an
+                    # ADDED subtree — suppress it under partial. The matching
+                    # REMOVED branch below is NOT suppressed, so an
+                    # expected-only subtree still reports fully (R5). Catches
+                    # actual-only subtrees pushed by ``_compare_message_field``
+                    # / ``_emit_one_sided`` before this separate recursive walk.
+                    # ``force_emit`` bypasses the gate for set-element subtrees:
+                    # partial does not descend into ``treat_as_set`` fields
+                    # (KTD-8 carve-out), so those still report.
+                    if not self._partial or item.force_emit:
+                        self._emit_all_fields(item.right_msg, item.path, ChangeType.ADDED,
+                                              differences, is_new=True, depth=item.depth,
+                                              warnings=warnings, truncated_paths=truncated_paths)
                     continue
                 if item.left_msg is not None and item.right_msg is None:
                     self._emit_all_fields(item.left_msg, item.path, ChangeType.REMOVED,
@@ -768,6 +861,11 @@ class MessageDifferencer:
                 # Process in reverse order since we're using a stack (LIFO)
                 sorted_names = sorted(all_names, key=_sort_key, reverse=True)
 
+                # Partial mode: the expected (left) message defines the
+                # sub-shape; build its default once so implicit-presence scalars
+                # can be tested by non-default value.
+                left_default = type(item.left_msg)() if self._partial else None
+
                 for field_name in sorted_names:
                     # Fast path: check bare-name ignore before allocating FieldPath
                     if field_name in self._ignore_names:
@@ -790,12 +888,23 @@ class MessageDifferencer:
 
                     # Field only on one side
                     if left_fd is None and right_fd is not None:
+                        # Partial visit gate (U4): an actual-only (right-only)
+                        # field is ADDED — skip it under partial so extra
+                        # fields on actual are not differences. ``should_visit``
+                        # returns ``expected_side_present`` (False here).
+                        if self._partial and not should_visit(
+                            right_fd, field_path, expected_side_present=False
+                        ):
+                            continue
                         self._emit_one_sided(
                             item.right_msg, right_fd, field_path,
                             differences, stack, item.depth, is_new=True,
                         )
                         continue
                     if left_fd is not None and right_fd is None:
+                        # Left-only (expected-only) field is REMOVED — always
+                        # reported, even under partial (``should_visit`` returns
+                        # True for ``expected_side_present=True``); R5.
                         self._emit_one_sided(
                             item.left_msg, left_fd, field_path,
                             differences, stack, item.depth, is_new=False,
@@ -803,6 +912,21 @@ class MessageDifferencer:
                         continue
 
                     assert left_fd is not None and right_fd is not None
+
+                    # Partial visit gate (U4) for both-present fields: under
+                    # partial, only fields present on the expected (left) side
+                    # are in the sub-shape. This catches proto3 implicit-presence
+                    # scalars (default on expected, set on actual) that are
+                    # both-present and would otherwise surface as MODIFIED; a
+                    # treat_as_set field non-empty on expected is still compared
+                    # strictly (KTD-8 carve-out, since it counts as present).
+                    if self._partial and not should_visit(
+                        left_fd, field_path,
+                        expected_side_present=self._present_on_expected(
+                            item.left_msg, left_fd, left_default,
+                        ),
+                    ):
+                        continue
 
                     # Schema evolution checks
                     self._check_schema_evolution(
@@ -867,6 +991,40 @@ class MessageDifferencer:
         )
 
     # --- Internal methods ---
+
+    def _expected_present(
+        self,
+        msg: Message,
+        fd: proto_descriptor.FieldDescriptor,
+    ) -> bool:
+        """Whether a field is "present" on the expected (left) side for partial.
+
+        Partial / sub-shape scope (U4) compares only fields the expected side
+        actually carries. "Present" is interpreted per the field's presence
+        model so the directional rule matches protobuf semantics:
+
+        * **Repeated / map** fields: present iff non-empty. (An empty repeated
+          field on expected does not constrain actual under partial.)
+        * **Presence-aware** fields (proto2, message, proto3 ``optional``,
+          oneof members): present iff ``HasField``.
+        * **proto3 implicit-presence scalars**: present iff the value is NOT the
+          field default — there is no presence bit, so a default value is
+          indistinguishable from unset (EQUIVALENT semantics, the default).
+
+        Args:
+            msg: The expected (left) parent message.
+            fd: The expected-side field descriptor.
+
+        Returns:
+            True if the field is present on the expected side and should
+            participate in partial comparison.
+        """
+        if is_repeated(fd):  # covers both repeated and map fields
+            return len(getattr(msg, fd.name)) > 0
+        if has_presence(fd):
+            return msg.HasField(fd.name)
+        # proto3 implicit-presence scalar: default value == "unset".
+        return getattr(msg, fd.name) != fd.default_value
 
     def _is_ignored(
         self,
@@ -1391,6 +1549,16 @@ class MessageDifferencer:
         if not left_present and not right_present:
             return
         if not left_present and right_present:
+            # Partial gate (U4): an actual-only (right-only) sub-message is an
+            # ADDED subtree — suppress it BEFORE pushing the separate recursive
+            # walk, or partial would leak the whole subtree as added. Direction-
+            # conditioned: only the right-only (ADDED) direction is dropped;
+            # the left-only (REMOVED) branch below still reports (R5). Mirrors
+            # the visit-gate decision (``should_visit`` returns False here).
+            if self._partial and not should_visit(
+                right_fd, path, expected_side_present=False
+            ):
+                return
             right_child = getattr(right_msg, right_fd.name)
             if _has_populated_fields(right_child):
                 stack.append(_WorkItem(None, right_child, path, depth + 1))
@@ -1759,7 +1927,12 @@ class MessageDifferencer:
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
             if right_fd.type == TYPE_MESSAGE:
                 if _has_populated_fields(right_list[i]):
-                    stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
+                    # force_emit: partial does NOT descend into set fields
+                    # (KTD-8 carve-out), so an actual-only set message element
+                    # must still report as ADDED even under partial scope.
+                    stack.append(_WorkItem(
+                        None, right_list[i], idx_path, depth + 1, force_emit=True,
+                    ))
                 else:
                     diffs.append(Difference(
                         path=idx_path, change_type=ChangeType.ADDED,
