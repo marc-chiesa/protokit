@@ -15,6 +15,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+## 0.10.0 — 2026-06-07
+
 ### Added
 - **`protokit storage` field selection (`--fields`) + dense full-record JSON
   (`--explicit-defaults`) (PR2).** `protokit storage scan` / `head` (not `count`)
@@ -65,7 +67,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `Any`/`Struct` map to lossless structs. Using the API without the extra raises
   `protokit.storage.ParquetExtraNotInstalledError` (naming the install), never a
   raw `ImportError`. New typed exceptions: `ParquetExtraNotInstalledError`,
-  `SchemaMismatchError`, `HandlerBuildError`, `IncompleteScanError`. The CLI
+  `SchemaMismatchError`, `UnknownStreamError`, `HandlerBuildError`,
+  `IncompleteScanError`. The CLI
   `--format parquet` flag is a separate later effort; the scan engine is unchanged.
 
 ## 0.9.0 — 2026-05-31
