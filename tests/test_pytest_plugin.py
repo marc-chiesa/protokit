@@ -24,28 +24,28 @@ def _make_builder() -> ProtoBuilder:
 
 class TestPytestPlugin:
     def test_returns_none_for_non_protobuf(self) -> None:
-        result = pytest_assertrepr_compare("==", "hello", "world")
+        result = pytest_assertrepr_compare(None, "==", "hello", "world")
         assert result is None
 
     def test_returns_none_for_non_eq_op(self) -> None:
         b = _make_builder()
         msg1 = b.build("test.Msg", name="Alice")
         msg2 = b.build("test.Msg", name="Bob")
-        result = pytest_assertrepr_compare("!=", msg1, msg2)
+        result = pytest_assertrepr_compare(None, "!=", msg1, msg2)
         assert result is None
 
     def test_returns_none_for_equal_messages(self) -> None:
         b = _make_builder()
         msg1 = b.build("test.Msg", name="Alice")
         msg2 = b.build("test.Msg", name="Alice")
-        result = pytest_assertrepr_compare("==", msg1, msg2)
+        result = pytest_assertrepr_compare(None, "==", msg1, msg2)
         assert result is None
 
     def test_returns_diff_for_different_messages(self) -> None:
         b = _make_builder()
         msg1 = b.build("test.Msg", name="Alice", value=1)
         msg2 = b.build("test.Msg", name="Bob", value=2)
-        result = pytest_assertrepr_compare("==", msg1, msg2)
+        result = pytest_assertrepr_compare(None, "==", msg1, msg2)
         assert result is not None
         assert len(result) >= 3  # header + count + at least one diff line
         assert "2 difference(s)" in result[1]
@@ -54,7 +54,7 @@ class TestPytestPlugin:
         b = _make_builder()
         msg1 = b.build("test.Msg", name="Alice")
         msg2 = b.build("test.Msg", name="Bob")
-        result = pytest_assertrepr_compare("==", msg1, msg2)
+        result = pytest_assertrepr_compare(None, "==", msg1, msg2)
         assert result is not None
         diff_lines = [line for line in result if "~" in line]
         assert len(diff_lines) == 1
@@ -72,7 +72,7 @@ class TestPytestPlugin:
         })
         msg1 = b1.build("test.Left", name="Alice")
         msg2 = b2.build("test.Right", name="Alice", extra="data")
-        result = pytest_assertrepr_compare("==", msg1, msg2)
+        result = pytest_assertrepr_compare(None, "==", msg1, msg2)
         assert result is not None
         added_lines = [line for line in result if "+" in line]
         assert len(added_lines) >= 1
@@ -81,7 +81,7 @@ class TestPytestPlugin:
         b = _make_builder()
         msg1 = b.build("test.Msg", name="Alice")
         msg2 = b.build("test.Msg", name="Bob")
-        result = pytest_assertrepr_compare("==", msg1, msg2)
+        result = pytest_assertrepr_compare(None, "==", msg1, msg2)
         assert result is not None
         assert "test.Msg" in result[0]
 
@@ -96,7 +96,7 @@ class TestPytestPlugin:
         ):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
-                result = pytest_assertrepr_compare("==", msg1, msg2)
+                result = pytest_assertrepr_compare(None, "==", msg1, msg2)
                 assert result is None
                 assert len(w) == 1
                 assert "protokit plugin failed" in str(w[0].message)

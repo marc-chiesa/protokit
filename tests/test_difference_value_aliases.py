@@ -155,5 +155,5 @@ class TestFormattersDoNotSelfWarn:
         cls = b.get_message_class("t.M")
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            out = pytest_assertrepr_compare("==", cls(a="A"), cls(a="B"))
+            out = pytest_assertrepr_compare(None, "==", cls(a="A"), cls(a="B"))
         assert out is not None and any(line.strip().startswith("~") for line in out)
