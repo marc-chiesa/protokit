@@ -22,6 +22,7 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
+from protokit.message._selector import FieldSelector, SelectorSpec
 from protokit.message.comparators import (
     FloatComparison,
     FloatConfig,
@@ -185,6 +186,10 @@ class MessageDifferencer:
         self._ignore_names: set[str] = set()  # bare names (global match)
         self._ignore_paths: list[FieldPath] = []  # parsed dotted paths
         self._ignore_fields_raw: list[str] = []  # raw selectors for conflict validation
+        # Predicate-form ignore selectors (KTD-1/U2). Consulted at the same
+        # selection gate (``_is_ignored``) as the string forms, but evaluated
+        # against a FieldDescriptor + path rather than parsed from a string.
+        self._ignore_selectors: list[FieldSelector] = []
         self._treat_as_map: dict[str, str] = {}  # field_name_or_path -> key_field_name
         self._treat_as_map_paths: list[tuple[FieldPath, str]] = []  # (parsed_path, key_name)
         self._float_config = FloatConfig()
@@ -438,23 +443,65 @@ class MessageDifferencer:
                     path=path_str, message=msg, level="error",
                 ))
 
-    def ignore_fields(self, *selectors: str) -> None:
-        """Add field name selectors to the ignore list.
+    def ignore_fields(self, *selectors: SelectorSpec) -> None:
+        """Add field selectors to the ignore list.
 
-        Bare names apply globally. Dotted paths match specific locations.
+        Accepts three forms, freely mixed in one call:
+
+        * **Bare name** (``"timestamp"``) — ignores that field everywhere.
+        * **Dotted path** (``"header.timestamp"``) — ignores only that
+          specific location (bracket-blind, exact-length match, so
+          ``"items.name"`` also matches ``"items[0].name"``).
+        * **Predicate / FieldSelector** — a
+          ``(FieldDescriptor, FieldPath) -> bool`` callable (or a
+          pre-built :class:`FieldSelector`) consulted per field at the same
+          selection gate as the string forms. The predicate receives the
+          field's descriptor and concrete path as explicit arguments
+          (KTD-10); any exception it raises propagates unchanged — a buggy
+          predicate is an author error, not an engine fault, and is NOT
+          captured into diagnostics.
+
+        Ignore applies symmetrically: an ignored field is suppressed whether
+        it differs, is added (present only on the right/actual side), or is
+        removed (present only on the left/expected side), because the gate is
+        consulted both pre-dispatch and inside ``_emit_all_fields``.
+
+        Conflict validation with ``treat_as_map`` is enforced at registration
+        for the string forms only. A predicate-form ignore CANNOT be
+        conflict-checked at registration — the callable is opaque and no
+        descriptor is in hand — so no such check is attempted for it. The
+        compare-time behavior when a predicate ignores a field that is also
+        ``treat_as_map``-keyed is defined as **ignore wins**: the field is
+        simply not visited, so its map key is never consulted. This is
+        intentional and silent (there is no cheap, reliable overlap signal at
+        compare time for an opaque predicate).
 
         Args:
-            *selectors: One or more field selectors. A bare name (e.g.
-                ``"timestamp"``) ignores that field everywhere. A dotted
-                path (e.g. ``"header.timestamp"``) ignores only that
-                specific location.
+            *selectors: One or more ignore selectors (bare name, dotted path,
+                predicate, or :class:`FieldSelector`), in any mix.
 
         Raises:
-            ValueError: If a selector conflicts with a ``treat_as_map``
-                configuration (e.g. ignoring a map key field).
+            ValueError: If a *string* selector uses bracket syntax, or
+                conflicts with a ``treat_as_map`` configuration (e.g.
+                ignoring a map key field). Predicate-form selectors are not
+                conflict-checked at registration (see above).
         """
-        # Validate all selectors before mutating state
-        for sel in selectors:
+        # Partition string selectors (existing path) from predicate/selector
+        # forms (new path). Strings keep byte-identical behavior, including
+        # conflict validation; the selector forms route to _ignore_selectors.
+        string_selectors: list[str] = []
+        selector_forms: list[FieldSelector] = []
+        for spec in selectors:
+            if isinstance(spec, str):
+                string_selectors.append(spec)
+            else:
+                # FieldSelector or (FieldDescriptor, FieldPath) -> bool callable.
+                # FieldSelector.of returns a FieldSelector as-is and wraps a
+                # callable; it rejects anything else with a clear TypeError.
+                selector_forms.append(FieldSelector.of(spec))
+
+        # Validate all string selectors before mutating state
+        for sel in string_selectors:
             if "[" in sel:
                 raise ValueError(
                     f"Bracket syntax is not supported in ignore selectors: '{sel}'. "
@@ -467,7 +514,7 @@ class MessageDifferencer:
 
         # Check for conflicts with treat_as_map key fields
         for map_sel, key_name in self._treat_as_map.items():
-            for ign in selectors:
+            for ign in string_selectors:
                 # Bare name that matches the key
                 if "." not in ign and ign == key_name:
                     raise ValueError(
@@ -482,12 +529,13 @@ class MessageDifferencer:
                     )
 
         # All validation passed — safe to mutate
-        self._ignore_fields_raw.extend(selectors)
-        for sel in selectors:
+        self._ignore_fields_raw.extend(string_selectors)
+        for sel in string_selectors:
             if "." in sel:
                 self._ignore_paths.append(FieldPath.parse(sel))
             else:
                 self._ignore_names.add(sel)
+        self._ignore_selectors.extend(selector_forms)
 
     def treat_as_map(self, field_selector: str, *, key: str) -> None:
         """Configure a repeated message field for key-based matching.
@@ -660,12 +708,19 @@ class MessageDifferencer:
                         continue
                     field_path = item.path.child(field_name)
 
-                    # Check path-scoped ignores
-                    if self._ignore_paths and self._is_ignored(field_name, field_path):
-                        continue
-
                     left_fd = left_fields.get(field_name)
                     right_fd = right_fields.get(field_name)
+
+                    # Check path-scoped and predicate ignores. Pass a descriptor
+                    # (expected/left side preferred, falling back to the
+                    # right-only side) so predicate-form selectors can evaluate;
+                    # this keeps ignore symmetric across modified/added/removed.
+                    if (self._ignore_paths or self._ignore_selectors) and (
+                        self._is_ignored(
+                            field_name, field_path, left_fd or right_fd
+                        )
+                    ):
+                        continue
 
                     # Field only on one side
                     if left_fd is None and right_fd is not None:
@@ -747,12 +802,32 @@ class MessageDifferencer:
 
     # --- Internal methods ---
 
-    def _is_ignored(self, field_name: str, field_path: FieldPath) -> bool:
+    def _is_ignored(
+        self,
+        field_name: str,
+        field_path: FieldPath,
+        fd: proto_descriptor.FieldDescriptor | None = None,
+    ) -> bool:
         """Check if a field should be ignored.
+
+        Consults the three ignore forms in cheapest-first order: the bare-name
+        set (fast path), the parsed dotted paths, then the predicate-form
+        :class:`FieldSelector` list. Predicate selectors need the field's
+        descriptor, so callers thread ``fd`` through; if a predicate-form
+        selector is configured but ``fd`` is ``None`` (no descriptor available
+        at the call site), the predicate is conservatively not consulted and
+        only the string forms apply.
+
+        A predicate raising during this check PROPAGATES — it is an author bug,
+        not an engine fault, so it is deliberately not captured into
+        diagnostics (KTD-10 / SWI-3).
 
         Args:
             field_name: The bare field name.
             field_path: The fully qualified field path.
+            fd: The field's descriptor, required to evaluate predicate-form
+                selectors. ``None`` when no descriptor is available at the
+                call site (string-form ignore still applies).
 
         Returns:
             True if the field matches any configured ignore selector.
@@ -764,6 +839,11 @@ class MessageDifferencer:
             # This ensures "items.name" matches "items[0].name".
             if sel_path.matches_selector(field_path):
                 return True
+        if self._ignore_selectors and fd is not None:
+            for selector in self._ignore_selectors:
+                # Predicate exceptions propagate (author bug, not engine fault).
+                if selector.matches(fd, field_path):
+                    return True
         return False
 
     def _check_schema_evolution(
@@ -1661,8 +1741,10 @@ class MessageDifferencer:
                     continue
                 field_path = cur_path.child(fd.name)
 
-                # Respect ignore_fields
-                if self._is_ignored(fd.name, field_path):
+                # Respect ignore_fields (string + predicate forms). The
+                # descriptor is in hand here, so predicate selectors apply to
+                # added/removed (one-sided) fields too — symmetric ignore.
+                if self._is_ignored(fd.name, field_path, fd):
                     continue
 
                 if is_map_field(fd):
