@@ -152,6 +152,7 @@ jobs:
             src/protokit/message/_setmatch.py \
             src/protokit/message/hamcrest.py \
             src/protokit/message/matchers.py \
+            src/protokit/message/pytest_plugin.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
             src/protokit/storage/

@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from protokit.message.comparators import FloatComparison, MessageFieldComparison
 from protokit.message.differ import MessageDifferencer, diff_messages
+from protokit.message.hamcrest import (
+    HamcrestExtraNotInstalledError,
+    equals_proto,
+)
 from protokit.message.matchers import (
     Approx,
     MatcherError,
@@ -45,17 +49,18 @@ __all__ = [
     "ChangeType",
     "Diagnostic",
     "DiagnosticLevel",
-    "Difference",
     "DiffResult",
+    "Difference",
     "DuplicateKeyError",
     "EnumValue",
     "FieldHook",
     "FieldHookContext",
     "FieldPath",
     "FloatComparison",
+    "HamcrestExtraNotInstalledError",
     "HookStage",
-    "MatcherError",
     "MatchPolicy",
+    "MatcherError",
     "MessageDifferencer",
     "MessageFieldComparison",
     "MessageHookContext",
@@ -64,6 +69,7 @@ __all__ = [
     "PathSegment",
     "Warning",  # deprecated alias; remove in a later release
     "diff_messages",
+    "equals_proto",
     "expect_proto",
     "proto_match",
 ]
