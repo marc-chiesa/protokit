@@ -760,12 +760,9 @@ class MessageDifferencer:
         if field_name in self._ignore_names:
             return True
         for sel_path in self._ignore_paths:
-            # Compare segment names only, ignoring brackets.
+            # Bracket-blind, exact-length segment-name match.
             # This ensures "items.name" matches "items[0].name".
-            if len(sel_path.segments) == len(field_path.segments) and all(
-                s.name == f.name
-                for s, f in zip(sel_path.segments, field_path.segments)
-            ):
+            if sel_path.matches_selector(field_path):
                 return True
         return False
 
@@ -1600,10 +1597,7 @@ class MessageDifferencer:
         # Check path-scoped first (bracket-stripped segment name comparison),
         # then bare name
         for sel_path, key in self._treat_as_map_paths:
-            if len(sel_path.segments) == len(field_path.segments) and all(
-                s.name == f.name
-                for s, f in zip(sel_path.segments, field_path.segments)
-            ):
+            if sel_path.matches_selector(field_path):
                 return key
         if field_name in self._treat_as_map:
             return self._treat_as_map[field_name]

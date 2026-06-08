@@ -353,6 +353,34 @@ class FieldPath:
                 return False
         return True
 
+    def matches_selector(self, other: FieldPath) -> bool:
+        """Check if this path matches another as a selector (bracket-blind, exact-length).
+
+        This is the matching semantics the differ's selective policies use
+        (``ignore_fields``, ``treat_as_map``): a selector matches a concrete
+        field path iff the two paths have the SAME number of segments AND each
+        selector segment's *name* equals the corresponding path segment's name.
+        Brackets and indices are ignored entirely on both sides.
+
+        It differs from both :meth:`matches_exact` (which requires bracket
+        equality) and :meth:`is_prefix_of` (which is a prefix, not exact-length).
+        ``self`` is the selector; ``other`` is the concrete path being tested.
+
+        Args:
+            other: The concrete field path to test against this selector.
+
+        Returns:
+            True if ``self`` selects ``other`` under bracket-blind,
+            exact-length name matching. For example, the selector
+            ``"items.name"`` matches ``"items[0].name"`` but not
+            ``"a.items.name"``.
+        """
+        if len(self.segments) != len(other.segments):
+            return False
+        return all(
+            s.name == o.name for s, o in zip(self.segments, other.segments)
+        )
+
     def __str__(self) -> str:
         """Render the path back to its dotted source form.
 
