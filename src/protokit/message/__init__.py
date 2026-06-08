@@ -12,7 +12,7 @@ See ``protokit.message.differ`` for the engine,
 
 from __future__ import annotations
 
-from protokit.message.comparators import FloatComparison
+from protokit.message.comparators import FloatComparison, MessageFieldComparison
 from protokit.message.differ import MessageDifferencer, diff_messages
 from protokit.message.model import (
     ChangeType,
@@ -47,6 +47,7 @@ __all__ = [
     "FloatComparison",
     "HookStage",
     "MessageDifferencer",
+    "MessageFieldComparison",
     "MessageHookContext",
     "MessageValidateHook",
     "MissingKeyError",

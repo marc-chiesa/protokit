@@ -22,11 +22,13 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
+from protokit.message._presence import PresenceVerdict, presence_verdict
 from protokit.message._selector import FieldSelector, SelectorSpec, should_visit
 from protokit.message._setmatch import greedy_multiset_pairing
 from protokit.message.comparators import (
     FloatComparison,
     FloatConfig,
+    MessageFieldComparison,
     compare_enum_cross_pool,
     compare_enum_same_pool,
     compare_float,
@@ -213,6 +215,13 @@ class MessageDifferencer:
         # fields and value differences are STILL reported. Directional and
         # recursive; default off keeps full comparison behavior unchanged (R12).
         self._partial: bool = False
+        # Field-presence comparison mode (KTD-7/U5). EQUIVALENT (default)
+        # collapses a presence-bearing field set to its DEFAULT value with an
+        # unset field; EQUAL distinguishes them. Observable only where presence
+        # exists (proto2, proto3 ``optional``, oneof members, message fields);
+        # a documented no-op for proto3 implicit-presence scalars. Default keeps
+        # today's pinned output (set-to-non-default-vs-unset still reported).
+        self._presence_mode: MessageFieldComparison = MessageFieldComparison.EQUIVALENT
         self._float_config = FloatConfig()
         self.max_depth: int | None = None
         self.strict_schema: bool = False
@@ -733,6 +742,36 @@ class MessageDifferencer:
             default_msg = type(msg)()
         return getattr(msg, left_fd.name) != getattr(default_msg, left_fd.name)
 
+    def set_message_field_comparison(
+        self, mode: MessageFieldComparison
+    ) -> None:
+        """Configure field-presence comparison semantics (KTD-7/U5).
+
+        Mirrors C++ ``MessageDifferencer::set_message_field_comparison``.
+
+        Controls how a singular field's *presence* (set vs unset) is compared
+        when one side has the field set and the other does not:
+
+        * :attr:`MessageFieldComparison.EQUIVALENT` (the default) treats a
+          field set to its **default value** as equal to an unset field — the
+          "set-to-default ≈ unset" collapse. A field set to a *non-default*
+          value vs unset is still reported as a presence difference (today's
+          pinned behavior, unchanged).
+        * :attr:`MessageFieldComparison.EQUAL` (opt-in) reports a presence
+          difference whenever a presence-bearing field is set on one side
+          (even to its default value) and unset on the other.
+
+        EQUAL is observable only where presence exists — proto2 fields, proto3
+        ``optional`` fields, oneof members, and singular message fields. It is a
+        documented NO-OP for proto3 implicit-presence scalars, which carry no
+        presence bit and so cannot distinguish a default value from unset.
+
+        Args:
+            mode: ``MessageFieldComparison.EQUIVALENT`` (default) or
+                ``MessageFieldComparison.EQUAL``.
+        """
+        self._presence_mode = mode
+
     def set_float_comparison(
         self,
         mode: FloatComparison,
@@ -1183,9 +1222,19 @@ class MessageDifferencer:
         # Fast path: no hooks → original behavior inlined.
         if not has_field_hooks:
             if left_has and right_has:
-                if not left_present and not right_present:
+                # Route the one-sided presence delta through the EQUAL/
+                # EQUIVALENT decision (U5). EQUIVALENT collapses a
+                # set-to-DEFAULT-vs-unset delta (COLLAPSE); EQUAL always
+                # reports it. A set-to-non-default-vs-unset delta reports in
+                # BOTH modes (today's pinned behavior). EQUAL_PRESENCE (both
+                # set or both unset) falls through to value comparison.
+                verdict = presence_verdict(
+                    left_msg, right_msg, left_fd, right_fd,
+                    equal_mode=self._presence_mode == MessageFieldComparison.EQUAL,
+                )
+                if verdict is PresenceVerdict.COLLAPSE:
                     return
-                if not left_present and right_present:
+                if verdict is PresenceVerdict.ADDED:
                     diffs.append(Difference(
                         path=path,
                         change_type=ChangeType.ADDED,
@@ -1193,7 +1242,7 @@ class MessageDifferencer:
                         field_type=type_name(right_fd.type),
                     ))
                     return
-                if left_present and not right_present:
+                if verdict is PresenceVerdict.REMOVED:
                     diffs.append(Difference(
                         path=path,
                         change_type=ChangeType.REMOVED,
@@ -1237,10 +1286,22 @@ class MessageDifferencer:
         )
 
         if left_has and right_has:
-            if not left_present and not right_present:
+            # Same EQUAL/EQUIVALENT presence decision as the fast path (U5),
+            # after VALIDATE has fired (SWI-6: VALIDATE fires on every leaf,
+            # including presence-gated paths). COLLAPSE / EQUAL_PRESENCE-both-
+            # unset drain warnings and return as equal; ADDED/REMOVED emit.
+            verdict = presence_verdict(
+                left_msg, right_msg, left_fd, right_fd,
+                equal_mode=self._presence_mode == MessageFieldComparison.EQUAL,
+            )
+            if verdict is PresenceVerdict.COLLAPSE:
                 self._drain_field_ctx_warnings(ctx_state, path, warnings)
                 return
-            if not left_present and right_present:
+            if verdict is PresenceVerdict.EQUAL_PRESENCE and not left_present:
+                # Both unset: nothing to compare.
+                self._drain_field_ctx_warnings(ctx_state, path, warnings)
+                return
+            if verdict is PresenceVerdict.ADDED:
                 diff = Difference(
                     path=path,
                     change_type=ChangeType.ADDED,
@@ -1251,7 +1312,7 @@ class MessageDifferencer:
                     diff, ctx_state, ctx, diffs, warnings, path,
                 )
                 return
-            if left_present and not right_present:
+            if verdict is PresenceVerdict.REMOVED:
                 diff = Difference(
                     path=path,
                     change_type=ChangeType.REMOVED,
@@ -1562,8 +1623,13 @@ class MessageDifferencer:
             right_child = getattr(right_msg, right_fd.name)
             if _has_populated_fields(right_child):
                 stack.append(_WorkItem(None, right_child, path, depth + 1))
-            else:
-                # Empty-but-present message exception
+            elif self._presence_mode == MessageFieldComparison.EQUAL:
+                # Empty-but-present message exception. The set side is the
+                # default (empty) instance. EQUAL distinguishes set-to-default
+                # from unset → report ADDED. EQUIVALENT (the default) collapses
+                # it (no diff) — the U5 reconciliation with this pre-existing
+                # exception, layered here rather than re-emitted elsewhere so
+                # there is exactly one decision site (no double-report).
                 diffs.append(Difference(
                     path=path, change_type=ChangeType.ADDED,
                     field_type=type_name(right_fd.type),
@@ -1573,7 +1639,8 @@ class MessageDifferencer:
             left_child = getattr(left_msg, left_fd.name)
             if _has_populated_fields(left_child):
                 stack.append(_WorkItem(left_child, None, path, depth + 1))
-            else:
+            elif self._presence_mode == MessageFieldComparison.EQUAL:
+                # Symmetric empty-but-present REMOVED; EQUIVALENT collapses.
                 diffs.append(Difference(
                     path=path, change_type=ChangeType.REMOVED,
                     field_type=type_name(left_fd.type),
