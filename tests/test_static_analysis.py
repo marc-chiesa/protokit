@@ -32,6 +32,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/message/_selector.py",
+    "src/protokit/message/_setmatch.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/storage",
@@ -46,6 +47,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "tests/test_field_selector.py",
     "tests/test_formatters_cli.py",
     "tests/test_ignore_predicate.py",
+    "tests/test_set_comparison.py",
     "tests/test_static_analysis.py",
 )
 
@@ -56,6 +58,7 @@ _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/message/_selector.py",
+    "src/protokit/message/_setmatch.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/storage",

@@ -23,6 +23,7 @@ from protokit._descriptors import (
     type_name,
 )
 from protokit.message._selector import FieldSelector, SelectorSpec
+from protokit.message._setmatch import greedy_multiset_pairing
 from protokit.message.comparators import (
     FloatComparison,
     FloatConfig,
@@ -192,6 +193,10 @@ class MessageDifferencer:
         self._ignore_selectors: list[FieldSelector] = []
         self._treat_as_map: dict[str, str] = {}  # field_name_or_path -> key_field_name
         self._treat_as_map_paths: list[tuple[FieldPath, str]] = []  # (parsed_path, key_name)
+        # Keyless "set" comparison (KTD-8/U3): repeated fields marked here are
+        # compared order-independently as multisets via greedy pairing, rather
+        # than the default index pairing. Distinct from keyed ``treat_as_map``.
+        self._treat_as_set_selectors: list[FieldSelector] = []
         self._float_config = FloatConfig()
         self.max_depth: int | None = None
         self.strict_schema: bool = False
@@ -581,9 +586,70 @@ class MessageDifferencer:
                     f"because '{ign}' is ignored"
                 )
 
+        # Reverse conflict: the field cannot already be treat_as_set (keyless).
+        # Only path-form set selectors are checkable here (predicates opaque).
+        map_path = FieldPath.parse(field_selector)
+        for set_sel in self._treat_as_set_selectors:
+            set_path = set_sel.path
+            if set_path is not None and set_path.matches_selector(map_path):
+                raise ValueError(
+                    f"Cannot treat_as_map field '{field_selector}' that is "
+                    f"already configured as treat_as_set"
+                )
+
         self._treat_as_map[field_selector] = key
         if "." in field_selector:
             self._treat_as_map_paths.append((FieldPath.parse(field_selector), key))
+
+    def treat_as_set(self, selector: SelectorSpec) -> None:
+        """Configure a repeated field for keyless, order-independent matching.
+
+        Unlike :meth:`treat_as_map` (which pairs elements by a key sub-field),
+        set comparison has NO key: elements are paired as a multiset via greedy
+        first-fit equality (KTD-8). Two repeated fields holding the same
+        elements in a different order compare equal; leftovers are reported as
+        REMOVED (expected-side) and ADDED (actual-side) for the unmatched
+        elements, using the same element ``Difference`` shape as the default
+        index path.
+
+        Applies to scalar/enum and message repeated fields. Set-membership
+        equality is STRICT exact equality — it deliberately does NOT apply
+        float tolerance or other per-element policies inside element
+        comparison, so equality stays a true equivalence relation and the
+        partition is order-independent. Cost is ``O(n * m)`` element-equality
+        evaluations; for message elements each is a full sub-comparison, so it
+        is intended for test-sized repeated fields.
+
+        Args:
+            selector: A bare field name (``"items"``), a dotted path
+                (``"parent.items"``), a ``(FieldDescriptor, FieldPath) -> bool``
+                predicate, or a pre-built :class:`FieldSelector`. The same
+                selection model every selective policy uses (R9).
+
+        Raises:
+            TypeError: If ``selector`` is not a str, callable, or
+                :class:`FieldSelector` (propagated from
+                :meth:`FieldSelector.of`).
+            ValueError: If ``selector`` is a *string/path* form that is also
+                configured as ``treat_as_map`` (a field cannot be both keyed
+                and keyless). Predicate-form selectors are opaque and cannot be
+                conflict-checked at registration (mirroring predicate ignore).
+        """
+        field_selector = FieldSelector.of(selector)
+
+        # Conflict validation: a field cannot be both treat_as_map (keyed) and
+        # treat_as_set (keyless). Only checkable for path/string forms — a
+        # predicate is opaque with no descriptor in hand at registration.
+        sel_path = field_selector.path
+        if sel_path is not None:
+            for map_sel in self._treat_as_map:
+                if FieldPath.parse(map_sel).matches_selector(sel_path):
+                    raise ValueError(
+                        f"Cannot treat_as_set field '{sel_path}' that is "
+                        f"already configured as treat_as_map('{map_sel}')"
+                    )
+
+        self._treat_as_set_selectors.append(field_selector)
 
     def set_float_comparison(
         self,
@@ -1402,6 +1468,17 @@ class MessageDifferencer:
                         f"(type={type_name(left_fd.type)}); falling back to index comparison",
             ))
 
+        # Keyless set comparison takes precedence over index pairing when the
+        # field is set-marked (KTD-8/U3). treat_as_map (keyed) wins over set if
+        # both somehow apply, since it returns above; the registration-time
+        # conflict guard prevents path-form double-config.
+        if self._treat_as_set_selectors and self._is_treat_as_set(path, left_fd):
+            self._compare_treat_as_set(
+                left_msg, right_msg, left_fd, right_fd, path,
+                diffs, stack, depth, warnings, same_pool,
+            )
+            return
+
         left_list = getattr(left_msg, field_name)
         right_list = getattr(right_msg, field_name)
 
@@ -1549,6 +1626,152 @@ class MessageDifferencer:
                         diffs, warnings,
                     )
 
+    def _set_elements_equal(
+        self,
+        left_elem: Any,
+        right_elem: Any,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        same_pool: bool,
+    ) -> bool:
+        """Decide STRICT element equality for keyless set pairing (KTD-8).
+
+        This is the equality callable injected into
+        :func:`greedy_multiset_pairing`. It is backed by the engine so set
+        membership matches :meth:`compare` semantics exactly — NOT a private
+        reimplementation:
+
+        * **Message elements** run a fresh, default-config sub-comparison
+          (``MessageDifferencer().compare(...)``) and count "zero differences"
+          as equal. The fresh differ carries default config (exact floats, no
+          ignore/map/set/tolerance), so the comparison is strict yet still
+          descriptor-aware: cross-pool name-matching, enum wire-compatibility,
+          and presence all come from the engine. A one-field-different element
+          therefore has differences and is NOT equal — it surfaces later as a
+          remove + add pair, not a modify (documented v1 behavior).
+
+        * **Scalar/enum/bytes elements** reuse the engine's value-equality path
+          (:meth:`_values_equal` — same enum wire-compat / cross-pool logic),
+          but under a STRICT float config so per-instance float tolerance never
+          leaks into set-membership equality. Keeping equality strict makes it
+          a true equivalence relation, so the greedy partition is
+          order-independent (KTD-8).
+
+        Args:
+            left_elem: An element from the expected (left) list.
+            right_elem: An element from the actual (right) list.
+            left_fd: The repeated field's left descriptor.
+            right_fd: The repeated field's right descriptor.
+            same_pool: True if the parent messages share a descriptor pool.
+
+        Returns:
+            True if the two elements are strictly engine-equal.
+        """
+        if left_fd.type == TYPE_MESSAGE:
+            # Engine equality for message elements: a fresh default-config
+            # differ gives strict comparison with full descriptor awareness.
+            sub_result = MessageDifferencer().compare(left_elem, right_elem)
+            return not sub_result.has_changes()
+
+        # Scalar/enum/bytes: engine value equality under a STRICT float config.
+        if left_fd.type in (TYPE_FLOAT, TYPE_DOUBLE):
+            return compare_float(
+                float(left_elem), float(right_elem),
+                FloatConfig(mode=FloatComparison.EXACT),
+            )
+        if left_fd.type == TYPE_ENUM:
+            if same_pool:
+                return compare_enum_same_pool(left_elem, right_elem)
+            left_ev = to_enum_value(left_elem, left_fd.enum_type)
+            right_ev = to_enum_value(right_elem, right_fd.enum_type)
+            equal, _warning = compare_enum_cross_pool(
+                left_ev.number, left_ev.name, right_ev.number, right_ev.name,
+            )
+            return equal
+        return compare_scalar(left_elem, right_elem)
+
+    def _compare_treat_as_set(
+        self,
+        left_msg: Message,
+        right_msg: Message,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+        diffs: list[Difference],
+        stack: list[_WorkItem],
+        depth: int,
+        warnings: list[Diagnostic],
+        same_pool: bool,
+    ) -> None:
+        """Compare a repeated field order-independently as a multiset (KTD-8).
+
+        Pairs elements via :func:`greedy_multiset_pairing` with an engine-backed
+        strict-equality callable (:meth:`_set_elements_equal`). Matched pairs
+        emit nothing (they are strictly equal); leftovers reuse the existing
+        element ``Difference`` shape — expected-side leftovers are REMOVED,
+        actual-side leftovers are ADDED, each keyed by its original index in
+        its own list (``field[i]``).
+
+        Args:
+            left_msg: The left parent message.
+            right_msg: The right parent message.
+            left_fd: Field descriptor from the left schema.
+            right_fd: Field descriptor from the right schema.
+            path: The current field path.
+            diffs: Accumulator list for Difference objects.
+            stack: The iterative comparison work stack.
+            depth: Current comparison depth.
+            warnings: Accumulator list for Diagnostic objects.
+            same_pool: True if both messages share a descriptor pool.
+        """
+        left_list = list(getattr(left_msg, left_fd.name))
+        right_list = list(getattr(right_msg, right_fd.name))
+
+        def _equal(left_elem: Any, right_elem: Any) -> bool:
+            return self._set_elements_equal(
+                left_elem, right_elem, left_fd, right_fd, same_pool,
+            )
+
+        _matched, expected_unmatched, actual_unmatched = greedy_multiset_pairing(
+            left_list, right_list, _equal,
+        )
+
+        # Expected-side leftovers -> REMOVED, keyed by original left index.
+        for i in expected_unmatched:
+            idx_path = _replace_bracket(path, str(i)) if path.segments else path
+            if left_fd.type == TYPE_MESSAGE:
+                if _has_populated_fields(left_list[i]):
+                    stack.append(_WorkItem(left_list[i], None, idx_path, depth + 1))
+                else:
+                    diffs.append(Difference(
+                        path=idx_path, change_type=ChangeType.REMOVED,
+                        field_type=type_name(left_fd.type),
+                    ))
+            else:
+                self._compare_one_sided_scalar_with_hooks(
+                    left_list[i], left_fd, right_fd, idx_path,
+                    left_msg, right_msg, is_new=False,
+                    diffs=diffs, warnings=warnings,
+                )
+
+        # Actual-side leftovers -> ADDED, keyed by original right index.
+        for i in actual_unmatched:
+            idx_path = _replace_bracket(path, str(i)) if path.segments else path
+            if right_fd.type == TYPE_MESSAGE:
+                if _has_populated_fields(right_list[i]):
+                    stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
+                else:
+                    diffs.append(Difference(
+                        path=idx_path, change_type=ChangeType.ADDED,
+                        field_type=type_name(right_fd.type),
+                    ))
+            else:
+                self._compare_one_sided_scalar_with_hooks(
+                    right_list[i], left_fd, right_fd, idx_path,
+                    left_msg, right_msg, is_new=True,
+                    diffs=diffs, warnings=warnings,
+                )
+
     def _compare_treat_as_map(
         self,
         left_msg: Message,
@@ -1682,6 +1905,30 @@ class MessageDifferencer:
         if field_name in self._treat_as_map:
             return self._treat_as_map[field_name]
         return None
+
+    def _is_treat_as_set(
+        self,
+        field_path: FieldPath,
+        fd: proto_descriptor.FieldDescriptor,
+    ) -> bool:
+        """Whether this repeated field is configured for keyless set matching.
+
+        Consults every registered :class:`FieldSelector` (path or predicate
+        form) via the shared :meth:`FieldSelector.matches`. A predicate raising
+        here PROPAGATES — it is an author bug, not an engine fault (KTD-10).
+
+        Args:
+            field_path: The fully qualified path of the repeated field.
+            fd: The repeated field's descriptor (needed by predicate-form
+                selectors).
+
+        Returns:
+            True if any configured ``treat_as_set`` selector matches.
+        """
+        for selector in self._treat_as_set_selectors:
+            if selector.matches(fd, field_path):
+                return True
+        return False
 
     def _emit_all_fields(
         self,

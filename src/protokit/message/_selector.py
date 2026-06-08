@@ -155,6 +155,18 @@ class FieldSelector:
         """Whether this selector is the predicate form."""
         return self._predicate is not None
 
+    @property
+    def path(self) -> FieldPath | None:
+        """The parsed path for a path-form selector, else ``None``.
+
+        Exposed read-only so registration-time conflict checks (e.g. a field
+        configured as both ``treat_as_map`` and ``treat_as_set``) can compare
+        a path-form selector against other configured paths. Predicate-form
+        selectors return ``None`` — they are opaque and cannot be
+        conflict-checked at registration (KTD-1, mirroring predicate ignore).
+        """
+        return self._path
+
     def matches(
         self,
         fd: proto_descriptor.FieldDescriptor,
