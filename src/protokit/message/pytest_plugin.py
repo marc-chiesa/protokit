@@ -21,7 +21,64 @@ from google.protobuf.message import Message
 
 from protokit.message.differ import MessageDifferencer
 from protokit.message.formatting import format_value as _format_value
-from protokit.message.model import ChangeType
+from protokit.message.model import ChangeType, DiffResult
+
+
+def render_diff_lines(result: DiffResult, header: str) -> list[str]:
+    """Render a non-empty ``DiffResult`` into human-readable display lines.
+
+    The single source of per-difference rendering shared by the pytest
+    assertion hook and the matcher facade (``protokit.message.matchers``),
+    so the two surfaces always agree on diff text (KTD-4). The header line
+    is supplied by the caller (the pytest hook names the two message types;
+    the matcher names ``expected``/``actual``); everything below it — the
+    difference count, the per-``Difference`` rows, and any diagnostics — is
+    rendered identically here.
+
+    Reads ONLY the canonical ``Difference.left_value`` / ``right_value`` (and
+    the ``left_*`` / ``right_*`` pairs) — never the deprecated ``old_value`` /
+    ``new_value`` aliases, which emit ``UserWarning`` and break strict-warning
+    CI (see ``docs/solutions/design-patterns/neutral-field-rename-with-deprecation-window.md``).
+
+    Args:
+        result: A ``DiffResult`` with at least one difference. The caller is
+            responsible for checking ``result.has_changes()`` first; this
+            function does not special-case the empty result.
+        header: The first display line (e.g. a ``"A != B"`` type summary).
+
+    Returns:
+        A list of display lines: ``header``, the difference count, one row
+        per ``Difference``, then one row per diagnostic.
+    """
+    lines = [header, f"  {len(result)} difference(s):"]
+
+    for diff in result:
+        path_str = str(diff.path) if diff.path else "(root)"
+        match diff.change_type:
+            case ChangeType.ADDED:
+                lines.append(f"  + {path_str}: {_format_value(diff.right_value)}")
+            case ChangeType.REMOVED:
+                lines.append(f"  - {path_str}: {_format_value(diff.left_value)}")
+            case ChangeType.MODIFIED:
+                lines.append(
+                    f"  ~ {path_str}: {_format_value(diff.left_value)} -> {_format_value(diff.right_value)}"
+                )
+            case ChangeType.TYPE_CHANGED:
+                lines.append(f"  T {path_str}: {diff.left_type} -> {diff.right_type}")
+            case ChangeType.FIELD_NUMBER_CHANGED:
+                lines.append(
+                    f"  # {path_str}: field {diff.left_field_number} -> {diff.right_field_number}"
+                )
+            case ChangeType.CARDINALITY_CHANGED:
+                lines.append(
+                    f"  C {path_str}: {diff.left_label} -> {diff.right_label}"
+                )
+
+    for d in result.diagnostics:
+        prefix = "error" if d.level == "error" else "warning"
+        lines.append(f"  {prefix}: {d}")
+
+    return lines
 
 
 def pytest_assertrepr_compare(op: str, left: Any, right: Any) -> list[str] | None:
@@ -78,32 +135,4 @@ def pytest_assertrepr_compare(op: str, left: Any, right: Any) -> list[str] | Non
     else:
         header = f"{left_type} != {right_type} (cross-schema)"
 
-    lines = [header, f"  {len(result)} difference(s):"]
-
-    for diff in result:
-        path_str = str(diff.path) if diff.path else "(root)"
-        match diff.change_type:
-            case ChangeType.ADDED:
-                lines.append(f"  + {path_str}: {_format_value(diff.right_value)}")
-            case ChangeType.REMOVED:
-                lines.append(f"  - {path_str}: {_format_value(diff.left_value)}")
-            case ChangeType.MODIFIED:
-                lines.append(
-                    f"  ~ {path_str}: {_format_value(diff.left_value)} -> {_format_value(diff.right_value)}"
-                )
-            case ChangeType.TYPE_CHANGED:
-                lines.append(f"  T {path_str}: {diff.left_type} -> {diff.right_type}")
-            case ChangeType.FIELD_NUMBER_CHANGED:
-                lines.append(
-                    f"  # {path_str}: field {diff.left_field_number} -> {diff.right_field_number}"
-                )
-            case ChangeType.CARDINALITY_CHANGED:
-                lines.append(
-                    f"  C {path_str}: {diff.left_label} -> {diff.right_label}"
-                )
-
-    for d in result.diagnostics:
-        prefix = "error" if d.level == "error" else "warning"
-        lines.append(f"  {prefix}: {d}")
-
-    return lines
+    return render_diff_lines(result, header)

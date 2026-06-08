@@ -14,6 +14,13 @@ from __future__ import annotations
 
 from protokit.message.comparators import FloatComparison, MessageFieldComparison
 from protokit.message.differ import MessageDifferencer, diff_messages
+from protokit.message.matchers import (
+    Approx,
+    MatcherError,
+    MatchPolicy,
+    expect_proto,
+    proto_match,
+)
 from protokit.message.model import (
     ChangeType,
     Diagnostic,
@@ -34,6 +41,7 @@ from protokit.message.model import (
 )
 
 __all__ = [
+    "Approx",
     "ChangeType",
     "Diagnostic",
     "DiagnosticLevel",
@@ -46,6 +54,8 @@ __all__ = [
     "FieldPath",
     "FloatComparison",
     "HookStage",
+    "MatcherError",
+    "MatchPolicy",
     "MessageDifferencer",
     "MessageFieldComparison",
     "MessageHookContext",
@@ -54,4 +64,6 @@ __all__ = [
     "PathSegment",
     "Warning",  # deprecated alias; remove in a later release
     "diff_messages",
+    "expect_proto",
+    "proto_match",
 ]
