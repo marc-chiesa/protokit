@@ -49,6 +49,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "tests/test_formatters_cli.py",
     "tests/test_ignore_predicate.py",
     "tests/test_match_partial.py",
+    "tests/test_per_field_tolerance.py",
     "tests/test_presence_mode.py",
     "tests/test_set_comparison.py",
     "tests/test_static_analysis.py",

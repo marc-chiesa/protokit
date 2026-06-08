@@ -223,6 +223,15 @@ class MessageDifferencer:
         # today's pinned output (set-to-non-default-vs-unset still reported).
         self._presence_mode: MessageFieldComparison = MessageFieldComparison.EQUIVALENT
         self._float_config = FloatConfig()
+        # Per-field float tolerance overlays (KTD-6/U6). Each entry pairs a
+        # FieldSelector with the FloatConfig to apply to the float/double fields
+        # it selects. Consulted FIRST in the float-comparison path: the first
+        # overlay whose selector matches ``(fd, path)`` supplies the config;
+        # otherwise the global ``_float_config`` applies. This LAYERS over the
+        # global setting rather than replacing it (R11) — an unscoped float field
+        # keeps the global behavior unchanged. Empty list = fast path (global
+        # only). Order is registration order; earlier overlays win ties.
+        self._float_overlays: list[tuple[FieldSelector, FloatConfig]] = []
         self.max_depth: int | None = None
         self.strict_schema: bool = False
         # Phase 1.5 hook pipeline. Per-stage lists; empty = fast path.
@@ -777,10 +786,33 @@ class MessageDifferencer:
         mode: FloatComparison,
         fraction: float = 1e-6,
         margin: float = 1e-9,
+        *,
+        selector: SelectorSpec | None = None,
     ) -> None:
         """Configure how float (and double) fields are compared.
 
         Default is exact IEEE 754 comparison.
+
+        Two layered scopes are supported:
+
+        * **Global** (``selector=None``, the default): sets the baseline
+            ``FloatConfig`` applied to every float/double field that no overlay
+            selects. This is the original behavior and is unchanged.
+        * **Per-field overlay** (``selector=...``): registers a
+            ``(FieldSelector, FloatConfig)`` overlay applied ONLY to the
+            float/double fields the selector matches (KTD-6/U6). Overlays
+            LAYER over the global setting (R11) — they never replace it. During
+            comparison the overlays are consulted first (in registration order);
+            the first whose selector matches the field supplies the config, and
+            any unmatched float field falls back to the global ``FloatConfig``.
+            Both ``fraction`` and ``margin`` are honored per overlay. Call again
+            with a different ``selector`` to register additional overlays.
+
+        The selector resolves over map/repeated float element values too: a
+        path-form selector (e.g. ``"ratios"``) matches via the element path,
+        and a descriptor-predicate selector receives the *container* field
+        descriptor (not the synthetic ``MapEntry.value`` descriptor) so it sees
+        the user's field name.
 
         Args:
             mode: ``FloatComparison.EXACT`` for bit-identical
@@ -794,8 +826,18 @@ class MessageDifferencer:
                 are equal if ``|a - b| <= margin``. Combined with
                 ``fraction`` as a logical OR. Defaults to ``1e-9``.
                 Ignored in EXACT mode.
+            selector: When provided, a bare name / dotted path string, a
+                ``(FieldDescriptor, FieldPath) -> bool`` predicate, or a
+                :class:`FieldSelector` scoping this ``mode``/``fraction``/
+                ``margin`` to the matching float fields as an overlay over the
+                global setting. When ``None`` (default), the global float config
+                is set instead.
         """
-        self._float_config = FloatConfig(mode=mode, fraction=fraction, margin=margin)
+        config = FloatConfig(mode=mode, fraction=fraction, margin=margin)
+        if selector is None:
+            self._float_config = config
+            return
+        self._float_overlays.append((FieldSelector.of(selector), config))
 
     def compare(self, left: Message, right: Message) -> DiffResult:
         """Compare two protobuf messages and return a structured diff.
@@ -1491,6 +1533,68 @@ class MessageDifferencer:
         )
         self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
 
+    def _selection_fd_for_float(
+        self,
+        left_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+    ) -> proto_descriptor.FieldDescriptor:
+        """Resolve the descriptor a float overlay selector should see (KTD-6).
+
+        At a map element's value-compare site ``left_fd`` is the synthetic
+        ``MapEntry.value`` descriptor (its ``name`` is ``"value"``), not the
+        user's container field. A descriptor-predicate selector inspecting
+        ``fd.name`` would therefore never match a map float value. This resolves
+        the *container* field descriptor — the field on the parent message whose
+        name is the path's last segment — so predicate-form selectors see the
+        user's field name. (Path-form selectors already match via the path's
+        bracket-blind last segment, so this matters only for the predicate form.)
+
+        For repeated (non-map) float fields the element-compare site already
+        passes the container descriptor, so ``left_fd`` is returned unchanged.
+
+        Args:
+            left_fd: The descriptor at the float-compare site.
+            path: The concrete path of the value being compared.
+
+        Returns:
+            The container field descriptor for a map value, else ``left_fd``.
+        """
+        entry = left_fd.containing_type
+        if entry is None or not entry.GetOptions().map_entry:
+            return left_fd
+        parent = entry.containing_type
+        if parent is None or not path.segments:
+            return left_fd
+        container = parent.fields_by_name.get(path.segments[-1].name)
+        return container if container is not None else left_fd
+
+    def _float_config_for(
+        self,
+        left_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+    ) -> FloatConfig:
+        """Pick the FloatConfig for a float/double field (KTD-6/U6).
+
+        Consults the per-field overlays FIRST: the first overlay whose selector
+        matches ``(fd, path)`` supplies its config. Falls back to the global
+        ``_float_config`` when no overlay matches — overlays LAYER over, never
+        replace, the global setting (R11). Empty overlay list is a fast path.
+
+        Args:
+            left_fd: Field descriptor at the float-compare site.
+            path: The concrete field path of the value being compared.
+
+        Returns:
+            The overlay's FloatConfig if one matches, else the global config.
+        """
+        if not self._float_overlays:
+            return self._float_config
+        selection_fd = self._selection_fd_for_float(left_fd, path)
+        for selector, config in self._float_overlays:
+            if selector.matches(selection_fd, path):
+                return config
+        return self._float_config
+
     def _values_equal(
         self,
         left: Any,
@@ -1519,7 +1623,9 @@ class MessageDifferencer:
             True if the values are considered equal.
         """
         if left_fd.type in (TYPE_FLOAT, TYPE_DOUBLE):
-            return compare_float(float(left), float(right), self._float_config)
+            return compare_float(
+                float(left), float(right), self._float_config_for(left_fd, path)
+            )
 
         if left_fd.type == TYPE_ENUM:
             if same_pool:
