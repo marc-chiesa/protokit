@@ -72,28 +72,6 @@ class PresenceVerdict(Enum):
     COLLAPSE = "COLLAPSE"
 
 
-def is_presence_observable(fd: proto_descriptor.FieldDescriptor) -> bool:
-    """Whether presence (set vs unset) is observable for a singular field.
-
-    Observable presence means ``HasField`` is meaningful: proto2 fields,
-    proto3 ``optional`` fields, oneof members, and singular message fields all
-    report ``has_presence``. proto3 implicit-presence scalars do not — for them
-    a default value is indistinguishable from unset, so EQUAL is a NO-OP.
-
-    Repeated and map fields have no scalar "presence" in this sense (their
-    emptiness is handled by the repeated/map comparison paths), so callers
-    should only consult this for singular fields; it still returns whatever
-    ``has_presence`` reports.
-
-    Args:
-        fd: The field descriptor under consideration.
-
-    Returns:
-        True if ``HasField`` can distinguish set from unset for this field.
-    """
-    return bool(fd.has_presence)
-
-
 def is_set(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
     """Whether a presence-bearing singular field is set on ``msg``.
 
@@ -105,8 +83,9 @@ def is_set(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
 
     Args:
         msg: The parent message holding the field.
-        fd: The field descriptor — MUST be presence-observable
-            (:func:`is_presence_observable`); calling ``HasField`` on a
+        fd: The field descriptor — MUST be presence-bearing (``fd.has_presence``
+            is True: proto2 fields, proto3 ``optional`` fields, oneof members,
+            and singular message fields); calling ``HasField`` on a
             non-presence field raises ``ValueError``.
 
     Returns:

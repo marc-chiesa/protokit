@@ -41,6 +41,7 @@ time.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 from typing import TYPE_CHECKING, Any
 
@@ -194,8 +195,6 @@ def _proto_matcher_class() -> type:
 
         def _with(self, **changes: Any) -> _ProtoMatcher:
             """Return a new matcher with ``policy`` fields replaced by ``changes``."""
-            import dataclasses
-
             new_policy = dataclasses.replace(self._policy, **changes)
             return _ProtoMatcher(self._expected, new_policy)
 

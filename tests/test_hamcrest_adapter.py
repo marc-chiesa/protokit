@@ -327,6 +327,40 @@ class TestSurfaceParity:
         assert a_pass is False
         assert a_msg == h_msg
 
+    def test_parity_under_presence_policy(self) -> None:
+        b = _opt_builder()
+        cls = b.get_message_class("test.Opt")
+        # flag set-to-default on expected vs unset on actual: EQUAL reports the
+        # presence delta (EQUIVALENT would collapse it).
+        expected = cls(flag=0)
+        actual = cls()
+        policy = MatchPolicy(presence=MessageFieldComparison.EQUAL)
+
+        a_pass, a_msg = _agnostic_outcome(policy, actual, expected)
+        h_pass, h_msg = _adapter_outcome(policy, actual, expected)
+
+        assert a_pass == h_pass
+        assert a_pass is False
+        assert a_msg == h_msg
+
+    def test_parity_under_approx_policy(self) -> None:
+        b = _ratio_builder()
+        cls = b.get_message_class("test.Msg")
+        # ratio differs within tolerance (suppressed); other differs beyond it.
+        expected = cls(ratio=0.1, other=1.0)
+        actual = cls(ratio=0.1000001, other=2.0)
+        policy = MatchPolicy(approx=Approx(margin=1e-5))
+
+        a_pass, a_msg = _agnostic_outcome(policy, actual, expected)
+        h_pass, h_msg = _adapter_outcome(policy, actual, expected)
+
+        assert a_pass == h_pass
+        assert a_pass is False
+        # approx is genuinely active: ratio is within tolerance, only other fails.
+        assert "ratio" not in a_msg
+        assert "other" in a_msg
+        assert a_msg == h_msg
+
 
 # ---------------------------------------------------------------------------
 # Fluent-knob wiring: each adapter chain matches its expect_proto sibling

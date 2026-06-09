@@ -114,6 +114,28 @@ def _set_scalar_builder() -> ProtoBuilder:
     return b
 
 
+def _map_builder() -> ProtoBuilder:
+    """``M{labels: map<string,string>}`` for partial map-extra tests."""
+    b = ProtoBuilder()
+    b.map_message(
+        "test.M",
+        {},
+        {"labels": (T.TYPE_STRING, T.TYPE_STRING, 1)},
+    )
+    return b
+
+
+def _opt_builder() -> ProtoBuilder:
+    """``Opt{flag: optional int32}`` (proto3 explicit presence)."""
+    b = ProtoBuilder()
+    b.message(
+        "test.Opt",
+        {"flag": (T.TYPE_INT32, 1)},
+        optional_fields={"flag"},
+    )
+    return b
+
+
 # ---------------------------------------------------------------------------
 # AE1: extra fields on actual suppressed under partial
 # ---------------------------------------------------------------------------
@@ -392,6 +414,126 @@ class TestPartialSetCarveOut:
         # element is ADDED (no collapse under partial).
         assert any(r.change_type == ChangeType.REMOVED for r in result)
         assert any(a.change_type == ChangeType.ADDED for a in result)
+
+
+# ---------------------------------------------------------------------------
+# partial over default (index-paired) repeated + map collections:
+# extra elements/keys on actual are suppressed (actual ⊇ expected); a missing
+# or differing expected element/key still reports. Regression guard for the
+# "partial leaks extra repeated/map elements as ADDED" defect.
+# ---------------------------------------------------------------------------
+
+
+class TestPartialRepeatedExtras:
+    def test_extra_repeated_element_on_actual_suppressed(self) -> None:
+        """expected{tags=[x]}, actual{tags=[x,y]} (no set mode): partial passes."""
+        b = _set_scalar_builder()
+        expected = b.build("test.Msg", tags=["x"])
+        actual = b.build("test.Msg", tags=["x", "y"])
+
+        # Baseline: full mode reports the trailing actual-only element as ADDED.
+        full = MessageDifferencer().compare(expected, actual)
+        added_full = [a for a in full if a.change_type == ChangeType.ADDED]
+        assert [a.right_value for a in added_full] == ["y"]
+
+        # Mechanism: partial (index-paired, NOT set mode) suppresses the extra.
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        assert not result.has_changes()
+
+    def test_missing_expected_repeated_element_still_removed(self) -> None:
+        """An expected element absent on actual is still REMOVED under partial."""
+        b = _set_scalar_builder()
+        expected = b.build("test.Msg", tags=["x", "y"])
+        actual = b.build("test.Msg", tags=["x"])
+
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        removed = [r for r in result if r.change_type == ChangeType.REMOVED]
+        assert [r.left_value for r in removed] == ["y"]
+
+    def test_differing_paired_repeated_element_still_modified(self) -> None:
+        """A paired (index) element diff still reports; the extra is suppressed."""
+        b = _set_scalar_builder()
+        expected = b.build("test.Msg", tags=["x"])
+        actual = b.build("test.Msg", tags=["z", "y"])
+
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        modified = [m for m in result if m.change_type == ChangeType.MODIFIED]
+        assert [str(m.path) for m in modified] == ["tags[0]"]
+        # index-1 actual-only element is suppressed.
+        assert [a for a in result if a.change_type == ChangeType.ADDED] == []
+
+
+class TestPartialMapExtras:
+    def test_extra_map_key_on_actual_suppressed(self) -> None:
+        """expected{labels={env}}, actual{labels={env,extra}}: partial passes."""
+        b = _map_builder()
+        expected = b.build("test.M", labels={"env": "prod"})
+        actual = b.build("test.M", labels={"env": "prod", "extra": "leak"})
+
+        # Baseline: full mode reports the actual-only key as ADDED.
+        full = MessageDifferencer().compare(expected, actual)
+        added_full = [a for a in full if a.change_type == ChangeType.ADDED]
+        assert [a.right_value for a in added_full] == ["leak"]
+
+        # Mechanism: partial suppresses the actual-only key.
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        assert not result.has_changes()
+
+    def test_missing_expected_map_key_still_removed(self) -> None:
+        """An expected key absent on actual is still REMOVED under partial."""
+        b = _map_builder()
+        expected = b.build("test.M", labels={"env": "prod", "team": "core"})
+        actual = b.build("test.M", labels={"env": "prod"})
+
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        removed = [r for r in result if r.change_type == ChangeType.REMOVED]
+        assert [r.left_value for r in removed] == ["core"]
+
+
+class TestPartialPresenceBranch:
+    """Exercise the ``has_presence`` branch of ``_present_on_expected`` under
+    partial via a proto3 ``optional`` field (explicit presence)."""
+
+    def test_optional_set_on_expected_is_compared_under_partial(self) -> None:
+        """flag set (even to default) on expected → HasField True → in sub-shape."""
+        b = _opt_builder()
+        cls = b.get_message_class("test.Opt")
+        expected = cls(flag=0)  # explicitly set to default → HasField True
+        actual = cls(flag=5)
+
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        assert {
+            str(m.path) for m in result if m.change_type == ChangeType.MODIFIED
+        } == {"flag"}
+
+    def test_optional_unset_on_expected_is_outside_subshape(self) -> None:
+        """flag unset on expected → HasField False → outside the sub-shape."""
+        b = _opt_builder()
+        cls = b.get_message_class("test.Opt")
+        expected = cls()  # flag unset → HasField False
+        actual = cls(flag=5)
+
+        # Baseline: full mode reports the set-on-actual-only optional field.
+        full = MessageDifferencer().compare(expected, actual)
+        assert full.has_changes()
+
+        # Partial: the has_presence branch returns False → field suppressed.
+        d = MessageDifferencer()
+        d.set_partial()
+        result = d.compare(expected, actual)
+        assert not result.has_changes()
 
 
 # ---------------------------------------------------------------------------

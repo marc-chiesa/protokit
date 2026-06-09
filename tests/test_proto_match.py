@@ -350,6 +350,50 @@ class TestApproxWiring:
         assert "other" in msg
         assert "ratio" not in msg
 
+    def test_global_fraction_shorthand_suppresses_relative_diff(self) -> None:
+        """The ``fraction=`` relative-tolerance shorthand wires through (U6).
+
+        Distinct from ``margin=`` (absolute): proves the ``fraction`` branch of
+        ``_approx_from_kwargs`` -> ``Approx.from_optional`` reaches the engine.
+        """
+        b = _ratio_builder()
+        cls = b.get_message_class("test.Msg")
+        expected = cls(ratio=1000.0, other=1.0)
+        actual = cls(ratio=1000.05, other=1.0)  # ~5e-5 relative
+
+        # Baseline: exact comparison reports the difference.
+        with pytest.raises(AssertionError):
+            proto_match(actual, expected)
+
+        # Relative shorthand admits it (5e-5 < 1e-4) ...
+        proto_match(actual, expected, fraction=1e-4)
+        # ... and the explicit Approx(fraction=...) form is equivalent.
+        proto_match(actual, expected, approx=Approx(fraction=1e-4))
+
+
+# ---------------------------------------------------------------------------
+# Cross-schema failure header
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSchemaHeader:
+    """When expected and actual are different message types, the failure header
+    names both types and flags the comparison as cross-schema."""
+
+    def test_cross_schema_mismatch_header_names_both_types(self) -> None:
+        b = ProtoBuilder()
+        b.message("test.Alpha", {"x": (T.TYPE_INT32, 1)})
+        b.message("test.Beta", {"x": (T.TYPE_INT32, 1)})
+        expected = b.build("test.Alpha", x=1)
+        actual = b.build("test.Beta", x=2)
+
+        with pytest.raises(AssertionError) as exc:
+            proto_match(actual, expected)
+        msg = str(exc.value)
+        assert "cross-schema" in msg
+        assert "test.Alpha" in msg
+        assert "test.Beta" in msg
+
 
 # ---------------------------------------------------------------------------
 # MatchPolicy frozen semantics

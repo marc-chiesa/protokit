@@ -712,6 +712,13 @@ class MessageDifferencer:
           the requirement that expected fields be present.
         * A field present on both sides whose values DIFFER is **still
           reported** (a value difference).
+        * Within a repeated or map field that IS present on the expected side,
+          extra trailing elements (index-paired repeated) and extra keys (map)
+          present only on actual are likewise **suppressed** — actual may be a
+          superset of the expected collection. A missing expected element / key
+          still reports REMOVED, and a paired element whose value differs still
+          reports. Order still matters for the index-paired default; use
+          :meth:`treat_as_set` for order-independent membership.
 
         The rule recurses: within a nested message present on the expected
         side, the same expected-defines-the-shape rule applies to its fields,
@@ -721,9 +728,9 @@ class MessageDifferencer:
         **``treat_as_set`` carve-out (KTD-8):** partial does NOT descend into a
         repeated field marked :meth:`treat_as_set`. Set-element equality stays
         STRICT exact equality so the multiset partition remains an equivalence
-        relation; a set element present only on the actual side is therefore
-        still reported even under partial. Partial relaxes the *field-shape*,
-        never set membership.
+        relation; so — unlike the index-paired collection case above — a set
+        element present only on the actual side IS still reported even under
+        partial. Partial relaxes the *field-shape*, never set membership.
 
         Default is full comparison (``partial=False``); the default behavior is
         unchanged and every existing comparison is unaffected (R12).
@@ -1829,23 +1836,30 @@ class MessageDifferencer:
                     diffs, warnings,
                 )
 
-        # Extra elements
-        for i in range(min_len, len(right_list)):
-            idx_path = _replace_bracket(path, str(i)) if path.segments else path
-            if right_fd.type == TYPE_MESSAGE:
-                if _has_populated_fields(right_list[i]):
-                    stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
+        # Extra elements present ONLY on actual (right). Under partial these
+        # fall outside the expected sub-shape — actual is allowed to be a
+        # superset (R5/U4) — so they are suppressed, consistent with how the
+        # singular-field and whole-sub-message actual-only branches already
+        # suppress under partial. In full mode they report as ADDED. (A
+        # treat_as_set field has its own strict path and returns above, so this
+        # guard never relaxes set membership — the KTD-8 carve-out is intact.)
+        if not self._partial:
+            for i in range(min_len, len(right_list)):
+                idx_path = _replace_bracket(path, str(i)) if path.segments else path
+                if right_fd.type == TYPE_MESSAGE:
+                    if _has_populated_fields(right_list[i]):
+                        stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
+                    else:
+                        diffs.append(Difference(
+                            path=idx_path, change_type=ChangeType.ADDED,
+                            field_type=type_name(right_fd.type),
+                        ))
                 else:
-                    diffs.append(Difference(
-                        path=idx_path, change_type=ChangeType.ADDED,
-                        field_type=type_name(right_fd.type),
-                    ))
-            else:
-                self._compare_one_sided_scalar_with_hooks(
-                    right_list[i], left_fd, right_fd, idx_path,
-                    left_msg, right_msg, is_new=True,
-                    diffs=diffs, warnings=warnings,
-                )
+                    self._compare_one_sided_scalar_with_hooks(
+                        right_list[i], left_fd, right_fd, idx_path,
+                        left_msg, right_msg, is_new=True,
+                        diffs=diffs, warnings=warnings,
+                    )
 
         for i in range(min_len, len(left_list)):
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
@@ -1906,6 +1920,11 @@ class MessageDifferencer:
             key_path = _replace_bracket(path, key_str) if path.segments else path
 
             if key not in left_map:
+                # Actual-only key: outside the expected sub-shape under partial
+                # (actual is allowed to be a superset, R5/U4) → suppressed.
+                # Reported as ADDED only in full mode.
+                if self._partial:
+                    continue
                 right_val = right_map[key]
                 if right_value_fd.type == TYPE_MESSAGE:
                     if _has_populated_fields(right_val):

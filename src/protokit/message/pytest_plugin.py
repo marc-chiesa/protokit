@@ -67,7 +67,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing-only imports
 
     from protokit.message._selector import SelectorSpec
     from protokit.message.comparators import MessageFieldComparison
-    from protokit.message.matchers import ProtoMatcher
+    from protokit.message.matchers import Approx, ProtoMatcher
 
 
 def render_diff_lines(
@@ -535,6 +535,7 @@ class ProtoMatcherFactory:
         as_set: SelectorSpec | Iterable[SelectorSpec] | None = None,
         ignore: SelectorSpec | Iterable[SelectorSpec] | None = None,
         presence: MessageFieldComparison | None = None,
+        approx: Approx | None = None,
         margin: float | None = None,
         fraction: float | None = None,
     ) -> ProtoMatcher | None:
@@ -550,6 +551,9 @@ class ProtoMatcherFactory:
             as_set: Single-call only — repeated-field set selector(s).
             ignore: Single-call only — field selector(s) to ignore.
             presence: Single-call only — presence comparison mode.
+            approx: Single-call only — explicit :class:`Approx` tolerance
+                (global, or per-field via its selector). Mutually exclusive
+                with the ``margin`` / ``fraction`` shorthand.
             margin: Single-call only — global absolute float tolerance.
             fraction: Single-call only — global relative float tolerance.
 
@@ -579,6 +583,7 @@ class ProtoMatcherFactory:
             as_set=as_set,
             ignore=ignore,
             presence=presence,
+            approx=approx,
             margin=margin,
             fraction=fraction,
         )

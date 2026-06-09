@@ -28,7 +28,7 @@ import pytest
 from google.protobuf import descriptor_pb2
 
 from protokit.message.comparators import MessageFieldComparison
-from protokit.message.matchers import MatcherError, ProtoMatcher
+from protokit.message.matchers import Approx, MatcherError, ProtoMatcher
 from protokit.message.pytest_plugin import (
     ProtoMatcherFactory,
     RenderConfig,
@@ -448,6 +448,25 @@ class TestProtoMatcherFixture:
             factory(actual, expected, presence=MessageFieldComparison.EQUAL)
             is None
         )
+
+    def test_single_call_approx_passthrough(self) -> None:
+        """The ``approx=`` knob reaches the engine via the factory (U6).
+
+        Regression guard: the factory's single-call form previously omitted
+        ``approx`` from its signature, so a per-field/global ``Approx`` could
+        not be applied through the fixture (would raise ``TypeError``).
+        """
+        b = ProtoBuilder()
+        b.message("test.Ratio", {"ratio": (T.TYPE_DOUBLE, 1)})
+        expected = b.build("test.Ratio", ratio=0.1)
+        actual = b.build("test.Ratio", ratio=0.1000001)
+        factory = ProtoMatcherFactory()
+
+        # Approx tolerance admits the sub-margin difference.
+        assert factory(actual, expected, approx=Approx(margin=1e-5)) is None
+        # Baseline: exact comparison fails.
+        with pytest.raises(AssertionError):
+            factory(actual, expected)
 
     def test_single_call_contradictory_tolerance_raises_matcher_error(self) -> None:
         """A genuinely malformed policy surfaces as MatcherError, not a silent

@@ -97,7 +97,6 @@ class TestInternalsNotExported:
             "should_visit",
             "greedy_multiset_pairing",
             "PresenceVerdict",
-            "is_presence_observable",
             "presence_verdict",
             "_build_differ",
             "ProtoMatcher",
