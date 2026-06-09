@@ -128,6 +128,12 @@ def _same_pool(left_msg: Message, right_msg: Message) -> bool:
     return left_msg.DESCRIPTOR.file.pool is right_msg.DESCRIPTOR.file.pool
 
 
+# Strict float config for treat_as_set element equality (KTD-8): set-membership
+# equality is always exact, never the per-field tolerance overlay. Hoisted to a
+# module constant so the O(n*m) set-pairing loop does not allocate per pair.
+_EXACT_FLOAT_CONFIG = FloatConfig(mode=FloatComparison.EXACT)
+
+
 # ---------------------------------------------------------------------------
 # Work item for the iterative stack
 # ---------------------------------------------------------------------------
@@ -1988,7 +1994,7 @@ class MessageDifferencer:
         if left_fd.type in (TYPE_FLOAT, TYPE_DOUBLE):
             return compare_float(
                 float(left_elem), float(right_elem),
-                FloatConfig(mode=FloatComparison.EXACT),
+                _EXACT_FLOAT_CONFIG,
             )
         if left_fd.type == TYPE_ENUM:
             if same_pool:
