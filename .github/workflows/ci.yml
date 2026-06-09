@@ -147,6 +147,12 @@ jobs:
           python -m mypy \
             src/protokit/_cli_utils.py \
             src/protokit/formatters/_builtin_lint.py \
+            src/protokit/message/_presence.py \
+            src/protokit/message/_selector.py \
+            src/protokit/message/_setmatch.py \
+            src/protokit/message/hamcrest.py \
+            src/protokit/message/matchers.py \
+            src/protokit/message/pytest_plugin.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
             src/protokit/storage/
@@ -256,6 +262,45 @@ jobs:
 
       - name: Run storage suite with the parquet extra
         run: pytest tests/storage -v
+
+  # =====================================================================
+  # Message hamcrest-extra job — verify the PyHamcrest adapter (matchers).
+  # =====================================================================
+  #
+  # The `[hamcrest]` extra (pyhamcrest) is NOT installed by the `test`
+  # matrix above (it installs `.[dev]`), so on that matrix the adapter
+  # tests importorskip and only the extra-ABSENT path runs
+  # (HamcrestExtraNotInstalledError / has_hamcrest()==False via the
+  # find_spec-stubbed test_hamcrest_extra.py) — exactly the R3 no-extra
+  # coverage we want exercised on every cell. This standalone job installs
+  # the extra and runs the adapter suite so the WITH-extra path (the lazy
+  # BaseMatcher subclass + assert_that parity with the agnostic matcher) is
+  # verified. Mirrors the storage-parquet job shape.
+  message-hamcrest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev + hamcrest extras
+        run: pip install -e ".[dev,hamcrest]"
+
+      - name: Sanity — pyhamcrest present (with-extra path)
+        # Insurance that the extra resolved, so the adapter tests actually
+        # run rather than silently importorskip-ing. The agnostic matcher
+        # path needs no extra; this job exists to exercise the hamcrest one.
+        run: |
+          python -c "import hamcrest; print('hamcrest', hamcrest.__version__ if hasattr(hamcrest, '__version__') else 'present')"
+
+      - name: Run the hamcrest adapter suite
+        run: pytest tests/test_hamcrest_adapter.py -v
 
   # =====================================================================
   # Parity job — buf v1.69.0 cross-tool parity checks.

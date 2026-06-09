@@ -39,6 +39,7 @@ class ProtoBuilder:
         enums: dict[str, dict[str, int]] | None = None,
         oneofs: dict[str, list[str]] | None = None,
         repeated_fields: set[str] | None = None,
+        optional_fields: set[str] | None = None,
         syntax: str = "proto3",
     ) -> None:
         """Register a message type in the pool.
@@ -51,12 +52,20 @@ class ProtoBuilder:
             enums: Optional dict of enum_name -> {value_name: number}
             oneofs: Optional dict of oneof_name -> [field_names in this oneof]
             repeated_fields: Set of field names that should be LABEL_REPEATED
+            optional_fields: Set of field names that should be proto3 ``optional``
+                (explicit presence). Each named field gets ``proto3_optional=True``
+                AND a compiler-synthesized ``_<field>`` oneof wrapping it, exactly
+                as ``protoc`` emits — so ``HasField`` works and ``has_presence``
+                is True. Only meaningful for singular scalar/enum fields under
+                ``syntax="proto3"``; a field cannot be both proto3-optional and
+                repeated or a member of a user-declared oneof.
             syntax: "proto2" or "proto3"
         """
         parts = full_name.rsplit(".", 1)
         package = parts[0] if len(parts) > 1 else ""
         msg_name = parts[-1]
         repeated_fields = repeated_fields or set()
+        optional_fields = optional_fields or set()
 
         self._file_counter += 1
         file_name = f"generated_{self._file_counter}.proto"
@@ -113,6 +122,17 @@ class ProtoBuilder:
             # Assign to oneof if applicable
             if field_name in field_to_oneof:
                 field_proto.oneof_index = field_to_oneof[field_name]
+            elif field_name in optional_fields:
+                # proto3 ``optional``: protoc marks the field proto3_optional and
+                # wraps it in a compiler-synthesized ``_<field>`` oneof appended
+                # AFTER any user-declared oneofs. This gives the field explicit
+                # presence (HasField / has_presence) without it behaving as a
+                # user oneof member. The leading underscore is the synthetic-oneof
+                # discriminator presence logic must skip (KTD-7).
+                synthetic = msg_proto.oneof_decl.add()
+                synthetic.name = f"_{field_name}"
+                field_proto.proto3_optional = True
+                field_proto.oneof_index = len(msg_proto.oneof_decl) - 1
 
         self.pool.Add(file_proto)
 

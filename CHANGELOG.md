@@ -15,6 +15,34 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Added
+- **Expressive message matchers + comparison parity (`protokit.message`).** A
+  framework-agnostic test-assertion layer over the differ: `proto_match(actual,
+  expected, *, partial=, as_set=, ignore=, presence=, approx=)` (single-call)
+  and `expect_proto(expected).partially().as_set("items").ignoring(pred)
+  .approximately(...).matches(actual)` (fluent) raise `AssertionError` with the
+  existing per-field diff on mismatch. The same policy is exposed as a
+  `hamcrest.BaseMatcher` via `equals_proto(...)` behind a new optional
+  `protokit[hamcrest]` extra (used as `assert_that(actual, equals_proto(...))`),
+  and as a `proto_matcher` pytest fixture; the bare `assert msg1 == msg2`
+  rich-diff rendering gains presentation-only config. Backing the matcher, the
+  `MessageDifferencer` engine gains five opt-in, additive capabilities, all
+  targeted by one unified field selector (a dotted path **or** a
+  `(FieldDescriptor, path)` predicate): partial / sub-shape scope
+  (`set_partial()` — only fields present on the expected side are compared);
+  keyless set comparison for repeated fields (`treat_as_set(selector)` —
+  order-independent multiset, distinct from keyed `treat_as_map`);
+  predicate-based field ignore (`ignore_fields(...)` now also accepts a
+  predicate); EQUAL vs EQUIVALENT presence (`set_message_field_comparison(...)`);
+  and selective per-field float tolerance (`set_float_comparison(..., selector=)`
+  overlay). New public surface: `proto_match`, `expect_proto`, `MatchPolicy`,
+  `Approx`, `MatcherError`, `equals_proto`, `HamcrestExtraNotInstalledError`,
+  `MessageFieldComparison`. The CLI matcher surface is a separate later effort.
+  **Behavior note:** the default `EQUIVALENT` presence mode now treats a
+  presence-bearing field set to its *default value* as equal to an unset field
+  (previously a presence difference); a non-default value vs unset is unchanged.
+  Opt into `MessageFieldComparison.EQUAL` for strict set-vs-unset presence.
+
 ## 0.10.0 — 2026-06-07
 
 ### Added

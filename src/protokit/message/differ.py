@@ -22,9 +22,13 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
+from protokit.message._presence import PresenceVerdict, presence_verdict
+from protokit.message._selector import FieldSelector, SelectorSpec
+from protokit.message._setmatch import greedy_multiset_pairing
 from protokit.message.comparators import (
     FloatComparison,
     FloatConfig,
+    MessageFieldComparison,
     compare_enum_cross_pool,
     compare_enum_same_pool,
     compare_float,
@@ -124,18 +128,34 @@ def _same_pool(left_msg: Message, right_msg: Message) -> bool:
     return left_msg.DESCRIPTOR.file.pool is right_msg.DESCRIPTOR.file.pool
 
 
+# Strict float config for treat_as_set element equality (KTD-8): set-membership
+# equality is always exact, never the per-field tolerance overlay. Hoisted to a
+# module constant so the O(n*m) set-pairing loop does not allocate per pair.
+_EXACT_FLOAT_CONFIG = FloatConfig(mode=FloatComparison.EXACT)
+
+
 # ---------------------------------------------------------------------------
 # Work item for the iterative stack
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _WorkItem:
-    """A unit of comparison work for the stack-based engine."""
+    """A unit of comparison work for the stack-based engine.
+
+    Attributes:
+        force_emit: When True, a one-sided (added/removed) subtree is emitted
+            in full even under partial scope. Set for subtrees produced by a
+            ``treat_as_set`` comparison: partial deliberately does NOT descend
+            into set fields (KTD-8 carve-out), so an actual-only set *message*
+            element — pushed here by ``_compare_treat_as_set`` — must still be
+            reported as ADDED. Default False; the ordinary partial gate applies.
+    """
 
     left_msg: Message | None
     right_msg: Message | None
     path: FieldPath
     depth: int
+    force_emit: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +205,39 @@ class MessageDifferencer:
         self._ignore_names: set[str] = set()  # bare names (global match)
         self._ignore_paths: list[FieldPath] = []  # parsed dotted paths
         self._ignore_fields_raw: list[str] = []  # raw selectors for conflict validation
+        # Predicate-form ignore selectors (KTD-1/U2). Consulted at the same
+        # selection gate (``_is_ignored``) as the string forms, but evaluated
+        # against a FieldDescriptor + path rather than parsed from a string.
+        self._ignore_selectors: list[FieldSelector] = []
         self._treat_as_map: dict[str, str] = {}  # field_name_or_path -> key_field_name
         self._treat_as_map_paths: list[tuple[FieldPath, str]] = []  # (parsed_path, key_name)
+        # Keyless "set" comparison (KTD-8/U3): repeated fields marked here are
+        # compared order-independently as multisets via greedy pairing, rather
+        # than the default index pairing. Distinct from keyed ``treat_as_map``.
+        self._treat_as_set_selectors: list[FieldSelector] = []
+        # Partial / sub-shape scope (KTD-11/U4). When True, only fields present
+        # on the EXPECTED (left) side are compared: extra fields on the actual
+        # (right) side produce no ADDED difference, while left-only (REMOVED)
+        # fields and value differences are STILL reported. Directional and
+        # recursive; default off keeps full comparison behavior unchanged (R12).
+        self._partial: bool = False
+        # Field-presence comparison mode (KTD-7/U5). EQUIVALENT (default)
+        # collapses a presence-bearing field set to its DEFAULT value with an
+        # unset field; EQUAL distinguishes them. Observable only where presence
+        # exists (proto2, proto3 ``optional``, oneof members, message fields);
+        # a documented no-op for proto3 implicit-presence scalars. Default keeps
+        # today's pinned output (set-to-non-default-vs-unset still reported).
+        self._presence_mode: MessageFieldComparison = MessageFieldComparison.EQUIVALENT
         self._float_config = FloatConfig()
+        # Per-field float tolerance overlays (KTD-6/U6). Each entry pairs a
+        # FieldSelector with the FloatConfig to apply to the float/double fields
+        # it selects. Consulted FIRST in the float-comparison path: the first
+        # overlay whose selector matches ``(fd, path)`` supplies the config;
+        # otherwise the global ``_float_config`` applies. This LAYERS over the
+        # global setting rather than replacing it (R11) — an unscoped float field
+        # keeps the global behavior unchanged. Empty list = fast path (global
+        # only). Order is registration order; earlier overlays win ties.
+        self._float_overlays: list[tuple[FieldSelector, FloatConfig]] = []
         self.max_depth: int | None = None
         self.strict_schema: bool = False
         # Phase 1.5 hook pipeline. Per-stage lists; empty = fast path.
@@ -438,23 +488,65 @@ class MessageDifferencer:
                     path=path_str, message=msg, level="error",
                 ))
 
-    def ignore_fields(self, *selectors: str) -> None:
-        """Add field name selectors to the ignore list.
+    def ignore_fields(self, *selectors: SelectorSpec) -> None:
+        """Add field selectors to the ignore list.
 
-        Bare names apply globally. Dotted paths match specific locations.
+        Accepts three forms, freely mixed in one call:
+
+        * **Bare name** (``"timestamp"``) — ignores that field everywhere.
+        * **Dotted path** (``"header.timestamp"``) — ignores only that
+          specific location (bracket-blind, exact-length match, so
+          ``"items.name"`` also matches ``"items[0].name"``).
+        * **Predicate / FieldSelector** — a
+          ``(FieldDescriptor, FieldPath) -> bool`` callable (or a
+          pre-built :class:`FieldSelector`) consulted per field at the same
+          selection gate as the string forms. The predicate receives the
+          field's descriptor and concrete path as explicit arguments
+          (KTD-10); any exception it raises propagates unchanged — a buggy
+          predicate is an author error, not an engine fault, and is NOT
+          captured into diagnostics.
+
+        Ignore applies symmetrically: an ignored field is suppressed whether
+        it differs, is added (present only on the right/actual side), or is
+        removed (present only on the left/expected side), because the gate is
+        consulted both pre-dispatch and inside ``_emit_all_fields``.
+
+        Conflict validation with ``treat_as_map`` is enforced at registration
+        for the string forms only. A predicate-form ignore CANNOT be
+        conflict-checked at registration — the callable is opaque and no
+        descriptor is in hand — so no such check is attempted for it. The
+        compare-time behavior when a predicate ignores a field that is also
+        ``treat_as_map``-keyed is defined as **ignore wins**: the field is
+        simply not visited, so its map key is never consulted. This is
+        intentional and silent (there is no cheap, reliable overlap signal at
+        compare time for an opaque predicate).
 
         Args:
-            *selectors: One or more field selectors. A bare name (e.g.
-                ``"timestamp"``) ignores that field everywhere. A dotted
-                path (e.g. ``"header.timestamp"``) ignores only that
-                specific location.
+            *selectors: One or more ignore selectors (bare name, dotted path,
+                predicate, or :class:`FieldSelector`), in any mix.
 
         Raises:
-            ValueError: If a selector conflicts with a ``treat_as_map``
-                configuration (e.g. ignoring a map key field).
+            ValueError: If a *string* selector uses bracket syntax, or
+                conflicts with a ``treat_as_map`` configuration (e.g.
+                ignoring a map key field). Predicate-form selectors are not
+                conflict-checked at registration (see above).
         """
-        # Validate all selectors before mutating state
-        for sel in selectors:
+        # Partition string selectors (existing path) from predicate/selector
+        # forms (new path). Strings keep byte-identical behavior, including
+        # conflict validation; the selector forms route to _ignore_selectors.
+        string_selectors: list[str] = []
+        selector_forms: list[FieldSelector] = []
+        for spec in selectors:
+            if isinstance(spec, str):
+                string_selectors.append(spec)
+            else:
+                # FieldSelector or (FieldDescriptor, FieldPath) -> bool callable.
+                # FieldSelector.of returns a FieldSelector as-is and wraps a
+                # callable; it rejects anything else with a clear TypeError.
+                selector_forms.append(FieldSelector.of(spec))
+
+        # Validate all string selectors before mutating state
+        for sel in string_selectors:
             if "[" in sel:
                 raise ValueError(
                     f"Bracket syntax is not supported in ignore selectors: '{sel}'. "
@@ -467,7 +559,7 @@ class MessageDifferencer:
 
         # Check for conflicts with treat_as_map key fields
         for map_sel, key_name in self._treat_as_map.items():
-            for ign in selectors:
+            for ign in string_selectors:
                 # Bare name that matches the key
                 if "." not in ign and ign == key_name:
                     raise ValueError(
@@ -482,12 +574,13 @@ class MessageDifferencer:
                     )
 
         # All validation passed — safe to mutate
-        self._ignore_fields_raw.extend(selectors)
-        for sel in selectors:
+        self._ignore_fields_raw.extend(string_selectors)
+        for sel in string_selectors:
             if "." in sel:
                 self._ignore_paths.append(FieldPath.parse(sel))
             else:
                 self._ignore_names.add(sel)
+        self._ignore_selectors.extend(selector_forms)
 
     def treat_as_map(self, field_selector: str, *, key: str) -> None:
         """Configure a repeated message field for key-based matching.
@@ -533,19 +626,220 @@ class MessageDifferencer:
                     f"because '{ign}' is ignored"
                 )
 
+        # Reverse conflict: the field cannot already be treat_as_set (keyless).
+        # Only path-form set selectors are checkable here (predicates opaque).
+        map_path = FieldPath.parse(field_selector)
+        for set_sel in self._treat_as_set_selectors:
+            set_path = set_sel.path
+            if set_path is not None and set_path.matches_selector(map_path):
+                raise ValueError(
+                    f"Cannot treat_as_map field '{field_selector}' that is "
+                    f"already configured as treat_as_set"
+                )
+
         self._treat_as_map[field_selector] = key
         if "." in field_selector:
             self._treat_as_map_paths.append((FieldPath.parse(field_selector), key))
+
+    def treat_as_set(self, selector: SelectorSpec) -> None:
+        """Configure a repeated field for keyless, order-independent matching.
+
+        Unlike :meth:`treat_as_map` (which pairs elements by a key sub-field),
+        set comparison has NO key: elements are paired as a multiset via greedy
+        first-fit equality (KTD-8). Two repeated fields holding the same
+        elements in a different order compare equal; leftovers are reported as
+        REMOVED (expected-side) and ADDED (actual-side) for the unmatched
+        elements, using the same element ``Difference`` shape as the default
+        index path.
+
+        Applies to scalar/enum and message repeated fields. Set-membership
+        equality is STRICT exact equality — it deliberately does NOT apply
+        float tolerance or other per-element policies inside element
+        comparison, so equality stays a true equivalence relation and the
+        partition is order-independent. Cost is ``O(n * m)`` element-equality
+        evaluations; for message elements each is a full sub-comparison, so it
+        is intended for test-sized repeated fields.
+
+        A selector that matches a non-repeated field silently has no effect: set
+        comparison is consulted only at the repeated-field site, so a selector
+        aimed at a singular field is a no-op rather than an error (consistent
+        with the opaque-predicate ignore path).
+
+        Args:
+            selector: A bare field name (``"items"``), a dotted path
+                (``"parent.items"``), a ``(FieldDescriptor, FieldPath) -> bool``
+                predicate, or a pre-built :class:`FieldSelector`. The same
+                selection model every selective policy uses (R9).
+
+        Raises:
+            TypeError: If ``selector`` is not a str, callable, or
+                :class:`FieldSelector` (propagated from
+                :meth:`FieldSelector.of`).
+            ValueError: If ``selector`` is a *string/path* form that is also
+                configured as ``treat_as_map`` (a field cannot be both keyed
+                and keyless). Predicate-form selectors are opaque and cannot be
+                conflict-checked at registration (mirroring predicate ignore).
+        """
+        field_selector = FieldSelector.of(selector)
+
+        # Conflict validation: a field cannot be both treat_as_map (keyed) and
+        # treat_as_set (keyless). Only checkable for path/string forms — a
+        # predicate is opaque with no descriptor in hand at registration.
+        sel_path = field_selector.path
+        if sel_path is not None:
+            for map_sel in self._treat_as_map:
+                if FieldPath.parse(map_sel).matches_selector(sel_path):
+                    raise ValueError(
+                        f"Cannot treat_as_set field '{sel_path}' that is "
+                        f"already configured as treat_as_map('{map_sel}')"
+                    )
+
+        self._treat_as_set_selectors.append(field_selector)
+
+    def set_partial(self, partial: bool = True) -> None:
+        """Enable (or disable) partial / sub-shape comparison (R5/U4).
+
+        Partial matching is **directional**: ``compare(left, right)`` treats
+        ``left`` as the expected side and ``right`` as the actual side. With
+        partial enabled, only fields present on the EXPECTED (left) side
+        participate in comparison:
+
+        * A field (or whole sub-message) present ONLY on the actual (right)
+          side — an ADDED difference in full mode — is **suppressed**: extra
+          fields on actual are not differences.
+        * A field present on the expected (left) side but MISSING on actual —
+          a REMOVED difference — is **still reported**. Partial does not relax
+          the requirement that expected fields be present.
+        * A field present on both sides whose values DIFFER is **still
+          reported** (a value difference).
+        * Within a repeated or map field that IS present on the expected side,
+          extra trailing elements (index-paired repeated) and extra keys (map)
+          present only on actual are likewise **suppressed** — actual may be a
+          superset of the expected collection. A missing expected element / key
+          still reports REMOVED, and a paired element whose value differs still
+          reports. Order still matters for the index-paired default; use
+          :meth:`treat_as_set` for order-independent membership.
+
+        The rule recurses: within a nested message present on the expected
+        side, the same expected-defines-the-shape rule applies to its fields,
+        so extra nested actual fields are likewise ignored while missing or
+        differing expected nested fields still report.
+
+        **``treat_as_set`` carve-out (KTD-8):** partial does NOT descend into a
+        repeated field marked :meth:`treat_as_set`. Set-element equality stays
+        STRICT exact equality so the multiset partition remains an equivalence
+        relation; so — unlike the index-paired collection case above — a set
+        element present only on the actual side IS still reported even under
+        partial. Partial relaxes the *field-shape*, never set membership.
+
+        Default is full comparison (``partial=False``); the default behavior is
+        unchanged and every existing comparison is unaffected (R12).
+
+        Args:
+            partial: ``True`` to enable partial / sub-shape scope, ``False`` to
+                restore full comparison. Defaults to ``True`` so
+                ``set_partial()`` reads as "turn partial on".
+        """
+        self._partial = partial
+
+    @staticmethod
+    def _present_on_expected(
+        msg: Message,
+        left_fd: proto_descriptor.FieldDescriptor,
+        default_msg: Message | None,
+    ) -> bool:
+        """Whether ``left_fd`` is "present" on the expected (left) side (U4).
+
+        Partial / sub-shape matching treats the expected message's set fields
+        as the shape to check. Presence here means:
+
+        - repeated / map fields: non-empty on the expected side;
+        - presence-bearing singular fields (messages, proto3 ``optional``,
+          oneof members, all proto2 fields): ``HasField`` is true;
+        - proto3 implicit-presence scalars/enums: a non-default value — they
+          carry no presence bit, so a defaulted expected field is
+          indistinguishable from unset and is treated as "not in the sub-shape"
+          (the documented proto3 limitation). Without this, such a field is
+          both-present and would surface as MODIFIED, defeating partial.
+
+        ``default_msg`` is a once-per-message default instance used to read each
+        implicit field's zero value; built lazily if not supplied.
+        """
+        if left_fd.label == left_fd.LABEL_REPEATED:  # repeated + map
+            return len(getattr(msg, left_fd.name)) > 0
+        if left_fd.has_presence:
+            return msg.HasField(left_fd.name)
+        if default_msg is None:
+            default_msg = type(msg)()
+        return getattr(msg, left_fd.name) != getattr(default_msg, left_fd.name)
+
+    def set_message_field_comparison(
+        self, mode: MessageFieldComparison
+    ) -> None:
+        """Configure field-presence comparison semantics (KTD-7/U5).
+
+        Mirrors C++ ``MessageDifferencer::set_message_field_comparison``.
+
+        Controls how a singular field's *presence* (set vs unset) is compared
+        when one side has the field set and the other does not:
+
+        * :attr:`MessageFieldComparison.EQUIVALENT` (the default) treats a
+          field set to its **default value** as equal to an unset field — the
+          "set-to-default ≈ unset" collapse. A field set to a *non-default*
+          value vs unset is still reported as a presence difference (today's
+          pinned behavior, unchanged).
+        * :attr:`MessageFieldComparison.EQUAL` (opt-in) reports a presence
+          difference whenever a presence-bearing field is set on one side
+          (even to its default value) and unset on the other.
+
+        EQUAL is observable only where presence exists — proto2 fields, proto3
+        ``optional`` fields, oneof members, and singular message fields. It is a
+        documented NO-OP for proto3 implicit-presence scalars, which carry no
+        presence bit and so cannot distinguish a default value from unset.
+
+        Args:
+            mode: ``MessageFieldComparison.EQUIVALENT`` (default) or
+                ``MessageFieldComparison.EQUAL``.
+        """
+        self._presence_mode = mode
 
     def set_float_comparison(
         self,
         mode: FloatComparison,
         fraction: float = 1e-6,
         margin: float = 1e-9,
+        *,
+        selector: SelectorSpec | None = None,
     ) -> None:
         """Configure how float (and double) fields are compared.
 
         Default is exact IEEE 754 comparison.
+
+        Two layered scopes are supported:
+
+        * **Global** (``selector=None``, the default): sets the baseline
+            ``FloatConfig`` applied to every float/double field that no overlay
+            selects. This is the original behavior and is unchanged.
+        * **Per-field overlay** (``selector=...``): registers a
+            ``(FieldSelector, FloatConfig)`` overlay applied ONLY to the
+            float/double fields the selector matches (KTD-6/U6). Overlays
+            LAYER over the global setting (R11) — they never replace it. During
+            comparison the overlays are consulted first (in registration order);
+            the first whose selector matches the field supplies the config, and
+            any unmatched float field falls back to the global ``FloatConfig``.
+            Both ``fraction`` and ``margin`` are honored per overlay. Call again
+            with a different ``selector`` to register additional overlays.
+
+        The selector resolves over map/repeated float element values too: a
+        path-form selector (e.g. ``"ratios"``) matches via the element path,
+        and a descriptor-predicate selector receives the *container* field
+        descriptor (not the synthetic ``MapEntry.value`` descriptor) so it sees
+        the user's field name.
+
+        An overlay ``selector`` that matches a non-float/double field silently
+        has no effect: float configs are consulted only at float/double
+        comparison sites, so a selector aimed at a wrong-typed field is a no-op
+        rather than an error (consistent with the opaque-predicate ignore path).
 
         Args:
             mode: ``FloatComparison.EXACT`` for bit-identical
@@ -559,8 +853,18 @@ class MessageDifferencer:
                 are equal if ``|a - b| <= margin``. Combined with
                 ``fraction`` as a logical OR. Defaults to ``1e-9``.
                 Ignored in EXACT mode.
+            selector: When provided, a bare name / dotted path string, a
+                ``(FieldDescriptor, FieldPath) -> bool`` predicate, or a
+                :class:`FieldSelector` scoping this ``mode``/``fraction``/
+                ``margin`` to the matching float fields as an overlay over the
+                global setting. When ``None`` (default), the global float config
+                is set instead.
         """
-        self._float_config = FloatConfig(mode=mode, fraction=fraction, margin=margin)
+        config = FloatConfig(mode=mode, fraction=fraction, margin=margin)
+        if selector is None:
+            self._float_config = config
+            return
+        self._float_overlays.append((FieldSelector.of(selector), config))
 
     def compare(self, left: Message, right: Message) -> DiffResult:
         """Compare two protobuf messages and return a structured diff.
@@ -628,9 +932,20 @@ class MessageDifferencer:
 
                 # Unset -> set (or vice versa) for message fields
                 if item.left_msg is None and item.right_msg is not None:
-                    self._emit_all_fields(item.right_msg, item.path, ChangeType.ADDED,
-                                          differences, is_new=True, depth=item.depth,
-                                          warnings=warnings, truncated_paths=truncated_paths)
+                    # Direction-conditioned partial gate (U4): a whole
+                    # sub-message present only on the actual (right) side is an
+                    # ADDED subtree — suppress it under partial. The matching
+                    # REMOVED branch below is NOT suppressed, so an
+                    # expected-only subtree still reports fully (R5). Catches
+                    # actual-only subtrees pushed by ``_compare_message_field``
+                    # / ``_emit_one_sided`` before this separate recursive walk.
+                    # ``force_emit`` bypasses the gate for set-element subtrees:
+                    # partial does not descend into ``treat_as_set`` fields
+                    # (KTD-8 carve-out), so those still report.
+                    if not self._partial or item.force_emit:
+                        self._emit_all_fields(item.right_msg, item.path, ChangeType.ADDED,
+                                              differences, is_new=True, depth=item.depth,
+                                              warnings=warnings, truncated_paths=truncated_paths)
                     continue
                 if item.left_msg is not None and item.right_msg is None:
                     self._emit_all_fields(item.left_msg, item.path, ChangeType.REMOVED,
@@ -654,27 +969,49 @@ class MessageDifferencer:
                 # Process in reverse order since we're using a stack (LIFO)
                 sorted_names = sorted(all_names, key=_sort_key, reverse=True)
 
+                # Partial mode: the expected (left) message defines the
+                # sub-shape; build its default once so implicit-presence scalars
+                # can be tested by non-default value.
+                left_default = type(item.left_msg)() if self._partial else None
+
                 for field_name in sorted_names:
                     # Fast path: check bare-name ignore before allocating FieldPath
                     if field_name in self._ignore_names:
                         continue
                     field_path = item.path.child(field_name)
 
-                    # Check path-scoped ignores
-                    if self._ignore_paths and self._is_ignored(field_name, field_path):
-                        continue
-
                     left_fd = left_fields.get(field_name)
                     right_fd = right_fields.get(field_name)
 
+                    # Check path-scoped and predicate ignores. Pass a descriptor
+                    # (expected/left side preferred, falling back to the
+                    # right-only side) so predicate-form selectors can evaluate;
+                    # this keeps ignore symmetric across modified/added/removed.
+                    if (self._ignore_paths or self._ignore_selectors) and (
+                        self._is_ignored(
+                            field_name, field_path, left_fd or right_fd
+                        )
+                    ):
+                        continue
+
                     # Field only on one side
                     if left_fd is None and right_fd is not None:
+                        # Partial visit gate (U4): an actual-only (right-only)
+                        # field is ADDED — skip it under partial so extra
+                        # fields on actual are not differences. The right-only
+                        # field is by definition not present on expected, so
+                        # the partial gate always skips it.
+                        if self._partial:
+                            continue
                         self._emit_one_sided(
                             item.right_msg, right_fd, field_path,
                             differences, stack, item.depth, is_new=True,
                         )
                         continue
                     if left_fd is not None and right_fd is None:
+                        # Left-only (expected-only) field is REMOVED — always
+                        # reported, even under partial (an expected-present
+                        # field is always in the sub-shape); R5.
                         self._emit_one_sided(
                             item.left_msg, left_fd, field_path,
                             differences, stack, item.depth, is_new=False,
@@ -682,6 +1019,18 @@ class MessageDifferencer:
                         continue
 
                     assert left_fd is not None and right_fd is not None
+
+                    # Partial visit gate (U4) for both-present fields: under
+                    # partial, only fields present on the expected (left) side
+                    # are in the sub-shape. This catches proto3 implicit-presence
+                    # scalars (default on expected, set on actual) that are
+                    # both-present and would otherwise surface as MODIFIED; a
+                    # treat_as_set field non-empty on expected is still compared
+                    # strictly (KTD-8 carve-out, since it counts as present).
+                    if self._partial and not self._present_on_expected(
+                        item.left_msg, left_fd, left_default,
+                    ):
+                        continue
 
                     # Schema evolution checks
                     self._check_schema_evolution(
@@ -747,12 +1096,32 @@ class MessageDifferencer:
 
     # --- Internal methods ---
 
-    def _is_ignored(self, field_name: str, field_path: FieldPath) -> bool:
+    def _is_ignored(
+        self,
+        field_name: str,
+        field_path: FieldPath,
+        fd: proto_descriptor.FieldDescriptor | None = None,
+    ) -> bool:
         """Check if a field should be ignored.
+
+        Consults the three ignore forms in cheapest-first order: the bare-name
+        set (fast path), the parsed dotted paths, then the predicate-form
+        :class:`FieldSelector` list. Predicate selectors need the field's
+        descriptor, so callers thread ``fd`` through; if a predicate-form
+        selector is configured but ``fd`` is ``None`` (no descriptor available
+        at the call site), the predicate is conservatively not consulted and
+        only the string forms apply.
+
+        A predicate raising during this check PROPAGATES — it is an author bug,
+        not an engine fault, so it is deliberately not captured into
+        diagnostics (KTD-10 / SWI-3).
 
         Args:
             field_name: The bare field name.
             field_path: The fully qualified field path.
+            fd: The field's descriptor, required to evaluate predicate-form
+                selectors. ``None`` when no descriptor is available at the
+                call site (string-form ignore still applies).
 
         Returns:
             True if the field matches any configured ignore selector.
@@ -760,13 +1129,15 @@ class MessageDifferencer:
         if field_name in self._ignore_names:
             return True
         for sel_path in self._ignore_paths:
-            # Compare segment names only, ignoring brackets.
+            # Bracket-blind, exact-length segment-name match.
             # This ensures "items.name" matches "items[0].name".
-            if len(sel_path.segments) == len(field_path.segments) and all(
-                s.name == f.name
-                for s, f in zip(sel_path.segments, field_path.segments)
-            ):
+            if sel_path.matches_selector(field_path):
                 return True
+        if self._ignore_selectors and fd is not None:
+            for selector in self._ignore_selectors:
+                # Predicate exceptions propagate (author bug, not engine fault).
+                if selector.matches(fd, field_path):
+                    return True
         return False
 
     def _check_schema_evolution(
@@ -882,9 +1253,23 @@ class MessageDifferencer:
         # Fast path: no hooks → original behavior inlined.
         if not has_field_hooks:
             if left_has and right_has:
-                if not left_present and not right_present:
+                # Route the one-sided presence delta through the EQUAL/
+                # EQUIVALENT decision (U5). EQUIVALENT collapses a
+                # set-to-DEFAULT-vs-unset delta (COLLAPSE); EQUAL always
+                # reports it. A set-to-non-default-vs-unset delta reports in
+                # BOTH modes (today's pinned behavior). EQUAL_PRESENCE (both
+                # set or both unset) falls through to value comparison.
+                # Reuse the presence already read above (left_present/
+                # right_present) rather than letting presence_verdict recompute
+                # the HasField pair — same verdict, half the presence reads.
+                verdict = presence_verdict(
+                    left_msg, right_msg, left_fd, right_fd,
+                    equal_mode=self._presence_mode == MessageFieldComparison.EQUAL,
+                    left_set=left_present, right_set=right_present,
+                )
+                if verdict is PresenceVerdict.COLLAPSE:
                     return
-                if not left_present and right_present:
+                if verdict is PresenceVerdict.ADDED:
                     diffs.append(Difference(
                         path=path,
                         change_type=ChangeType.ADDED,
@@ -892,7 +1277,7 @@ class MessageDifferencer:
                         field_type=type_name(right_fd.type),
                     ))
                     return
-                if left_present and not right_present:
+                if verdict is PresenceVerdict.REMOVED:
                     diffs.append(Difference(
                         path=path,
                         change_type=ChangeType.REMOVED,
@@ -936,10 +1321,23 @@ class MessageDifferencer:
         )
 
         if left_has and right_has:
-            if not left_present and not right_present:
+            # Same EQUAL/EQUIVALENT presence decision as the fast path (U5),
+            # after VALIDATE has fired (SWI-6: VALIDATE fires on every leaf,
+            # including presence-gated paths). COLLAPSE / EQUAL_PRESENCE-both-
+            # unset drain warnings and return as equal; ADDED/REMOVED emit.
+            verdict = presence_verdict(
+                left_msg, right_msg, left_fd, right_fd,
+                equal_mode=self._presence_mode == MessageFieldComparison.EQUAL,
+                left_set=left_present, right_set=right_present,
+            )
+            if verdict is PresenceVerdict.COLLAPSE:
                 self._drain_field_ctx_warnings(ctx_state, path, warnings)
                 return
-            if not left_present and right_present:
+            if verdict is PresenceVerdict.EQUAL_PRESENCE and not left_present:
+                # Both unset: nothing to compare.
+                self._drain_field_ctx_warnings(ctx_state, path, warnings)
+                return
+            if verdict is PresenceVerdict.ADDED:
                 diff = Difference(
                     path=path,
                     change_type=ChangeType.ADDED,
@@ -950,7 +1348,7 @@ class MessageDifferencer:
                     diff, ctx_state, ctx, diffs, warnings, path,
                 )
                 return
-            if left_present and not right_present:
+            if verdict is PresenceVerdict.REMOVED:
                 diff = Difference(
                     path=path,
                     change_type=ChangeType.REMOVED,
@@ -1129,6 +1527,68 @@ class MessageDifferencer:
         )
         self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
 
+    def _selection_fd_for_float(
+        self,
+        left_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+    ) -> proto_descriptor.FieldDescriptor:
+        """Resolve the descriptor a float overlay selector should see (KTD-6).
+
+        At a map element's value-compare site ``left_fd`` is the synthetic
+        ``MapEntry.value`` descriptor (its ``name`` is ``"value"``), not the
+        user's container field. A descriptor-predicate selector inspecting
+        ``fd.name`` would therefore never match a map float value. This resolves
+        the *container* field descriptor — the field on the parent message whose
+        name is the path's last segment — so predicate-form selectors see the
+        user's field name. (Path-form selectors already match via the path's
+        bracket-blind last segment, so this matters only for the predicate form.)
+
+        For repeated (non-map) float fields the element-compare site already
+        passes the container descriptor, so ``left_fd`` is returned unchanged.
+
+        Args:
+            left_fd: The descriptor at the float-compare site.
+            path: The concrete path of the value being compared.
+
+        Returns:
+            The container field descriptor for a map value, else ``left_fd``.
+        """
+        entry = left_fd.containing_type
+        if entry is None or not entry.GetOptions().map_entry:
+            return left_fd
+        parent = entry.containing_type
+        if parent is None or not path.segments:
+            return left_fd
+        container = parent.fields_by_name.get(path.segments[-1].name)
+        return container if container is not None else left_fd
+
+    def _float_config_for(
+        self,
+        left_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+    ) -> FloatConfig:
+        """Pick the FloatConfig for a float/double field (KTD-6/U6).
+
+        Consults the per-field overlays FIRST: the first overlay whose selector
+        matches ``(fd, path)`` supplies its config. Falls back to the global
+        ``_float_config`` when no overlay matches — overlays LAYER over, never
+        replace, the global setting (R11). Empty overlay list is a fast path.
+
+        Args:
+            left_fd: Field descriptor at the float-compare site.
+            path: The concrete field path of the value being compared.
+
+        Returns:
+            The overlay's FloatConfig if one matches, else the global config.
+        """
+        if not self._float_overlays:
+            return self._float_config
+        selection_fd = self._selection_fd_for_float(left_fd, path)
+        for selector, config in self._float_overlays:
+            if selector.matches(selection_fd, path):
+                return config
+        return self._float_config
+
     def _values_equal(
         self,
         left: Any,
@@ -1157,7 +1617,9 @@ class MessageDifferencer:
             True if the values are considered equal.
         """
         if left_fd.type in (TYPE_FLOAT, TYPE_DOUBLE):
-            return compare_float(float(left), float(right), self._float_config)
+            return compare_float(
+                float(left), float(right), self._float_config_for(left_fd, path)
+            )
 
         if left_fd.type == TYPE_ENUM:
             if same_pool:
@@ -1248,11 +1710,25 @@ class MessageDifferencer:
         if not left_present and not right_present:
             return
         if not left_present and right_present:
+            # Partial gate (U4): an actual-only (right-only) sub-message is an
+            # ADDED subtree — suppress it BEFORE pushing the separate recursive
+            # walk, or partial would leak the whole subtree as added. Direction-
+            # conditioned: only the right-only (ADDED) direction is dropped;
+            # the left-only (REMOVED) branch below still reports (R5). The
+            # right-only sub-message is by definition not present on expected,
+            # so the partial gate always drops it here.
+            if self._partial:
+                return
             right_child = getattr(right_msg, right_fd.name)
             if _has_populated_fields(right_child):
                 stack.append(_WorkItem(None, right_child, path, depth + 1))
-            else:
-                # Empty-but-present message exception
+            elif self._presence_mode == MessageFieldComparison.EQUAL:
+                # Empty-but-present message exception. The set side is the
+                # default (empty) instance. EQUAL distinguishes set-to-default
+                # from unset → report ADDED. EQUIVALENT (the default) collapses
+                # it (no diff) — the U5 reconciliation with this pre-existing
+                # exception, layered here rather than re-emitted elsewhere so
+                # there is exactly one decision site (no double-report).
                 diffs.append(Difference(
                     path=path, change_type=ChangeType.ADDED,
                     field_type=type_name(right_fd.type),
@@ -1262,7 +1738,8 @@ class MessageDifferencer:
             left_child = getattr(left_msg, left_fd.name)
             if _has_populated_fields(left_child):
                 stack.append(_WorkItem(left_child, None, path, depth + 1))
-            else:
+            elif self._presence_mode == MessageFieldComparison.EQUAL:
+                # Symmetric empty-but-present REMOVED; EQUIVALENT collapses.
                 diffs.append(Difference(
                     path=path, change_type=ChangeType.REMOVED,
                     field_type=type_name(left_fd.type),
@@ -1325,6 +1802,17 @@ class MessageDifferencer:
                         f"(type={type_name(left_fd.type)}); falling back to index comparison",
             ))
 
+        # Keyless set comparison takes precedence over index pairing when the
+        # field is set-marked (KTD-8/U3). treat_as_map (keyed) wins over set if
+        # both somehow apply, since it returns above; the registration-time
+        # conflict guard prevents path-form double-config.
+        if self._treat_as_set_selectors and self._is_treat_as_set(path, left_fd):
+            self._compare_treat_as_set(
+                left_msg, right_msg, left_fd, right_fd, path,
+                diffs, stack, depth, warnings, same_pool,
+            )
+            return
+
         left_list = getattr(left_msg, field_name)
         right_list = getattr(right_msg, field_name)
 
@@ -1348,23 +1836,30 @@ class MessageDifferencer:
                     diffs, warnings,
                 )
 
-        # Extra elements
-        for i in range(min_len, len(right_list)):
-            idx_path = _replace_bracket(path, str(i)) if path.segments else path
-            if right_fd.type == TYPE_MESSAGE:
-                if _has_populated_fields(right_list[i]):
-                    stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
+        # Extra elements present ONLY on actual (right). Under partial these
+        # fall outside the expected sub-shape — actual is allowed to be a
+        # superset (R5/U4) — so they are suppressed, consistent with how the
+        # singular-field and whole-sub-message actual-only branches already
+        # suppress under partial. In full mode they report as ADDED. (A
+        # treat_as_set field has its own strict path and returns above, so this
+        # guard never relaxes set membership — the KTD-8 carve-out is intact.)
+        if not self._partial:
+            for i in range(min_len, len(right_list)):
+                idx_path = _replace_bracket(path, str(i)) if path.segments else path
+                if right_fd.type == TYPE_MESSAGE:
+                    if _has_populated_fields(right_list[i]):
+                        stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
+                    else:
+                        diffs.append(Difference(
+                            path=idx_path, change_type=ChangeType.ADDED,
+                            field_type=type_name(right_fd.type),
+                        ))
                 else:
-                    diffs.append(Difference(
-                        path=idx_path, change_type=ChangeType.ADDED,
-                        field_type=type_name(right_fd.type),
-                    ))
-            else:
-                self._compare_one_sided_scalar_with_hooks(
-                    right_list[i], left_fd, right_fd, idx_path,
-                    left_msg, right_msg, is_new=True,
-                    diffs=diffs, warnings=warnings,
-                )
+                    self._compare_one_sided_scalar_with_hooks(
+                        right_list[i], left_fd, right_fd, idx_path,
+                        left_msg, right_msg, is_new=True,
+                        diffs=diffs, warnings=warnings,
+                    )
 
         for i in range(min_len, len(left_list)):
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
@@ -1425,6 +1920,11 @@ class MessageDifferencer:
             key_path = _replace_bracket(path, key_str) if path.segments else path
 
             if key not in left_map:
+                # Actual-only key: outside the expected sub-shape under partial
+                # (actual is allowed to be a superset, R5/U4) → suppressed.
+                # Reported as ADDED only in full mode.
+                if self._partial:
+                    continue
                 right_val = right_map[key]
                 if right_value_fd.type == TYPE_MESSAGE:
                     if _has_populated_fields(right_val):
@@ -1471,6 +1971,157 @@ class MessageDifferencer:
                         same_pool,
                         diffs, warnings,
                     )
+
+    def _set_elements_equal(
+        self,
+        left_elem: Any,
+        right_elem: Any,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        same_pool: bool,
+    ) -> bool:
+        """Decide STRICT element equality for keyless set pairing (KTD-8).
+
+        This is the equality callable injected into
+        :func:`greedy_multiset_pairing`. It is backed by the engine so set
+        membership matches :meth:`compare` semantics exactly — NOT a private
+        reimplementation:
+
+        * **Message elements** run a fresh, default-config sub-comparison
+          (``MessageDifferencer().compare(...)``) and count "zero differences"
+          as equal. The fresh differ carries default config (exact floats, no
+          ignore/map/set/tolerance), so the comparison is strict yet still
+          descriptor-aware: cross-pool name-matching, enum wire-compatibility,
+          and presence all come from the engine. A one-field-different element
+          therefore has differences and is NOT equal — it surfaces later as a
+          remove + add pair, not a modify (documented v1 behavior).
+
+        * **Scalar/enum/bytes elements** reuse the engine's value-equality path
+          (:meth:`_values_equal` — same enum wire-compat / cross-pool logic),
+          but under a STRICT float config so per-instance float tolerance never
+          leaks into set-membership equality. Keeping equality strict makes it
+          a true equivalence relation, so the greedy partition is
+          order-independent (KTD-8).
+
+        Args:
+            left_elem: An element from the expected (left) list.
+            right_elem: An element from the actual (right) list.
+            left_fd: The repeated field's left descriptor.
+            right_fd: The repeated field's right descriptor.
+            same_pool: True if the parent messages share a descriptor pool.
+
+        Returns:
+            True if the two elements are strictly engine-equal.
+        """
+        if left_fd.type == TYPE_MESSAGE:
+            # Engine equality for message elements: a fresh default-config
+            # differ gives strict comparison with full descriptor awareness.
+            sub_result = MessageDifferencer().compare(left_elem, right_elem)
+            return not sub_result.has_changes()
+
+        # Scalar/enum/bytes: engine value equality under a STRICT float config.
+        if left_fd.type in (TYPE_FLOAT, TYPE_DOUBLE):
+            return compare_float(
+                float(left_elem), float(right_elem),
+                _EXACT_FLOAT_CONFIG,
+            )
+        if left_fd.type == TYPE_ENUM:
+            if same_pool:
+                return compare_enum_same_pool(left_elem, right_elem)
+            left_ev = to_enum_value(left_elem, left_fd.enum_type)
+            right_ev = to_enum_value(right_elem, right_fd.enum_type)
+            equal, _warning = compare_enum_cross_pool(
+                left_ev.number, left_ev.name, right_ev.number, right_ev.name,
+            )
+            return equal
+        return compare_scalar(left_elem, right_elem)
+
+    def _compare_treat_as_set(
+        self,
+        left_msg: Message,
+        right_msg: Message,
+        left_fd: proto_descriptor.FieldDescriptor,
+        right_fd: proto_descriptor.FieldDescriptor,
+        path: FieldPath,
+        diffs: list[Difference],
+        stack: list[_WorkItem],
+        depth: int,
+        warnings: list[Diagnostic],
+        same_pool: bool,
+    ) -> None:
+        """Compare a repeated field order-independently as a multiset (KTD-8).
+
+        Pairs elements via :func:`greedy_multiset_pairing` with an engine-backed
+        strict-equality callable (:meth:`_set_elements_equal`). Matched pairs
+        emit nothing (they are strictly equal); leftovers reuse the existing
+        element ``Difference`` shape — expected-side leftovers are REMOVED,
+        actual-side leftovers are ADDED, each keyed by its original index in
+        its own list (``field[i]``).
+
+        Args:
+            left_msg: The left parent message.
+            right_msg: The right parent message.
+            left_fd: Field descriptor from the left schema.
+            right_fd: Field descriptor from the right schema.
+            path: The current field path.
+            diffs: Accumulator list for Difference objects.
+            stack: The iterative comparison work stack.
+            depth: Current comparison depth.
+            warnings: Accumulator list for Diagnostic objects.
+            same_pool: True if both messages share a descriptor pool.
+        """
+        left_list = list(getattr(left_msg, left_fd.name))
+        right_list = list(getattr(right_msg, right_fd.name))
+
+        def _equal(left_elem: Any, right_elem: Any) -> bool:
+            return self._set_elements_equal(
+                left_elem, right_elem, left_fd, right_fd, same_pool,
+            )
+
+        _matched, expected_unmatched, actual_unmatched = greedy_multiset_pairing(
+            left_list, right_list, _equal,
+        )
+
+        # Expected-side leftovers -> REMOVED, keyed by original left index.
+        for i in expected_unmatched:
+            idx_path = _replace_bracket(path, str(i)) if path.segments else path
+            if left_fd.type == TYPE_MESSAGE:
+                if _has_populated_fields(left_list[i]):
+                    stack.append(_WorkItem(left_list[i], None, idx_path, depth + 1))
+                else:
+                    diffs.append(Difference(
+                        path=idx_path, change_type=ChangeType.REMOVED,
+                        field_type=type_name(left_fd.type),
+                    ))
+            else:
+                self._compare_one_sided_scalar_with_hooks(
+                    left_list[i], left_fd, right_fd, idx_path,
+                    left_msg, right_msg, is_new=False,
+                    diffs=diffs, warnings=warnings,
+                )
+
+        # Actual-side leftovers -> ADDED, keyed by original right index.
+        for i in actual_unmatched:
+            idx_path = _replace_bracket(path, str(i)) if path.segments else path
+            if right_fd.type == TYPE_MESSAGE:
+                if _has_populated_fields(right_list[i]):
+                    # force_emit: partial does NOT descend into set fields
+                    # (KTD-8 carve-out), so an actual-only set message element
+                    # must still report as ADDED even under partial scope.
+                    stack.append(_WorkItem(
+                        None, right_list[i], idx_path, depth + 1, force_emit=True,
+                    ))
+                else:
+                    diffs.append(Difference(
+                        path=idx_path, change_type=ChangeType.ADDED,
+                        field_type=type_name(right_fd.type),
+                    ))
+            else:
+                self._compare_one_sided_scalar_with_hooks(
+                    right_list[i], left_fd, right_fd, idx_path,
+                    left_msg, right_msg, is_new=True,
+                    diffs=diffs, warnings=warnings,
+                )
 
     def _compare_treat_as_map(
         self,
@@ -1600,14 +2251,35 @@ class MessageDifferencer:
         # Check path-scoped first (bracket-stripped segment name comparison),
         # then bare name
         for sel_path, key in self._treat_as_map_paths:
-            if len(sel_path.segments) == len(field_path.segments) and all(
-                s.name == f.name
-                for s, f in zip(sel_path.segments, field_path.segments)
-            ):
+            if sel_path.matches_selector(field_path):
                 return key
         if field_name in self._treat_as_map:
             return self._treat_as_map[field_name]
         return None
+
+    def _is_treat_as_set(
+        self,
+        field_path: FieldPath,
+        fd: proto_descriptor.FieldDescriptor,
+    ) -> bool:
+        """Whether this repeated field is configured for keyless set matching.
+
+        Consults every registered :class:`FieldSelector` (path or predicate
+        form) via the shared :meth:`FieldSelector.matches`. A predicate raising
+        here PROPAGATES — it is an author bug, not an engine fault (KTD-10).
+
+        Args:
+            field_path: The fully qualified path of the repeated field.
+            fd: The repeated field's descriptor (needed by predicate-form
+                selectors).
+
+        Returns:
+            True if any configured ``treat_as_set`` selector matches.
+        """
+        for selector in self._treat_as_set_selectors:
+            if selector.matches(fd, field_path):
+                return True
+        return False
 
     def _emit_all_fields(
         self,
@@ -1667,8 +2339,10 @@ class MessageDifferencer:
                     continue
                 field_path = cur_path.child(fd.name)
 
-                # Respect ignore_fields
-                if self._is_ignored(fd.name, field_path):
+                # Respect ignore_fields (string + predicate forms). The
+                # descriptor is in hand here, so predicate selectors apply to
+                # added/removed (one-sided) fields too — symmetric ignore.
+                if self._is_ignored(fd.name, field_path, fd):
                     continue
 
                 if is_map_field(fd):

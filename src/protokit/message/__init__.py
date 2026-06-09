@@ -12,8 +12,19 @@ See ``protokit.message.differ`` for the engine,
 
 from __future__ import annotations
 
-from protokit.message.comparators import FloatComparison
+from protokit.message.comparators import FloatComparison, MessageFieldComparison
 from protokit.message.differ import MessageDifferencer, diff_messages
+from protokit.message.hamcrest import (
+    HamcrestExtraNotInstalledError,
+    equals_proto,
+)
+from protokit.message.matchers import (
+    Approx,
+    MatcherError,
+    MatchPolicy,
+    expect_proto,
+    proto_match,
+)
 from protokit.message.model import (
     ChangeType,
     Diagnostic,
@@ -34,23 +45,31 @@ from protokit.message.model import (
 )
 
 __all__ = [
+    "Approx",
     "ChangeType",
     "Diagnostic",
     "DiagnosticLevel",
-    "Difference",
     "DiffResult",
+    "Difference",
     "DuplicateKeyError",
     "EnumValue",
     "FieldHook",
     "FieldHookContext",
     "FieldPath",
     "FloatComparison",
+    "HamcrestExtraNotInstalledError",
     "HookStage",
+    "MatchPolicy",
+    "MatcherError",
     "MessageDifferencer",
+    "MessageFieldComparison",
     "MessageHookContext",
     "MessageValidateHook",
     "MissingKeyError",
     "PathSegment",
     "Warning",  # deprecated alias; remove in a later release
     "diff_messages",
+    "equals_proto",
+    "expect_proto",
+    "proto_match",
 ]

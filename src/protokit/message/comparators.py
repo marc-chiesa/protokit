@@ -16,6 +16,31 @@ from google.protobuf import descriptor as proto_descriptor
 from protokit.message.model import EnumValue
 
 
+class MessageFieldComparison(Enum):
+    """Field-presence comparison mode for ``MessageDifferencer``.
+
+    Pass to :meth:`MessageDifferencer.set_message_field_comparison` to choose
+    how a singular field's *presence* (set vs unset) participates in comparison.
+    Mirrors C++ ``MessageDifferencer::set_message_field_comparison``.
+
+    Members:
+        EQUIVALENT: The default. A field set to its default value is treated as
+            equal to an unset field — the "set-to-default ≈ unset" collapse.
+            Today's behavior; non-default-vs-unset still reports a presence
+            difference.
+        EQUAL: Opt-in strict presence. A presence-bearing field set on one side
+            (even to its default value) and unset on the other is reported as a
+            presence difference. Observable only where presence exists — proto2
+            fields, proto3 ``optional`` fields, oneof members, and singular
+            message fields. It is a documented NO-OP for proto3
+            implicit-presence scalars, which carry no presence bit and so cannot
+            distinguish a default value from unset.
+    """
+
+    EQUIVALENT = "EQUIVALENT"
+    EQUAL = "EQUAL"
+
+
 class FloatComparison(Enum):
     """Float comparison mode for ``MessageDifferencer``.
 
