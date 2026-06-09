@@ -190,32 +190,3 @@ class FieldSelector:
             return self._path.matches_selector(path)
         assert self._predicate is not None  # invariant: exactly one form
         return self._predicate(fd, path)
-
-
-def should_visit(
-    fd: proto_descriptor.FieldDescriptor,
-    path: FieldPath,
-    expected_side_present: bool,
-) -> bool:
-    """Partial-mode field-visit decision (KTD-2 / U4).
-
-    In partial / sub-shape matching, only fields present on the ``expected``
-    side participate in comparison; extra fields on ``actual`` are not
-    differences. This is the pure decision the differ consults at its visit
-    gates — it does NOT itself wire into ``differ.py`` (U4 does that).
-
-    Args:
-        fd: The descriptor of the field under consideration. Accepted for a
-            uniform field-visit decision signature; the partial decision is
-            presence-driven and does not consult it today.
-        path: The concrete field path under consideration. Accepted for the
-            same uniform signature; unused by the partial decision today.
-        expected_side_present: Whether the field is present on the expected
-            (left) side.
-
-    Returns:
-        True if the field should be visited under partial mode, i.e. iff it is
-        present on the expected side.
-    """
-    del fd, path  # presence-driven decision; args kept for a uniform signature
-    return expected_side_present

@@ -23,7 +23,7 @@ from protokit._descriptors import (
     type_name,
 )
 from protokit.message._presence import PresenceVerdict, presence_verdict
-from protokit.message._selector import FieldSelector, SelectorSpec, should_visit
+from protokit.message._selector import FieldSelector, SelectorSpec
 from protokit.message._setmatch import greedy_multiset_pairing
 from protokit.message.comparators import (
     FloatComparison,
@@ -725,7 +725,11 @@ class MessageDifferencer:
         self._partial = partial
 
     @staticmethod
-    def _present_on_expected(msg, left_fd, default_msg):
+    def _present_on_expected(
+        msg: Message,
+        left_fd: proto_descriptor.FieldDescriptor,
+        default_msg: Message | None,
+    ) -> bool:
         """Whether ``left_fd`` is "present" on the expected (left) side (U4).
 
         Partial / sub-shape matching treats the expected message's set fields
@@ -971,11 +975,10 @@ class MessageDifferencer:
                     if left_fd is None and right_fd is not None:
                         # Partial visit gate (U4): an actual-only (right-only)
                         # field is ADDED — skip it under partial so extra
-                        # fields on actual are not differences. ``should_visit``
-                        # returns ``expected_side_present`` (False here).
-                        if self._partial and not should_visit(
-                            right_fd, field_path, expected_side_present=False
-                        ):
+                        # fields on actual are not differences. The right-only
+                        # field is by definition not present on expected, so
+                        # the partial gate always skips it.
+                        if self._partial:
                             continue
                         self._emit_one_sided(
                             item.right_msg, right_fd, field_path,
@@ -984,8 +987,8 @@ class MessageDifferencer:
                         continue
                     if left_fd is not None and right_fd is None:
                         # Left-only (expected-only) field is REMOVED — always
-                        # reported, even under partial (``should_visit`` returns
-                        # True for ``expected_side_present=True``); R5.
+                        # reported, even under partial (an expected-present
+                        # field is always in the sub-shape); R5.
                         self._emit_one_sided(
                             item.left_msg, left_fd, field_path,
                             differences, stack, item.depth, is_new=False,
@@ -1001,11 +1004,8 @@ class MessageDifferencer:
                     # both-present and would otherwise surface as MODIFIED; a
                     # treat_as_set field non-empty on expected is still compared
                     # strictly (KTD-8 carve-out, since it counts as present).
-                    if self._partial and not should_visit(
-                        left_fd, field_path,
-                        expected_side_present=self._present_on_expected(
-                            item.left_msg, left_fd, left_default,
-                        ),
+                    if self._partial and not self._present_on_expected(
+                        item.left_msg, left_fd, left_default,
                     ):
                         continue
 
@@ -1072,40 +1072,6 @@ class MessageDifferencer:
         )
 
     # --- Internal methods ---
-
-    def _expected_present(
-        self,
-        msg: Message,
-        fd: proto_descriptor.FieldDescriptor,
-    ) -> bool:
-        """Whether a field is "present" on the expected (left) side for partial.
-
-        Partial / sub-shape scope (U4) compares only fields the expected side
-        actually carries. "Present" is interpreted per the field's presence
-        model so the directional rule matches protobuf semantics:
-
-        * **Repeated / map** fields: present iff non-empty. (An empty repeated
-          field on expected does not constrain actual under partial.)
-        * **Presence-aware** fields (proto2, message, proto3 ``optional``,
-          oneof members): present iff ``HasField``.
-        * **proto3 implicit-presence scalars**: present iff the value is NOT the
-          field default — there is no presence bit, so a default value is
-          indistinguishable from unset (EQUIVALENT semantics, the default).
-
-        Args:
-            msg: The expected (left) parent message.
-            fd: The expected-side field descriptor.
-
-        Returns:
-            True if the field is present on the expected side and should
-            participate in partial comparison.
-        """
-        if is_repeated(fd):  # covers both repeated and map fields
-            return len(getattr(msg, fd.name)) > 0
-        if has_presence(fd):
-            return msg.HasField(fd.name)
-        # proto3 implicit-presence scalar: default value == "unset".
-        return getattr(msg, fd.name) != fd.default_value
 
     def _is_ignored(
         self,
@@ -1270,9 +1236,13 @@ class MessageDifferencer:
                 # reports it. A set-to-non-default-vs-unset delta reports in
                 # BOTH modes (today's pinned behavior). EQUAL_PRESENCE (both
                 # set or both unset) falls through to value comparison.
+                # Reuse the presence already read above (left_present/
+                # right_present) rather than letting presence_verdict recompute
+                # the HasField pair — same verdict, half the presence reads.
                 verdict = presence_verdict(
                     left_msg, right_msg, left_fd, right_fd,
                     equal_mode=self._presence_mode == MessageFieldComparison.EQUAL,
+                    left_set=left_present, right_set=right_present,
                 )
                 if verdict is PresenceVerdict.COLLAPSE:
                     return
@@ -1335,6 +1305,7 @@ class MessageDifferencer:
             verdict = presence_verdict(
                 left_msg, right_msg, left_fd, right_fd,
                 equal_mode=self._presence_mode == MessageFieldComparison.EQUAL,
+                left_set=left_present, right_set=right_present,
             )
             if verdict is PresenceVerdict.COLLAPSE:
                 self._drain_field_ctx_warnings(ctx_state, path, warnings)
@@ -1720,11 +1691,10 @@ class MessageDifferencer:
             # ADDED subtree — suppress it BEFORE pushing the separate recursive
             # walk, or partial would leak the whole subtree as added. Direction-
             # conditioned: only the right-only (ADDED) direction is dropped;
-            # the left-only (REMOVED) branch below still reports (R5). Mirrors
-            # the visit-gate decision (``should_visit`` returns False here).
-            if self._partial and not should_visit(
-                right_fd, path, expected_side_present=False
-            ):
+            # the left-only (REMOVED) branch below still reports (R5). The
+            # right-only sub-message is by definition not present on expected,
+            # so the partial gate always drops it here.
+            if self._partial:
                 return
             right_child = getattr(right_msg, right_fd.name)
             if _has_populated_fields(right_child):

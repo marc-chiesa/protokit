@@ -44,19 +44,17 @@ from __future__ import annotations
 import importlib.util
 from typing import TYPE_CHECKING, Any
 
-from protokit.message.comparators import MessageFieldComparison
 from protokit.message.matchers import (
-    Approx,
     MatcherError,
     MatchPolicy,
     _build_differ,
+    _match_failure_header,
+    _PolicyChain,
 )
 from protokit.message.pytest_plugin import render_diff_lines
 
 if TYPE_CHECKING:  # pragma: no cover — typing-only import
     from google.protobuf.message import Message
-
-    from protokit.message._selector import SelectorSpec
 
 
 __all__ = [
@@ -120,7 +118,7 @@ def _proto_matcher_class() -> type:
     # ``hamcrest.*`` so this base types as ``Any`` under --strict.
     from hamcrest.core.base_matcher import BaseMatcher
 
-    class _ProtoMatcher(BaseMatcher):  # type: ignore[misc]  # Any base
+    class _ProtoMatcher(BaseMatcher, _PolicyChain):  # type: ignore[misc]  # Any base
         """A ``hamcrest`` matcher delegating to the shared policy → differ path.
 
         Holds the reference ``expected`` message and a frozen
@@ -129,14 +127,23 @@ def _proto_matcher_class() -> type:
         surfaces are policy-equivalent (SWI-1). ``describe_mismatch`` renders the
         per-field diff via the shared :func:`render_diff_lines` formatter (KTD-4).
 
-        The fluent steps each return a NEW ``_ProtoMatcher`` with an updated
-        policy (immutable builder, mirroring ``ProtoMatcher``), so a
-        partially-configured matcher can be branched without surprise.
+        The seven fluent steps come from the shared
+        :class:`~protokit.message.matchers._PolicyChain` mixin (a PLAIN class,
+        imported at module top so this lazy ``BaseMatcher`` subclass can mix it
+        in without ``hamcrest`` ever being imported eagerly, F1). They each
+        return a NEW ``_ProtoMatcher`` with an updated policy (immutable
+        builder, mirroring ``ProtoMatcher``), so a partially-configured matcher
+        can be branched without surprise.
         """
 
         def __init__(self, expected: Message, policy: MatchPolicy) -> None:
             self._expected = expected
             self._policy = policy
+
+        @property
+        def _policy_obj(self) -> MatchPolicy:
+            """The accumulated policy (the :class:`_PolicyChain` hook)."""
+            return self._policy
 
         # -- comparison -----------------------------------------------------
 
@@ -175,18 +182,13 @@ def _proto_matcher_class() -> type:
                 super().describe_mismatch(item, description)
                 return
 
-            expected_type = self._expected.DESCRIPTOR.full_name
-            actual_type = item.DESCRIPTOR.full_name
-            if expected_type == actual_type:
-                header = f"proto match failed: expected != actual ({expected_type})"
-            else:
-                header = (
-                    f"proto match failed: expected != actual "
-                    f"({expected_type} != {actual_type}, cross-schema)"
-                )
+            header = _match_failure_header(self._expected, item)
             description.append_text("\n".join(render_diff_lines(result, header)))
 
-        # -- fluent builder (mirrors ProtoMatcher) --------------------------
+        # -- fluent builder ------------------------------------------------
+        # The seven chain methods come from the shared ``_PolicyChain`` mixin;
+        # only the type-specific ``_with`` is provided here so each step
+        # returns a new ``_ProtoMatcher`` (immutable builder).
 
         def _with(self, **changes: Any) -> _ProtoMatcher:
             """Return a new matcher with ``policy`` fields replaced by ``changes``."""
@@ -194,49 +196,6 @@ def _proto_matcher_class() -> type:
 
             new_policy = dataclasses.replace(self._policy, **changes)
             return _ProtoMatcher(self._expected, new_policy)
-
-        def partially(self) -> _ProtoMatcher:
-            """Return a new matcher with partial / sub-shape scope enabled (R5)."""
-            return self._with(partial=True)
-
-        def ignoring(self, selector: SelectorSpec) -> _ProtoMatcher:
-            """Return a new matcher that also ignores ``selector`` (R8)."""
-            return self._with(ignore=(*self._policy.ignore, selector))
-
-        def as_set(self, selector: SelectorSpec) -> _ProtoMatcher:
-            """Return a new matcher that compares ``selector`` as a multiset (R6)."""
-            return self._with(as_set=(*self._policy.as_set, selector))
-
-        def with_presence(self, presence: MessageFieldComparison) -> _ProtoMatcher:
-            """Return a new matcher with the given presence comparison mode (R10)."""
-            return self._with(presence=presence)
-
-        def strict_presence(self) -> _ProtoMatcher:
-            """Return a new matcher with EQUAL presence (distinguish default/unset)."""
-            return self._with(presence=MessageFieldComparison.EQUAL)
-
-        def approximately(
-            self,
-            *,
-            margin: float | None = None,
-            fraction: float | None = None,
-            selector: SelectorSpec | None = None,
-        ) -> _ProtoMatcher:
-            """Return a new matcher applying float tolerance (R11).
-
-            With ``selector=None`` this sets the GLOBAL tolerance; with a
-            ``selector`` it registers a per-field overlay layered over the global
-            setting (KTD-6). Mirrors ``ProtoMatcher.approximately`` exactly.
-            """
-            approx = Approx(
-                margin=1e-9 if margin is None else margin,
-                fraction=1e-6 if fraction is None else fraction,
-            )
-            if selector is None:
-                return self._with(approx=approx)
-            return self._with(
-                approx_overlays=(*self._policy.approx_overlays, (selector, approx)),
-            )
 
     return _ProtoMatcher
 

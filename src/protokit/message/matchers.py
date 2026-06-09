@@ -38,6 +38,7 @@ from protokit.message.pytest_plugin import render_diff_lines
 
 if TYPE_CHECKING:  # pragma: no cover — typing-only import
     from google.protobuf.message import Message
+    from typing_extensions import Self
 
 
 __all__ = [
@@ -83,6 +84,30 @@ class Approx:
 
     margin: float = 1e-9
     fraction: float = 1e-6
+
+    @classmethod
+    def from_optional(
+        cls, margin: float | None, fraction: float | None
+    ) -> Approx:
+        """Build an ``Approx`` from optional ``margin`` / ``fraction`` kwargs.
+
+        Each ``None`` falls back to the dataclass field default (``1e-9`` /
+        ``1e-6``), so the engine-default fold lives in exactly one place rather
+        than being re-spelled at every ``approximately`` / shorthand call site.
+
+        Args:
+            margin: Absolute tolerance, or ``None`` for the default.
+            fraction: Relative tolerance, or ``None`` for the default.
+
+        Returns:
+            An ``Approx`` with any omitted tolerance defaulted.
+        """
+        kwargs: dict[str, float] = {}
+        if margin is not None:
+            kwargs["margin"] = margin
+        if fraction is not None:
+            kwargs["fraction"] = fraction
+        return cls(**kwargs)
 
 
 # A per-field approx overlay: a selector spec paired with its tolerance.
@@ -204,6 +229,35 @@ def _build_differ(policy: MatchPolicy) -> MessageDifferencer:
     return differ
 
 
+def _match_failure_header(expected: Message, actual: Message) -> str:
+    """Build the rich-diff header line for a proto match failure.
+
+    Shared by the agnostic matcher's :func:`_assert_matches` and the PyHamcrest
+    adapter's ``describe_mismatch`` so the two surfaces emit a byte-identical
+    header (KTD-4). Same-type and cross-schema cases are distinguished: a
+    cross-schema mismatch names both full type names.
+
+    Note this is deliberately NOT the pytest ``==`` hook's ``"{left} != {right}"``
+    header — that one is intentionally different and stays in
+    ``pytest_plugin``.
+
+    Args:
+        expected: The reference message (the differ's ``left``).
+        actual: The message under test (the differ's ``right``).
+
+    Returns:
+        The header string to pass to :func:`render_diff_lines`.
+    """
+    expected_type = expected.DESCRIPTOR.full_name
+    actual_type = actual.DESCRIPTOR.full_name
+    if expected_type == actual_type:
+        return f"proto match failed: expected != actual ({expected_type})"
+    return (
+        f"proto match failed: expected != actual "
+        f"({expected_type} != {actual_type}, cross-schema)"
+    )
+
+
 def _assert_matches(policy: MatchPolicy, actual: Message, expected: Message) -> None:
     """Run the policy and raise ``AssertionError`` (rich diff) on mismatch.
 
@@ -230,16 +284,7 @@ def _assert_matches(policy: MatchPolicy, actual: Message, expected: Message) -> 
     if not result.has_changes():
         return
 
-    expected_type = expected.DESCRIPTOR.full_name
-    actual_type = actual.DESCRIPTOR.full_name
-    if expected_type == actual_type:
-        header = f"proto match failed: expected != actual ({expected_type})"
-    else:
-        header = (
-            f"proto match failed: expected != actual "
-            f"({expected_type} != {actual_type}, cross-schema)"
-        )
-
+    header = _match_failure_header(expected, actual)
     raise AssertionError("\n".join(render_diff_lines(result, header)))
 
 
@@ -275,10 +320,7 @@ def _approx_from_kwargs(
         return approx
     if margin is None and fraction is None:
         return None
-    return Approx(
-        margin=1e-9 if margin is None else margin,
-        fraction=1e-6 if fraction is None else fraction,
-    )
+    return Approx.from_optional(margin, fraction)
 
 
 def _as_tuple(spec: SelectorSpec | Iterable[SelectorSpec] | None) -> tuple[SelectorSpec, ...]:
@@ -362,8 +404,108 @@ def proto_match(
     _assert_matches(policy, actual, expected)
 
 
+class _PolicyChain:
+    """Shared fluent-builder chain over a :class:`MatchPolicy`.
+
+    The seven chain methods (``_with``, ``partially``, ``ignoring``,
+    ``as_set``, ``with_presence``, ``strict_presence``, ``approximately``) were
+    once duplicated verbatim between :class:`ProtoMatcher` and the PyHamcrest
+    adapter's lazily-defined ``_ProtoMatcher``; they live here once. Each chain
+    step reads the current policy via the :attr:`_policy_obj` hook and returns a
+    NEW instance via the :meth:`_with` hook (immutable builder).
+
+    Subclasses provide ONLY their own ``_policy_obj`` (return their policy) and
+    ``_with`` (return their own concrete type), plus their terminal surface
+    (``matches`` / ``assert_matches`` for the agnostic matcher;
+    ``_matches`` / ``describe_to`` / ``describe_mismatch`` for the hamcrest
+    one). This is a PLAIN class, not a ``hamcrest.BaseMatcher`` — the adapter's
+    ``BaseMatcher`` subclass mixes it in alongside the lazily-imported base, so
+    importing this module never imports ``hamcrest`` (F1).
+    """
+
+    @property
+    def _policy_obj(self) -> MatchPolicy:
+        """The current accumulated policy (subclass-provided hook)."""
+        raise NotImplementedError  # pragma: no cover — abstract hook
+
+    def _with(self, **changes: Any) -> Self:
+        """Return a new instance with ``policy`` fields replaced by ``changes``.
+
+        The accumulation primitive: subclasses build a fresh
+        :class:`MatchPolicy` from the current one with the named fields
+        overridden (re-running ``__post_init__`` snapshotting/validation) and
+        wrap it in a new immutable instance of their own type.
+        """
+        raise NotImplementedError  # pragma: no cover — abstract hook
+
+    def partially(self) -> Self:
+        """Return a new matcher with partial / sub-shape scope enabled (R5)."""
+        return self._with(partial=True)
+
+    def ignoring(self, selector: SelectorSpec) -> Self:
+        """Return a new matcher that also ignores ``selector`` (R8).
+
+        Args:
+            selector: A bare name / dotted path, a
+                ``(FieldDescriptor, FieldPath) -> bool`` predicate, or a
+                :class:`FieldSelector`.
+        """
+        return self._with(ignore=(*self._policy_obj.ignore, selector))
+
+    def as_set(self, selector: SelectorSpec) -> Self:
+        """Return a new matcher that compares ``selector`` as a multiset (R6).
+
+        Args:
+            selector: A selector for a repeated field to compare
+                order-independently with no key.
+        """
+        return self._with(as_set=(*self._policy_obj.as_set, selector))
+
+    def with_presence(self, presence: MessageFieldComparison) -> Self:
+        """Return a new matcher with the given presence comparison mode (R10).
+
+        Args:
+            presence: ``MessageFieldComparison.EQUAL`` or ``EQUIVALENT``.
+        """
+        return self._with(presence=presence)
+
+    def strict_presence(self) -> Self:
+        """Return a new matcher with EQUAL presence (distinguish default/unset).
+
+        Shorthand for ``.with_presence(MessageFieldComparison.EQUAL)`` (R10).
+        """
+        return self._with(presence=MessageFieldComparison.EQUAL)
+
+    def approximately(
+        self,
+        *,
+        margin: float | None = None,
+        fraction: float | None = None,
+        selector: SelectorSpec | None = None,
+    ) -> Self:
+        """Return a new matcher applying float tolerance (R11).
+
+        With ``selector=None`` this sets the GLOBAL tolerance; with a
+        ``selector`` it registers a per-field overlay layered over the global
+        setting (KTD-6). Either ``margin`` or ``fraction`` (or both) may be
+        given; omitted values fall back to the engine defaults.
+
+        Args:
+            margin: Absolute tolerance. Defaults to ``1e-9`` when omitted.
+            fraction: Relative tolerance. Defaults to ``1e-6`` when omitted.
+            selector: When given, scopes the tolerance to matching float fields
+                as an overlay; when ``None``, sets the global tolerance.
+        """
+        approx = Approx.from_optional(margin, fraction)
+        if selector is None:
+            return self._with(approx=approx)
+        return self._with(
+            approx_overlays=(*self._policy_obj.approx_overlays, (selector, approx)),
+        )
+
+
 @dataclass(frozen=True)
-class ProtoMatcher:
+class ProtoMatcher(_PolicyChain):
     """Fluent matcher accumulating a :class:`MatchPolicy` over ``expected``.
 
     Returned by :func:`expect_proto`. Each builder step
@@ -381,73 +523,10 @@ class ProtoMatcher:
     expected: Message
     policy: MatchPolicy = field(default_factory=MatchPolicy)
 
-    def partially(self) -> ProtoMatcher:
-        """Return a new matcher with partial / sub-shape scope enabled (R5)."""
-        return self._with(partial=True)
-
-    def ignoring(self, selector: SelectorSpec) -> ProtoMatcher:
-        """Return a new matcher that also ignores ``selector`` (R8).
-
-        Args:
-            selector: A bare name / dotted path, a
-                ``(FieldDescriptor, FieldPath) -> bool`` predicate, or a
-                :class:`FieldSelector`.
-        """
-        return self._with(ignore=(*self.policy.ignore, selector))
-
-    def as_set(self, selector: SelectorSpec) -> ProtoMatcher:
-        """Return a new matcher that compares ``selector`` as a multiset (R6).
-
-        Args:
-            selector: A selector for a repeated field to compare
-                order-independently with no key.
-        """
-        return self._with(as_set=(*self.policy.as_set, selector))
-
-    def with_presence(self, presence: MessageFieldComparison) -> ProtoMatcher:
-        """Return a new matcher with the given presence comparison mode (R10).
-
-        Args:
-            presence: ``MessageFieldComparison.EQUAL`` or ``EQUIVALENT``.
-        """
-        return self._with(presence=presence)
-
-    def strict_presence(self) -> ProtoMatcher:
-        """Return a new matcher with EQUAL presence (distinguish default/unset).
-
-        Shorthand for ``.with_presence(MessageFieldComparison.EQUAL)`` (R10).
-        """
-        return self._with(presence=MessageFieldComparison.EQUAL)
-
-    def approximately(
-        self,
-        *,
-        margin: float | None = None,
-        fraction: float | None = None,
-        selector: SelectorSpec | None = None,
-    ) -> ProtoMatcher:
-        """Return a new matcher applying float tolerance (R11).
-
-        With ``selector=None`` this sets the GLOBAL tolerance; with a
-        ``selector`` it registers a per-field overlay layered over the global
-        setting (KTD-6). Either ``margin`` or ``fraction`` (or both) may be
-        given; omitted values fall back to the engine defaults.
-
-        Args:
-            margin: Absolute tolerance. Defaults to ``1e-9`` when omitted.
-            fraction: Relative tolerance. Defaults to ``1e-6`` when omitted.
-            selector: When given, scopes the tolerance to matching float fields
-                as an overlay; when ``None``, sets the global tolerance.
-        """
-        approx = Approx(
-            margin=1e-9 if margin is None else margin,
-            fraction=1e-6 if fraction is None else fraction,
-        )
-        if selector is None:
-            return self._with(approx=approx)
-        return self._with(
-            approx_overlays=(*self.policy.approx_overlays, (selector, approx)),
-        )
+    @property
+    def _policy_obj(self) -> MatchPolicy:
+        """The accumulated policy (the :class:`_PolicyChain` hook)."""
+        return self.policy
 
     def matches(self, actual: Message) -> None:
         """Assert ``actual`` matches ``expected`` under the accumulated policy.

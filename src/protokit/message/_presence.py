@@ -140,6 +140,8 @@ def presence_verdict(
     right_fd: proto_descriptor.FieldDescriptor,
     *,
     equal_mode: bool,
+    left_set: bool | None = None,
+    right_set: bool | None = None,
 ) -> PresenceVerdict:
     """Decide the presence relationship of a singular leaf field on both sides.
 
@@ -178,12 +180,18 @@ def presence_verdict(
         left_fd: The left-side leaf field descriptor (presence-observable).
         right_fd: The right-side leaf field descriptor (presence-observable).
         equal_mode: True for EQUAL semantics, False for EQUIVALENT (default).
+        left_set: The left-side presence, if the caller already computed it via
+            ``HasField``; ``None`` (the default) recomputes it here. Lets a
+            caller that has the booleans avoid a redundant ``HasField`` pair.
+        right_set: The right-side presence, same contract as ``left_set``.
 
     Returns:
         A :class:`PresenceVerdict` for the field.
     """
-    left_set = is_set(left_msg, left_fd)
-    right_set = is_set(right_msg, right_fd)
+    if left_set is None:
+        left_set = is_set(left_msg, left_fd)
+    if right_set is None:
+        right_set = is_set(right_msg, right_fd)
 
     if left_set == right_set:
         # Both set or both unset: presence agrees. Both-set falls through to

@@ -14,7 +14,7 @@ from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pb2
 
 from protokit.message import MessageDifferencer
-from protokit.message._selector import FieldSelector, should_visit
+from protokit.message._selector import FieldSelector
 from protokit.message.model import FieldPath
 from tests.proto_builder import ProtoBuilder
 
@@ -197,24 +197,6 @@ class TestConstruction:
         assert path_sel.matches(fd, path) == pred_sel.matches(fd, path) is True
         other = FieldPath.parse("name")
         assert path_sel.matches(fd, other) == pred_sel.matches(fd, other) is False
-
-
-# ---------------------------------------------------------------------------
-# Partial should_visit predicate (co-located, U4 will wire it)
-# ---------------------------------------------------------------------------
-
-
-class TestShouldVisit:
-    def test_visits_when_expected_present(self) -> None:
-        fd = _field("test.Msg", "name")
-        assert should_visit(fd, FieldPath.parse("name"), expected_side_present=True)
-
-    def test_skips_when_expected_absent(self) -> None:
-        fd = _field("test.Msg", "name")
-        assert (
-            should_visit(fd, FieldPath.parse("name"), expected_side_present=False)
-            is False
-        )
 
 
 # ---------------------------------------------------------------------------
