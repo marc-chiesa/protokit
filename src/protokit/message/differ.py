@@ -660,6 +660,11 @@ class MessageDifferencer:
         evaluations; for message elements each is a full sub-comparison, so it
         is intended for test-sized repeated fields.
 
+        A selector that matches a non-repeated field silently has no effect: set
+        comparison is consulted only at the repeated-field site, so a selector
+        aimed at a singular field is a no-op rather than an error (consistent
+        with the opaque-predicate ignore path).
+
         Args:
             selector: A bare field name (``"items"``), a dotted path
                 (``"parent.items"``), a ``(FieldDescriptor, FieldPath) -> bool``
@@ -823,6 +828,11 @@ class MessageDifferencer:
         and a descriptor-predicate selector receives the *container* field
         descriptor (not the synthetic ``MapEntry.value`` descriptor) so it sees
         the user's field name.
+
+        An overlay ``selector`` that matches a non-float/double field silently
+        has no effect: float configs are consulted only at float/double
+        comparison sites, so a selector aimed at a wrong-typed field is a no-op
+        rather than an error (consistent with the opaque-predicate ignore path).
 
         Args:
             mode: ``FloatComparison.EXACT`` for bit-identical

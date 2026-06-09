@@ -75,6 +75,8 @@ class HamcrestExtraNotInstalledError(MatcherError):
         missing: The name of the missing distribution (``"hamcrest"``).
     """
 
+    missing: str
+
     def __init__(self, missing: str = "hamcrest") -> None:
         self.missing = missing
         super().__init__(
