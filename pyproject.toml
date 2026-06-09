@@ -84,7 +84,13 @@ hamcrest = [
 # Neither is needed at runtime — formatters emit XML/JSON via
 # stdlib only.
 dev = [
-    "pytest",
+    # pytest>=8: the `pytest_assertrepr_compare` hook in
+    # protokit.message.pytest_plugin reads the `config` parameter, which pytest
+    # only added to that hookspec in 8.0. On pytest<8 the hook fails plugin
+    # validation (declares an arg the older hookspec doesn't provide). The hook
+    # is opt-in for downstream consumers — they need pytest>=8 too; documented
+    # in pytest_plugin's module docstring.
+    "pytest>=8",
     "xmlschema>=2.0",
     "jsonschema>=4.0",
     "types-jsonschema",

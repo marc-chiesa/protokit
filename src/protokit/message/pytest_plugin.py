@@ -27,6 +27,12 @@ Or register as a pytest plugin in pyproject.toml:
 
     [tool.pytest.ini_options]
     plugins = ["protokit.message.pytest_plugin"]
+
+Requires **pytest >= 8**: ``pytest_assertrepr_compare`` reads the ``config``
+argument, which pytest added to that hookspec in 8.0. On pytest < 8 the hook
+fails plugin validation (it declares an argument the older hookspec does not
+provide). The ``proto_matcher`` fixture and ``render_diff_lines`` themselves
+have no such requirement; only the assertion-rewrite hook does.
 """
 
 from __future__ import annotations
@@ -406,6 +412,12 @@ def pytest_assertrepr_compare(
     statement fails. Activates only when both operands are protobuf
     ``Message`` instances and ``op == "=="`` — all other cases fall
     back to pytest's default representation.
+
+    **Requires pytest >= 8.** The ``config`` parameter was added to this
+    hookspec in pytest 8.0; on pytest < 8 the older hookspec does not provide
+    it and pluggy rejects this hookimpl during plugin validation. The ``[dev]``
+    extra pins ``pytest>=8`` accordingly; downstream consumers wiring this hook
+    into their own conftest need the same floor.
 
     The hook enriches the *failure rendering* only; it never changes
     ``==``'s pass/fail (KTD-9) — proto equality decided the boolean before
