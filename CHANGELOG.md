@@ -15,6 +15,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+## 0.11.0 — 2026-06-09
+
 ### Added
 - **Expressive message matchers + comparison parity (`protokit.message`).** A
   framework-agnostic test-assertion layer over the differ: `proto_match(actual,
