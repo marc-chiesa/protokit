@@ -15,6 +15,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+## 0.12.0 — 2026-06-10
+
 ### Added
 - **`protokit storage scan --format parquet` — typed Parquet output from the
   CLI (#24).** `scan` gains `parquet` as a `--format` value with a required
