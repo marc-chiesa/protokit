@@ -221,6 +221,29 @@ class TestEnvSourcedParquetRejected:
         assert "PROTOKIT_FORMAT" not in result.stderr
 
 
+class TestOutputInputCollisionRejected:
+    def test_output_equal_to_data_file_rejected(
+        self, runner: CliRunner, data_and_desc: tuple[Path, Path]
+    ) -> None:
+        # The publish step replaces the output path on success — pointing -o
+        # at the input would destroy the just-read source. Rejected up front.
+        data, desc = data_and_desc
+        before = data.read_bytes()
+        result = _run(runner, pq_cmd(data, desc, data))
+        _reject(result)
+        assert "--output" in result.stderr
+        assert data.read_bytes() == before
+
+    def test_output_equal_to_desc_rejected(
+        self, runner: CliRunner, data_and_desc: tuple[Path, Path]
+    ) -> None:
+        data, desc = data_and_desc
+        before = desc.read_bytes()
+        result = _run(runner, pq_cmd(data, desc, desc))
+        _reject(result)
+        assert desc.read_bytes() == before
+
+
 class TestStdoutDashRejected:
     def test_r15_output_dash_rejected(
         self, runner: CliRunner, data_and_desc: tuple[Path, Path]

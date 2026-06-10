@@ -270,7 +270,14 @@ def _build_schema_source(
     return ProtoFileSchema(proto, type_name, proto_paths=proto_paths)
 
 
-def _validate_parquet_flags(on_error: str, fields: str | None, output: Path | None) -> None:
+def _validate_parquet_flags(
+    data_file: Path,
+    desc: Path | None,
+    proto: Path | None,
+    on_error: str,
+    fields: str | None,
+    output: Path | None,
+) -> None:
     """The ``--format parquet`` up-front guard block (exit 2, before any I/O).
 
     Pure flag-combination guards run first — misuse rejection must not depend
@@ -296,6 +303,14 @@ def _validate_parquet_flags(on_error: str, fields: str | None, output: Path | No
             "--format parquet cannot write to '-': Parquet needs a seekable "
             "file (a streaming stdout format would be Arrow IPC, not shipped)"
         )
+    # -o must not collide with an input file: the publish step replaces the
+    # output path on success, so the just-read source would be destroyed.
+    for label, path in (("DATA_FILE", data_file), ("--desc", desc), ("--proto", proto)):
+        if path is not None and output.resolve() == path.resolve():
+            error_exit(
+                f"-o/--output must not point at {label} ({path}): the Parquet "
+                f"output would replace the input file"
+            )
     if on_error != "raise":
         error_exit(
             f"--on-error {on_error} is incompatible with --format parquet: a "
@@ -344,7 +359,7 @@ def _prepare(
     if explicit_defaults and output_format != "json":
         error_exit("--explicit-defaults is JSON only; use --format json")
     if output_format == "parquet":
-        _validate_parquet_flags(on_error, fields, output)
+        _validate_parquet_flags(data_file, desc, proto, on_error, fields, output)
     elif output is not None:
         error_exit(
             "-o/--output is only for --format parquet; redirect human/json "

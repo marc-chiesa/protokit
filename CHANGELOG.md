@@ -36,13 +36,23 @@ All notable changes to `protokit` are documented here. Format loosely follows
   (full-record only; the JSON-only guard now rejects every non-JSON format),
   and env-sourced `PROTOKIT_FORMAT=parquet` (file-writing output must be
   explicit on the command line; `head` keeps the two-value format choice,
-  `count` has none). Success prints one stderr summary (`wrote N rows to
-  PATH`) and keeps stdout clean. Parquet values are Arrow-native by design —
-  bytes → binary, enums → int32, timestamps at microsecond resolution —
-  diverging from the JSON view's encodings. Library change in support:
-  `IncompleteScanError` now carries the collected `FrameError`s verbatim
-  (`faults`, alongside the backward-compatible `fault_count`) so fault
-  locations are reportable.
+  `count` has none; `-o` colliding with the input or schema file is rejected
+  too — the publish step would otherwise replace the just-read input).
+  Success prints one stderr summary (`wrote N rows to PATH`) and keeps stdout
+  clean. Parquet values are Arrow-native by design — bytes → binary, enums →
+  int32, timestamps at microsecond resolution — diverging from the JSON
+  view's encodings. Library change in support: `IncompleteScanError` now
+  carries the collected `FrameError`s verbatim (`faults`, alongside the
+  backward-compatible `fault_count`) so fault locations are reportable.
+
+### Changed — BREAKING
+- **`IncompleteScanError` constructor signature.**
+  `IncompleteScanError(fault_count: int)` is replaced by
+  `IncompleteScanError(faults: tuple[FrameError, ...])` — the error now
+  carries the collected faults verbatim. Consumers that construct the
+  exception directly (e.g. test doubles) must update the call site. Read-only
+  consumers are unaffected: catching the error and reading `fault_count`
+  (preserved as `len(faults)`) and the message shape work unchanged.
 
 ## 0.11.0 — 2026-06-09
 
