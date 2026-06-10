@@ -26,18 +26,14 @@ from google.protobuf import descriptor_pb2  # noqa: E402
 
 from protokit.cli import main  # noqa: E402
 from protokit.storage.schema_source import FileDescriptorSetSchema  # noqa: E402
-from tests.storage.cli.conftest import cmd  # noqa: E402
+from tests.storage.cli.conftest import DECODE_BAD, pq_cmd  # noqa: E402
+from tests.storage.proto_fixtures import fds, message_file  # noqa: E402
 
 F = descriptor_pb2.FieldDescriptorProto
 
-# A framing-valid frame whose 1-byte body is a truncated a.A{int32 x=1}: a
-# DECODE fault, recovered past under the sink's collect mode — so the scan
-# provably continues to the record after it, and the file is still withheld.
-BAD_PAYLOAD = b"\x08"
 
-
-def _run(runner: CliRunner, args: list[str], env: dict[str, str] | None = None):  # noqa: ANN202
-    return runner.invoke(main, args, env=env, catch_exceptions=False)
+def _run(runner: CliRunner, args: list[str]):  # noqa: ANN202
+    return runner.invoke(main, args, catch_exceptions=False)
 
 
 def _no_partial_left(directory: Path) -> bool:
@@ -55,7 +51,7 @@ class TestHappyPath:
         desc, cls = desc_and_cls
         data = data_file_factory([cls(x=n).SerializeToString() for n in (1, 2, 3)])
         out = tmp_path / "out.parquet"
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 0, result.stderr
         # stdout stays clean for scripting; the summary goes to stderr (R19).
         assert result.stdout == ""
@@ -76,7 +72,7 @@ class TestHappyPath:
         data = data_file_factory([cls(x=7).SerializeToString()])
         out = tmp_path / "out.parquet"
         out.write_bytes(b"stale previous output")
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 0, result.stderr
         assert pq.read_table(out).column("x").to_pylist() == [7]
 
@@ -92,7 +88,7 @@ class TestHappyPath:
         desc, cls = desc_and_cls
         data = data_file_factory([cls(x=1).SerializeToString()])
         out = tmp_path / "out.parquet"
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 0, result.stderr
         sibling = tmp_path / "normally-created.txt"
         sibling.write_text("x")
@@ -110,7 +106,7 @@ class TestEmptyAndWhere:
         desc, _cls = desc_and_cls
         data = data_file_factory([])
         out = tmp_path / "out.parquet"
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 0, result.stderr
         assert f"wrote 0 rows to {out}" in result.stderr
         table = pq.read_table(out)
@@ -129,20 +125,7 @@ class TestEmptyAndWhere:
         desc, cls = desc_and_cls
         data = data_file_factory([cls(x=1).SerializeToString()])
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd(
-                "scan",
-                data,
-                desc,
-                "--where",
-                "x == 99",
-                "--format",
-                "parquet",
-                "-o",
-                str(out),
-            ),
-        )
+        result = _run(runner, pq_cmd(data, desc, out, "--where", "x == 99"))
         assert result.exit_code == 0, result.stderr
         assert pq.read_table(out).num_rows == 0
 
@@ -156,20 +139,7 @@ class TestEmptyAndWhere:
         desc, cls = desc_and_cls
         data = data_file_factory([cls(x=n).SerializeToString() for n in (1, 2, 3)])
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd(
-                "scan",
-                data,
-                desc,
-                "--where",
-                "x == 2",
-                "--format",
-                "parquet",
-                "-o",
-                str(out),
-            ),
-        )
+        result = _run(runner, pq_cmd(data, desc, out, "--where", "x == 2"))
         assert result.exit_code == 0, result.stderr
         assert f"wrote 1 rows to {out}" in result.stderr
         assert pq.read_table(out).column("x").to_pylist() == [2]
@@ -189,12 +159,12 @@ class TestFaultDiscard:
         data = data_file_factory(
             [
                 cls(x=1).SerializeToString(),
-                BAD_PAYLOAD,
+                DECODE_BAD,
                 cls(x=3).SerializeToString(),
             ]
         )
         out = tmp_path / "out.parquet"
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 2
         assert "Error:" in result.stderr
         assert "1 record fault(s)" in result.stderr
@@ -212,10 +182,10 @@ class TestFaultDiscard:
         tmp_path: Path,
     ) -> None:
         desc, cls = desc_and_cls
-        data = data_file_factory([BAD_PAYLOAD])
+        data = data_file_factory([DECODE_BAD])
         out = tmp_path / "out.parquet"
         out.write_bytes(b"precious previous output")
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 2
         assert out.read_bytes() == b"precious previous output"
         assert _no_partial_left(tmp_path)
@@ -234,7 +204,7 @@ class TestFilesystemErrors:
         out = tmp_path / "no-such-dir" / "out.parquet"
         # catch_exceptions=False: a traceback would raise out of the runner,
         # so reaching the assertions at all proves the clean exit-2 path.
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", str(out)))
+        result = _run(runner, pq_cmd(data, desc, out))
         assert result.exit_code == 2
         assert "Error:" in result.stderr
         assert not out.exists()
@@ -250,10 +220,7 @@ class TestFilesystemErrors:
         data = data_file_factory([cls(x=1).SerializeToString()])
         target_dir = tmp_path / "results"
         target_dir.mkdir()
-        result = _run(
-            runner,
-            cmd("scan", data, desc, "--format", "parquet", "-o", str(target_dir)),
-        )
+        result = _run(runner, pq_cmd(data, desc, target_dir))
         assert result.exit_code == 2
         assert "Error:" in result.stderr
 
@@ -261,35 +228,26 @@ class TestFilesystemErrors:
 class TestValueEncoding:
     def _enum_bytes_setup(self, tmp_path: Path) -> tuple[Path, type]:
         """A descriptor with enum + bytes fields (the conftest ``a.A`` carries
-        only ``int32 x``), following the ``_build_fds`` pattern from
-        ``tests/storage/test_columnar.py``."""
-        fds = descriptor_pb2.FileDescriptorSet()
-        f = fds.file.add()
-        f.name = "ev2.proto"
-        f.package = "ev2"
-        f.syntax = "proto3"
+        only ``int32 x``): ``message_file`` plus a hand-added enum, following
+        the ``_build_fds`` pattern from ``tests/storage/test_columnar.py``."""
+        f = message_file(
+            "ev2.proto",
+            "ev2",
+            "E",
+            {"id": (F.TYPE_INT32, 1), "payload": (F.TYPE_BYTES, 2)},
+        )
         color = f.enum_type.add()
         color.name = "Color"
         for n, num in (("UNKNOWN", 0), ("RED", 1)):
             v = color.value.add()
             v.name, v.number = n, num
-        m = f.message_type.add()
-        m.name = "E"
-        fid = m.field.add()
-        fid.name, fid.number, fid.type, fid.label = "id", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
-        fp = m.field.add()
-        fp.name, fp.number, fp.type, fp.label = (
-            "payload",
-            2,
-            F.TYPE_BYTES,
-            F.LABEL_OPTIONAL,
-        )
-        fc = m.field.add()
+        fc = f.message_type[0].field.add()
         fc.name, fc.number, fc.type, fc.label = "color", 3, F.TYPE_ENUM, F.LABEL_OPTIONAL
         fc.type_name = ".ev2.Color"
+        fset = fds(f)
         desc_path = tmp_path / "ev2.desc"
-        desc_path.write_bytes(fds.SerializeToString())
-        cls = FileDescriptorSetSchema(fds, "ev2.E").resolve().message_class
+        desc_path.write_bytes(fset.SerializeToString())
+        cls = FileDescriptorSetSchema(fset, "ev2.E").resolve().message_class
         return desc_path, cls
 
     def test_arrow_native_values_diverge_from_json_view(

@@ -15,11 +15,8 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from protokit.cli import main
+from tests.storage.cli.conftest import DECODE_BAD as _DECODE_BAD
 from tests.storage.proto_fixtures import delimited, encode_varint
-
-# A 1-byte frame body that is a truncated A{int32 x=1} -> a DECODE fault
-# (recoverable: the source keeps yielding).
-_DECODE_BAD = b"\x08"
 
 
 def _run(runner: CliRunner, args: list[str]):  # noqa: ANN202

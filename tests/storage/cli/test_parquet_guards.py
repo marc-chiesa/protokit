@@ -19,10 +19,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from protokit.cli import main
-from tests.storage.cli.conftest import cmd
+from tests.storage.cli.conftest import cmd, pq_cmd
 
 
 def _run(runner: CliRunner, args: list[str], env: dict[str, str] | None = None):  # noqa: ANN202
@@ -56,11 +56,11 @@ def data_and_desc(
     return data, desc
 
 
-def _reject(result: object, out: Path | None = None) -> None:
+def _reject(result: Result, out: Path | None = None) -> None:
     """Assert the shared up-front rejection contract."""
-    assert result.exit_code == 2  # type: ignore[attr-defined]
-    assert "Error:" in result.stderr  # type: ignore[attr-defined]
-    assert result.stdout == ""  # type: ignore[attr-defined]
+    assert result.exit_code == 2
+    assert "Error:" in result.stderr
+    assert result.stdout == ""
     if out is not None:
         assert not out.exists()
 
@@ -95,10 +95,7 @@ class TestOutputRequiresParquet:
     ) -> None:
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd("scan", data, desc, "--format", "json", "-o", str(out)),
-        )
+        result = _run(runner, cmd("scan", data, desc, "--format", "json", "-o", str(out)))
         _reject(result, out)
         assert "--output" in result.stderr
 
@@ -123,20 +120,7 @@ class TestTolerantModesRejected:
     ) -> None:
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd(
-                "scan",
-                data,
-                desc,
-                "--format",
-                "parquet",
-                "-o",
-                str(out),
-                "--on-error",
-                mode,
-            ),
-        )
+        result = _run(runner, pq_cmd(data, desc, out, "--on-error", mode))
         _reject(result, out)
         assert "--on-error" in result.stderr
 
@@ -147,20 +131,7 @@ class TestProjectionFlagsRejected:
     ) -> None:
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd(
-                "scan",
-                data,
-                desc,
-                "--format",
-                "parquet",
-                "-o",
-                str(out),
-                "--fields",
-                "x",
-            ),
-        )
+        result = _run(runner, pq_cmd(data, desc, out, "--fields", "x"))
         _reject(result, out)
         assert "--fields" in result.stderr
 
@@ -170,19 +141,7 @@ class TestProjectionFlagsRejected:
         # The JSON-only guard generalizes: parquet is not JSON either.
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd(
-                "scan",
-                data,
-                desc,
-                "--format",
-                "parquet",
-                "-o",
-                str(out),
-                "--explicit-defaults",
-            ),
-        )
+        result = _run(runner, pq_cmd(data, desc, out, "--explicit-defaults"))
         _reject(result, out)
         assert "--explicit-defaults" in result.stderr
         assert "json" in result.stderr.lower()
@@ -256,11 +215,7 @@ class TestEnvSourcedParquetRejected:
         _stub_probes(monkeypatch, ptars=False, pyarrow=False)
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd("scan", data, desc, "--format", "parquet", "-o", str(out)),
-            env={"PROTOKIT_FORMAT": "parquet"},
-        )
+        result = _run(runner, pq_cmd(data, desc, out), env={"PROTOKIT_FORMAT": "parquet"})
         _reject(result, out)
         assert "protokit[parquet]" in result.stderr
         assert "PROTOKIT_FORMAT" not in result.stderr
@@ -273,7 +228,7 @@ class TestStdoutDashRejected:
         # Parquet needs a seekable file; '-' would create a literal file named
         # '-' rather than streaming to stdout. Reject it honestly.
         data, desc = data_and_desc
-        result = _run(runner, cmd("scan", data, desc, "--format", "parquet", "-o", "-"))
+        result = _run(runner, pq_cmd(data, desc, "-"))
         _reject(result)
         assert "'-'" in result.stderr
         assert not Path("-").exists()
@@ -290,10 +245,7 @@ class TestMissingExtra:
         _stub_probes(monkeypatch, ptars=False, pyarrow=False)
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd("scan", data, desc, "--format", "parquet", "-o", str(out)),
-        )
+        result = _run(runner, pq_cmd(data, desc, out))
         _reject(result, out)
         assert "protokit[parquet]" in result.stderr
 
@@ -309,10 +261,7 @@ class TestMissingExtra:
         _stub_probes(monkeypatch, ptars=True, pyarrow=False)
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd("scan", data, desc, "--format", "parquet", "-o", str(out)),
-        )
+        result = _run(runner, pq_cmd(data, desc, out))
         _reject(result, out)
         assert "pyarrow" in result.stderr
 
@@ -328,20 +277,7 @@ class TestMissingExtra:
         _stub_probes(monkeypatch, ptars=False, pyarrow=False)
         data, desc = data_and_desc
         out = tmp_path / "out.parquet"
-        result = _run(
-            runner,
-            cmd(
-                "scan",
-                data,
-                desc,
-                "--format",
-                "parquet",
-                "-o",
-                str(out),
-                "--on-error",
-                "skip",
-            ),
-        )
+        result = _run(runner, pq_cmd(data, desc, out, "--on-error", "skip"))
         _reject(result, out)
         assert "--on-error" in result.stderr
         assert "protokit[parquet]" not in result.stderr

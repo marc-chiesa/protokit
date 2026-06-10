@@ -155,30 +155,35 @@ def _common_options(command: Callable[..., None]) -> Callable[..., None]:
 
 
 def _format_option(
-    choices: tuple[str, ...],
+    *, parquet: bool = False
 ) -> Callable[[Callable[..., None]], Callable[..., None]]:
-    """Build the ``--format`` option for a command's supported choice set.
+    """Build the ``--format`` option; ``parquet=True`` adds the file format.
 
-    ``scan`` adds ``parquet`` (file output, R1); ``head`` keeps the two text
-    formats, so Click itself rejects ``head --format parquet`` — flag- or
-    env-sourced — as an invalid choice with exit 2 (R4). Same
+    ``scan`` opts in (R1); ``head`` keeps the two text formats, so Click
+    itself rejects ``head --format parquet`` — flag- or env-sourced — as an
+    invalid choice with exit 2 (R4). Same
     invalid-combinations-are-unrepresentable idiom as ``--fields`` off
     ``count``.
     """
-    parquet = "parquet" in choices
-    help_text = (
-        "Output format: human (default), json (compact JSONL)"
-        + (", or parquet (typed Parquet file; requires -o/--output)" if parquet else "")
-        + ". Also reads PROTOKIT_FORMAT (human/json only"
-        + ("; parquet must be passed explicitly" if parquet else "")
-        + ")."
-    )
+    if parquet:
+        choices = ["human", "json", "parquet"]
+        help_text = (
+            "Output format: human (default), json (compact JSONL), or "
+            "parquet (typed Parquet file; requires -o/--output). Also reads "
+            "PROTOKIT_FORMAT (human/json only; parquet must be passed "
+            "explicitly)."
+        )
+    else:
+        choices = ["human", "json"]
+        help_text = (
+            "Output format: human (default) or json (compact JSONL). Also reads PROTOKIT_FORMAT."
+        )
 
     def deco(command: Callable[..., None]) -> Callable[..., None]:
         return click.option(
             "--format",
             "output_format",
-            type=click.Choice(list(choices)),
+            type=click.Choice(choices),
             default="human",
             envvar="PROTOKIT_FORMAT",
             help=help_text,
@@ -568,16 +573,13 @@ def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
                 )
             except IncompleteScanError as exc:
                 # The library message hints at on_error='skip', which parquet
-                # rejects up front — reword with the fault location instead,
-                # now carried verbatim on the error (R20).
-                first = exc.faults[0]
-                where = f"stream {first.stream_id!r} record {first.record_index}"
-                if first.offset is not None:  # None for non-positional faults
-                    where += f" (offset {first.offset})"
+                # rejects up front — reword around the first fault, carried
+                # verbatim on the error (R20). FrameError's own message is the
+                # canonical location rendering (offset-unknown included).
                 error_exit(
                     f"scan did not complete cleanly: {exc.fault_count} record "
                     f"fault(s); no Parquet output is written (all-or-nothing). "
-                    f"first fault: {where}: {first.reason}"
+                    f"first fault: {exc.faults[0]}"
                 )
             except _TYPED_CLI_ERRORS as exc:
                 error_exit(str(exc))
@@ -615,7 +617,7 @@ def _open_data(path: Path) -> BinaryIO:
 
 @main.command(name="scan")
 @_common_options
-@_format_option(("human", "json", "parquet"))
+@_format_option(parquet=True)
 @_output_option
 @_fields_option
 @_explicit_defaults_option
@@ -670,7 +672,7 @@ def scan_cmd(
 
 @main.command(name="head")
 @_common_options
-@_format_option(("human", "json"))
+@_format_option()
 @_fields_option
 @_explicit_defaults_option
 @click.option(
