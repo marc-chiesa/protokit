@@ -8,7 +8,7 @@ Python toolkit for Protocol Buffers — four pillars: message diffing, schema co
 
 `protokit lint` — descriptor-level linting with full **buf BASIC parity** (26/26 rules), AIP-122 naming, a `[tool.protokit.lint]` pyproject table, and pluggable rule packs.
 
-`protokit storage` — schema-aware scan/filter over **stored** protobuf (length-delimited files, a pybind11 `memoryview`, any buffer source): `scan` / `head` / `count` with a minimal `--where` filter, presence-faithful field selection (`--fields`), dense full-record JSON (`--explicit-defaults`), and safe concurrent multi-version scanning via isolated per-stream descriptor pools.
+`protokit storage` — schema-aware scan/filter over **stored** protobuf (length-delimited files, a pybind11 `memoryview`, any buffer source): `scan` / `head` / `count` with a minimal `--where` filter, presence-faithful field selection (`--fields`), dense full-record JSON (`--explicit-defaults`), typed Parquet output (`--format parquet -o`, via the optional `protokit[parquet]` extra), and safe concurrent multi-version scanning via isolated per-stream descriptor pools.
 
 ## Installation
 
@@ -1207,7 +1207,7 @@ accumulation.
 | Python exception | `protokit.storage.StorageError` (base) / `FrameError(stream_id, record_index, offset, reason)` / `DuplicateStreamError(stream_id)` / `SchemaCompileError(proto_path, detail)` / `WhereError(expr, reason)` / `FieldSelectionError(spec, reason)` | IN |
 | Python function | `protokit.storage.compile_fields(spec, descriptor) -> CompiledSelection` then `protokit.storage.project(message, selection) -> dict` (the two-step `--fields` projection: `compile_fields` validates a comma-separated dotted-path spec against a message descriptor — an invalid path raises `FieldSelectionError`; `project` prunes a parsed message to the faithful nested view — snake_case keys; no-presence fields filled, presence-bearing by presence) | IN |
 | Python function | `protokit.storage.sources.length_delimited(file, *, stream_id, max_frame_size=64*1024*1024)` / `per_message_view(buffers, *, stream_id)` (reference frame adapters — examples of the boundary, not protokit's framing taxonomy) | IN |
-| CLI | `protokit storage scan\|head\|count <file> (--desc\|--proto) --type <fqn> [--where EXPR] [--on-error raise\|skip\|warn]` — `scan`/`head` add `--format human\|json`, `--fields PATHS` (snake_case faithful view), `--explicit-defaults` (JSON-only dense full record, camelCase; mutually exclusive with `--fields`); `head` adds `-n`, `count` adds `--quiet`. Exit `0`/`2` (+ `count --quiet` grep-like `1`) | IN |
+| CLI | `protokit storage scan\|head\|count <file> (--desc\|--proto) --type <fqn> [--where EXPR] [--on-error raise\|skip\|warn]` — `scan`/`head` add `--format human\|json`, `--fields PATHS` (snake_case faithful view), `--explicit-defaults` (JSON-only dense full record, camelCase; mutually exclusive with `--fields`); `scan` alone adds `--format parquet` with `-o/--output PATH` (typed Parquet via the `protokit[parquet]` extra; all-or-nothing, atomic overwrite-on-success; rejects `--on-error skip\|warn`, `--fields`, `--explicit-defaults`, and env-sourced `PROTOKIT_FORMAT=parquet`); `head` adds `-n`, `count` adds `--quiet`. Exit `0`/`2` (+ `count --quiet` grep-like `1`) | IN |
 | Internal modules | `protokit.storage.{engine,source,registry,schema_source,cli,_where,_fields}` (implementation modules; import the public names from `protokit.storage`, never these directly; `_where.compile_where` is internal — only `WhereError` is public for `--where` — whereas the `--fields` projection exports `compile_fields` / `CompiledSelection` / `project` / `FieldSelectionError`) | INTERNAL |
 
 The surface above is a working draft. Names and signatures may
@@ -1620,6 +1620,50 @@ Under `--format human` it is a clean error (exit 2), not a silent no-op.
 `--explicit-defaults` is **camelCase** (so it stays byte-aligned with the default
 JSON). `--fields` and `--explicit-defaults` are **mutually exclusive** — passing
 both is a clean error (exit 2).
+
+#### Typed Parquet output: `--format parquet`
+
+`scan` (only) can write its result as a typed Parquet file — a direct
+proto→Arrow→Parquet conversion with no JSON intermediate. It needs the
+optional `protokit[parquet]` extra and a real output path:
+
+```bash
+pip install "protokit[parquet]"
+
+protokit storage scan orders.bin --desc orders.desc --type myapp.Order \
+    --format parquet -o orders.parquet
+# stderr: wrote 12843 rows to orders.parquet
+
+# --where composes: only matching records are converted.
+protokit storage scan orders.bin --desc orders.desc --type myapp.Order \
+    --where 'header.error_code != 0' --format parquet -o bad.parquet
+```
+
+Every field of the message type maps to a column from the descriptor-derived
+schema — there is no `--fields` projection because Parquet readers (pandas,
+DuckDB, Spark) project columns at read time essentially for free. An empty
+result (zero records, or a `--where` matching nothing) still writes a valid
+zero-row file carrying the full schema.
+
+**All-or-nothing.** A Parquet file that reads as complete must *be* complete:
+conversion writes a hidden sibling temp file and atomically renames it onto
+`-o` only after a complete, fault-free scan. On any fault the command exits
+`2` reporting the fault count and first fault location, no output file is
+left behind, and a pre-existing file at `-o` is preserved (it is overwritten
+only by a complete result). `--on-error skip`/`warn` are rejected up front
+with `--format parquet` — a tolerant mode could silently write a file that
+under-represents the input. `--fields` and `--explicit-defaults` are rejected
+too (full-record output only), and `head`/`count` do not take Parquet at all.
+`PROTOKIT_FORMAT=parquet` is not honored: file-writing output must be
+explicit on the command line.
+
+**Value encoding is Arrow-native, not the JSON view.** Parquet leaf values
+deliberately diverge from the JSON output's encodings: `bytes` → Arrow binary
+(not base64 strings), enums → their int32 number (not names), int64 → int64
+(not decimal strings), and proto `Timestamp`s land at **microsecond**
+resolution (sub-microsecond nanos truncate). Presence semantics match the
+faithful view: no-presence fields appear at their default; presence-bearing
+fields are null when unset.
 
 **Exit codes:** `0` success, `2` error (a bad flag, an unresolved schema, a
 malformed `--where`, or a data fault under `--on-error raise`). `count --quiet`

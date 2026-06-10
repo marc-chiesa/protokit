@@ -15,6 +15,35 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Added
+- **`protokit storage scan --format parquet` — typed Parquet output from the
+  CLI (#24).** `scan` gains `parquet` as a `--format` value with a required
+  `-o`/`--output PATH`, converting records straight proto→Arrow→Parquet
+  through the shipped columnar path (the optional `protokit[parquet]` extra)
+  with no JSON intermediate. Full-record only: every field of the resolved
+  type maps to a column from the descriptor-derived schema; an empty result
+  still writes a valid zero-row file with the full schema; `--where` composes
+  (only matching records are converted). The output contract is
+  all-or-nothing with an atomic publish: conversion writes a uniquely named
+  dot-prefixed `.partial` sibling temp and renames it onto `-o` only after a
+  complete, fault-free scan — on any fault the command exits 2 reporting the
+  fault count and first fault location, no output file is left behind, and a
+  pre-existing `-o` file is preserved (overwritten only by a complete
+  result). Misuse is rejected up front (exit 2, before any record is read):
+  `--format parquet` without `-o`, `-o` without parquet, `-o -`,
+  `--on-error skip|warn` (a tolerant mode could silently write a file that
+  under-represents the input), `--fields` / `--explicit-defaults`
+  (full-record only; the JSON-only guard now rejects every non-JSON format),
+  and env-sourced `PROTOKIT_FORMAT=parquet` (file-writing output must be
+  explicit on the command line; `head` keeps the two-value format choice,
+  `count` has none). Success prints one stderr summary (`wrote N rows to
+  PATH`) and keeps stdout clean. Parquet values are Arrow-native by design —
+  bytes → binary, enums → int32, timestamps at microsecond resolution —
+  diverging from the JSON view's encodings. Library change in support:
+  `IncompleteScanError` now carries the collected `FrameError`s verbatim
+  (`faults`, alongside the backward-compatible `fault_count`) so fault
+  locations are reportable.
+
 ## 0.11.0 — 2026-06-09
 
 ### Added
