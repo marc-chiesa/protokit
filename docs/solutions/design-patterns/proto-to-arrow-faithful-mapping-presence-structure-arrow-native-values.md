@@ -1,6 +1,7 @@
 ---
 title: "Faithful proto-to-Arrow mapping: presence-class structure, Arrow-native values, lossless structs for Any/WKT"
 date: 2026-06-07
+last_updated: 2026-06-10
 category: docs/solutions/design-patterns
 module: protokit.storage
 problem_type: design_pattern
@@ -60,7 +61,7 @@ Consumers must **not** expect Parquet values to byte-match the JSON output. Keep
 Three further structural rules:
 
 - **oneof arms → independent nullable columns, no discriminator.** Lossy and *accepted*: an arm set to its type's default value is indistinguishable from an unset arm, and an Arrow→proto round-trip cannot recover which arm was active. Documented tradeoff, not a bug. (The JSON faithful view preserves arm identity; Parquet currently does not — a derived discriminator column is a candidate future addition.)
-- **`Any`/`Struct`/`FieldMask` → lossless structs, NEVER blocked** (`Any` → `struct<type_url, value>`). This **superseded** an earlier "fail-loud on `Any`/`Struct`" decision once the spike showed they map losslessly. Reserve fail-loud strictly for a descriptor the backend cannot build a handler for *at all* — and raise it **before any output** (build/validate the `HandlerPool` before opening the `ParquetWriter`), so a failure never leaves a partially-written file.
+- **`Any`/`Struct`/`FieldMask` → lossless structs, NEVER blocked** (`Any` → `struct<type_url, value>`). This **superseded** an earlier "fail-loud on `Any`/`Struct`" decision once the spike showed they map losslessly. Reserve fail-loud strictly for a descriptor the backend cannot build a handler for *at all* — and raise it **before any output** (build/validate the `HandlerPool` before opening the `ParquetWriter`). The no-partial-file guarantee is **two-layered**: handler-build failure raises before the writer ever opens (no file created), AND on any `BaseException` *after* the writer opens — a collected-fault failure, a mid-stream exception, a Ctrl-C — the sink closes the writer and unconditionally unlinks the file it created (`to_parquet` in `src/protokit/storage/_columnar.py`). Callers wrapping the sink own only their own publish step (see the atomic CLI file-publish doc below), not in-write cleanup.
 - **Schema is DESCRIPTOR-derived, never inferred from the first observed record.** An empty result still yields a valid, readable zero-row Parquet file carrying the full column schema. This also gives a stable schema across batches (no drift when an early batch happens to omit an optional field).
 
 ## Why This Matters
@@ -102,6 +103,10 @@ Lossless struct instead of fail-loud:
 # Fail-loud is reserved for "cannot build a handler at all", raised BEFORE output:
 handler_pool = build_handler_pool(descriptor)   # raises here if unmappable...
 writer = pq.ParquetWriter(dest, schema)          # ...so no partial file is ever opened
+# Layer 2: once the writer IS open, any BaseException (collected faults,
+# mid-stream exception, Ctrl-C) closes the writer and unconditionally
+# unlinks the file the sink created -- a truncated Parquet is never left
+# looking complete (see to_parquet in src/protokit/storage/_columnar.py).
 ```
 
 Descriptor-derived, batch-stable schema:
@@ -115,10 +120,11 @@ schema = arrow_schema_from_descriptor(msg_cls.DESCRIPTOR)   # not inferred from 
 
 (Snippets are illustrative composites grounded in the verified behavior; see `src/protokit/storage/_columnar.py` for the implemented sink.)
 
-The pattern in one line: *presence-class structure and Arrow-native value encoding are independent contracts; derive the schema from the descriptor so it is stable and empty-safe; map exotic types to lossless structs and reserve fail-loud — raised before any output — for true handler-build failure.*
+The pattern in one line: *presence-class structure and Arrow-native value encoding are independent contracts; derive the schema from the descriptor so it is stable and empty-safe; map exotic types to lossless structs and reserve fail-loud for true handler-build failure — raised before any output, with the sink discarding its own partial file on any fault after the writer opens.*
 
 ## Related
 
 - [Faithful proto-to-JSON field projection: fill-dense-then-prune, split by presence class](proto-json-field-projection-presence-class-fill-then-prune-2026-06-01.md) — the PR2 JSON faithful view whose presence-class structure axis this mirrors; same presence taxonomy, divergent leaf encoding.
 - [ptars over protarrow for proto-to-Arrow on isolated descriptor pools](../tooling-decisions/ptars-over-protarrow-proto-to-arrow-isolated-descriptor-pools.md) — the dependency choice that makes this mapping implementable on isolated pools and protobuf 5.x (that doc = the dependency; this doc = the mapping it enables).
+- [Atomic CLI file publish: sibling temp + umask-honoring mode + os.replace](atomic-cli-file-publish-sibling-temp-os-replace.md) — the CLI publish layer above this sink: the sink owns in-write disposal (the two-layer guard above); the CLI wrapper owns only the atomic rename window.
 - Origin: PR #17 (`feat/storage-pr3-columnar`); design recorded in `docs/brainstorms/2026-06-02-storage-pr3-columnar-parquet-requirements.md` (R5–R7, R11–R13).
