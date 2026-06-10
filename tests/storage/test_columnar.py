@@ -254,6 +254,28 @@ def test_r14_fault_fails_loud_and_discards_file(tmp_path):
     assert not out.exists()  # partial output discarded
 
 
+def test_incomplete_scan_error_carries_collected_faults(tmp_path):
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    out = tmp_path / "partial.parquet"
+    src = _source("events", [msg_cls(id=1)]) + [("nope", b"\x00")]
+    with pytest.raises(IncompleteScanError) as excinfo:
+        to_parquet(src, reg, out, stream_id="events")
+    err = excinfo.value
+    # The collected FrameErrors are carried verbatim so a caller can report
+    # fault locations without scraping the message string.
+    assert err.fault_count == len(err.faults) == 1
+    first = err.faults[0]
+    assert first.stream_id == "nope"
+    assert isinstance(first.record_index, int)
+    assert first.reason
+    # offset is None for this non-positional (unknown-stream) fault — callers
+    # must tolerate it.
+    assert first.offset is None
+    # Backward-compatible message shape: the count still appears verbatim.
+    assert "1 record fault(s)" in str(err)
+
+
 # --- to_parquet happy path + round-trip + batching ---------------------------
 
 def test_to_parquet_roundtrip_and_batching(tmp_path):
