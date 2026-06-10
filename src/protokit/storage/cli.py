@@ -584,7 +584,18 @@ def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
             except _TYPED_CLI_ERRORS as exc:
                 error_exit(str(exc))
             except OSError as exc:
-                error_exit(f"failed to write {output}: {exc}")
+                # Neutral attribution: this clause sees both write-side faults
+                # (the temp) and read-side faults the engine re-raises (EIO on
+                # the data file mid-scan) — blaming the output alone would
+                # send the operator debugging the wrong file.
+                error_exit(f"I/O error during Parquet conversion ({data_file} -> {output}): {exc}")
+            except Exception as exc:  # defensive: outside the taxonomy (KD-6)
+                # A conversion failure that is none of the above (e.g. a
+                # ptars/pyarrow regression surfacing as RuntimeError) must
+                # still honor the 0/2 exit contract, mirroring _render's
+                # blanket catch; the message keeps the exception text so the
+                # regression stays debuggable.
+                error_exit(f"failed to convert records to Parquet: {exc}")
         umask = os.umask(0)
         os.umask(umask)
         try:

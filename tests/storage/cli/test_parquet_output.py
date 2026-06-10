@@ -224,6 +224,58 @@ class TestFilesystemErrors:
         assert result.exit_code == 2
         assert "Error:" in result.stderr
 
+    def test_r18_publish_failure_exits_2_and_cleans_temp(
+        self,
+        runner: CliRunner,
+        desc_and_cls: tuple[Path, type],
+        data_file_factory: Callable[..., Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The rename window is the one publish step the CLI owns (the library
+        # cleans up everything before it): an os.replace failure after a
+        # successful conversion must exit 2 and leave no temp behind.
+        desc, cls = desc_and_cls
+        data = data_file_factory([cls(x=1).SerializeToString()])
+        out = tmp_path / "out.parquet"
+
+        def deny_replace(src: object, dst: object) -> None:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr("protokit.storage.cli.os.replace", deny_replace)
+        result = _run(runner, pq_cmd(data, desc, out))
+        assert result.exit_code == 2
+        assert "failed to publish" in result.stderr
+        assert not out.exists()
+        assert _no_partial_left(tmp_path)
+
+    def test_non_taxonomy_conversion_error_exits_2_clean(
+        self,
+        runner: CliRunner,
+        desc_and_cls: tuple[Path, type],
+        data_file_factory: Callable[..., Path],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A conversion failure outside the storage taxonomy (e.g. a
+        # ptars/pyarrow regression surfacing as RuntimeError) must still honor
+        # the 0/2 exit contract — a traceback with exit 1 would break it.
+        desc, cls = desc_and_cls
+        data = data_file_factory([cls(x=1).SerializeToString()])
+        out = tmp_path / "out.parquet"
+
+        def boom(*a: object, **k: object) -> int:
+            raise RuntimeError("schema drifted")
+
+        monkeypatch.setattr("protokit.storage.cli.to_parquet", boom)
+        result = _run(runner, pq_cmd(data, desc, out))
+        assert result.exit_code == 2
+        assert "Error:" in result.stderr
+        assert "schema drifted" in result.stderr
+        assert result.stdout == ""
+        assert not out.exists()
+        assert _no_partial_left(tmp_path)
+
 
 class TestValueEncoding:
     def _enum_bytes_setup(self, tmp_path: Path) -> tuple[Path, type]:
