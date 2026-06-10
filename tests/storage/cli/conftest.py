@@ -41,6 +41,17 @@ def cmd(subcommand: str, data: Path, desc: Path, *extra: str) -> list[str]:
     ]
 
 
+def pq_cmd(data: Path, desc: Path, out: Path | str, *extra: str) -> list[str]:
+    """Build a ``storage scan --format parquet -o OUT`` argv over ``a.A``."""
+    return cmd("scan", data, desc, "--format", "parquet", "-o", str(out), *extra)
+
+
+# A 1-byte frame body that is a truncated A{int32 x=1} -> a DECODE fault
+# (recoverable: the source keeps yielding). Shared by the --on-error and
+# parquet test modules.
+DECODE_BAD = b"\x08"
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()

@@ -13,7 +13,21 @@ Schema sources (exactly one required, plus ``--type``):
 yet pinned, so it is not a CLI flag.)
 
 Output: ``scan`` / ``head`` dump each record (``--format human`` default, or
-``json`` as compact JSONL). ``count`` prints the count.
+``json`` as compact JSONL). ``scan`` alone also takes ``--format parquet`` with
+``-o``/``--output PATH``: a typed Parquet file via the columnar library path
+(needs the optional ``protokit[parquet]`` extra). ``count`` prints the count.
+
+Parquet output is all-or-nothing: conversion writes a sibling temp file that is
+atomically renamed onto ``-o`` only after a complete, fault-free scan — a
+pre-existing output is overwritten only by a complete result and preserved on
+any fault, and the output path never holds a partial file. ``--on-error skip`` /
+``warn`` are rejected up front with parquet (a tolerant mode could silently
+write a file that under-represents the input), as are ``--fields`` and
+``--explicit-defaults`` (full-record output only) and an env-sourced
+``PROTOKIT_FORMAT=parquet`` (file-writing output must be explicit per
+invocation). Parquet faults are reported only after the input is read to
+exhaustion (collect mode) — unlike the text formats' first-fault abort under
+``raise``.
 
 Error policy (``--on-error``): ``raise`` (default, fail-loud) aborts on the first
 bad record; ``skip`` drops bad records; ``warn`` reports each to stderr live and
@@ -22,20 +36,26 @@ frame) ends the scan even under ``skip`` / ``warn`` — only *decode* and
 *unknown-stream* faults are recovered past.
 
 Exit codes: 0 = success, 2 = error (a bad flag, an unresolved schema, a malformed
-``--where``, or a data fault under ``--on-error raise``). ``count --quiet`` adds
-the grep-like signal: 1 = zero matches, 0 = at least one (mirroring ``diff
---quiet``). Storage library code never calls ``sys.exit``; this layer owns it.
+``--where``, or a data fault under ``--on-error raise``). A Ctrl-C exits 1 via
+Click's ``Abort`` (any partial parquet temp is still discarded). ``count
+--quiet`` adds the grep-like signal: 1 = zero matches, 0 = at least one
+(mirroring ``diff --quiet``). Storage library code never calls ``sys.exit``;
+this layer owns it.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
 import click
+from click.core import ParameterSource
 from google.protobuf import descriptor_pb2, json_format, text_format
 from google.protobuf.message import DecodeError, Message
 
@@ -43,14 +63,18 @@ from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
 from protokit.storage import (
     FrameError,
+    IncompleteScanError,
     OnError,
+    ParquetExtraNotInstalledError,
     ScanRecord,
     ScanResult,
     Source,
     StorageError,
     StreamRegistry,
     scan,
+    to_parquet,
 )
+from protokit.storage._columnar import _require_parquet
 from protokit.storage._fields import (
     CompiledSelection,
     FieldSelectionError,
@@ -130,15 +154,60 @@ def _common_options(command: Callable[..., None]) -> Callable[..., None]:
     return command
 
 
-def _format_option(command: Callable[..., None]) -> Callable[..., None]:
+def _format_option(
+    *, parquet: bool = False
+) -> Callable[[Callable[..., None]], Callable[..., None]]:
+    """Build the ``--format`` option; ``parquet=True`` adds the file format.
+
+    ``scan`` opts in (R1); ``head`` keeps the two text formats, so Click
+    itself rejects ``head --format parquet`` — flag- or env-sourced — as an
+    invalid choice with exit 2 (R4). Same
+    invalid-combinations-are-unrepresentable idiom as ``--fields`` off
+    ``count``.
+    """
+    if parquet:
+        choices = ["human", "json", "parquet"]
+        help_text = (
+            "Output format: human (default), json (compact JSONL), or "
+            "parquet (typed Parquet file; requires -o/--output). Also reads "
+            "PROTOKIT_FORMAT (human/json only; parquet must be passed "
+            "explicitly)."
+        )
+    else:
+        choices = ["human", "json"]
+        help_text = (
+            "Output format: human (default) or json (compact JSONL). Also reads PROTOKIT_FORMAT."
+        )
+
+    def deco(command: Callable[..., None]) -> Callable[..., None]:
+        return click.option(
+            "--format",
+            "output_format",
+            type=click.Choice(choices),
+            default="human",
+            envvar="PROTOKIT_FORMAT",
+            help=help_text,
+        )(command)
+
+    return deco
+
+
+def _output_option(command: Callable[..., None]) -> Callable[..., None]:
+    """Add ``-o``/``--output`` to a command (``scan`` ONLY).
+
+    Parquet-only (R2/R11): with the text formats, shell redirection already
+    covers output-to-file, so ``-o`` without ``--format parquet`` is rejected
+    up front in :func:`_prepare`. Kept off ``head``/``count`` the same way
+    ``--fields`` is, so both reject it with Click's ``No such option``
+    (exit 2) for free.
+    """
     return click.option(
-        "--format",
-        "output_format",
-        type=click.Choice(["human", "json"]),
-        default="human",
-        envvar="PROTOKIT_FORMAT",
-        help="Output format: human (default) or json (compact JSONL). "
-        "Also reads PROTOKIT_FORMAT.",
+        "--output",
+        "-o",
+        "output",
+        type=click.Path(dir_okay=False, path_type=Path),
+        help="Output file for --format parquet (required there). Overwritten "
+        "on success, preserved on failure.",
     )(command)
 
 
@@ -201,6 +270,65 @@ def _build_schema_source(
     return ProtoFileSchema(proto, type_name, proto_paths=proto_paths)
 
 
+def _validate_parquet_flags(
+    data_file: Path,
+    desc: Path | None,
+    proto: Path | None,
+    on_error: str,
+    fields: str | None,
+    output: Path | None,
+) -> None:
+    """The ``--format parquet`` up-front guard block (exit 2, before any I/O).
+
+    Pure flag-combination guards run first — misuse rejection must not depend
+    on the environment — then the missing-extra probe, so the not-installed
+    error surfaces before any schema work or data I/O and the ordering stays
+    deterministic and testable.
+    """
+    source = click.get_current_context().get_parameter_source("output_format")
+    if source is not ParameterSource.COMMANDLINE:
+        # The envvar is shared by every protokit command; ambient environment
+        # must not switch a scan into file-writing mode (R14).
+        error_exit(
+            "PROTOKIT_FORMAT=parquet is not supported; pass --format parquet "
+            "on the command line (file-writing output must be explicit)"
+        )
+    if output is None:
+        error_exit(
+            "--format parquet writes a file: -o/--output PATH is required "
+            "(Parquet cannot stream to stdout)"
+        )
+    if str(output) == "-":
+        error_exit(
+            "--format parquet cannot write to '-': Parquet needs a seekable "
+            "file (a streaming stdout format would be Arrow IPC, not shipped)"
+        )
+    # -o must not collide with an input file: the publish step replaces the
+    # output path on success, so the just-read source would be destroyed.
+    for label, path in (("DATA_FILE", data_file), ("--desc", desc), ("--proto", proto)):
+        if path is not None and output.resolve() == path.resolve():
+            error_exit(
+                f"-o/--output must not point at {label} ({path}): the Parquet "
+                f"output would replace the input file"
+            )
+    if on_error != "raise":
+        error_exit(
+            f"--on-error {on_error} is incompatible with --format parquet: a "
+            f"tolerant mode could silently write a Parquet that "
+            f"under-represents the input; columnar output is all-or-nothing "
+            f"(use --on-error raise)"
+        )
+    if fields is not None:
+        error_exit(
+            "--fields is not supported with --format parquet: output is "
+            "always the full record (project columns at read time instead)"
+        )
+    try:
+        _require_parquet()
+    except ParquetExtraNotInstalledError as exc:
+        error_exit(str(exc))
+
+
 def _prepare(
     data_file: Path,
     desc: Path | None,
@@ -211,6 +339,8 @@ def _prepare(
     fields: str | None = None,
     explicit_defaults: bool = False,
     output_format: str = "human",  # matches the Click default; count_cmd omits it
+    on_error: str = "raise",  # only the parquet guards read it; others ignore
+    output: Path | None = None,  # scan-only -o; head/count never pass it
 ) -> _Setup:
     """Validate flags, resolve the schema, and compile the predicate (exit 2 on fault).
 
@@ -218,14 +348,23 @@ def _prepare(
     (``--explicit-defaults`` is JSON only) are enforced here up front — before any
     record is read — so they fail cleanly with exit 2 regardless of how many
     records the data file holds (an empty file must not silently no-op R9).
-    ``count_cmd`` intentionally omits ``output_format`` (it has no output rows to
-    densify): it passes neither flag, so the ``explicit_defaults`` + ``human``
-    guard never fires for it regardless of this default.
+    The ``--format parquet`` guard block (:func:`_validate_parquet_flags`)
+    lives in the same up-front slot and inherits the same contract.
+    ``count_cmd`` intentionally omits ``output_format`` (it has no output rows
+    to densify): it passes neither flag, so none of the format-dependent
+    guards can fire for it regardless of these defaults.
     """
     if fields is not None and explicit_defaults:
         error_exit("--fields and --explicit-defaults are mutually exclusive")
-    if explicit_defaults and output_format == "human":
+    if explicit_defaults and output_format != "json":
         error_exit("--explicit-defaults is JSON only; use --format json")
+    if output_format == "parquet":
+        _validate_parquet_flags(data_file, desc, proto, on_error, fields, output)
+    elif output is not None:
+        error_exit(
+            "-o/--output is only for --format parquet; redirect human/json "
+            "output with the shell instead"
+        )
     chosen = [name for name, val in (("--desc", desc), ("--proto", proto)) if val]
     if not chosen:
         error_exit("a schema source is required: --desc or --proto")
@@ -378,9 +517,7 @@ def _render(
             else:
                 rendered = json_format.MessageToJson(message, indent=None)
         except Exception as exc:  # defensive: render errors are outside the taxonomy
-            error_exit(
-                f"failed to render record {record.record_index} as JSON: {exc}"
-            )
+            error_exit(f"failed to render record {record.record_index} as JSON: {exc}")
         return rendered
     try:
         if selection is not None:
@@ -405,6 +542,90 @@ def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:
         click.echo(f"matched {matched} records, {run.faults[0]} faults", err=True)
 
 
+def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
+    """Convert the scan straight to Parquet at ``output``; return rows written.
+
+    The library sink owns in-write disposition: a descriptor-derived schema
+    (an empty result is a valid zero-row file, R8), one row group per batch,
+    and close + unlink of the file *it* created on any fault — including a
+    Ctrl-C. This wrapper owns only the publish step (R16-R18), so the output
+    path is never observable in a partial state and a pre-existing output
+    survives any fault:
+
+    - The temp is a uniquely named, dot-prefixed sibling of ``output``: same
+      directory because ``os.replace`` is atomic only within one filesystem
+      (a cross-mount rename raises ``EXDEV``); unique per process so
+      concurrent scans to the same output cannot corrupt each other's temp
+      (last completed rename wins); dot-prefix + ``.partial`` keep
+      ``*.parquet`` globs from matching it.
+    - ``mkstemp`` creates mode 0600, so the temp is re-chmodded to the
+      umask-honoring mode a plain ``open()`` would have produced (R17) —
+      otherwise the published file would silently lock out other readers.
+    - ``os.replace`` gives atomic *visibility*, not durability: no fsync
+      (deliberate — a power loss may lose the rename; acceptable for a CLI
+      export), and a symlinked ``output`` is replaced, not written through.
+    - The ``finally`` unlink keeps the rename window clean: a fault after
+      ``to_parquet`` returns (or an interrupt anywhere) leaves no temp
+      behind. In the library-fault cases the temp is already gone — the
+      unlink is best-effort by design.
+    """
+    try:
+        fd, temp = tempfile.mkstemp(dir=output.parent, prefix=f".{output.name}.", suffix=".partial")
+    except OSError as exc:
+        error_exit(f"cannot create output in {output.parent}: {exc}")
+    os.close(fd)
+    temp_pending: str | None = temp
+    try:
+        with _open_data(data_file) as handle:
+            source = length_delimited(handle, stream_id=setup.stream_id)
+            try:
+                rows = to_parquet(
+                    source,
+                    setup.registry,
+                    temp,
+                    stream_id=setup.stream_id,
+                    predicate=setup.predicate,
+                )
+            except IncompleteScanError as exc:
+                # The library message hints at on_error='skip', which parquet
+                # rejects up front — reword around the first fault, carried
+                # verbatim on the error (R20). FrameError's own message is the
+                # canonical location rendering (offset-unknown included).
+                error_exit(
+                    f"scan did not complete cleanly: {exc.fault_count} record "
+                    f"fault(s); no Parquet output is written (all-or-nothing). "
+                    f"first fault: {exc.faults[0]}"
+                )
+            except _TYPED_CLI_ERRORS as exc:
+                error_exit(str(exc))
+            except OSError as exc:
+                # Neutral attribution: this clause sees both write-side faults
+                # (the temp) and read-side faults the engine re-raises (EIO on
+                # the data file mid-scan) — blaming the output alone would
+                # send the operator debugging the wrong file.
+                error_exit(f"I/O error during Parquet conversion ({data_file} -> {output}): {exc}")
+            except Exception as exc:  # defensive: outside the taxonomy (KD-6)
+                # A conversion failure that is none of the above (e.g. a
+                # ptars/pyarrow regression surfacing as RuntimeError) must
+                # still honor the 0/2 exit contract, mirroring _render's
+                # blanket catch; the message keeps the exception text so the
+                # regression stays debuggable.
+                error_exit(f"failed to convert records to Parquet: {exc}")
+        umask = os.umask(0)
+        os.umask(umask)
+        try:
+            os.chmod(temp, 0o666 & ~umask)
+            os.replace(temp, output)
+        except OSError as exc:
+            error_exit(f"failed to publish {output}: {exc}")
+        temp_pending = None  # published: the temp IS the output now
+        return rows
+    finally:
+        if temp_pending is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temp_pending)
+
+
 def _open_data(path: Path) -> BinaryIO:
     """Open the data file, translating an OS read error to a clean exit-2.
 
@@ -422,7 +643,8 @@ def _open_data(path: Path) -> BinaryIO:
 
 @main.command(name="scan")
 @_common_options
-@_format_option
+@_format_option(parquet=True)
+@_output_option
 @_fields_option
 @_explicit_defaults_option
 def scan_cmd(
@@ -434,6 +656,7 @@ def scan_cmd(
     where_expr: str | None,
     on_error: str,
     output_format: str,
+    output: Path | None,
     fields: str | None,
     explicit_defaults: bool,
 ) -> None:
@@ -448,18 +671,24 @@ def scan_cmd(
         fields,
         explicit_defaults,
         output_format,
+        on_error=on_error,
+        output=output,
     )
+    if output_format == "parquet":
+        assert output is not None  # required by the _prepare guard (R2)
+        rows = _write_parquet(data_file, setup, output)
+        # One summary line, stderr-only: stdout stays clean for scripting and
+        # a legitimate-but-surprising zero-row result (e.g. a typo'd --where)
+        # is visible (R19).
+        click.echo(f"wrote {rows} rows to {output}", err=True)
+        sys.exit(0)
     yielded = 0
     with _open_data(data_file) as handle:
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:
             for record in run.result:
-                click.echo(
-                    _render(
-                        record, output_format, setup.selection, setup.explicit_defaults
-                    )
-                )
+                click.echo(_render(record, output_format, setup.selection, setup.explicit_defaults))
                 yielded += 1
         except _TYPED_CLI_ERRORS as exc:
             error_exit(str(exc))
@@ -469,7 +698,7 @@ def scan_cmd(
 
 @main.command(name="head")
 @_common_options
-@_format_option
+@_format_option()
 @_fields_option
 @_explicit_defaults_option
 @click.option(

@@ -42,7 +42,7 @@ from google.protobuf.message import Message
 
 from protokit.storage.engine import ScanRecord, scan
 from protokit.storage.registry import StreamRegistry
-from protokit.storage.source import Source, StorageError
+from protokit.storage.source import FrameError, Source, StorageError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; runtime imports are lazy
     import pyarrow as pa
@@ -130,16 +130,24 @@ class IncompleteScanError(StorageError):
     (a framing fault, an unknown stream, a decode failure) means the written
     file would not faithfully represent the whole scan. The sink fails loud and
     discards the partial output rather than presenting it as complete (R14).
+
+    Attributes:
+        faults: The collected :class:`~protokit.storage.FrameError`s, verbatim,
+            so callers can report fault locations (stream / record index /
+            offset / reason) without scraping the message string. ``offset`` is
+            ``None`` for non-positional faults (see :class:`FrameError`).
+        fault_count: ``len(faults)`` — the stable count attribute.
     """
 
-    def __init__(self, fault_count: int) -> None:
-        self.fault_count = fault_count
+    def __init__(self, faults: tuple[FrameError, ...]) -> None:
+        self.faults = faults
+        self.fault_count = len(faults)
         super().__init__(
-            f"scan did not complete cleanly: {fault_count} record fault(s) were "
-            f"collected (a framing fault can also truncate the scan, so further "
-            f"records may be missing beyond the count); the Parquet output is "
-            f"withheld (use on_error='skip' on a plain scan() if partial output "
-            f"is acceptable)"
+            f"scan did not complete cleanly: {self.fault_count} record fault(s) "
+            f"were collected (a framing fault can also truncate the scan, so "
+            f"further records may be missing beyond the count); the Parquet "
+            f"output is withheld (use on_error='skip' on a plain scan() if "
+            f"partial output is acceptable)"
         )
 
 
@@ -287,7 +295,7 @@ def to_arrow_batches(
         yield adapter.to_record_batch(chunk)
     faults = result.errors
     if faults:
-        raise IncompleteScanError(len(faults))
+        raise IncompleteScanError(faults)
 
 
 def to_parquet(
@@ -333,7 +341,7 @@ def to_parquet(
         # Completion honesty (R14): withhold a complete-looking file on any fault.
         faults = result.errors
         if faults:
-            raise IncompleteScanError(len(faults))
+            raise IncompleteScanError(faults)
         writer.close()
         writer = None
         return rows
