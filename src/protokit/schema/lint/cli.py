@@ -142,7 +142,7 @@ _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 #: output via ``_print_lint_version`` below so users can verify the
 #: parity reference without reading CI YAML. CONTRIBUTING.md points
 #: readers here as the canonical source for the pinned buf version.
-_BUF_PARITY_PIN: str = "v1.69.0"
+_BUF_PARITY_PIN: str = "v1.70.0"
 
 
 def _print_lint_version(

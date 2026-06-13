@@ -15,6 +15,14 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Changed
+- **Bumped the buf parity reference from `v1.69.0` to `v1.70.0` (#16).** The
+  pinned BASIC-rule parity baseline (`_BUF_PARITY_PIN`, surfaced in
+  `protokit lint --version` and exercised by the CI parity job) now tracks
+  buf v1.70.0. v1.70.0 changed only the `PROTOVALIDATE` lint rule, which is
+  outside protokit's 26-rule BASIC parity surface — no rule mappings,
+  fixtures, or divergence annotations change.
+
 ## 0.12.0 — 2026-06-10
 
 ### Added
