@@ -2,7 +2,7 @@
 
 Uses pytest's ``pytester`` fixture to spawn an isolated test
 session that imports the plugin — same pattern as
-``tests/test_pytest_plugin.py`` for the differ's plugin.
+``tests/message/test_pytest_plugin.py`` for the differ's plugin.
 """
 
 from __future__ import annotations

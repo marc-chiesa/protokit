@@ -89,7 +89,7 @@ Python-protobuf-developer ergonomics, not buf's defaults
 
 Both the UX-philosophy line above and the 3-line POSITIONING_STATEMENT
 block are protected by
-``tests/test_uxd_philosophy_principle_presence_ratchet.py``.
+``tests/meta/test_uxd_philosophy_principle_presence_ratchet.py``.
 The UX-philosophy line is pinned by a single substring;
 POSITIONING_STATEMENT is pinned by TWO substrings ("not buf's
 defaults" + "see proto2-strict") — reformatting either content

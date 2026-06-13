@@ -412,7 +412,7 @@ class TestRulePack:
     # without record=True is invisible to result.output assertions. With
     # record=True the AE assertions inspect the captured warning objects
     # directly (category, message text, count), which is also the in-repo
-    # idiom at tests/test_formatters_registry.py:265 for similar UserWarning
+    # idiom at tests/formatters/test_formatters_registry.py:265 for similar UserWarning
     # checks. simplefilter("always") bypasses Python's per-message dedupe
     # registry that earlier --rule-pack tests in this class would otherwise
     # consume.
@@ -696,7 +696,7 @@ class TestErrors:
         ``"X compile failed: "`` stderr prefix.
 
         Replaces the helper-level invariant from the deleted
-        ``tests/test_cli_utils.py::TestProtoxyBackend::test_compile_failure_exits_with_code_2``
+        ``tests/core/test_cli_utils.py::TestProtoxyBackend::test_compile_failure_exits_with_code_2``
         which was testing the helper's ``error_exit`` behavior at the
         wrong layer post-refactor (helpers now raise typed exceptions;
         only the legacy adapter / CLI surface translates to ``SystemExit``).

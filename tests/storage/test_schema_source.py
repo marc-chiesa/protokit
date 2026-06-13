@@ -7,7 +7,7 @@ incomplete descriptor sets — never ``mock.patch`` on a protobuf C-extension
 method, which silently no-ops and produces a false green.
 
 ``_file`` / ``_fds`` are the shared ``proto_fixtures`` builders (which mirror
-``tests/test_pools.py``), so multi-file topo-sort and missing-dependency
+``tests/core/test_pools.py``), so multi-file topo-sort and missing-dependency
 fixtures are built programmatically.
 """
 

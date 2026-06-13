@@ -2,7 +2,7 @@
 length-delimited frame helpers.
 
 The descriptor builders mirror the ``_file`` / ``_fds`` helpers in
-``tests/test_pools.py`` but live in one importable module (no ``test_`` prefix,
+``tests/core/test_pools.py`` but live in one importable module (no ``test_`` prefix,
 so pytest does not collect it) so the storage suite's many multi-file topo-sort
 and isolation fixtures are built the same way without per-file duplication. The
 framing helpers (``encode_varint`` / ``delimited``) build the byte streams the

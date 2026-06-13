@@ -9,11 +9,11 @@ selection concept rather than one parser per policy (KTD-1, R9).
 Path-form matching delegates to :meth:`FieldPath.matches_selector`, the same
 bracket-blind, exact-length segment-name comparison the engine's ``_is_ignored``
 and ``_get_treat_as_map_key`` gates use. Both forms therefore agree on the same
-selector/path pair; the regression test in ``tests/test_field_selector.py``
+selector/path pair; the regression test in ``tests/message/test_field_selector.py``
 pins that equivalence.
 
 This module is strict-typed (``mypy --strict``) and gated by
-``tests/test_static_analysis.py``.
+``tests/meta/test_static_analysis.py``.
 """
 
 from __future__ import annotations

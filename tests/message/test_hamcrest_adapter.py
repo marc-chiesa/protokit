@@ -50,7 +50,7 @@ T = descriptor_pb2.FieldDescriptorProto
 
 
 # ---------------------------------------------------------------------------
-# Builders (mirror tests/test_proto_match.py so parity is apples-to-apples)
+# Builders (mirror tests/message/test_proto_match.py so parity is apples-to-apples)
 # ---------------------------------------------------------------------------
 
 
