@@ -21,7 +21,7 @@ to ``False`` so the dispatch tree's protoc-only branches run on
 every CI matrix axis.
 
 Tests follow the ``class TestX:`` / function-scoped fixture style
-established by the rewritten ``tests/test_cli_utils.py`` (Unit 1)
+established by the rewritten ``tests/core/test_cli_utils.py`` (Unit 1)
 and ``tests/schema/lint/test_compile_multi.py`` (Unit 4).
 """
 
@@ -39,7 +39,7 @@ from protokit.schema.compile import (
 )
 
 # ---------------------------------------------------------------------------
-# Demo proto fixture — mirrors tests/test_cli_utils.py:17-32. Most failure
+# Demo proto fixture — mirrors tests/core/test_cli_utils.py:17-32. Most failure
 # tests synthesize subprocess.run failures BEFORE the protoc backend reads
 # the file, so the file content rarely matters; the fixture exists so the
 # input ``Path`` is real (avoids accidental pre-flight oddities).

@@ -8,7 +8,7 @@ behaviour (empty-list vs. KeyError on the missing-key path, etc.).
 
 D5 U5 added the cross-formatter render contract. The
 ``LINT_RUNTIME_WARNING_CATEGORIES`` tuple + ``warning_for_category``
-factory live here so the formatter test (``tests/test_builtin_lint_runtime_warnings.py``)
+factory live here so the formatter test (``tests/formatters/test_builtin_lint_runtime_warnings.py``)
 and the CLI human-stderr test (``test_human_stderr_render.py``)
 share one definition — a new category lands by editing this file
 alone (D6b U5 added the 5th, ``severities_unloaded_rule``; D6d U1

@@ -34,7 +34,7 @@ fields keep their dedicated path, and EQUIVALENT mode is what *relaxes* that
 path (so an empty-but-present message collapses with unset). See ``differ.py``.
 
 This module is pure, strict-typed (``mypy --strict``), and gated by
-``tests/test_static_analysis.py``.
+``tests/meta/test_static_analysis.py``.
 """
 
 from __future__ import annotations

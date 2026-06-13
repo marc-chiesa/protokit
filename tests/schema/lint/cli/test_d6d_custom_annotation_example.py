@@ -596,7 +596,7 @@ class TestSarifFormatExposesCustomRule:
         # The catalog entry must include a name (rendered as the rule
         # header in SARIF viewers) — synthetic specs use the rule_id
         # as the name. Other SARIF metadata fields are exercised in
-        # the formatter-level tests at tests/test_formatters_sarif.py.
+        # the formatter-level tests at tests/formatters/test_formatters_sarif.py.
         assert synthetic_entry["name"] == _RULE_ID
 
 

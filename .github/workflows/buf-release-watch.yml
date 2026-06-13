@@ -102,7 +102,7 @@ jobs:
         # extracts the quoted version. The annotation segment uses
         # ``[^=]+`` so the grep tolerates any shape between ``:`` and
         # ``=`` (str, Final[str], etc.) — matches the regex in
-        # tests/test_buf_parity_pin_drift.py so both consumers agree
+        # tests/meta/test_buf_parity_pin_drift.py so both consumers agree
         # on the same line shape.
         run: |
           set -euo pipefail
@@ -173,7 +173,7 @@ jobs:
           1. Update \`_BUF_PARITY_PIN\` in \`src/protokit/schema/lint/cli.py\` to \`$LATEST\`.
           2. Update the curl URLs in \`.github/workflows/ci.yml\`'s parity job
              (\`releases/download/$LATEST/buf-Linux-x86_64.tar.gz\` + \`sha256.txt\`).
-          3. Run \`tests/test_buf_parity_pin_drift.py\` locally — it asserts
+          3. Run \`tests/meta/test_buf_parity_pin_drift.py\` locally — it asserts
              both sites reference the same version.
           4. Inspect buf's release notes for BASIC rule deprecations / renames / additions:
              - Run \`buf config ls-lint-rules --version v2 --include-deprecated --format json\`

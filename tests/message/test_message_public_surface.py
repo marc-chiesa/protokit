@@ -36,7 +36,7 @@ from protokit.message import (
     equals_proto,
 )
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _MESSAGE_PKG = _REPO_ROOT / "src" / "protokit" / "message"
 
 # The five differ-config builder methods that, per SWI-2, may be called ONLY
@@ -169,7 +169,7 @@ class TestHamcrestLazyImport:
         #
         # Resolve BOTH the callable and the expected exception from the LIVE
         # ``protokit.message.hamcrest`` module rather than this file's module-top
-        # imports: ``tests/test_hamcrest_extra.py`` may have ``importlib.reload``-d
+        # imports: ``tests/message/test_hamcrest_extra.py`` may have ``importlib.reload``-d
         # that submodule earlier in the session, which rebinds its
         # ``HamcrestExtraNotInstalledError`` to a NEW class object. A module-top
         # binding captured at collection time would then mismatch the class the

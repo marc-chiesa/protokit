@@ -15,7 +15,7 @@ cell is skipped when the optional ``[compiler]`` extra is not
 installed (matches the CI matrix's ``has_protoxy: false`` cell).
 
 Tests follow the ``class TestX:`` / function-scoped fixture style
-established by the rewritten ``tests/test_cli_utils.py`` (Unit 1).
+established by the rewritten ``tests/core/test_cli_utils.py`` (Unit 1).
 """
 
 from __future__ import annotations

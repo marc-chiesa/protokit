@@ -29,7 +29,7 @@ from typing import NoReturn
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _CLI_PY = _REPO_ROOT / "src" / "protokit" / "schema" / "lint" / "cli.py"
 _CI_YAML = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 

@@ -11,7 +11,7 @@ These tests will live across the Unit 3 → Unit 5 transition:
 once Unit 5 wires the CLI to use the registry, the legacy
 rendering helpers are deleted; the regression coverage for the
 output then comes from the existing CLI integration tests in
-``tests/test_cli.py`` and ``tests/schema/test_cli.py``.
+``tests/message/test_cli.py`` and ``tests/schema/test_cli.py``.
 """
 
 from __future__ import annotations

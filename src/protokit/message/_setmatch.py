@@ -26,7 +26,7 @@ same regardless of element order on either side. Which specific equal instance
 is named as a leftover when duplicates exist is unspecified (fine for v1).
 
 This module is strict-typed (``mypy --strict``) and gated by
-``tests/test_static_analysis.py``.
+``tests/meta/test_static_analysis.py``.
 """
 
 from __future__ import annotations

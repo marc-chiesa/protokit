@@ -11,7 +11,7 @@
 #   - has_protoxy: true installs the optional `[compiler]` extra
 #     (protoxy 0.7+); false skips it. Tests that integration-test the
 #     protoxy backend gate via `pytest.mark.skipif(not _has_protoxy())`
-#     (see tests/test_cli_utils.py header for the convention).
+#     (see tests/core/test_cli_utils.py header for the convention).
 #     System protoc is installed on EVERY cell so the protoc-only path
 #     always runs; the `has_protoxy` axis only controls protoxy.
 #
@@ -138,11 +138,11 @@ jobs:
         # Strict-mode mypy is configured in pyproject.toml but the
         # broader codebase has ~30 pre-existing strict-mode errors.
         # This step gates ONLY the modules currently in
-        # tests/test_static_analysis.py:_TYPE_CHECK_PATHS — the lockstep
+        # tests/meta/test_static_analysis.py:_TYPE_CHECK_PATHS — the lockstep
         # is enforced by that test (any divergence between this list
         # and the ratchet trips the ratchet test). Future deliveries
         # widen the scope by extending BOTH the path list here AND
-        # _TYPE_CHECK_PATHS in tests/test_static_analysis.py.
+        # _TYPE_CHECK_PATHS in tests/meta/test_static_analysis.py.
         run: |
           python -m mypy \
             src/protokit/_cli_utils.py \
@@ -300,7 +300,7 @@ jobs:
           python -c "import hamcrest; print('hamcrest', hamcrest.__version__ if hasattr(hamcrest, '__version__') else 'present')"
 
       - name: Run the hamcrest adapter suite
-        run: pytest tests/test_hamcrest_adapter.py -v
+        run: pytest tests/message/test_hamcrest_adapter.py -v
 
   # =====================================================================
   # Parity job — buf v1.69.0 cross-tool parity checks.
@@ -329,7 +329,7 @@ jobs:
   #
   # The buf version pinned below MUST match `_BUF_PARITY_PIN` in
   # src/protokit/schema/lint/cli.py. The default test suite contains
-  # tests/test_buf_parity_pin_drift.py which fails locally and in CI
+  # tests/meta/test_buf_parity_pin_drift.py which fails locally and in CI
   # before the parity job runs if either pin is bumped without the
   # other.
   parity:
@@ -382,7 +382,7 @@ jobs:
         #
         # When bumping the version: update BOTH this curl URL AND
         # _BUF_PARITY_PIN in src/protokit/schema/lint/cli.py. The
-        # tests/test_buf_parity_pin_drift.py drift-check enforces this.
+        # tests/meta/test_buf_parity_pin_drift.py drift-check enforces this.
         run: |
           curl -fsSL --connect-timeout 30 --max-time 120 \
             -o buf-Linux-x86_64.tar.gz \

@@ -39,7 +39,7 @@ from protokit.schema.model import (
 )
 
 
-_SARIF_SCHEMA = Path(__file__).parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
+_SARIF_SCHEMA = Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
 
 
 @pytest.fixture(scope="module")

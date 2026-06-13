@@ -174,7 +174,7 @@ class TestListFormatters:
         # the lint subcommand module imports at its top. This test
         # only verifies the eagerly-loaded kinds — ``LINT_REPORT``
         # registration is covered in
-        # ``tests/test_builtin_lint_formatter.py`` and the cold-import
+        # ``tests/formatters/test_builtin_lint_formatter.py`` and the cold-import
         # contract is verified by the CI YAML smoke step extended in
         # D3 Unit 5.
         eagerly_loaded_kinds = (

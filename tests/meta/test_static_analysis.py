@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Paths gated by ``ruff check``. Tests are linted but not strict-typed
 # in this codebase — the test files appear here but not in
@@ -44,23 +44,23 @@ _LINT_PATHS: tuple[str, ...] = (
     "tests/parity",
     "tests/schema/lint",
     "tests/storage",
-    "tests/test_buf_parity_pin_drift.py",
-    "tests/test_builtin_lint_formatter.py",
-    "tests/test_builtin_lint_runtime_warnings.py",
-    "tests/test_cli_utils.py",
-    "tests/test_field_selector.py",
-    "tests/test_formatters_cli.py",
-    "tests/test_hamcrest_adapter.py",
-    "tests/test_hamcrest_extra.py",
-    "tests/test_ignore_predicate.py",
-    "tests/test_match_partial.py",
-    "tests/test_message_public_surface.py",
-    "tests/test_per_field_tolerance.py",
-    "tests/test_presence_mode.py",
-    "tests/test_proto_match.py",
-    "tests/test_pytest_policy.py",
-    "tests/test_set_comparison.py",
-    "tests/test_static_analysis.py",
+    "tests/meta/test_buf_parity_pin_drift.py",
+    "tests/formatters/test_builtin_lint_formatter.py",
+    "tests/formatters/test_builtin_lint_runtime_warnings.py",
+    "tests/core/test_cli_utils.py",
+    "tests/message/test_field_selector.py",
+    "tests/formatters/test_formatters_cli.py",
+    "tests/message/test_hamcrest_adapter.py",
+    "tests/message/test_hamcrest_extra.py",
+    "tests/message/test_ignore_predicate.py",
+    "tests/message/test_match_partial.py",
+    "tests/message/test_message_public_surface.py",
+    "tests/message/test_per_field_tolerance.py",
+    "tests/message/test_presence_mode.py",
+    "tests/message/test_proto_match.py",
+    "tests/meta/test_pytest_policy.py",
+    "tests/message/test_set_comparison.py",
+    "tests/meta/test_static_analysis.py",
 )
 
 # Paths gated by ``mypy --strict`` (configuration in pyproject.toml).

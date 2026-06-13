@@ -21,7 +21,7 @@ documented not thread-safe (KTD-5) — a cached/shared differ would reintroduce 
 race under parametrized/concurrent test use.
 
 This module is strict-typed (``mypy --strict``) and gated by
-``tests/test_static_analysis.py``.
+``tests/meta/test_static_analysis.py``.
 """
 
 from __future__ import annotations

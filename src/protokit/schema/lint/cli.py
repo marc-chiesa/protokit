@@ -128,7 +128,7 @@ _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 #: ``releases/download/v<X>/buf-Linux-x86_64.tar.gz`` URL in
 #: ``.github/workflows/ci.yml``'s parity job MUST reference the same
 #: version. Drift between the two is caught by
-#: ``tests/test_buf_parity_pin_drift.py`` in the default
+#: ``tests/meta/test_buf_parity_pin_drift.py`` in the default
 #: ``pytest tests/`` invocation, so a contributor bumping one
 #: without the other fails locally before push.
 #:

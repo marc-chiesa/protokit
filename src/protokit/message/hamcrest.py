@@ -33,7 +33,7 @@ does not eagerly import ``hamcrest``. The actionable error therefore fires only
 on *use*, not at package import (R3).
 
 This module is strict-typed (``mypy --strict``) and gated by
-``tests/test_static_analysis.py``. The ``import hamcrest`` resolves to ``Any``
+``tests/meta/test_static_analysis.py``. The ``import hamcrest`` resolves to ``Any``
 under the ``[[tool.mypy.overrides]]`` ``ignore_missing_imports`` block in
 ``pyproject.toml``, so ``hamcrest.BaseMatcher`` is an ``Any`` base at type-check
 time.
