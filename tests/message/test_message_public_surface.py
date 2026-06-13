@@ -36,7 +36,7 @@ from protokit.message import (
     equals_proto,
 )
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _MESSAGE_PKG = _REPO_ROOT / "src" / "protokit" / "message"
 
 # The five differ-config builder methods that, per SWI-2, may be called ONLY

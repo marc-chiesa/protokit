@@ -41,7 +41,7 @@ from protokit.schema.model import (
 # ---------------------------------------------------------------------------
 
 
-_JUNIT_XSD = Path(__file__).parent / "fixtures" / "junit-xml" / "JUnit.xsd"
+_JUNIT_XSD = Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd"
 
 
 @pytest.fixture(scope="module")

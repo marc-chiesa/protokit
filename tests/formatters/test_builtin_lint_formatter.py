@@ -762,7 +762,7 @@ class TestBumpContractDocstring:
             )
 
 
-_JUNIT_XSD = Path(__file__).parent / "fixtures" / "junit-xml" / "JUnit.xsd"
+_JUNIT_XSD = Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd"
 
 
 @pytest.fixture(scope="module")
@@ -867,7 +867,7 @@ class TestLintJunit:
         assert fn is bl.lint_junit
 
 
-_SARIF_SCHEMA = Path(__file__).parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
+_SARIF_SCHEMA = Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
 
 
 @pytest.fixture(scope="module")

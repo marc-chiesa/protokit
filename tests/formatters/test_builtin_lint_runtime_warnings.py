@@ -46,8 +46,8 @@ from tests.schema.lint.cli._helpers import (
     warning_for_category as _warning_for_category,
 )
 
-_JUNIT_XSD = Path(__file__).parent / "fixtures" / "junit-xml" / "JUnit.xsd"
-_SARIF_SCHEMA = Path(__file__).parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
+_JUNIT_XSD = Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd"
+_SARIF_SCHEMA = Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
 
 
 @pytest.fixture(scope="module")
