@@ -513,7 +513,7 @@ walk against a ref where the importer has been updated.
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
 As of `protokit 0.6.0`, `protokit lint` covers **26 of 26 buf
-v1.69.0 BASIC rules**. The 26th rule, `package/no-import-cycle`,
+v1.70.0 BASIC rules**. The 26th rule, `package/no-import-cycle`,
 uses a Tarjan SCC pre-walk accumulator to detect package-level
 cycles where individual file imports are acyclic (file-level
 cycles are caught at the protobuf COMPILE phase by both buf and
@@ -587,7 +587,7 @@ its target before rule-pack profile-name lookup.
 | Profile | Rules | Purpose |
 |---------|-------|---------|
 | `essentials` | 0 (forward-placeholder) | Light-touch tier reserved for a future curation pass; no rules ship in this profile as of 0.6.0. |
-| `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.69.0 BASIC rules, complete as of 0.6.0). `naming` (9), `enum` (2), `imports` (3), `package` (5; includes `package/no-import-cycle` via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 — pragmatic-not-dogmatic about proto2), `package_same` (7). |
+| `recommended` | 27 | Buf BASIC parity (26 of 26 buf v1.70.0 BASIC rules, complete as of 0.6.0). `naming` (9), `enum` (2), `imports` (3), `package` (5; includes `package/no-import-cycle` via Tarjan SCC pre-walk), `file` (1; `file/syntax-specified` demoted to WARNING in 0.6.0 — pragmatic-not-dogmatic about proto2), `package_same` (7). |
 | `default` | 33 | Buf BASIC parity (`recommended`'s 27 rules) + the deprecated-replacement family (5 **error-severity** option-aware rules in `options/deprecated_replacement` — promoted from WARNING in 0.7.0; demotable via `[severities]` / `disabled_rules` / `--disable-rule`) + AIP-203 well-formedness (1 warning-severity rule in `options/field_behavior`: `options/field-behavior-consistent`). |
 | `proto2-strict` (0.6.0+) | 1 | Opt-in proto2-specific strictness. Currently ships `field/not-required` (the proto2-only `buf:FIELD_NOT_REQUIRED` rule at ERROR severity). Activate via `--profile proto2-strict` or pyproject `profile = ["default", "proto2-strict"]`. Proto2-specific anti-pattern rules ship here rather than in `recommended`/`default` so proto2 shops opt in explicitly. |
 | `minimal` (alias) | → `essentials` | Buf-compatibility alias resolved at `_coerce_profile`. |
@@ -1703,7 +1703,7 @@ or endorsed by Buf Technologies.
 The functional overlap is intentionally narrow:
 
 - **`protokit lint` ↔ `buf lint`**: closely tracked. `protokit lint`
-  matches 26 of 26 buf v1.69.0 BASIC rules, with deliberate
+  matches 26 of 26 buf v1.70.0 BASIC rules, with deliberate
   divergences where Python-protobuf-developer ergonomics differ
   (see the [Schema Linting](#schema-linting) section's positioning
   statement).
