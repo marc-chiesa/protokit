@@ -270,7 +270,7 @@ A checklist for any new subprocess wrapper in a test harness:
   another tool's exit code). Together they cover both sides of the
   exit-code contract boundary.
 - [[pytest-static-analysis-gate-ratchet-2026-05-02]] — the `_run()`
-  subprocess helper at `tests/test_static_analysis.py` does check
+  subprocess helper at `tests/meta/test_static_analysis.py` does check
   `result.returncode == 0` explicitly and is the canonical correct
   pattern in this codebase. The new harness's failure was not following
   the established pattern.

@@ -115,7 +115,7 @@ Do **not** apply (i.e., a directory glob IS appropriate) when:
 - The work is an explicit project-wide lint-cleanup commit with subject like `chore: ruff autofix sweep`.
 - The directory under fix is brand-new (every file in it is part of the current diff).
 - Running in pre-commit hook mode where the hook itself scopes the call to staged files.
-- The `tests/test_static_analysis.py`-style gated paths in this project: those test runners run `ruff check` (without `--fix`) over the full gated set, which is the correct shape for a CI invariant.
+- The `tests/meta/test_static_analysis.py`-style gated paths in this project: those test runners run `ruff check` (without `--fix`) over the full gated set, which is the correct shape for a CI invariant.
 
 ## Examples
 
