@@ -1,9 +1,9 @@
 ---
 title: "Anchor cross-file pin regexes on structure (``:[^=]+=``), not on the type-annotation token (``: str``), when both a test and a CI script grep the same Python constant"
 date: 2026-05-13
-last_updated: 2026-05-14
+last_updated: 2026-06-13
 category: best-practices
-module: tests/test_buf_parity_pin_drift.py
+module: tests/meta/test_buf_parity_pin_drift.py
 problem_type: best_practice
 component: testing_framework
 severity: medium
@@ -133,7 +133,7 @@ The originating case is `_BUF_PARITY_PIN` in protokit, where the
 constant has three consumers:
 
 1. The Python `_CLI_PIN_RE` regex in
-   `tests/test_buf_parity_pin_drift.py` — the drift-check test.
+   `tests/meta/test_buf_parity_pin_drift.py` — the drift-check test.
 2. The bash `grep -E` in `.github/workflows/buf-release-watch.yml` —
    the release-watcher pin-extraction step.
 3. (Future, Unit 9) The `protokit lint --version` output — will
@@ -143,7 +143,7 @@ constant has three consumers:
 Before (commit `a7ec9a8`):
 
 ```python
-# tests/test_buf_parity_pin_drift.py
+# tests/meta/test_buf_parity_pin_drift.py
 _CLI_PIN_RE = re.compile(
     r'^_BUF_PARITY_PIN\s*:\s*str\s*=\s*"(v[^"]+)"',
     re.MULTILINE,
@@ -158,7 +158,7 @@ grep -E '^_BUF_PARITY_PIN\s*:\s*str\s*=\s*"v[^"]+"' src/protokit/schema/lint/cli
 After (commit `da3affb`):
 
 ```python
-# tests/test_buf_parity_pin_drift.py
+# tests/meta/test_buf_parity_pin_drift.py
 #: The annotation segment uses ``[^=]+`` so the regex tolerates any
 #: shape between ``:`` and ``=`` (``str``, ``Final[str]``, etc.) —
 #: the constant's annotation is incidental to the pin discipline, and
@@ -178,7 +178,7 @@ _CLI_PIN_RE = re.compile(
 # the quoted version. The annotation segment uses ``[^=]+`` so
 # the grep tolerates any shape between ``:`` and ``=`` (str,
 # Final[str], etc.) — matches the regex in
-# tests/test_buf_parity_pin_drift.py so both consumers agree on
+# tests/meta/test_buf_parity_pin_drift.py so both consumers agree on
 # the same line shape.
 grep -E '^_BUF_PARITY_PIN\s*:[^=]+=\s*"v[^"]+"' src/protokit/schema/lint/cli.py
 ```
@@ -237,3 +237,10 @@ confirming the relaxation is correct.
   presence-ratchet is the single-file degenerate case (substring
   pin against silent reversion in one doc/source file). Both
   enforce a contract that no static analyzer reads.
+- [[pinned-version-bump-reference-classification-2026-06-13]] — the bump-time
+  decision discipline this drift test enforces. When the pin is bumped, the
+  drift test's three lockstep sites (the `_BUF_PARITY_PIN` constant + the two
+  CI download URLs) are that doc's "functional pin sites" category — always
+  bump; the `v1.69.0` values in the regex examples here are its "illustrative
+  examples" category — always leave (the regex matches `v[^"]+`, so the sample
+  version is not pin-tracking).

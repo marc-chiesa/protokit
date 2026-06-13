@@ -1,8 +1,8 @@
 ---
 title: "Presence-ratchet test pattern: pin prose substrings in docs/source against silent reversion when static analysis can't read them"
 date: 2026-05-14
-last_updated: 2026-05-23
-category: docs/solutions/best-practices
+last_updated: 2026-06-13
+category: best-practices
 module: testing_framework
 problem_type: best_practice
 component: testing_framework
@@ -48,7 +48,7 @@ that pin stability-bearing surfaces against silent regression:
    [[structural-pin-inspect-getsource-untestable-collision-branch]]
    for the technique.
 3. **Cross-file regex pin** —
-   `tests/test_buf_parity_pin_drift.py` greps a regex anchored to
+   `tests/meta/test_buf_parity_pin_drift.py` greps a regex anchored to
    the constant's structural shape (`_BUF_PARITY_PIN: str = "..."`)
    against `.github/workflows/ci.yml` to catch
    buf-version-string drift between two source-of-truth files.
@@ -178,7 +178,7 @@ class TestArtifactRatchet:
    committing the test.
 
    **Worked example (D6b U7 FEAS-1 catch)**: the R35 bump-contract
-   ratchet at `tests/test_builtin_lint_formatter.py::TestBumpContractDocstring`
+   ratchet at `tests/formatters/test_builtin_lint_formatter.py::TestBumpContractDocstring`
    originally planned substring 2 as `"additions DO bump the version"`
    (6 words, the full directional clause for closed Literals).
    /ce:plan-time empirical verification revealed the phrase spans
@@ -275,7 +275,7 @@ class TestArtifactRatchet:
    ratchets, retire the individual per-delivery files in favor
    of a parametrized test consuming a `DELIVERY_RATCHETS` tuple
    (see D6c U5 ce:review F#5 strategic consolidation:
-   `tests/test_changelog_delivery_presence_ratchet.py`).
+   `tests/meta/test_changelog_delivery_presence_ratchet.py`).
    Each tuple entry inherits the line-anchored heading regex
    automatically, so future per-delivery additions (D6d, D6e,
    ...) are 3-line tuple extensions with the strengthened
@@ -508,3 +508,10 @@ zero — the tests are self-explanatory at first read.
   line forms per rule 5, fix truncated local copies rather than
   accommodating them, record canonical source in the test
   comment).
+- [[pinned-version-bump-reference-classification-2026-06-13]] — a presence
+  ratchet is a "leave" classification when bumping a pinned upstream version.
+  That doc's category-6 (ratchet-pinned drift anchors) is exactly a
+  presence-ratcheted substring — e.g. the buf BASIC-rule numerator pinned by
+  `tests/schema/lint/test_builtin_packs.py` — that must stay stale so a new
+  upstream rule forces a conscious update; bumping it breaks the ratchet and
+  disarms the detector.
