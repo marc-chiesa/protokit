@@ -41,9 +41,9 @@ declared at `_BUF_PARITY_PIN` in `src/protokit/schema/lint/cli.py`:
   snapshots. Skipped when `BUF_BINARY` is unset and `buf` is not on
   PATH.
 
-To run these, install buf v1.69.0:
+To run these, install buf v1.70.0:
 
-**Preferred (macOS — currently bottled at v1.69.0; brew handles signing
+**Preferred (macOS — currently bottled at v1.70.0; brew handles signing
 + integrity):**
 
 ```sh
@@ -52,9 +52,9 @@ brew install buf
 
 **Manual install (when brew is unavailable):** download the
 platform-specific tarball from
-<https://github.com/bufbuild/buf/releases/tag/v1.69.0>, **verify the
+<https://github.com/bufbuild/buf/releases/tag/v1.70.0>, **verify the
 SHA-256 against the published `sha256.txt` at
-<https://github.com/bufbuild/buf/releases/download/v1.69.0/sha256.txt>
+<https://github.com/bufbuild/buf/releases/download/v1.70.0/sha256.txt>
 BEFORE extracting**, then place the binary on PATH or:
 
 ```sh

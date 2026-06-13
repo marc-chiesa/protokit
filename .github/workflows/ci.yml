@@ -303,7 +303,7 @@ jobs:
         run: pytest tests/message/test_hamcrest_adapter.py -v
 
   # =====================================================================
-  # Parity job — buf v1.69.0 cross-tool parity checks.
+  # Parity job — buf v1.70.0 cross-tool parity checks.
   # =====================================================================
   #
   # Runs every buf-equivalent protokit lint rule's fixture through both
@@ -363,7 +363,7 @@ jobs:
       - name: Install package + dev deps (with compiler extra)
         run: pip install -e ".[compiler,dev]"
 
-      - name: Download buf v1.69.0 tarball + checksum
+      - name: Download buf v1.70.0 tarball + checksum
         # Asset name is `buf-Linux-x86_64.tar.gz` (capital L) and the
         # combined checksum file is `sha256.txt` (one file listing all
         # release assets). The downloaded tarball MUST be saved under
@@ -386,10 +386,10 @@ jobs:
         run: |
           curl -fsSL --connect-timeout 30 --max-time 120 \
             -o buf-Linux-x86_64.tar.gz \
-            https://github.com/bufbuild/buf/releases/download/v1.69.0/buf-Linux-x86_64.tar.gz
+            https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Linux-x86_64.tar.gz
           curl -fsSL --connect-timeout 30 --max-time 60 \
             -o sha256.txt \
-            https://github.com/bufbuild/buf/releases/download/v1.69.0/sha256.txt
+            https://github.com/bufbuild/buf/releases/download/v1.70.0/sha256.txt
 
       - name: Verify buf SHA-256 checksum
         # NON-OPTIONAL supply-chain hardening. A skipped or commented-out
