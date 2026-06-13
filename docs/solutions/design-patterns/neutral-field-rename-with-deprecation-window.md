@@ -187,7 +187,7 @@ Schema-evolution change types (`TYPE_CHANGED`, `FIELD_NUMBER_CHANGED`, `CARDINAL
 **Source of truth:**
 - `src/protokit/message/model.py` — `_warn_value_alias`, the `left_value`/`right_value` fields, and the `old_value`/`new_value` `@property` aliases.
 - `src/protokit/formatters/_builtin_diff.py` — `_DIFF_JSON_SCHEMA_VERSION`, `_set_value_keys`, and the `diff_json` dual-emit + `schema_version` output key.
-- `tests/test_difference_value_aliases.py` — the full deprecation contract (13 cases).
+- `tests/message/test_difference_value_aliases.py` — the full deprecation contract (13 cases).
 
 ## Related
 

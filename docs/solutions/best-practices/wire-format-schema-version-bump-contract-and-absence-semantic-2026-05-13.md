@@ -1,7 +1,7 @@
 ---
 title: "Document both the bump contract and the field-absence semantic when introducing a wire-format schema_version"
 date: 2026-05-13
-last_updated: 2026-05-30
+last_updated: 2026-06-13
 category: docs/solutions/best-practices
 module: src/protokit/formatters/_builtin_lint.py
 problem_type: best_practice
@@ -306,7 +306,7 @@ When SARIF carries both ``runtime_warnings`` and
 The dedicated co-existence test pins both keys' presence and
 value:
 
-``tests/test_builtin_lint_runtime_warnings.py:346–374``:
+``tests/formatters/test_builtin_lint_runtime_warnings.py:346–374``:
 
 ```python
 def test_runtime_warnings_and_schema_version_coexist(

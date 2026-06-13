@@ -140,7 +140,7 @@ The `@functools.cache` decorator is also load-bearing for performance: discovery
 - **Validate candidate paths with a sentinel-file stat**, not just directory existence. A directory named `include/` that doesn't actually contain the expected protos shouldn't be added to `-I`.
 - **Cache discovery results** with `@functools.cache` (or equivalent in non-Python ecosystems) — the answer is stable across calls within a process.
 - **Place auto-discovered paths AFTER caller-supplied paths** in the argv so explicit user overrides always win. Auto-discovery is a fallback, not a primary configuration.
-- **Test the helper in isolation** with a fake filesystem (see `tests/test_cli_utils.py::TestWktIncludePathDiscovery` for the 4-test pattern: empty-no-WKT, populated-include, argv-ordering, no-duplicate-entry). Cross-backend integration tests are the higher-level validation but don't catch unit-level regressions in the helper itself.
+- **Test the helper in isolation** with a fake filesystem (see `tests/core/test_cli_utils.py::TestWktIncludePathDiscovery` for the 4-test pattern: empty-no-WKT, populated-include, argv-ordering, no-duplicate-entry). Cross-backend integration tests are the higher-level validation but don't catch unit-level regressions in the helper itself.
 
 ## Related
 

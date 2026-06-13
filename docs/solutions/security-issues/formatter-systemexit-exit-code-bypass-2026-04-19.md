@@ -1,7 +1,7 @@
 ---
 title: "Formatter SystemExit bypass flips CLI exit code from 1 to 0"
 date: 2026-04-19
-last_updated: 2026-05-07
+last_updated: 2026-06-13
 category: docs/solutions/security-issues
 module: protokit.formatters
 problem_type: security_issue
@@ -177,7 +177,7 @@ exit-code-2 error. (session history)
 
 ### Regression test
 
-Add to the formatter test suite (`tests/test_formatters_cli.py` in
+Add to the formatter test suite (`tests/formatters/test_formatters_cli.py` in
 protokit; adapt paths/fixture names for other projects):
 
 ```python
