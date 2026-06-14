@@ -83,7 +83,9 @@ Two real-world triggers surfaced during Phase A bring-up and ce:review:
    deprecated the rule (`categories=[]`, `deprecated=true`): buf exits 1
    with `"Failure: it looks like you have found a bug in buf...
    resultRules was empty"` on stderr, empty stdout — happy-path
-   silently green.
+   silently green. (provenance — verified against buf v1.69.0; the upstream
+   deprecation is re-asserted live by the parity harness's `_BUF_DEPRECATED_RULES`
+   runtime skip against the current pin.)
 2. Hypothetical: a CLI rename causing `from protokit.cli import main` to
    `ImportError`: protokit exits 127 with empty stdout — every parity
    test in the suite reports "neither tool fired" as a clean run.

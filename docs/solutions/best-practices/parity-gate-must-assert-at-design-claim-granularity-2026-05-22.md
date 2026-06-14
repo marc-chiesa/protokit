@@ -51,7 +51,7 @@ for pf in protokit_findings:
     assert pf["location_column"] == expected[1]
 ```
 
-All 5 fixtures PASSED — confirming protokit's line/column already matched buf v1.69.0 byte-equivalently; the previous test version just wasn't asserting it.
+All 5 fixtures PASSED — confirming protokit's line/column already matched buf v1.69.0 byte-equivalently; the previous test version just wasn't asserting it. (provenance — verified against buf v1.69.0's recorded NDJSON snapshots; current behavior re-asserted every run by the Tier 2 line/column loop in `tests/parity/test_parity_package_no_import_cycle.py`)
 
 ## The pattern
 
@@ -186,7 +186,7 @@ D6e U3 commit sequence:
 
 1. `e66f27c feat(lint): D6e U3 — package/no-import-cycle` — initial implementation with the documentation-only claim of byte-equivalent line/column parity (test only invoked `assert_parity_multi_file`).
 2. ce:review run `20260522-230615-e23aa0e2` — 3-way convergence on the gap at high confidence (T1 0.97, ADV-002 0.99, Agent-native W2).
-3. `eff3a80 fix(lint): ce:review U3 follow-ups` — added Tier 2 per-finding line/column assertion. All 5 fixtures PASS, confirming protokit's line/column actually do match buf v1.69.0 byte-equivalently. The protection is regression-forward: any future change to `_import_source_position` that breaks the byte-equivalence (off-by-one, wrong field number, broken span arithmetic) will fail the new assertion with a structured diagnostic naming the suspect function.
+3. `eff3a80 fix(lint): ce:review U3 follow-ups` — added Tier 2 per-finding line/column assertion. All 5 fixtures PASS, confirming protokit's line/column actually do match buf v1.69.0 byte-equivalently (provenance — verified against buf v1.69.0's recorded snapshots; current behavior re-asserted every run by the Tier 2 loop in `tests/parity/test_parity_package_no_import_cycle.py`). The protection is regression-forward: any future change to `_import_source_position` that breaks the byte-equivalence (off-by-one, wrong field number, broken span arithmetic) will fail the new assertion with a structured diagnostic naming the suspect function.
 4. `<this commit> docs(solutions): D6e U3 ce:compound` — captures the pattern (this file) + sibling learnings for Tarjan SCC + Phase 0 narrowing.
 
 The lesson for future per-unit work: **if your design choice promises granularity X, your test must compare at granularity X**. The shared helper's coarser default is correct for the common case but the per-test opt-in is mandatory whenever the claim is finer.

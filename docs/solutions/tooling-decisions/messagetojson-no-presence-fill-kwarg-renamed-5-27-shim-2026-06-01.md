@@ -21,17 +21,17 @@ tags: [protobuf, message-to-json, json-format, version-compat, deprecationwarnin
 (both the `--fields` faithful view and `--explicit-defaults` dense output rely
 on it). The `json_format.MessageToJson` / `MessageToDict` keyword that does this
 was **renamed** within protokit's supported `protobuf>=4.21.0,<6` range, so a
-single hard-coded kwarg name breaks on part of the range.
+single hard-coded kwarg name breaks on part of the range. (provenance — verified against protobuf 4.25.9 / 5.27.5; current kwarg selection re-asserted by `tests/storage/test_project.py::TestNoPresenceFillShim` on both the default matrix and the `storage-protobuf-floor` CI cell)
 
 ## Guidance
 
 The cross-version facts (verified empirically):
 
 - `including_default_value_fields=True` — the **old** name, protobuf 4.21–5.26.
-- `always_print_fields_with_no_presence=True` — the **new** name, protobuf 5.27+.
+- `always_print_fields_with_no_presence=True` — the **new** name, protobuf 5.27+. (provenance — verified against protobuf 4.21–5.26 (old) / 5.27+ (new); the live spelling is re-asserted by `tests/storage/test_project.py::TestNoPresenceFillShim` against whatever protobuf is installed, with the old-name path pinned by the `storage-protobuf-floor` CI cell)
 - On 5.27+, passing the **old** name raises `TypeError` (it was removed from the
   signature, not merely deprecated-but-accepted). The **new** name does not exist
-  before 5.27. So neither name works across the whole pinned range.
+  before 5.27. So neither name works across the whole pinned range. (provenance — verified against protobuf 5.27.5; current behavior re-asserted by the `storage-protobuf-floor` CI cell (old-name path) and the default matrix (new-name path))
 
 Detect the supported kwarg **once at import** by inspecting the signature, and
 **prefer the new name**:
@@ -70,7 +70,7 @@ Two non-obvious points:
   4.25.9 (old kwarg) vs 5.27.5 (new kwarg): both produce identical fill output
   for every presence class — no-presence fields filled at default,
   presence-bearing fields (proto3 `optional`, `oneof`, singular submessage)
-  omitted when unset. So the shim is a safe name-swap, not a papered-over
+  omitted when unset. (provenance — verified against protobuf 4.25.9 / 5.27.5; the fill semantics are re-asserted by `TestNoPresenceFillShim.test_fill_behavior_*` on the default matrix (new name) and the `storage-protobuf-floor` CI cell (old name)) So the shim is a safe name-swap, not a papered-over
   semantic difference. (A reviewer initially hypothesized the old flag printed
   *all* fields; that did not reproduce.)
 

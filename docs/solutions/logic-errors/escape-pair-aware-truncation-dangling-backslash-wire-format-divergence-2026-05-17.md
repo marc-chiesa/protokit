@@ -31,12 +31,12 @@ tags:
 
 ## Problem
 
-A 500-character length cap applied AFTER `_escape_inner_quote` has expanded each inner `"` to `\"` (two characters) can land precisely between a `\` and its `"` partner, leaving a stranded backslash at the cap boundary with no semantic meaning. The resulting `params["values_payload"]` ends with a lone `\` that is byte-divergent from buf v1.69.0 (which never produces an unbalanced escape pair) and renders incorrectly in human-format lint messages.
+A 500-character length cap applied AFTER `_escape_inner_quote` has expanded each inner `"` to `\"` (two characters) can land precisely between a `\` and its `"` partner, leaving a stranded backslash at the cap boundary with no semantic meaning. The resulting `params["values_payload"]` ends with a lone `\` that is byte-divergent from buf v1.69.0 (which never produces an unbalanced escape pair) and renders incorrectly in human-format lint messages. (provenance — verified against buf v1.69.0; current byte-compatibility re-asserted by the package-same parity gate's recorded-snapshot byte-match.)
 
 ## Symptoms
 
 - `params["values_payload"]` ends with `\` for the affected finding.
-- Wire-format byte-divergence from buf v1.69.0 on adversarial inputs (any `go_package`/string-attr value of length ~482 chars containing an inner quote, combined with a second value of ~483 chars, crosses the 500-char composed-string boundary at the `\"` escape pair).
+- Wire-format byte-divergence from buf v1.69.0 on adversarial inputs (any `go_package`/string-attr value of length ~482 chars containing an inner quote, combined with a second value of ~483 chars, crosses the 500-char composed-string boundary at the `\"` escape pair). (provenance — verified against buf v1.69.0; current behavior re-asserted by the package-same parity gate.)
 - Rendered message ends with malformed `... \` fragment instead of a properly closed value list.
 - Happy-path values and typical multi-KB inputs are unaffected (the boundary case is narrow).
 - All R7 PACKAGE_SAME_* rules can be affected — the helper is shared.

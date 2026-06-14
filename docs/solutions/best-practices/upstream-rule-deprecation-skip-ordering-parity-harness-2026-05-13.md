@@ -37,7 +37,7 @@ via `buf config ls-lint-rules --include-deprecated --format json`:
 `categories: []`, `deprecated: true`). Protokit retained
 `imports/no-weak` because the `weak` import keyword is still in the
 protobuf descriptor format — buf's deprecation reflects buf's product
-judgment, not a change in the underlying protobuf semantics.
+judgment, not a change in the underlying protobuf semantics. (provenance — verified against buf v1.69.0 via `buf config ls-lint-rules --include-deprecated`; the parity harness skips this rule rather than re-asserting it live, so re-confirm the `deprecated: true` status on each pin bump)
 
 When the harness invokes `buf lint` with a `buf.yaml` containing
 `use: [IMPORT_NO_WEAK]`, buf exits 1 with stderr:

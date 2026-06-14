@@ -59,7 +59,7 @@ The iterative form uses an explicit work stack with `(node, iter(sorted(children
 
 ### Why per-import-edge emission, not per-root-file fan-out
 
-The brainstorm + plan PD-6 originally bound the emission shape to "per-root-file fan-out: each root file in an SCC of size ≥ 2 gets one finding." Phase 0 of U3 empirically verified buf v1.69.0's actual behavior is **per-import-edge**: one finding per cycle-closing `import` statement, pointing at the import's line/column. Sibling "leaf" files in cyclic packages that don't have cycle-closing imports themselves do NOT emit findings.
+The brainstorm + plan PD-6 originally bound the emission shape to "per-root-file fan-out: each root file in an SCC of size ≥ 2 gets one finding." Phase 0 of U3 empirically verified buf v1.69.0's actual behavior is **per-import-edge**: one finding per cycle-closing `import` statement, pointing at the import's line/column. Sibling "leaf" files in cyclic packages that don't have cycle-closing imports themselves do NOT emit findings. (provenance — verified against buf v1.69.0; current behavior re-asserted by `tests/parity/test_parity_package_no_import_cycle.py` byte-matching the recorded snapshots, and the CI parity job against live buf.)
 
 The plan was revised (commit `f5ab8c5`) to bind PD-6/PD-7/PD-8 to per-import-edge granularity. The `leaf_files_in_cyclic_pkg` fixture pins this as a regression guard.
 
@@ -67,7 +67,7 @@ The general lesson: **buf-parity emission shape is empirical, not derivable from
 
 ### Why forward cycle traversal, not Tarjan member order
 
-Tarjan SCC returns members in reverse DFS-finish order. For a 3-package cycle `A → B → C → A`, Tarjan may return `['C', 'B', 'A']`. Buf v1.69.0 renders the cycle following actual import edges: `"Package import cycle: acme.a -> acme.b -> acme.c -> acme.a"`. Simple rotation of Tarjan's output gives `"acme.a -> acme.c -> acme.b -> acme.a"` (wrong direction).
+Tarjan SCC returns members in reverse DFS-finish order. For a 3-package cycle `A → B → C → A`, Tarjan may return `['C', 'B', 'A']`. Buf v1.69.0 renders the cycle following actual import edges: `"Package import cycle: acme.a -> acme.b -> acme.c -> acme.a"` (provenance — verified against buf v1.69.0; this exact rendering is pinned by the recorded snapshot and re-asserted by `tests/parity/test_parity_package_no_import_cycle.py`, with the CI parity job re-verifying against live buf). Simple rotation of Tarjan's output gives `"acme.a -> acme.c -> acme.b -> acme.a"` (wrong direction).
 
 The fix is a separate helper (`_walk_cycle_forward`) that does DFS within the SCC following the actual graph edges, starting at the source file's package and closing back to it. The helper is iterative (per the recursion-limit discipline above).
 

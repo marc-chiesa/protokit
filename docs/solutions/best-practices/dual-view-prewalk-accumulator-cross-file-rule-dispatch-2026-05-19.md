@@ -127,7 +127,7 @@ finally:
     self._current_directory_packages_by_dir = None
 ```
 
-**Scope the accumulator to `root_files`, NOT `pool_file_names`.** This is a deliberate divergence from the sibling `_build_package_options_accumulator` (R7), which iterates `pool_file_names` for cross-import language-namespace conflicts. buf v1.69.0 does NOT cross-fire `PACKAGE_SAME_DIRECTORY` / `DIRECTORY_SAME_PACKAGE` across module boundaries; restricting to `root_files` matches the reference tool's empirical behavior. The KTD-4 (d) empirical correction is itself an instance of audit-wire-format-before-claiming-sibling-parity-2026-05-03 — the brainstorm originally assumed R8 would mirror R7's pool-scope; empirical verification at brainstorm time inverted the decision.
+**Scope the accumulator to `root_files`, NOT `pool_file_names`.** This is a deliberate divergence from the sibling `_build_package_options_accumulator` (R7), which iterates `pool_file_names` for cross-import language-namespace conflicts. buf v1.69.0 does NOT cross-fire `PACKAGE_SAME_DIRECTORY` / `DIRECTORY_SAME_PACKAGE` across module boundaries; restricting to `root_files` matches the reference tool's empirical behavior (provenance — verified against buf v1.69.0; current behavior re-asserted by the CI parity job). The KTD-4 (d) empirical correction is itself an instance of audit-wire-format-before-claiming-sibling-parity-2026-05-03 — the brainstorm originally assumed R8 would mirror R7's pool-scope; empirical verification at brainstorm time inverted the decision.
 
 The counterfactual is documented in the engine.py method docstring: "Correcting this back to `pool_file_names` would cause R8/R8b to fire on transitively-imported files outside the user's control — spurious findings on every `vendor/`-style import."
 
