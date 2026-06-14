@@ -460,7 +460,7 @@ interpolated slot" extended principle above asserts that every
 That principle is necessary but not sufficient when a slot also
 needs **structural** escaping for wire-format byte-parity with an
 external tool (e.g., the `\"` escape that buf v1.69.0 inserts for
-inner quote characters in its NDJSON `message` field).
+inner quote characters in its NDJSON `message` field) (provenance — verified against buf v1.69.0; current behavior re-asserted by the CI parity job).
 
 Structural escaping and control-char neutralization are
 **complementary layers**, not alternatives. They serve different

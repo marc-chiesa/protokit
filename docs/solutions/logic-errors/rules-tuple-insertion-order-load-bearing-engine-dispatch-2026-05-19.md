@@ -45,7 +45,7 @@ Result: the position of a `@lint_rule`-decorated function within its pack's `RUL
   got ['package/same-directory', 'package/directory-same-package']
   ```
 
-- U3's empirical parity gate against buf v1.69.0 would have failed byte-comparison on any co-fire fixture (R8 + R8b firing on a shared file), since buf emits `DIRECTORY_SAME_PACKAGE` before `PACKAGE_SAME_DIRECTORY` per its own alphabetic-on-rule-id convention.
+- U3's empirical parity gate against buf v1.69.0 would have failed byte-comparison on any co-fire fixture (R8 + R8b firing on a shared file), since buf emits `DIRECTORY_SAME_PACKAGE` before `PACKAGE_SAME_DIRECTORY` per its own alphabetic-on-rule-id convention (provenance — buf v1.69.0; ratchet anchor pinned by the recorded NDJSON snapshots in tests/schema/lint/test_buf_smoke_recorded_checksums_package_directory.py — do not bump).
 - No runtime failure prior to the test addition — the bug was latent until an invariant-pin test exercised the cofire boundary.
 
 ## What Didn't Work

@@ -29,7 +29,7 @@ tags:
 
 protokit's storage layer already had a "faithful view" for proto→JSON (PR2): a rendering that mirrors proto3 presence semantics rather than naively dumping fields (see [Faithful proto-to-JSON field projection](proto-json-field-projection-presence-class-fill-then-prune-2026-06-01.md)). PR3 extends faithful representation to proto→Arrow/Parquet (`src/protokit/storage/_columnar.py`).
 
-The naive expectation — "the faithful view is the faithful view, so Parquet values should match the JSON output" — is wrong, and that is the central trap. Fidelity in a columnar export is **two independent axes with separate contracts**. All mappings below were verified against ptars 0.0.17 on the engine's real isolated-pool path on 2026-06-02 (brainstorm R5/R6/R7/R13).
+The naive expectation — "the faithful view is the faithful view, so Parquet values should match the JSON output" — is wrong, and that is the central trap. Fidelity in a columnar export is **two independent axes with separate contracts**. All mappings below were verified against ptars 0.0.17 on the engine's real isolated-pool path on 2026-06-02 (brainstorm R5/R6/R7/R13) (provenance — verified against ptars 0.0.17; current behavior re-asserted by the `storage-parquet` CI job running `tests/storage` against the pinned extra).
 
 ## Guidance
 

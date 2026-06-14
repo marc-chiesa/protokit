@@ -155,7 +155,8 @@ jobs:
             src/protokit/message/pytest_plugin.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
-            src/protokit/storage/
+            src/protokit/storage/ \
+            scripts/check_docs_test_refs.py
 
       - name: Run test suite
         run: pytest tests/ -v
@@ -424,3 +425,39 @@ jobs:
         env:
           BUF_BINARY: /usr/local/bin/buf
         run: pytest tests/parity/ -m parity -v
+
+  # =====================================================================
+  # docs-refs job — non-blocking reference-drift report (plan U1/U2).
+  # =====================================================================
+  #
+  # When a test file is renamed or removed on this branch, surface the
+  # docs/solutions/ learnings that name its old path, for human triage
+  # (navigational pointer -> update; intentional/historical -> leave).
+  # Reports to the job summary; it NEVER fails the build (plan R2/R3/SC3)
+  # -- the script always exits 0 and no step gates on its output.
+  # fetch-depth: 0 is load-bearing: the default shallow checkout has no
+  # merge-base for the `<base>...HEAD` diff.
+  docs-refs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history for base diff)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Reference-drift report
+        # Resolve the PR base (origin/<base_ref>); fall back to
+        # origin/main for non-PR pushes. Reads only git + docs/solutions/
+        # -- stdlib only, so no package install is needed.
+        run: |
+          base="origin/${{ github.base_ref }}"
+          if ! git rev-parse --verify "$base" >/dev/null 2>&1; then
+            base="origin/main"
+          fi
+          python scripts/check_docs_test_refs.py "$base"

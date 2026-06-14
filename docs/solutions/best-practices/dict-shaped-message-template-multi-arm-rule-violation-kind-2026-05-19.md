@@ -31,7 +31,7 @@ tags:
 
 ## Context
 
-R8b (`package/directory-same-package`, D6c U2) ships with **two structurally distinct emit arms** empirically locked against buf v1.69.0:
+R8b (`package/directory-same-package`, D6c U2) ships with **two structurally distinct emit arms** empirically locked against buf v1.69.0 (provenance — verified against buf v1.69.0; current behavior re-asserted by the CI parity job, `tests/parity/test_parity_package_directory.py` + the recorded-snapshot byte-match gate):
 
 - **Standard arm**: `Multiple packages "X,Y[,Z]" detected within directory "Z".` — fires when all packages in a directory are declared.
 - **Empty-mixed arm**: `Package "X" and file with no package detected within directory "Y".` — fires when declared and packageless files co-occur in the same directory.
