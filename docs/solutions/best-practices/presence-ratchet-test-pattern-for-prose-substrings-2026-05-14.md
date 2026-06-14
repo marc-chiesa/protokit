@@ -41,7 +41,7 @@ that pin stability-bearing surfaces against silent regression:
    [[pytest-static-analysis-gate-ratchet]] for the
    file-set-membership variant.
 2. **Structural pin** —
-   `tests/schema/lint/cli/test_severities_user_wins_structural.py`
+   `tests/schema/lint/cli/test_r9a_severities_overlay.py`
    uses `inspect.getsource()` to assert the user-wins
    dict-spread order in `cli.py` evaluates user-severities AFTER
    profile-defaults. See
