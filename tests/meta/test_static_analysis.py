@@ -62,6 +62,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "tests/message/test_set_comparison.py",
     "tests/meta/test_static_analysis.py",
     "tests/meta/test_docs_test_refs.py",
+    "tests/meta/test_drift_defense_convention_presence_ratchet.py",
     "scripts/check_docs_test_refs.py",
 )
 
