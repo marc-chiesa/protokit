@@ -61,6 +61,8 @@ _LINT_PATHS: tuple[str, ...] = (
     "tests/meta/test_pytest_policy.py",
     "tests/message/test_set_comparison.py",
     "tests/meta/test_static_analysis.py",
+    "tests/meta/test_docs_test_refs.py",
+    "scripts/check_docs_test_refs.py",
 )
 
 # Paths gated by ``mypy --strict`` (configuration in pyproject.toml).
@@ -78,6 +80,7 @@ _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/storage",
+    "scripts/check_docs_test_refs.py",
 )
 
 
