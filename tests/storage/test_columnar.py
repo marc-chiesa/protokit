@@ -8,6 +8,8 @@ covered separately in ``test_columnar_extra.py`` (which does not importorskip).
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 pytest.importorskip("ptars")
@@ -758,3 +760,84 @@ def test_decode_fault_takes_precedence_over_fidelity(tmp_path):  # AE8
     with pytest.raises(IncompleteScanError):
         to_parquet(src, reg, out, stream_id="s", fidelity="error")
     assert not out.exists()
+
+
+# --- R9: the signal agrees with ptars's column disposition, end to end --------
+#
+# The probe runs on the parsed Python message; ptars converts a re-serialization
+# of it. R9 pins that the two stay consistent against the *actual* conversion,
+# not just a SerializeToString round-trip: an undeclared field is dropped from
+# the Parquet AND flagged; an out-of-range closed enum is present in the column
+# as a raw int AND flagged.
+
+
+def test_r9_pin_undeclared_field_dropped_and_flagged(tmp_path):
+    reg = _fid_registry()
+    out = tmp_path / "r9a.parquet"
+    report = to_parquet([("s", _unmodeled_bytes(1, 99))], reg, out, stream_id="s")
+    table = pq.read_table(out)
+    assert table.schema.names == ["id"]  # the undeclared field is NOT a column
+    assert report.unmodeled_records == 1  # ...and the signal flagged the loss
+
+
+def _fid_proto2_enum_fds():
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "p2.proto", "p2", "proto2"
+    en = f.enum_type.add()
+    en.name = "Color"
+    for n, num in (("UNSET", 0), ("RED", 1), ("GREEN", 2), ("BLUE", 3)):
+        v = en.value.add()
+        v.name, v.number = n, num
+    m = f.message_type.add()
+    m.name = "E"
+    fld = m.field.add()
+    fld.name, fld.number, fld.type = "c", 1, F.TYPE_ENUM
+    fld.type_name, fld.label = ".p2.Color", F.LABEL_OPTIONAL
+    return fds
+
+
+def test_r9_pin_out_of_range_closed_enum_present_and_flagged(tmp_path):
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_fid_proto2_enum_fds(), "p2.E"))
+    out = tmp_path / "r9b.parquet"
+    # wire 08 08: a proto2 closed enum set to 8, outside the valid 0-3 set. A
+    # protobuf reader relegates it (HasField=False, default 0); ptars surfaces
+    # the raw int in the column. The probe flags the divergence.
+    report = to_parquet([("s", bytes([0x08, 0x08]))], reg, out, stream_id="s")
+    assert pq.read_table(out).column("c").to_pylist() == [8]  # raw int, present
+    assert report.unmodeled_records == 1  # ...and the signal flagged it
+
+
+@pytest.mark.skipif(
+    not os.environ.get("PROTOKIT_BENCH"),
+    reason="opt-in cost benchmark (set PROTOKIT_BENCH=1); not a CI gate (U6/R10)",
+)
+def test_fidelity_probe_cost_benchmark(tmp_path):
+    """Measure the warn-tier probe's marginal cost vs ignore on a nested feed.
+
+    Run pre-merge (``PROTOKIT_BENCH=1 pytest -k cost_benchmark -s``); record the
+    ratio in the PR. Informs whether the ``warn``-on-by-default posture holds or
+    falls back to ``ignore``-default (origin R10).
+    """
+    import time
+
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    src = _source("events", _make_events(msg_cls, 20_000))  # nested: Meta, attrs, WKT
+
+    def run(fidelity):
+        t0 = time.perf_counter()
+        to_parquet(
+            src, reg, tmp_path / f"b_{fidelity}.parquet", stream_id="events", fidelity=fidelity
+        )
+        return time.perf_counter() - t0
+
+    run("ignore")  # warm caches
+    off = min(run("ignore") for _ in range(3))
+    on = min(run("warn") for _ in range(3))
+    ratio = on / off
+    print(
+        f"\nfidelity probe cost: ignore={off * 1000:.1f}ms "
+        f"warn={on * 1000:.1f}ms ratio={ratio:.2f}x"
+    )
