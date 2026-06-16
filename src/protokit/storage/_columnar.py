@@ -43,6 +43,7 @@ import contextlib
 import importlib.util
 import os
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
@@ -208,6 +209,63 @@ class UnsupportedWktError(StorageError):
             f"), which has no Arrow/Parquet representation; the columnar path "
             f"does not support it"
         )
+
+
+class FidelityError(StorageError):
+    """The scan carried unmodeled wire data and ``fidelity='error'`` was set.
+
+    Under ``fidelity='error'`` a record that carried wire data the descriptor
+    does not model — a proto2 out-of-range closed-enum value, or an *undeclared*
+    unknown/extension field — fails the conversion loud rather than writing a
+    Parquet that silently diverges from what a protobuf consumer would see. The
+    partial output is discarded, like :class:`IncompleteScanError` (R14
+    all-or-nothing publish). It is a *distinct* error channel from
+    ``IncompleteScanError``: that signals records that failed to **decode**,
+    whereas a fidelity fault is a cleanly-decoded record that carried unmodeled
+    bytes.
+
+    Attributes:
+        unmodeled_records: how many records carried unmodeled wire data.
+        unmodeled_bytes: total unmodeled bytes across those records.
+    """
+
+    def __init__(self, unmodeled_records: int, unmodeled_bytes: int) -> None:
+        self.unmodeled_records = unmodeled_records
+        self.unmodeled_bytes = unmodeled_bytes
+        super().__init__(
+            f"scan carried unmodeled wire data and fidelity='error': "
+            f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) the "
+            f"descriptor does not model; the Parquet output is withheld (use "
+            f"fidelity='warn' to write it and surface the count instead)"
+        )
+
+
+@dataclass(frozen=True)
+class FidelityReport:
+    """Result of a columnar conversion: rows written plus the fidelity signal.
+
+    Returned by :func:`to_parquet` (replacing its former bare ``int`` row count).
+    ``rows`` is the number of records written. The fidelity signal counts records
+    that carried wire data the descriptor does not model (a non-empty recursive
+    unknown-field set) and the total such bytes.
+
+    ``measured`` distinguishes a *measured zero* from *not measured*: under
+    ``fidelity='ignore'`` the per-record probe does not run, so ``measured`` is
+    ``False`` and the counts are ``0`` by convention (not a real observation).
+    Under ``fidelity='warn'`` / ``'error'`` ``measured`` is ``True`` and the
+    counts are real — check ``measured`` before reading them.
+
+    Attributes:
+        rows: records written to the output.
+        measured: whether fidelity detection ran (``False`` under ``'ignore'``).
+        unmodeled_records: records carrying unmodeled wire data (``0`` if not measured).
+        unmodeled_bytes: total unmodeled bytes across those records (``0`` if not measured).
+    """
+
+    rows: int
+    measured: bool
+    unmodeled_records: int
+    unmodeled_bytes: int
 
 
 def _require_parquet() -> None:

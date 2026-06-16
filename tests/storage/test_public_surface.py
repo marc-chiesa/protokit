@@ -38,8 +38,15 @@ class TestPublicImports:
     def test_core_names_resolve_from_top_level(self) -> None:
         # The import block at module top already exercises resolution; assert a
         # representative slice is present on the package object too.
-        for name in ("scan", "Source", "StreamRegistry", "FrameError",
-                     "SchemaSource", "ScanRecord", "ScanResult"):
+        for name in (
+            "scan",
+            "Source",
+            "StreamRegistry",
+            "FrameError",
+            "SchemaSource",
+            "ScanRecord",
+            "ScanResult",
+        ):
             assert hasattr(storage, name), name
 
     def test_all_is_sorted_and_fully_importable(self) -> None:
@@ -210,6 +217,36 @@ class TestRecursiveRejectionSurfaceAdditions:
         # The walker, the reject helper, and the WKT-file constant are internal.
         for name in ("_find_recursive_cycle", "_reject_recursive", "_STRUCT_PROTO_FILE"):
             assert name not in storage.__all__, name
+
+
+class TestFidelitySignalSurfaceAdditions:
+    def test_new_public_symbols_resolve(self) -> None:
+        # The columnar fidelity-signal delivery adds a typed exception + a report.
+        for name in ("FidelityError", "FidelityReport"):
+            assert hasattr(storage, name), name
+            assert name in storage.__all__, name
+
+    def test_all_stays_sorted(self) -> None:
+        assert storage.__all__ == sorted(storage.__all__)
+
+    def test_fidelity_error_is_a_storage_error(self) -> None:
+        from protokit.storage import FidelityError, StorageError
+
+        assert issubclass(FidelityError, StorageError)
+
+    def test_fidelity_report_is_a_frozen_dataclass(self) -> None:
+        import dataclasses
+
+        from protokit.storage import FidelityReport
+
+        assert dataclasses.is_dataclass(FidelityReport)
+        assert FidelityReport.__dataclass_params__.frozen is True
+        report = FidelityReport(rows=3, measured=True, unmodeled_records=1, unmodeled_bytes=2)
+        assert (report.rows, report.measured, report.unmodeled_records) == (3, True, 1)
+
+    def test_fidelity_internals_not_exported(self) -> None:
+        # The per-record probe is internal.
+        assert "_unmodeled_byte_delta" not in storage.__all__
 
 
 class TestReadmeDocsPresence:
