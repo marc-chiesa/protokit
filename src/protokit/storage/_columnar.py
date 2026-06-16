@@ -151,6 +151,58 @@ class IncompleteScanError(StorageError):
         )
 
 
+class RecursiveSchemaError(StorageError):
+    """A bound message type is recursive, so the columnar path rejects it.
+
+    Arrow/Parquet schemas are finite, acyclic type trees: a self-referential
+    message — directly, mutually, or through map / group / oneof message fields
+    — has no columnar representation, and ptars segfaults building one. The
+    pre-flight detects the cycle on the descriptor graph before ptars is invoked
+    (R12), so this raises before any output exists.
+
+    Attributes:
+        type_name: The bound message type's fully-qualified name.
+        cycle: The fully-qualified names forming the cycle, with the repeated
+            type at both ends (e.g. ``("t.Node", "t.Node")``).
+    """
+
+    def __init__(self, type_name: str, cycle: tuple[str, ...]) -> None:
+        self.type_name = type_name
+        self.cycle = tuple(cycle)
+        super().__init__(
+            f"message type {type_name!r} is recursive and cannot be represented "
+            f"in Arrow/Parquet (cycle: {' -> '.join(cycle)}); recursive message "
+            f"types are not supported by the columnar path"
+        )
+
+
+class UnsupportedWktError(StorageError):
+    """A bound message embeds a recursive well-known type with no columnar form.
+
+    ``google.protobuf.Struct`` / ``Value`` / ``ListValue`` are mutually
+    recursive (``Struct -> Value -> Struct``) and segfault ptars 0.0.17's schema
+    build, exactly like a user-authored recursive type. They are split from
+    :class:`RecursiveSchemaError` so the failure reads as an unsupported
+    well-known type — the user did not write a recursive schema — rather than as
+    their own recursion, keeping the columnar go/no-go signal honest about what
+    actually blocks real data.
+
+    Attributes:
+        type_name: The bound message type's fully-qualified name.
+        cycle: The recursive well-known-type cycle reached from it.
+    """
+
+    def __init__(self, type_name: str, cycle: tuple[str, ...]) -> None:
+        self.type_name = type_name
+        self.cycle = tuple(cycle)
+        super().__init__(
+            f"message type {type_name!r} embeds the recursive well-known type "
+            f"google.protobuf.Struct/Value/ListValue (cycle: {' -> '.join(cycle)}"
+            f"), which has no Arrow/Parquet representation; the columnar path "
+            f"does not support it"
+        )
+
+
 def _require_parquet() -> None:
     """Raise :class:`ParquetExtraNotInstalledError` if the extra is absent.
 
@@ -259,6 +311,24 @@ def _find_recursive_cycle(
     return None
 
 
+def _reject_recursive(descriptor: Descriptor) -> None:
+    """Raise if ``descriptor``'s reachable type graph contains a cycle.
+
+    Runs before ptars sees the descriptor (KTD2): a recursive type segfaults
+    ptars 0.0.17's schema build — an uncatchable process death — so the only fix
+    is to detect and reject it in Python first. The recursive ``google.protobuf``
+    struct family raises :class:`UnsupportedWktError`; every other cycle raises
+    :class:`RecursiveSchemaError`.
+    """
+    found = _find_recursive_cycle(descriptor)
+    if found is None:
+        return
+    cycle, is_wkt = found
+    if is_wkt:
+        raise UnsupportedWktError(descriptor.full_name, tuple(cycle))
+    raise RecursiveSchemaError(descriptor.full_name, tuple(cycle))
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
@@ -272,6 +342,12 @@ class _PtarsConversionAdapter:
         import ptars  # lazy: only when the extra is present (R8)
 
         self._descriptor = descriptor
+        # Reject a recursive descriptor before ptars sees it: ptars 0.0.17
+        # segfaults building an Arrow schema for a self-referential type, an
+        # uncatchable process death that bypasses the HandlerBuildError net
+        # below and the writer's partial-file cleanup. This is the load-bearing
+        # third disposal layer (KTD2).
+        _reject_recursive(descriptor)
         files = _transitive_file_descriptors(descriptor)
         try:
             self._pool = ptars.HandlerPool(

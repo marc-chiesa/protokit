@@ -13,13 +13,21 @@ import pytest
 pytest.importorskip("ptars")
 pa = pytest.importorskip("pyarrow")
 import pyarrow.parquet as pq  # noqa: E402 - after importorskip by design
-from google.protobuf import any_pb2, descriptor_pb2, timestamp_pb2  # noqa: E402
+from google.protobuf import (  # noqa: E402
+    any_pb2,
+    descriptor_pb2,
+    struct_pb2,
+    timestamp_pb2,
+)
 
 from protokit.storage import (  # noqa: E402
     HandlerBuildError,
     IncompleteScanError,
+    RecursiveSchemaError,
     SchemaMismatchError,
+    StorageError,
     UnknownStreamError,
+    UnsupportedWktError,
     to_arrow_batches,
     to_parquet,
 )
@@ -448,6 +456,130 @@ def test_cross_batch_schema_drift_raises_runtime_error():
     adapter._pool = _DriftPool()
     with pytest.raises(RuntimeError, match="drifted"):
         adapter.to_record_batch([msg_cls(id=1)])
+
+
+# --- recursive-schema rejection: pre-flight before ptars (U2) -----------------
+
+
+def _recursive_fds():
+    """A single recursive message ``n.Node { repeated Node children }``."""
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "node.proto", "n", "proto3"
+    node = f.message_type.add()
+    node.name = "Node"
+    fld = node.field.add()
+    fld.name, fld.number, fld.type, fld.label = (
+        "children", 1, F.TYPE_MESSAGE, F.LABEL_REPEATED,
+    )
+    fld.type_name = ".n.Node"
+    return fds
+
+
+def _mutual_fds():
+    """Mutually recursive ``p.A { B b }`` / ``p.B { A a }``."""
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "ab.proto", "p", "proto3"
+    a = f.message_type.add()
+    a.name = "A"
+    fa = a.field.add()
+    fa.name, fa.number, fa.type, fa.label = "b", 1, F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    fa.type_name = ".p.B"
+    b = f.message_type.add()
+    b.name = "B"
+    fb = b.field.add()
+    fb.name, fb.number, fb.type, fb.label = "a", 1, F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    fb.type_name = ".p.A"
+    return fds
+
+
+def _wkt_embed_fds(wkt_module, wkt_type, holder="Holder"):
+    """A message with one field of the given well-known type."""
+    fds = descriptor_pb2.FileDescriptorSet()
+    wkt_module.DESCRIPTOR.CopyToProto(fds.file.add())
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "u.proto", "u", "proto3"
+    f.dependency.append(wkt_module.DESCRIPTOR.name)
+    h = f.message_type.add()
+    h.name = holder
+    fld = h.field.add()
+    fld.name, fld.number, fld.type, fld.label = "w", 1, F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    fld.type_name = f".google.protobuf.{wkt_type}"
+    return fds
+
+
+def _reg(fds, type_name, stream="s"):
+    reg = StreamRegistry()
+    reg.register_stream(stream, FileDescriptorSetSchema(fds, type_name))
+    return reg
+
+
+def test_recursive_self_ref_rejected_before_file(tmp_path):
+    reg = _reg(_recursive_fds(), "n.Node")
+    out = tmp_path / "r.parquet"
+    with pytest.raises(RecursiveSchemaError):
+        to_parquet([], reg, out, stream_id="s")
+    assert not out.exists()  # rejected before the writer opens -> no file
+
+
+def test_recursive_error_carries_cycle(tmp_path):
+    reg = _reg(_recursive_fds(), "n.Node")
+    with pytest.raises(RecursiveSchemaError) as excinfo:
+        to_parquet([], reg, tmp_path / "r.parquet", stream_id="s")
+    err = excinfo.value
+    assert err.type_name == "n.Node"
+    # length-1 (root self-reference) cycle renders both ends explicitly
+    assert err.cycle == ("n.Node", "n.Node")
+    assert "n.Node -> n.Node" in str(err)
+
+
+def test_mutual_recursion_rejected(tmp_path):
+    reg = _reg(_mutual_fds(), "p.A")
+    with pytest.raises(RecursiveSchemaError) as excinfo:
+        to_parquet([], reg, tmp_path / "m.parquet", stream_id="s")
+    assert "p.A -> p.B -> p.A" in str(excinfo.value)
+
+
+def test_unused_recursive_field_still_rejected(tmp_path):
+    # The recursive field is never populated, but rejection is type-level: the
+    # adapter is built (and rejects) before any record is examined.
+    reg = _reg(_recursive_fds(), "n.Node")
+    msg = reg.get("s").message_class()  # no children set
+    with pytest.raises(RecursiveSchemaError):
+        to_parquet(_source("s", [msg]), reg, tmp_path / "u.parquet", stream_id="s")
+
+
+def test_to_arrow_batches_rejects_on_first_consumption():
+    reg = _reg(_recursive_fds(), "n.Node")
+    gen = to_arrow_batches([], reg, stream_id="s")  # generator: body not yet run
+    with pytest.raises(RecursiveSchemaError):
+        list(gen)
+
+
+def test_struct_embed_rejected_as_unsupported_wkt(tmp_path):
+    reg = _reg(_wkt_embed_fds(struct_pb2, "Struct", holder="HasStruct"), "u.HasStruct")
+    out = tmp_path / "s.parquet"
+    with pytest.raises(UnsupportedWktError) as excinfo:
+        to_parquet([], reg, out, stream_id="s")
+    assert excinfo.value.type_name == "u.HasStruct"
+    assert "google.protobuf.Struct" in str(excinfo.value)
+    assert not out.exists()
+
+
+def test_non_recursive_wkt_embed_converts(tmp_path):
+    reg = _reg(_wkt_embed_fds(timestamp_pb2, "Timestamp", holder="HasTs"), "u.HasTs")
+    msg = reg.get("s").message_class()
+    msg.w.seconds = 5
+    out = tmp_path / "t.parquet"
+    rows = to_parquet(_source("s", [msg]), reg, out, stream_id="s")
+    assert rows == 1
+    assert out.exists()
+
+
+def test_recursive_errors_are_storage_errors():
+    assert issubclass(RecursiveSchemaError, StorageError)
+    assert issubclass(UnsupportedWktError, StorageError)
 
 
 # --- _transitive_file_descriptors: deduped + dependency-ordered ---------------
