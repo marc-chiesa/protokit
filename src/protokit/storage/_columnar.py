@@ -37,7 +37,7 @@ import os
 from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Literal
 
-from google.protobuf.descriptor import Descriptor, FileDescriptor
+from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
 from google.protobuf.message import Message
 
 from protokit.storage.engine import ScanRecord, scan
@@ -193,6 +193,70 @@ def _transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]
 
     visit(descriptor.file)
     return ordered
+
+
+# The recursive well-known types live in this one file. ptars 0.0.17 segfaults
+# building an Arrow schema for any of them (Struct -> Value -> Struct has no
+# finite columnar shape), so a cycle whose every node is declared here is the
+# unsupported-WKT case, distinct from a user-authored recursive schema.
+_STRUCT_PROTO_FILE = "google/protobuf/struct.proto"
+
+_MESSAGE_FIELD_TYPES = frozenset(
+    (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP)
+)
+
+
+def _find_recursive_cycle(
+    descriptor: Descriptor,
+) -> tuple[list[str], bool] | None:
+    """Find a message-type cycle reachable from ``descriptor``.
+
+    Returns ``(cycle, is_wkt_family)`` where ``cycle`` is the list of
+    fully-qualified type names forming the cycle — the repeated type appears at
+    both ends, e.g. ``["t.Node", "t.Node"]`` or ``["p.A", "p.B", "p.A"]`` — and
+    ``is_wkt_family`` is true when every node on the cycle is declared in
+    ``struct.proto`` (the recursive ``google.protobuf.Struct`` / ``Value`` /
+    ``ListValue`` family). Returns ``None`` when the reachable type graph is
+    acyclic.
+
+    The walk is an iterative DFS (no Python recursion — a recursive walk would
+    reintroduce a ``RecursionError`` on a self-referential type, the very class
+    of uncatchable failure this guard exists to remove). A path-scoped
+    ``in_progress`` set, popped on backtrack via a ``leave`` sentinel, means a
+    DAG diamond — a type reached by two non-cyclic paths — is not a cycle; only
+    a type reached while still on the current path is. Map fields need no
+    special handling: the synthetic map-entry message is an ordinary node whose
+    ``value`` field is walked like any other. Every message- or group-typed
+    field is descended into exactly once per node, so a map entry is not also
+    walked a second time.
+    """
+    on_path: list[Descriptor] = []  # descriptors on the current DFS path
+    in_progress: set[str] = set()  # their full_names, for O(1) membership
+    # Stack entries: ("enter", Descriptor) or ("leave", Descriptor).
+    stack: list[tuple[str, Descriptor]] = [("enter", descriptor)]
+    while stack:
+        action, node = stack.pop()
+        if action == "leave":
+            in_progress.discard(node.full_name)
+            on_path.pop()
+            continue
+        if node.full_name in in_progress:
+            start = next(
+                i for i, d in enumerate(on_path) if d.full_name == node.full_name
+            )
+            cycle_descs = on_path[start:] + [node]
+            cycle = [d.full_name for d in cycle_descs]
+            is_wkt = all(d.file.name == _STRUCT_PROTO_FILE for d in cycle_descs)
+            return cycle, is_wkt
+        in_progress.add(node.full_name)
+        on_path.append(node)
+        stack.append(("leave", node))
+        for field in node.fields:
+            if field.is_extension:
+                continue
+            if field.type in _MESSAGE_FIELD_TYPES:
+                stack.append(("enter", field.message_type))
+    return None
 
 
 class _PtarsConversionAdapter:
