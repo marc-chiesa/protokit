@@ -8,6 +8,7 @@ covered separately in ``test_columnar_extra.py`` (which does not importorskip).
 
 from __future__ import annotations
 
+import functools
 import os
 
 import pytest
@@ -660,7 +661,10 @@ def _fid_registry():
     return reg
 
 
+@functools.lru_cache(maxsize=1)
 def _full_m_class():
+    # Memoized: the full-M class is shared by _unmodeled_bytes/_modeled_bytes
+    # across every fidelity test, so the pool is built once, not per call.
     reg = StreamRegistry()
     reg.register_stream("s", FileDescriptorSetSchema(_fid_fds(with_extra=True), "fid.M"))
     return reg.get("s").message_class
@@ -684,7 +688,8 @@ def test_fidelity_warn_default_surfaces_count(tmp_path):  # AE10, AE9, AE1
     assert report.measured is True
     assert report.rows == 2
     assert report.unmodeled_records == 1
-    assert report.unmodeled_bytes > 0
+    # exact: the unknown field #50 (tag 0x90 0x03) + varint 99 (0x63) = 3 bytes
+    assert report.unmodeled_bytes == 3
     assert out.exists()  # warn writes the file regardless
     # conversion proceeds unchanged: the modeled `id` is present in the column
     assert pq.read_table(out).column("id").to_pylist() == [1, 2]
@@ -841,3 +846,15 @@ def test_fidelity_probe_cost_benchmark(tmp_path):
         f"\nfidelity probe cost: ignore={off * 1000:.1f}ms "
         f"warn={on * 1000:.1f}ms ratio={ratio:.2f}x"
     )
+
+
+def test_fidelity_accumulates_across_batches(tmp_path):
+    # batch_size=1 forces three separate chunk iterations; the loop-local
+    # accumulator must sum records and bytes across all of them.
+    reg = _fid_registry()
+    src = [("s", _unmodeled_bytes(i, 99)) for i in range(3)]
+    out = tmp_path / "multi.parquet"
+    report = to_parquet(src, reg, out, stream_id="s", batch_size=1)
+    assert report.rows == 3
+    assert report.unmodeled_records == 3
+    assert report.unmodeled_bytes == 9  # 3 bytes each, summed across 3 batches

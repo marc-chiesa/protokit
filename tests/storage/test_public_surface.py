@@ -221,8 +221,9 @@ class TestRecursiveRejectionSurfaceAdditions:
 
 class TestFidelitySignalSurfaceAdditions:
     def test_new_public_symbols_resolve(self) -> None:
-        # The columnar fidelity-signal delivery adds a typed exception + a report.
-        for name in ("FidelityError", "FidelityReport"):
+        # The columnar fidelity-signal delivery adds a policy alias, a typed
+        # exception, and a report.
+        for name in ("Fidelity", "FidelityError", "FidelityReport"):
             assert hasattr(storage, name), name
             assert name in storage.__all__, name
 

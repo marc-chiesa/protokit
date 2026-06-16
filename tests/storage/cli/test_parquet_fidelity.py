@@ -22,7 +22,7 @@ import pyarrow.parquet as pq  # noqa: E402 - after importorskip by design
 from click.testing import CliRunner  # noqa: E402
 
 from protokit.cli import main  # noqa: E402
-from tests.storage.cli.conftest import pq_cmd  # noqa: E402
+from tests.storage.cli.conftest import cmd, pq_cmd  # noqa: E402
 
 # Wire bytes for an unknown field #50 (varint 99): tag (50<<3)|0 = 400 -> 0x90 0x03,
 # value 0x63. Appended to a serialized a.A so the record carries data the descriptor
@@ -104,6 +104,8 @@ def test_error_fails_and_writes_nothing(
     assert result.exit_code == 2
     assert result.stdout == ""
     assert "fidelity check failed" in result.stderr
+    assert "1 record(s)" in result.stderr  # the count reaches the operator
+    assert "byte(s)" in result.stderr
     assert not out.exists()  # all-or-nothing: nothing published
     assert _no_partial_left(tmp_path)  # and no temp left behind
 
@@ -134,3 +136,17 @@ def test_invalid_fidelity_value_rejected(
     result = _run(runner, pq_cmd(data, desc, out, "--fidelity", "bogus"))
     assert result.exit_code == 2  # click usage error
     assert not out.exists()
+
+
+def test_fidelity_rejected_without_parquet(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    # --fidelity only governs parquet output; passing it on a text format must
+    # fail up front, not silently no-op a data-integrity gate.
+    desc, cls = desc_and_cls
+    data = data_file_factory([cls(x=1).SerializeToString()])
+    result = _run(runner, cmd("scan", data, desc, "--fidelity", "error"))
+    assert result.exit_code == 2
+    assert "only valid with --format parquet" in result.stderr

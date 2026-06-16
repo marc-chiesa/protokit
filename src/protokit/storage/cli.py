@@ -66,6 +66,7 @@ from google.protobuf.message import DecodeError, Message
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
 from protokit.storage import (
+    Fidelity,
     FidelityError,
     FidelityReport,
     FrameError,
@@ -80,7 +81,7 @@ from protokit.storage import (
     scan,
     to_parquet,
 )
-from protokit.storage._columnar import Fidelity, _require_parquet
+from protokit.storage._columnar import _require_parquet
 from protokit.storage._fields import (
     CompiledSelection,
     FieldSelectionError,
@@ -725,6 +726,15 @@ def scan_cmd(
         on_error=on_error,
         output=output,
     )
+    # --fidelity governs the parquet path only. Reject an explicit value on a
+    # text format up front: a `--format json --fidelity error` data-integrity
+    # gate would otherwise never reach the parquet branch and silently no-op.
+    if (
+        output_format != "parquet"
+        and click.get_current_context().get_parameter_source("fidelity")
+        is ParameterSource.COMMANDLINE
+    ):
+        error_exit("--fidelity is only valid with --format parquet")
     if output_format == "parquet":
         assert output is not None  # required by the _prepare guard (R2)
         report = _write_parquet(data_file, setup, output, fidelity=_CLI_TO_FIDELITY[fidelity])
