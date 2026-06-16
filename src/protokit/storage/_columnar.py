@@ -46,7 +46,7 @@ from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
-from google.protobuf.message import Message
+from google.protobuf.message import EncodeError, Message
 
 from protokit.storage.engine import ScanRecord, scan
 from protokit.storage.registry import StreamRegistry
@@ -92,8 +92,7 @@ class HandlerBuildError(StorageError):
         self.type_name = type_name
         self.reason = reason
         super().__init__(
-            f"could not build a columnar converter for message type "
-            f"{type_name!r}: {reason}"
+            f"could not build a columnar converter for message type {type_name!r}: {reason}"
         )
 
 
@@ -261,9 +260,7 @@ def _transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]
 # unsupported-WKT case, distinct from a user-authored recursive schema.
 _STRUCT_PROTO_FILE = "google/protobuf/struct.proto"
 
-_MESSAGE_FIELD_TYPES = frozenset(
-    (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP)
-)
+_MESSAGE_FIELD_TYPES = frozenset((FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP))
 
 
 def _find_recursive_cycle(
@@ -313,9 +310,7 @@ def _find_recursive_cycle(
         if node.full_name in acyclic:
             continue
         if node.full_name in in_progress:
-            start = next(
-                i for i, d in enumerate(on_path) if d.full_name == node.full_name
-            )
+            start = next(i for i, d in enumerate(on_path) if d.full_name == node.full_name)
             cycle_descs = on_path[start:] + [node]
             cycle = [d.full_name for d in cycle_descs]
             is_wkt = all(d.file.name == _STRUCT_PROTO_FILE for d in cycle_descs)
@@ -349,6 +344,44 @@ def _reject_recursive(descriptor: Descriptor) -> None:
     raise RecursiveSchemaError(descriptor.full_name, tuple(cycle))
 
 
+def _unmodeled_byte_delta(message: Message) -> int | None:
+    """Wire bytes ``message`` carried that its descriptor does not model.
+
+    The serialized-size difference between ``message`` and a copy with its
+    unknown-field set discarded — recursively, into submessages, repeated
+    elements, and map entries (``DiscardUnknownFields`` clears the whole tree). A
+    non-zero delta means the message carried wire data outside the descriptor: a
+    proto2 out-of-range closed-enum value (which the runtime relegates to the
+    unknown-field set) or an *undeclared* unknown/extension field. ``0`` means
+    the descriptor modeled every byte — including proto3 open-enum out-of-range
+    values, which are preserved as the field value, not relegated.
+
+    Returns ``None`` ("cannot measure") when the message is not fully
+    initialized: ``ByteSize`` raises ``EncodeError`` on a proto2 message missing
+    a required field. ptars itself rejects such a record during conversion, so
+    the probe defers rather than letting the error escape its own pre-pass.
+
+    The signal is a causally-linked proxy computed on the parsed message, not on
+    ptars's column output: the same out-of-range value the descriptor cannot
+    model is what both lands in the unknown-field set here and is surfaced by
+    ptars in the column, so a non-empty set is exactly the divergence condition.
+    A field the descriptor *does* model but ptars drops — a *declared* proto2
+    extension (read into ``Extensions[...]`` with an empty unknown set) or a
+    group field — is invisible to this probe; that is a documented non-goal.
+    """
+    try:
+        # Typed locals: protobuf ships no stubs, so ByteSize() is Any; annotate so
+        # mypy --strict (warn_return_any) sees an int subtraction, not Any.
+        before: int = message.ByteSize()
+        clone = type(message)()
+        clone.CopyFrom(message)
+        clone.DiscardUnknownFields()
+        after: int = clone.ByteSize()
+        return before - after
+    except EncodeError:
+        return None
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
@@ -374,23 +407,17 @@ class _PtarsConversionAdapter:
         _reject_recursive(descriptor)
         files = _transitive_file_descriptors(descriptor)
         try:
-            self._pool = ptars.HandlerPool(
-                files, ptars.PtarsConfig(timestamp_unit=timestamp_unit)
-            )
+            self._pool = ptars.HandlerPool(files, ptars.PtarsConfig(timestamp_unit=timestamp_unit))
             # Canonical schema, descriptor-derived and record-independent (R13):
             # an empty conversion yields the full schema used to open the writer.
-            self.schema: pa.Schema = self._pool.messages_to_record_batch(
-                [], descriptor
-            ).schema
+            self.schema: pa.Schema = self._pool.messages_to_record_batch([], descriptor).schema
         except Exception as exc:  # noqa: BLE001 - any ptars build failure is one fault class
             raise HandlerBuildError(descriptor.full_name, str(exc)) from exc
 
     def to_record_batch(self, messages: list[Message]) -> pa.RecordBatch:
         for message in messages:
             if message.DESCRIPTOR is not self._descriptor:
-                raise SchemaMismatchError(
-                    self._descriptor.full_name, message.DESCRIPTOR.full_name
-                )
+                raise SchemaMismatchError(self._descriptor.full_name, message.DESCRIPTOR.full_name)
         batch = self._pool.messages_to_record_batch(messages, self._descriptor)
         if not batch.schema.equals(self.schema):
             # A drift between the canonical (empty-conversion) schema and a
