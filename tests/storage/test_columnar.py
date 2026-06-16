@@ -21,6 +21,7 @@ from google.protobuf import (  # noqa: E402
 )
 
 from protokit.storage import (  # noqa: E402
+    FidelityError,
     HandlerBuildError,
     IncompleteScanError,
     RecursiveSchemaError,
@@ -145,15 +146,14 @@ def _source(stream_id, msgs):
 
 # --- AE1: presence + value representation -----------------------------------
 
+
 def test_ae1_presence_and_values():
     reg = _registry()
     msg_cls = _event_class(reg)
     e_set = msg_cls(id=7, name="hi", payload=b"\x01\x02", color=1)
     e_set.created_at.seconds = 100
     e_unset = msg_cls()  # implicit scalars default; created_at unset
-    batches = list(
-        to_arrow_batches(_source("events", [e_set, e_unset]), reg, stream_id="events")
-    )
+    batches = list(to_arrow_batches(_source("events", [e_set, e_unset]), reg, stream_id="events"))
     table = pa.Table.from_batches(batches)
     schema = table.schema
     # value representation: Arrow-native, NOT JSON encodings
@@ -169,6 +169,7 @@ def test_ae1_presence_and_values():
 
 
 # --- AE2: oneof arms -> independent nullable columns, no discriminator -------
+
 
 def test_ae2_oneof_columns():
     reg = _registry()
@@ -188,6 +189,7 @@ def test_ae2_oneof_columns():
 
 # --- AE3: Any -> lossless struct, never blocked ------------------------------
 
+
 def test_ae3_any_maps_to_struct_not_error():
     reg = _registry()
     msg_cls = _event_class(reg)
@@ -201,6 +203,7 @@ def test_ae3_any_maps_to_struct_not_error():
 
 
 # --- AE7: WKT nested at depth -> nested Arrow timestamp ----------------------
+
 
 def test_ae7_nested_wkt():
     reg = _registry()
@@ -217,37 +220,40 @@ def test_ae7_nested_wkt():
 
 # --- AE5: a second message type in one pass -> typed error -------------------
 
+
 def test_ae5_second_type_raises(tmp_path):
     reg = _registry()
     msg_cls = _event_class(reg)
-    src = _source("events", [msg_cls(id=1)]) + _source("others", [
-        reg.get("others").message_class(v=5)
-    ])
+    src = _source("events", [msg_cls(id=1)]) + _source(
+        "others", [reg.get("others").message_class(v=5)]
+    )
     with pytest.raises(SchemaMismatchError):
         list(to_arrow_batches(src, reg, stream_id="events"))
 
 
 # --- AE9 / R13: zero-record result -> valid 0-row Parquet, descriptor schema --
 
+
 def test_ae9_zero_record_valid_parquet(tmp_path):
     reg = _registry()
     msg_cls = _event_class(reg)
     out = tmp_path / "empty.parquet"
     # predicate matches nothing
-    rows = to_parquet(
+    report = to_parquet(
         _source("events", [msg_cls(id=1), msg_cls(id=2)]),
         reg,
         out,
         stream_id="events",
         predicate=lambda m: False,
     )
-    assert rows == 0
+    assert report.rows == 0
     table = pq.read_table(out)  # readable
     assert table.num_rows == 0
     assert "created_at" in table.schema.names  # full descriptor schema present
 
 
 # --- R14: a collected fault -> IncompleteScanError + partial file discarded ---
+
 
 def test_r14_fault_fails_loud_and_discards_file(tmp_path):
     reg = _registry()
@@ -286,13 +292,14 @@ def test_incomplete_scan_error_carries_collected_faults(tmp_path):
 
 # --- to_parquet happy path + round-trip + batching ---------------------------
 
+
 def test_to_parquet_roundtrip_and_batching(tmp_path):
     reg = _registry()
     msg_cls = _event_class(reg)
     msgs = _make_events(msg_cls, 5000)
     out = tmp_path / "events.parquet"
-    rows = to_parquet(_source("events", msgs), reg, out, stream_id="events", batch_size=1024)
-    assert rows == 5000
+    report = to_parquet(_source("events", msgs), reg, out, stream_id="events", batch_size=1024)
+    assert report.rows == 5000
     table = pq.read_table(out)
     assert table.num_rows == 5000
     # row groups streamed (batch_size 1024 over 5000 rows -> multiple groups)
@@ -319,6 +326,7 @@ def test_unknown_stream_id_raises():
 
 # --- AE4 / R2: bounded — the sink pulls O(batch), not the whole source --------
 
+
 def test_ae4_sink_pulls_bounded_not_whole_source():
     reg = _registry()
     msg_cls = _event_class(reg)
@@ -331,9 +339,7 @@ def test_ae4_sink_pulls_bounded_not_whole_source():
             pulled += 1
             yield ("events", payload)
 
-    gen = to_arrow_batches(
-        counting_source(10_000), reg, stream_id="events", batch_size=1000
-    )
+    gen = to_arrow_batches(counting_source(10_000), reg, stream_id="events", batch_size=1000)
     first = next(gen)  # consume only the first batch
     assert first.num_rows == 1000
     # bounded: the sink pulled ~one batch worth, NOT the whole 10k source
@@ -342,6 +348,7 @@ def test_ae4_sink_pulls_bounded_not_whole_source():
 
 
 # --- R14: non-FrameError mid-stream abort still discards the partial file ------
+
 
 def test_to_parquet_mid_stream_type_mismatch_discards_file(tmp_path):
     reg = _registry()
@@ -361,6 +368,7 @@ def test_to_parquet_mid_stream_type_mismatch_discards_file(tmp_path):
 
 # --- R15: a memoryview-backed source converts (sink consumes parsed messages) --
 
+
 def test_memoryview_source_converts(tmp_path):
     reg = _registry()
     msg_cls = _event_class(reg)
@@ -368,16 +376,14 @@ def test_memoryview_source_converts(tmp_path):
     # record bytes as a memoryview over a bytearray (a C++-style buffer): the
     # engine takes its defensive copy and the sink consumes only parsed messages,
     # so a memoryview-backed source converts without issue (R15).
-    src = [
-        ("events", memoryview(bytearray(msg_cls(id=i).SerializeToString())))
-        for i in range(50)
-    ]
-    rows = to_parquet(src, reg, out, stream_id="events")
-    assert rows == 50
+    src = [("events", memoryview(bytearray(msg_cls(id=i).SerializeToString()))) for i in range(50)]
+    report = to_parquet(src, reg, out, stream_id="events")
+    assert report.rows == 50
     assert pq.read_table(out).num_rows == 50
 
 
 # --- to_arrow_batches surfaces a collected fault after exhaustion -------------
+
 
 def test_to_arrow_batches_fault_raises_after_exhaustion():
     reg = _registry()
@@ -388,6 +394,7 @@ def test_to_arrow_batches_fault_raises_after_exhaustion():
 
 
 # --- AE3 Any value round-trip (lossless struct, not just shape) ---------------
+
 
 def test_ae3_any_value_roundtrip():
     reg = _registry()
@@ -405,6 +412,7 @@ def test_ae3_any_value_roundtrip():
 
 # --- AE7 nested WKT value round-trip ------------------------------------------
 
+
 def test_ae7_nested_wkt_value_roundtrip():
     reg = _registry()
     msg_cls = _event_class(reg)
@@ -420,6 +428,7 @@ def test_ae7_nested_wkt_value_roundtrip():
 
 
 # --- HandlerBuildError fires before the writer opens (no orphan file) ---------
+
 
 def test_handler_build_error_before_file_created(tmp_path, monkeypatch):
     import ptars
@@ -438,6 +447,7 @@ def test_handler_build_error_before_file_created(tmp_path, monkeypatch):
 
 
 # --- cross-batch schema drift is an internal invariant breach (RuntimeError) --
+
 
 def test_cross_batch_schema_drift_raises_runtime_error():
     from protokit.storage._columnar import _PtarsConversionAdapter
@@ -470,7 +480,10 @@ def _recursive_fds():
     node.name = "Node"
     fld = node.field.add()
     fld.name, fld.number, fld.type, fld.label = (
-        "children", 1, F.TYPE_MESSAGE, F.LABEL_REPEATED,
+        "children",
+        1,
+        F.TYPE_MESSAGE,
+        F.LABEL_REPEATED,
     )
     fld.type_name = ".n.Node"
     return fds
@@ -590,8 +603,8 @@ def test_non_recursive_wkt_embed_converts(tmp_path):
     msg = reg.get("s").message_class()
     msg.w.seconds = 5
     out = tmp_path / "t.parquet"
-    rows = to_parquet(_source("s", [msg]), reg, out, stream_id="s")
-    assert rows == 1
+    report = to_parquet(_source("s", [msg]), reg, out, stream_id="s")
+    assert report.rows == 1
     assert out.exists()
 
 
@@ -601,6 +614,7 @@ def test_recursive_errors_are_storage_errors():
 
 
 # --- _transitive_file_descriptors: deduped + dependency-ordered ---------------
+
 
 def test_transitive_file_descriptors_deduped_and_ordered():
     from protokit.storage._columnar import _transitive_file_descriptors
@@ -613,3 +627,134 @@ def test_transitive_file_descriptors_deduped_and_ordered():
     assert "google/protobuf/timestamp.proto" in names
     # dependency precedes dependent: the WKT files come before the importer
     assert names.index("google/protobuf/timestamp.proto") < names.index("ev.proto")
+
+
+# --- fidelity signal (U3 wiring + report, U4 strict mode) ---------------------
+#
+# Setup: register the stream with a REDUCED descriptor (M { int32 id }) but feed
+# wire bytes from a FULL M (id + an `extra` field #50). scan parses with the
+# reduced class, so `extra` lands in the unknown-field set and the sink's probe
+# detects it — the same shape as a real vendor extension outside the descriptor.
+
+
+def _fid_fds(*, with_extra: bool):
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "fid.proto", "fid", "proto3"
+    m = f.message_type.add()
+    m.name = "M"
+    idf = m.field.add()
+    idf.name, idf.number, idf.type, idf.label = "id", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    if with_extra:
+        ex = m.field.add()
+        ex.name, ex.number, ex.type, ex.label = "extra", 50, F.TYPE_INT32, F.LABEL_OPTIONAL
+    return fds
+
+
+def _fid_registry():
+    """Registry whose ``M`` lacks ``extra`` — so wire ``extra`` is unmodeled."""
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_fid_fds(with_extra=False), "fid.M"))
+    return reg
+
+
+def _full_m_class():
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_fid_fds(with_extra=True), "fid.M"))
+    return reg.get("s").message_class
+
+
+def _unmodeled_bytes(id_val, extra_val):
+    msg = _full_m_class()(id=id_val)
+    msg.extra = extra_val
+    return msg.SerializeToString()
+
+
+def _modeled_bytes(id_val):
+    return _full_m_class()(id=id_val).SerializeToString()
+
+
+def test_fidelity_warn_default_surfaces_count(tmp_path):  # AE10, AE9, AE1
+    reg = _fid_registry()
+    src = [("s", _unmodeled_bytes(1, 99)), ("s", _modeled_bytes(2))]
+    out = tmp_path / "w.parquet"
+    report = to_parquet(src, reg, out, stream_id="s")  # default warn
+    assert report.measured is True
+    assert report.rows == 2
+    assert report.unmodeled_records == 1
+    assert report.unmodeled_bytes > 0
+    assert out.exists()  # warn writes the file regardless
+    # conversion proceeds unchanged: the modeled `id` is present in the column
+    assert pq.read_table(out).column("id").to_pylist() == [1, 2]
+
+
+def test_fidelity_ignore_skips_measurement(tmp_path):  # AE11
+    reg = _fid_registry()
+    out = tmp_path / "i.parquet"
+    report = to_parquet(
+        [("s", _unmodeled_bytes(1, 99))], reg, out, stream_id="s", fidelity="ignore"
+    )
+    assert report.measured is False  # not measured, distinct from a measured zero
+    assert report.unmodeled_records == 0
+    assert report.unmodeled_bytes == 0
+    assert report.rows == 1
+    assert out.exists()
+
+
+def test_fidelity_clean_input_measured_zero(tmp_path):
+    reg = _fid_registry()
+    out = tmp_path / "c.parquet"
+    report = to_parquet(
+        [("s", _modeled_bytes(1)), ("s", _modeled_bytes(2))], reg, out, stream_id="s"
+    )
+    assert report.measured is True
+    assert report.unmodeled_records == 0
+    assert report.unmodeled_bytes == 0
+
+
+def test_fidelity_empty_scan_builds_report(tmp_path):  # empty/zero-row path
+    reg = _fid_registry()
+    out = tmp_path / "e.parquet"
+    report = to_parquet([], reg, out, stream_id="s")
+    assert report.rows == 0
+    assert report.measured is True
+    assert report.unmodeled_records == 0
+    assert out.exists()  # valid zero-row Parquet still written
+
+
+def test_fidelity_error_raises_and_discards(tmp_path):  # AE5 (U4)
+    reg = _fid_registry()
+    out = tmp_path / "x.parquet"
+    with pytest.raises(FidelityError) as excinfo:
+        to_parquet([("s", _unmodeled_bytes(1, 99))], reg, out, stream_id="s", fidelity="error")
+    assert excinfo.value.unmodeled_records == 1
+    assert excinfo.value.unmodeled_bytes > 0
+    assert "unmodeled wire data" in str(excinfo.value)
+    assert not out.exists()  # partial discarded, like a decode fault
+
+
+def test_fidelity_error_clean_input_writes(tmp_path):  # error mode, nothing unmodeled
+    reg = _fid_registry()
+    out = tmp_path / "x2.parquet"
+    report = to_parquet([("s", _modeled_bytes(1))], reg, out, stream_id="s", fidelity="error")
+    assert report.rows == 1
+    assert out.exists()
+
+
+def test_fidelity_error_empty_scan_no_raise(tmp_path):  # error mode, empty input
+    reg = _fid_registry()
+    out = tmp_path / "x3.parquet"
+    report = to_parquet([], reg, out, stream_id="s", fidelity="error")
+    assert report.rows == 0
+    assert out.exists()
+
+
+def test_decode_fault_takes_precedence_over_fidelity(tmp_path):  # AE8
+    reg = _fid_registry()
+    out = tmp_path / "p.parquet"
+    # one unmodeled-data record AND one decode/frame fault (unknown stream),
+    # under fidelity='error': the decode fault wins, not FidelityError.
+    src = [("s", _unmodeled_bytes(1, 99)), ("nope", b"\x00")]
+    with pytest.raises(IncompleteScanError):
+        to_parquet(src, reg, out, stream_id="s", fidelity="error")
+    assert not out.exists()

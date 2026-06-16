@@ -579,7 +579,7 @@ def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
         with _open_data(data_file) as handle:
             source = length_delimited(handle, stream_id=setup.stream_id)
             try:
-                rows = to_parquet(
+                report = to_parquet(
                     source,
                     setup.registry,
                     temp,
@@ -619,7 +619,7 @@ def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
         except OSError as exc:
             error_exit(f"failed to publish {output}: {exc}")
         temp_pending = None  # published: the temp IS the output now
-        return rows
+        return report.rows
     finally:
         if temp_pending is not None:
             with contextlib.suppress(OSError):

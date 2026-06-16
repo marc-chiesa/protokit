@@ -67,6 +67,12 @@ DEFAULT_BATCH_SIZE = 65_536
 # ``ns`` is fuller proto fidelity but exceeds ``datetime`` resolution.
 TimestampUnit = Literal["s", "ms", "us", "ns"]
 
+# Fidelity-signal policy over records carrying wire data the descriptor does not
+# model: ``ignore`` skips the per-record probe entirely; ``warn`` (the default)
+# measures and surfaces the count; ``error`` fails the conversion loud. Distinct
+# from the ``on_error`` decode-fault axis (hard-wired ``collect`` here).
+Fidelity = Literal["ignore", "warn", "error"]
+
 
 class ParquetExtraNotInstalledError(StorageError):
     """The columnar API was used without the ``protokit[parquet]`` extra.
@@ -561,7 +567,8 @@ def to_parquet(
     predicate: Callable[[Message], bool] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     timestamp_unit: TimestampUnit = "us",
-) -> int:
+    fidelity: Fidelity = "warn",
+) -> FidelityReport:
     """Convert one message type from a scan and write it to a Parquet file.
 
     Streams one row group per batch (peak memory O(``batch_size``)). An empty
@@ -570,7 +577,15 @@ def to_parquet(
     exception, the partially-written file is discarded and the error propagates —
     never a truncated file that reads as complete (R14/R12).
 
-    Returns the number of rows written.
+    Returns a :class:`FidelityReport` — the rows written plus the fidelity signal
+    (how many records carried wire data the descriptor does not model, and the
+    total such bytes). ``fidelity`` governs the signal: ``ignore`` skips the
+    per-record probe (no cost, ``measured=False``); ``warn`` (default) measures
+    and surfaces the count, writing the file regardless; ``error`` raises
+    :class:`FidelityError` and discards the partial file when any record carried
+    unmodeled data. The fidelity axis is orthogonal to ``on_error`` (hard-wired
+    ``collect``): a *decode* fault (:class:`IncompleteScanError`) takes precedence
+    over a fidelity fault.
 
     ``destination`` is a filesystem path (a path is required so the sink can own
     creation and discard a partial file on failure).
@@ -583,6 +598,14 @@ def to_parquet(
     result = scan(source, registry, predicate=predicate, on_error="collect")
     path = os.fspath(destination)
 
+    # The fidelity probe runs in this sink loop, on the same Message objects the
+    # adapter hands to ptars — not inside the adapter (its return is a RecordBatch
+    # and it is shared by to_arrow_batches). A loop-local accumulator means the
+    # report is per-call; the empty-result case builds it at the return site.
+    measure = fidelity != "ignore"
+    unmodeled_records = 0
+    unmodeled_bytes = 0
+
     writer: pq.ParquetWriter | None = None
     rows = 0
     try:
@@ -592,13 +615,30 @@ def to_parquet(
         for chunk in _batched(result, batch_size):
             writer.write_batch(adapter.to_record_batch(chunk))
             rows += len(chunk)
+            if measure:
+                for message in chunk:
+                    delta = _unmodeled_byte_delta(message)
+                    if delta:  # not None ("cannot measure") and > 0
+                        unmodeled_records += 1
+                        unmodeled_bytes += delta
         # Completion honesty (R14): withhold a complete-looking file on any fault.
+        # Decode faults take precedence over fidelity — a corrupt record is a
+        # stronger signal than a cleanly-decoded one carrying unmodeled bytes.
         faults = result.errors
         if faults:
             raise IncompleteScanError(faults)
+        # Strict fidelity: fail loud and discard the partial, like a decode fault.
+        # Raised inside the try (before writer.close) so the disposal below fires.
+        if fidelity == "error" and unmodeled_records:
+            raise FidelityError(unmodeled_records, unmodeled_bytes)
         writer.close()
         writer = None
-        return rows
+        return FidelityReport(
+            rows=rows,
+            measured=measure,
+            unmodeled_records=unmodeled_records,
+            unmodeled_bytes=unmodeled_bytes,
+        )
     except BaseException:
         # Partial-file disposition (R14 / R12 extended to the write phase): close
         # the writer, then discard ANY file the writer may have created so a
