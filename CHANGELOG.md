@@ -15,6 +15,18 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+### Added
+- **The columnar/Parquet path rejects recursive proto schemas up front.** A
+  message type that references itself — directly, mutually, or through
+  map / group / oneof message fields — has no finite Arrow/Parquet
+  representation. A descriptor pre-flight now detects the cycle before the
+  conversion backend is invoked and raises a typed, catchable error naming the
+  cycle: `RecursiveSchemaError` for user-authored recursion and
+  `UnsupportedWktError` for the recursive `google.protobuf.Struct`/`Value`/
+  `ListValue` family (`protokit.storage` exports both). Non-recursive
+  well-known types (`Timestamp`, `Any`, `Duration`, `FieldMask`, wrappers) are
+  unaffected and convert as before.
+
 ### Changed
 - **Bumped the buf parity reference from `v1.69.0` to `v1.70.0` (#16).** The
   pinned BASIC-rule parity baseline (`_BUF_PARITY_PIN`, surfaced in
@@ -22,6 +34,16 @@ All notable changes to `protokit` are documented here. Format loosely follows
   buf v1.70.0. v1.70.0 changed only the `PROTOVALIDATE` lint rule, which is
   outside protokit's 26-rule BASIC parity surface — no rule mappings,
   fixtures, or divergence annotations change.
+
+### Fixed
+- **Recursive proto schemas no longer crash the columnar/Parquet path.**
+  Converting a self-referential message type — or one embedding the recursive
+  well-known types `google.protobuf.Struct`/`Value`/`ListValue` — previously
+  segfaulted the whole process inside the ptars backend (exit 139), bypassing
+  every Python guard and orphaning the `.partial` temp file. The new
+  descriptor pre-flight (above) turns this into a clean `exit 2` with no
+  partial file left behind, restoring the documented all-or-nothing contract.
+  Not a breaking change: input that crashed now raises a catchable error.
 
 ## 0.12.0 — 2026-06-10
 

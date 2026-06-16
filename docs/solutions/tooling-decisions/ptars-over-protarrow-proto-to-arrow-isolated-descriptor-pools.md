@@ -1,6 +1,7 @@
 ---
 title: "ptars over protarrow for proto-to-Arrow conversion on isolated descriptor pools"
 date: 2026-06-07
+last_updated: 2026-06-15
 category: docs/solutions/tooling-decisions
 module: protokit.storage
 problem_type: tooling_decision
@@ -41,6 +42,8 @@ When picking a proto-introspection dependency for an engine that uses anything o
 3. **Prefer a Rust/decoupled core when your protobuf pin is constrained.** ptars parses wire bytes in Rust over the descriptors it is *handed*; the Python `protobuf` package is used only to register `FileDescriptor`s into a ptars `HandlerPool`. Its conversion correctness does not depend on the protobuf Python API version, so it runs cleanly on protobuf 5.x. The spike verified it maps WKTs correctly on isolated pools (including nested at depth), plus map/repeated/nested/oneof and PR2 presence parity.
 
 Then **contain the maturity risk** of a young best-fit dependency with four mechanisms: a thin swappable conversion adapter (`_PtarsConversionAdapter`, so the backend can be replaced without touching callers), an **exact** version pin (`ptars==0.0.17`), optional-extra isolation (the `protokit[parquet]` extra means the core install never depends on it), and an ABI note (ptars bundles `arrow-rs 57.1`; the pinned pyarrow must stay ABI-compatible).
+
+This maturity risk is not hypothetical. ptars 0.0.17's Rust schema builder recurses with no cycle guard and **segfaults the process** on a recursive descriptor — a self-referential type, or one embedding `google.protobuf.Struct`/`Value`/`ListValue` — an uncatchable crash that bypasses the Python error model entirely. The realized mitigation is a fifth, runtime containment mechanism: a descriptor cycle pre-flight that detects recursion and rejects it in Python *before* the descriptor reaches ptars (see Related).
 
 ## Why This Matters
 
@@ -89,4 +92,5 @@ The rule in one line: *spike the candidate against your actual descriptor-proven
 
 - [Faithful proto-to-Arrow mapping (presence structure + Arrow-native values)](../design-patterns/proto-to-arrow-faithful-mapping-presence-structure-arrow-native-values.md) — the conversion fidelity model this library choice enables (this doc = the dependency; that doc = the mapping).
 - [`protobuf>=4.21,<6` upper-bound pin is load-bearing](protobuf-upper-bound-pin-fielddescriptor-label-removed-in-7-2026-05-27.md) — the pin that disqualifies protarrow `>=0.15`; the binding premise for rule 2.
+- [Recursive proto schemas segfault ptars during Arrow schema build](../security-issues/recursive-proto-schema-segfaults-ptars-arrow-build.md) — a realized instance of this backend's maturity risk; ptars 0.0.17 segfaults on recursive descriptors, now guarded by a Python descriptor pre-flight.
 - Origin: PR #17 (`feat/storage-pr3-columnar`); sink at `src/protokit/storage/_columnar.py`; decision recorded in `docs/brainstorms/2026-06-02-storage-pr3-columnar-parquet-requirements.md`.

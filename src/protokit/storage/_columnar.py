@@ -22,6 +22,14 @@ Three load-bearing properties (each pinned in code, not left implicit):
   ``ScanResult.errors``; any collected fault fails loud rather than closing a
   complete-looking Parquet. On any mid-stream exception the partially-written
   Parquet is discarded, never left as a truncated complete-looking file.
+- **Recursive-schema rejection (pre-ptars).** A self-referential message type
+  has no finite Arrow representation and segfaults the ptars backend during
+  schema construction — an uncatchable process death that bypasses the
+  ``HandlerBuildError`` net and the partial-file cleanup above. A descriptor
+  pre-flight (:func:`_reject_recursive`, the load-bearing third disposal layer)
+  detects the cycle and raises :class:`RecursiveSchemaError` /
+  :class:`UnsupportedWktError` before ptars is invoked, keeping the failure
+  inside the catchable model.
 
 Single message type per conversion (R11): the adapter binds to one expected
 message ``DESCRIPTOR`` and raises :class:`SchemaMismatchError` on a record of a
@@ -37,7 +45,7 @@ import os
 from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Literal
 
-from google.protobuf.descriptor import Descriptor, FileDescriptor
+from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
 from google.protobuf.message import Message
 
 from protokit.storage.engine import ScanRecord, scan
@@ -151,6 +159,58 @@ class IncompleteScanError(StorageError):
         )
 
 
+class RecursiveSchemaError(StorageError):
+    """A bound message type is recursive, so the columnar path rejects it.
+
+    Arrow/Parquet schemas are finite, acyclic type trees: a self-referential
+    message — directly, mutually, or through map / group / oneof message fields
+    — has no columnar representation, and ptars segfaults building one. The
+    pre-flight detects the cycle on the descriptor graph before ptars is invoked
+    (R12), so this raises before any output exists.
+
+    Attributes:
+        type_name: The bound message type's fully-qualified name.
+        cycle: The fully-qualified names forming the cycle, with the repeated
+            type at both ends (e.g. ``("t.Node", "t.Node")``).
+    """
+
+    def __init__(self, type_name: str, cycle: tuple[str, ...]) -> None:
+        self.type_name = type_name
+        self.cycle = tuple(cycle)
+        super().__init__(
+            f"message type {type_name!r} is recursive and cannot be represented "
+            f"in Arrow/Parquet (cycle: {' -> '.join(cycle)}); recursive message "
+            f"types are not supported by the columnar path"
+        )
+
+
+class UnsupportedWktError(StorageError):
+    """A bound message embeds a recursive well-known type with no columnar form.
+
+    ``google.protobuf.Struct`` / ``Value`` / ``ListValue`` are mutually
+    recursive (``Struct -> Value -> Struct``) and segfault ptars 0.0.17's schema
+    build, exactly like a user-authored recursive type. They are split from
+    :class:`RecursiveSchemaError` so the failure reads as an unsupported
+    well-known type — the user did not write a recursive schema — rather than as
+    their own recursion, keeping the columnar go/no-go signal honest about what
+    actually blocks real data.
+
+    Attributes:
+        type_name: The bound message type's fully-qualified name.
+        cycle: The recursive well-known-type cycle reached from it.
+    """
+
+    def __init__(self, type_name: str, cycle: tuple[str, ...]) -> None:
+        self.type_name = type_name
+        self.cycle = tuple(cycle)
+        super().__init__(
+            f"message type {type_name!r} embeds the recursive well-known type "
+            f"google.protobuf.Struct/Value/ListValue (cycle: {' -> '.join(cycle)}"
+            f"), which has no Arrow/Parquet representation; the columnar path "
+            f"does not support it"
+        )
+
+
 def _require_parquet() -> None:
     """Raise :class:`ParquetExtraNotInstalledError` if the extra is absent.
 
@@ -195,6 +255,100 @@ def _transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]
     return ordered
 
 
+# The recursive well-known types live in this one file. ptars 0.0.17 segfaults
+# building an Arrow schema for any of them (Struct -> Value -> Struct has no
+# finite columnar shape), so a cycle whose every node is declared here is the
+# unsupported-WKT case, distinct from a user-authored recursive schema.
+_STRUCT_PROTO_FILE = "google/protobuf/struct.proto"
+
+_MESSAGE_FIELD_TYPES = frozenset(
+    (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP)
+)
+
+
+def _find_recursive_cycle(
+    descriptor: Descriptor,
+) -> tuple[list[str], bool] | None:
+    """Find a message-type cycle reachable from ``descriptor``.
+
+    Returns ``(cycle, is_wkt_family)`` where ``cycle`` is the list of
+    fully-qualified type names forming the cycle — the repeated type appears at
+    both ends, e.g. ``["t.Node", "t.Node"]`` or ``["p.A", "p.B", "p.A"]`` — and
+    ``is_wkt_family`` is true when every node on the cycle is declared in
+    ``struct.proto`` (the recursive ``google.protobuf.Struct`` / ``Value`` /
+    ``ListValue`` family). Returns ``None`` when the reachable type graph is
+    acyclic.
+
+    The walk is an iterative DFS (no Python recursion — a recursive walk would
+    reintroduce a ``RecursionError`` on a self-referential type, the very class
+    of uncatchable failure this guard exists to remove). A path-scoped
+    ``in_progress`` set, popped on backtrack via a ``leave`` sentinel, means a
+    DAG diamond — a type reached by two non-cyclic paths — is not a cycle; only
+    a type reached while still on the current path is. An ``acyclic`` memo
+    records nodes fully explored without a cycle, so a shared sub-message in a
+    DAG is walked once, not once per path (O(V+E)); when a type has multiple
+    distinct cycles, the first reached in DFS order is returned. Map fields need no
+    special handling: the synthetic map-entry message is an ordinary node whose
+    ``value`` field is walked like any other. Every message- or group-typed
+    field is descended into exactly once per node, so a map entry is not also
+    walked a second time.
+    """
+    on_path: list[Descriptor] = []  # descriptors on the current DFS path
+    in_progress: set[str] = set()  # their full_names, for O(1) membership
+    acyclic: set[str] = set()  # full_names fully explored with no cycle (memo)
+    # Stack entries: ("enter", Descriptor) or ("leave", Descriptor).
+    stack: list[tuple[str, Descriptor]] = [("enter", descriptor)]
+    while stack:
+        action, node = stack.pop()
+        if action == "leave":
+            in_progress.discard(node.full_name)
+            on_path.pop()
+            # A node popped with no cycle is acyclic on every path that reaches
+            # it — any cycle through it is found while it is still in_progress —
+            # so later paths skip it. Without this memo a shared sub-message in a
+            # DAG diamond is re-walked once per path: exponential on a wide, deep
+            # (but valid, acyclic) schema, which would hang the pre-flight.
+            acyclic.add(node.full_name)
+            continue
+        if node.full_name in acyclic:
+            continue
+        if node.full_name in in_progress:
+            start = next(
+                i for i, d in enumerate(on_path) if d.full_name == node.full_name
+            )
+            cycle_descs = on_path[start:] + [node]
+            cycle = [d.full_name for d in cycle_descs]
+            is_wkt = all(d.file.name == _STRUCT_PROTO_FILE for d in cycle_descs)
+            return cycle, is_wkt
+        in_progress.add(node.full_name)
+        on_path.append(node)
+        stack.append(("leave", node))
+        for field in node.fields:
+            if field.is_extension:
+                continue
+            if field.type in _MESSAGE_FIELD_TYPES:
+                stack.append(("enter", field.message_type))
+    return None
+
+
+def _reject_recursive(descriptor: Descriptor) -> None:
+    """Raise if ``descriptor``'s reachable type graph contains a cycle.
+
+    Runs before ptars sees the descriptor (KTD2): a recursive type segfaults
+    ptars 0.0.17's schema build — an uncatchable process death — so the only fix
+    is to detect and reject it in Python first. The recursive ``google.protobuf``
+    struct family raises :class:`UnsupportedWktError`; every other cycle raises
+    :class:`RecursiveSchemaError`.
+    """
+    found = _find_recursive_cycle(descriptor)
+    if found is None:
+        return
+    cycle, is_wkt = found
+    if is_wkt:
+        raise UnsupportedWktError(descriptor.full_name, tuple(cycle))
+    raise RecursiveSchemaError(descriptor.full_name, tuple(cycle))
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
@@ -202,12 +356,22 @@ class _PtarsConversionAdapter:
     the canonical descriptor-derived schema across every batch — so a handler
     failure surfaces before any output, and each batch is checked against one
     fixed schema (Parquet requires a single schema across row groups).
+
+    A recursive descriptor is rejected by :func:`_reject_recursive` before the
+    pool is built: ptars 0.0.17 segfaults constructing an Arrow schema for a
+    self-referential type, so the cycle must be caught in Python first.
     """
 
     def __init__(self, descriptor: Descriptor, *, timestamp_unit: TimestampUnit = "us") -> None:
         import ptars  # lazy: only when the extra is present (R8)
 
         self._descriptor = descriptor
+        # Reject a recursive descriptor before ptars sees it: ptars 0.0.17
+        # segfaults building an Arrow schema for a self-referential type, an
+        # uncatchable process death that bypasses the HandlerBuildError net
+        # below and the writer's partial-file cleanup. This is the load-bearing
+        # third disposal layer (KTD2).
+        _reject_recursive(descriptor)
         files = _transitive_file_descriptors(descriptor)
         try:
             self._pool = ptars.HandlerPool(
@@ -286,6 +450,11 @@ def to_arrow_batches(
     that breaks early will not observe :class:`IncompleteScanError` — exhaust the
     iterator, or use :func:`to_parquet` (all-or-nothing), when completeness
     matters.
+
+    Because this is a generator, the descriptor pre-flight fires on the first
+    iteration, not at call time: a recursive bound type raises
+    :class:`RecursiveSchemaError` / :class:`UnsupportedWktError` when iteration
+    begins (:func:`to_parquet` is eager and raises at call time).
     """
     _require_parquet()
     descriptor = _resolve_descriptor(registry, stream_id)

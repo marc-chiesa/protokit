@@ -186,6 +186,32 @@ class TestPr3SurfaceAdditions:
             assert not hasattr(protokit, name), f"protokit.{name} leaked to top level"
 
 
+class TestRecursiveRejectionSurfaceAdditions:
+    def test_new_public_symbols_resolve(self) -> None:
+        # The recursive-schema rejection delivery adds two typed exceptions.
+        for name in ("RecursiveSchemaError", "UnsupportedWktError"):
+            assert hasattr(storage, name), name
+            assert name in storage.__all__, name
+
+    def test_all_stays_sorted(self) -> None:
+        assert storage.__all__ == sorted(storage.__all__)
+
+    def test_new_exceptions_are_storage_errors(self) -> None:
+        from protokit.storage import (
+            RecursiveSchemaError,
+            StorageError,
+            UnsupportedWktError,
+        )
+
+        for exc in (RecursiveSchemaError, UnsupportedWktError):
+            assert issubclass(exc, StorageError), exc
+
+    def test_recursion_internals_not_exported(self) -> None:
+        # The walker, the reject helper, and the WKT-file constant are internal.
+        for name in ("_find_recursive_cycle", "_reject_recursive", "_STRUCT_PROTO_FILE"):
+            assert name not in storage.__all__, name
+
+
 class TestReadmeDocsPresence:
     def test_readme_mentions_storage_surface(self) -> None:
         readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")

@@ -1657,6 +1657,14 @@ too (full-record output only), and `head`/`count` do not take Parquet at all.
 `PROTOKIT_FORMAT=parquet` is not honored: file-writing output must be
 explicit on the command line.
 
+**Recursive schemas are rejected.** A message type that references itself —
+directly, mutually, or through a map / group / oneof message field — has no
+finite columnar representation, so it is rejected up front with `exit 2` and an
+error naming the cycle, leaving no output file. This includes the recursive
+well-known types `google.protobuf.Struct`/`Value`/`ListValue`; the
+non-recursive WKTs (`Timestamp`, `Any`, `Duration`, `FieldMask`, wrappers)
+convert normally.
+
 **Value encoding is Arrow-native, not the JSON view.** Parquet leaf values
 deliberately diverge from the JSON output's encodings: `bytes` → Arrow binary
 (not base64 strings), enums → their int32 number (not names), int64 → int64
