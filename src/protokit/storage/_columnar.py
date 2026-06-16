@@ -284,7 +284,10 @@ def _find_recursive_cycle(
     of uncatchable failure this guard exists to remove). A path-scoped
     ``in_progress`` set, popped on backtrack via a ``leave`` sentinel, means a
     DAG diamond — a type reached by two non-cyclic paths — is not a cycle; only
-    a type reached while still on the current path is. Map fields need no
+    a type reached while still on the current path is. An ``acyclic`` memo
+    records nodes fully explored without a cycle, so a shared sub-message in a
+    DAG is walked once, not once per path (O(V+E)); when a type has multiple
+    distinct cycles, the first reached in DFS order is returned. Map fields need no
     special handling: the synthetic map-entry message is an ordinary node whose
     ``value`` field is walked like any other. Every message- or group-typed
     field is descended into exactly once per node, so a map entry is not also
@@ -292,6 +295,7 @@ def _find_recursive_cycle(
     """
     on_path: list[Descriptor] = []  # descriptors on the current DFS path
     in_progress: set[str] = set()  # their full_names, for O(1) membership
+    acyclic: set[str] = set()  # full_names fully explored with no cycle (memo)
     # Stack entries: ("enter", Descriptor) or ("leave", Descriptor).
     stack: list[tuple[str, Descriptor]] = [("enter", descriptor)]
     while stack:
@@ -299,6 +303,14 @@ def _find_recursive_cycle(
         if action == "leave":
             in_progress.discard(node.full_name)
             on_path.pop()
+            # A node popped with no cycle is acyclic on every path that reaches
+            # it — any cycle through it is found while it is still in_progress —
+            # so later paths skip it. Without this memo a shared sub-message in a
+            # DAG diamond is re-walked once per path: exponential on a wide, deep
+            # (but valid, acyclic) schema, which would hang the pre-flight.
+            acyclic.add(node.full_name)
+            continue
+        if node.full_name in acyclic:
             continue
         if node.full_name in in_progress:
             start = next(
@@ -438,6 +450,11 @@ def to_arrow_batches(
     that breaks early will not observe :class:`IncompleteScanError` — exhaust the
     iterator, or use :func:`to_parquet` (all-or-nothing), when completeness
     matters.
+
+    Because this is a generator, the descriptor pre-flight fires on the first
+    iteration, not at call time: a recursive bound type raises
+    :class:`RecursiveSchemaError` / :class:`UnsupportedWktError` when iteration
+    begins (:func:`to_parquet` is eager and raises at call time).
     """
     _require_parquet()
     descriptor = _resolve_descriptor(registry, stream_id)

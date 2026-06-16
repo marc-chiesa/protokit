@@ -564,6 +564,24 @@ def test_struct_embed_rejected_as_unsupported_wkt(tmp_path):
         to_parquet([], reg, out, stream_id="s")
     assert excinfo.value.type_name == "u.HasStruct"
     assert "google.protobuf.Struct" in str(excinfo.value)
+    # The structured cycle is carried verbatim and lies entirely within the WKT
+    # struct family (parallel to RecursiveSchemaError.cycle, which is asserted
+    # in test_recursive_error_carries_cycle).
+    assert len(excinfo.value.cycle) >= 2
+    assert all(n.startswith("google.protobuf.") for n in excinfo.value.cycle)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("wkt", ["Value", "ListValue"])
+def test_recursive_wkt_family_rejected_in_process(tmp_path, wkt):
+    # The subprocess survival test covers process survival for the whole family;
+    # this pins the in-process error TYPE and cycle for Value / ListValue, not
+    # just Struct.
+    reg = _reg(_wkt_embed_fds(struct_pb2, wkt), "u.Holder")
+    out = tmp_path / "w.parquet"
+    with pytest.raises(UnsupportedWktError) as excinfo:
+        to_parquet([], reg, out, stream_id="s")
+    assert all(n.startswith("google.protobuf.") for n in excinfo.value.cycle)
     assert not out.exists()
 
 

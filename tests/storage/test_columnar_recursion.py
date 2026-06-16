@@ -192,6 +192,28 @@ def test_deep_finite_nesting_is_not_a_cycle():
     assert _find_recursive_cycle(_desc(fds, "p.A")) is None
 
 
+def test_wide_diamond_terminates_without_blowup():
+    # Each level has two message fields both pointing at the next level, so there
+    # are 2**N acyclic root->leaf paths. Without the `acyclic` memo the walk
+    # re-visits shared nodes once per path and hangs; with it the walk is O(V+E)
+    # and returns immediately. This test's completion is the regression guard.
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "diamond.proto", "p", "proto3"
+    depth = 40
+    for i in range(depth):
+        m = f.message_type.add()
+        m.name = f"L{i}"
+        _msgfield(m, "a", 1, f".p.L{i + 1}")
+        _msgfield(m, "b", 2, f".p.L{i + 1}")
+    leaf = f.message_type.add()
+    leaf.name = f"L{depth}"
+    x = leaf.field.add()
+    x.name, x.number, x.type, x.label = "x", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+
+    assert _find_recursive_cycle(_desc(fds, "p.L0")) is None
+
+
 def test_non_recursive_wkt_embed_is_not_a_cycle():
     fds = descriptor_pb2.FileDescriptorSet()
     timestamp_pb2.DESCRIPTOR.CopyToProto(fds.file.add())
