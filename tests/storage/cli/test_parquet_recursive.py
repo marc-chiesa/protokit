@@ -132,7 +132,9 @@ def test_subprocess_survives_self_reference(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
     )
-    assert proc.returncode == 2, f"expected clean exit 2, got {proc.returncode}: {proc.stderr[-300:]}"
+    assert proc.returncode == 2, (
+        f"expected clean exit 2, got {proc.returncode}: {proc.stderr[-300:]}"
+    )
     assert not out.exists()
 
 
@@ -145,5 +147,7 @@ def test_subprocess_survives_recursive_wkt(tmp_path: Path, wkt: str) -> None:
         capture_output=True,
         text=True,
     )
-    assert proc.returncode == 2, f"expected clean exit 2, got {proc.returncode}: {proc.stderr[-300:]}"
+    assert proc.returncode == 2, (
+        f"expected clean exit 2, got {proc.returncode}: {proc.stderr[-300:]}"
+    )
     assert not out.exists()

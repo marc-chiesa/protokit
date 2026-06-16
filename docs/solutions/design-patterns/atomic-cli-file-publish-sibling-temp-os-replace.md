@@ -215,9 +215,10 @@ assert result.exit_code == 2 and _no_partial_left(tmp_path)
 ## Related
 
 - `docs/solutions/design-patterns/proto-to-arrow-faithful-mapping-presence-structure-arrow-native-values.md`
-  — the library sink's side of the partial-file contract (handler-build
-  fail-loud before output AND mid-write `BaseException` close+unlink); this
-  doc covers the CLI publish step above it.
+  — the library sink's side of the partial-file contract (a recursion
+  pre-flight that rejects before ptars, handler-build fail-loud before output,
+  AND mid-write `BaseException` close+unlink — three layers); this doc covers
+  the CLI publish step above them.
 - `docs/solutions/design-patterns/tolerant-iteration-error-taxonomy-narrow-catch-loud-completion-guard-2026-05-30.md`
   — the engine-layer taxonomy (narrow typed catches, `BaseException` always
   propagates) that the wrapper's except-chain extends to the CLI boundary.

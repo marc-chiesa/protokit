@@ -22,6 +22,14 @@ Three load-bearing properties (each pinned in code, not left implicit):
   ``ScanResult.errors``; any collected fault fails loud rather than closing a
   complete-looking Parquet. On any mid-stream exception the partially-written
   Parquet is discarded, never left as a truncated complete-looking file.
+- **Recursive-schema rejection (pre-ptars).** A self-referential message type
+  has no finite Arrow representation and segfaults the ptars backend during
+  schema construction — an uncatchable process death that bypasses the
+  ``HandlerBuildError`` net and the partial-file cleanup above. A descriptor
+  pre-flight (:func:`_reject_recursive`, the load-bearing third disposal layer)
+  detects the cycle and raises :class:`RecursiveSchemaError` /
+  :class:`UnsupportedWktError` before ptars is invoked, keeping the failure
+  inside the catchable model.
 
 Single message type per conversion (R11): the adapter binds to one expected
 message ``DESCRIPTOR`` and raises :class:`SchemaMismatchError` on a record of a
@@ -336,6 +344,10 @@ class _PtarsConversionAdapter:
     the canonical descriptor-derived schema across every batch — so a handler
     failure surfaces before any output, and each batch is checked against one
     fixed schema (Parquet requires a single schema across row groups).
+
+    A recursive descriptor is rejected by :func:`_reject_recursive` before the
+    pool is built: ptars 0.0.17 segfaults constructing an Arrow schema for a
+    self-referential type, so the cycle must be caught in Python first.
     """
 
     def __init__(self, descriptor: Descriptor, *, timestamp_unit: TimestampUnit = "us") -> None:
