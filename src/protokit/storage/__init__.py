@@ -34,14 +34,19 @@ Public surface:
 - :func:`to_arrow_batches` / :func:`to_parquet` — the columnar output path
   (optional ``protokit[parquet]`` extra): convert a scan stream to Apache Arrow
   ``RecordBatch``es, or stream it to a Parquet file one row group per batch.
+  :func:`to_parquet` returns a :class:`FidelityReport` carrying the rows written
+  plus the fidelity signal — how many records carried wire data the descriptor
+  does not model (the ``fidelity='ignore'/'warn'/'error'`` policy governs it).
 - :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
   :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError` /
   :class:`ParquetExtraNotInstalledError` / :class:`SchemaMismatchError` /
   :class:`UnknownStreamError` / :class:`HandlerBuildError` /
-  :class:`IncompleteScanError` / :class:`RecursiveSchemaError` /
-  :class:`UnsupportedWktError`
+  :class:`IncompleteScanError` / :class:`FidelityError` /
+  :class:`RecursiveSchemaError` / :class:`UnsupportedWktError`
   — the typed exception hierarchy.
 - ``OnError`` — the ``Literal['raise', 'skip', 'collect', 'route']`` policy type.
+- ``Fidelity`` — the ``Literal['ignore', 'warn', 'error']`` columnar fidelity
+  policy type (the ``fidelity=`` keyword on :func:`to_parquet`).
 
 The reference frame adapters live in :mod:`protokit.storage.sources`
 (``length_delimited``, ``per_message_view``) — they are *examples* of the
@@ -52,6 +57,9 @@ rather than re-exported here.
 from __future__ import annotations
 
 from protokit.storage._columnar import (
+    Fidelity,
+    FidelityError,
+    FidelityReport,
     HandlerBuildError,
     IncompleteScanError,
     ParquetExtraNotInstalledError,
@@ -85,6 +93,9 @@ __all__ = [
     "CompiledSelection",
     "DuplicateStreamError",
     "EmbeddedSchema",
+    "Fidelity",
+    "FidelityError",
+    "FidelityReport",
     "FieldSelectionError",
     "FileDescriptorSetSchema",
     "FrameError",

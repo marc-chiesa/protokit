@@ -26,6 +26,24 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `ListValue` family (`protokit.storage` exports both). Non-recursive
   well-known types (`Timestamp`, `Any`, `Duration`, `FieldMask`, wrappers) are
   unaffected and convert as before.
+- **A columnar/Parquet fidelity signal surfaces unmodeled wire data.** The
+  conversion now detects, per record, when a message carried wire data the
+  supplied descriptor does not model — a proto2 out-of-range closed-enum value
+  (which a protobuf reader relegates to unknown fields but `ptars` surfaces as a
+  raw int) or an undeclared unknown/extension field (dropped from the output).
+  A graduated `--fidelity` policy (`ignore` | `warn` | `error`, default `warn`)
+  governs it, exposed on the CLI and as the `fidelity=` keyword on `to_parquet`:
+  `warn` writes the file and prints a one-line count, `error` fails the
+  conversion (`exit 2`, all-or-nothing, nothing written), `ignore` skips the
+  per-record probe. `protokit.storage` exports the new `FidelityReport` result
+  and `FidelityError`. Declared proto2 extensions and group fields are a
+  documented blind spot — the unknown-field signal does not see them.
+
+### Changed — BREAKING
+- **`to_parquet` now returns a `FidelityReport`, not a bare `int`.** The row
+  count moves to `report.rows`; the report also carries the fidelity signal
+  (`measured`, `unmodeled_records`, `unmodeled_bytes`). Callers that used the
+  former `int` return must read `.rows`. `to_arrow_batches` is unchanged.
 
 ### Changed
 - **Bumped the buf parity reference from `v1.69.0` to `v1.70.0` (#16).** The

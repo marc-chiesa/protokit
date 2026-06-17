@@ -27,7 +27,11 @@ write a file that under-represents the input), as are ``--fields`` and
 ``PROTOKIT_FORMAT=parquet`` (file-writing output must be explicit per
 invocation). Parquet faults are reported only after the input is read to
 exhaustion (collect mode) — unlike the text formats' first-fault abort under
-``raise``.
+``raise``. ``--fidelity`` (ignore | warn | error, parquet only) governs records
+that carry wire data the descriptor does not model — an out-of-range proto2
+closed enum or an undeclared field — and is a distinct axis from the decode-fault
+``--on-error``: ``warn`` (default) writes the file and prints a stderr count,
+``error`` fails the conversion (exit 2, nothing written), ``ignore`` is silent.
 
 Error policy (``--on-error``): ``raise`` (default, fail-loud) aborts on the first
 bad record; ``skip`` drops bad records; ``warn`` reports each to stderr live and
@@ -62,6 +66,9 @@ from google.protobuf.message import DecodeError, Message
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
 from protokit.storage import (
+    Fidelity,
+    FidelityError,
+    FidelityReport,
     FrameError,
     IncompleteScanError,
     OnError,
@@ -92,6 +99,14 @@ _TYPED_CLI_ERRORS = (StorageError, DescriptorPoolError)
 # 'warn' is handled separately (route + a stderr sink). An explicit, typed map
 # keeps the translation exhaustive and avoids a cast at the scan() boundary.
 _CLI_TO_ENGINE: dict[str, OnError] = {"raise": "raise", "skip": "skip"}
+
+# --fidelity values map 1:1 onto the columnar Fidelity policy; an explicit typed
+# map keeps the translation exhaustive and avoids a cast at the to_parquet boundary.
+_CLI_TO_FIDELITY: dict[str, Fidelity] = {
+    "ignore": "ignore",
+    "warn": "warn",
+    "error": "error",
+}
 
 
 class _Setup(NamedTuple):
@@ -244,6 +259,28 @@ def _explicit_defaults_option(command: Callable[..., None]) -> Callable[..., Non
         is_flag=True,
         help="JSON only: emit a dense full record — fill no-presence fields at "
         "their default (camelCase keys). Mutually exclusive with --fields.",
+    )(command)
+
+
+def _fidelity_option(command: Callable[..., None]) -> Callable[..., None]:
+    """Add ``--fidelity`` to a command (governs the columnar fidelity signal).
+
+    Parquet only: how the converter treats a record carrying wire data the
+    descriptor does not model (an out-of-range proto2 closed enum, or an
+    undeclared unknown/extension field). ``ignore`` skips the per-record probe;
+    ``warn`` (default) writes the file and prints a one-line count to stderr;
+    ``error`` fails the conversion (exit 2) and writes nothing. Distinct from
+    ``--on-error`` (which governs records that fail to *decode*).
+    """
+    return click.option(
+        "--fidelity",
+        "fidelity",
+        type=click.Choice(["ignore", "warn", "error"]),
+        default="warn",
+        show_default=True,
+        help="Parquet only: how to treat records carrying wire data the "
+        "descriptor does not model — ignore (skip), warn (count to stderr), "
+        "or error (fail the conversion).",
     )(command)
 
 
@@ -542,8 +579,10 @@ def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:
         click.echo(f"matched {matched} records, {run.faults[0]} faults", err=True)
 
 
-def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
-    """Convert the scan straight to Parquet at ``output``; return rows written.
+def _write_parquet(
+    data_file: Path, setup: _Setup, output: Path, *, fidelity: Fidelity
+) -> FidelityReport:
+    """Convert the scan straight to Parquet at ``output``; return the conversion report.
 
     The library sink owns in-write disposition: a descriptor-derived schema
     (an empty result is a valid zero-row file, R8), one row group per batch,
@@ -579,12 +618,23 @@ def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
         with _open_data(data_file) as handle:
             source = length_delimited(handle, stream_id=setup.stream_id)
             try:
-                rows = to_parquet(
+                report = to_parquet(
                     source,
                     setup.registry,
                     temp,
                     stream_id=setup.stream_id,
                     predicate=setup.predicate,
+                    fidelity=fidelity,
+                )
+            except FidelityError as exc:
+                # fidelity='error': records carried wire data the descriptor does
+                # not model. All-or-nothing like a decode fault — nothing written.
+                error_exit(
+                    f"fidelity check failed (--fidelity error): "
+                    f"{exc.unmodeled_records} record(s) carried "
+                    f"{exc.unmodeled_bytes} byte(s) the descriptor does not model; "
+                    f"no Parquet output is written. Use --fidelity warn to write "
+                    f"the file and report the count instead."
                 )
             except IncompleteScanError as exc:
                 # The library message hints at on_error='skip', which parquet
@@ -619,7 +669,7 @@ def _write_parquet(data_file: Path, setup: _Setup, output: Path) -> int:
         except OSError as exc:
             error_exit(f"failed to publish {output}: {exc}")
         temp_pending = None  # published: the temp IS the output now
-        return rows
+        return report
     finally:
         if temp_pending is not None:
             with contextlib.suppress(OSError):
@@ -647,6 +697,7 @@ def _open_data(path: Path) -> BinaryIO:
 @_output_option
 @_fields_option
 @_explicit_defaults_option
+@_fidelity_option
 def scan_cmd(
     data_file: Path,
     desc: Path | None,
@@ -659,6 +710,7 @@ def scan_cmd(
     output: Path | None,
     fields: str | None,
     explicit_defaults: bool,
+    fidelity: str,
 ) -> None:
     """Dump every (matching) record readably — the protoc --decode replacement."""
     setup = _prepare(
@@ -674,13 +726,31 @@ def scan_cmd(
         on_error=on_error,
         output=output,
     )
+    # --fidelity governs the parquet path only. Reject an explicit value on a
+    # text format up front: a `--format json --fidelity error` data-integrity
+    # gate would otherwise never reach the parquet branch and silently no-op.
+    if (
+        output_format != "parquet"
+        and click.get_current_context().get_parameter_source("fidelity")
+        is ParameterSource.COMMANDLINE
+    ):
+        error_exit("--fidelity is only valid with --format parquet")
     if output_format == "parquet":
         assert output is not None  # required by the _prepare guard (R2)
-        rows = _write_parquet(data_file, setup, output)
+        report = _write_parquet(data_file, setup, output, fidelity=_CLI_TO_FIDELITY[fidelity])
         # One summary line, stderr-only: stdout stays clean for scripting and
         # a legitimate-but-surprising zero-row result (e.g. a typo'd --where)
         # is visible (R19).
-        click.echo(f"wrote {rows} rows to {output}", err=True)
+        click.echo(f"wrote {report.rows} rows to {output}", err=True)
+        # Fidelity signal: surface only when something was actually unmodeled
+        # (under 'warn'); a clean scan or 'ignore' prints nothing extra.
+        if report.measured and report.unmodeled_records:
+            click.echo(
+                f"fidelity: {report.unmodeled_records} record(s) carried "
+                f"{report.unmodeled_bytes} byte(s) the descriptor does not model "
+                f"(unmodeled wire data, absent from the Parquet's modeled columns)",
+                err=True,
+            )
         sys.exit(0)
     yielded = 0
     with _open_data(data_file) as handle:

@@ -43,10 +43,11 @@ import contextlib
 import importlib.util
 import os
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
-from google.protobuf.message import Message
+from google.protobuf.message import EncodeError, Message
 
 from protokit.storage.engine import ScanRecord, scan
 from protokit.storage.registry import StreamRegistry
@@ -65,6 +66,12 @@ DEFAULT_BATCH_SIZE = 65_536
 # (microsecond) is the default — it round-trips cleanly to Python ``datetime``;
 # ``ns`` is fuller proto fidelity but exceeds ``datetime`` resolution.
 TimestampUnit = Literal["s", "ms", "us", "ns"]
+
+# Fidelity-signal policy over records carrying wire data the descriptor does not
+# model: ``ignore`` skips the per-record probe entirely; ``warn`` (the default)
+# measures and surfaces the count; ``error`` fails the conversion loud. Distinct
+# from the ``on_error`` decode-fault axis (hard-wired ``collect`` here).
+Fidelity = Literal["ignore", "warn", "error"]
 
 
 class ParquetExtraNotInstalledError(StorageError):
@@ -92,8 +99,7 @@ class HandlerBuildError(StorageError):
         self.type_name = type_name
         self.reason = reason
         super().__init__(
-            f"could not build a columnar converter for message type "
-            f"{type_name!r}: {reason}"
+            f"could not build a columnar converter for message type {type_name!r}: {reason}"
         )
 
 
@@ -211,6 +217,63 @@ class UnsupportedWktError(StorageError):
         )
 
 
+class FidelityError(StorageError):
+    """The scan carried unmodeled wire data and ``fidelity='error'`` was set.
+
+    Under ``fidelity='error'`` a record that carried wire data the descriptor
+    does not model — a proto2 out-of-range closed-enum value, or an *undeclared*
+    unknown/extension field — fails the conversion loud rather than writing a
+    Parquet that silently diverges from what a protobuf consumer would see. The
+    partial output is discarded, like :class:`IncompleteScanError` (R14
+    all-or-nothing publish). It is a *distinct* error channel from
+    ``IncompleteScanError``: that signals records that failed to **decode**,
+    whereas a fidelity fault is a cleanly-decoded record that carried unmodeled
+    bytes.
+
+    Attributes:
+        unmodeled_records: how many records carried unmodeled wire data.
+        unmodeled_bytes: total unmodeled bytes across those records.
+    """
+
+    def __init__(self, unmodeled_records: int, unmodeled_bytes: int) -> None:
+        self.unmodeled_records = unmodeled_records
+        self.unmodeled_bytes = unmodeled_bytes
+        super().__init__(
+            f"scan carried unmodeled wire data and fidelity='error': "
+            f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) the "
+            f"descriptor does not model; the Parquet output is withheld (use "
+            f"fidelity='warn' to write it and surface the count instead)"
+        )
+
+
+@dataclass(frozen=True)
+class FidelityReport:
+    """Result of a columnar conversion: rows written plus the fidelity signal.
+
+    Returned by :func:`to_parquet` (replacing its former bare ``int`` row count).
+    ``rows`` is the number of records written. The fidelity signal counts records
+    that carried wire data the descriptor does not model (a non-empty recursive
+    unknown-field set) and the total such bytes.
+
+    ``measured`` distinguishes a *measured zero* from *not measured*: under
+    ``fidelity='ignore'`` the per-record probe does not run, so ``measured`` is
+    ``False`` and the counts are ``0`` by convention (not a real observation).
+    Under ``fidelity='warn'`` / ``'error'`` ``measured`` is ``True`` and the
+    counts are real — check ``measured`` before reading them.
+
+    Attributes:
+        rows: records written to the output.
+        measured: whether fidelity detection ran (``False`` under ``'ignore'``).
+        unmodeled_records: records carrying unmodeled wire data (``0`` if not measured).
+        unmodeled_bytes: total unmodeled bytes across those records (``0`` if not measured).
+    """
+
+    rows: int
+    measured: bool
+    unmodeled_records: int
+    unmodeled_bytes: int
+
+
 def _require_parquet() -> None:
     """Raise :class:`ParquetExtraNotInstalledError` if the extra is absent.
 
@@ -261,9 +324,7 @@ def _transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]
 # unsupported-WKT case, distinct from a user-authored recursive schema.
 _STRUCT_PROTO_FILE = "google/protobuf/struct.proto"
 
-_MESSAGE_FIELD_TYPES = frozenset(
-    (FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP)
-)
+_MESSAGE_FIELD_TYPES = frozenset((FieldDescriptor.TYPE_MESSAGE, FieldDescriptor.TYPE_GROUP))
 
 
 def _find_recursive_cycle(
@@ -313,9 +374,7 @@ def _find_recursive_cycle(
         if node.full_name in acyclic:
             continue
         if node.full_name in in_progress:
-            start = next(
-                i for i, d in enumerate(on_path) if d.full_name == node.full_name
-            )
+            start = next(i for i, d in enumerate(on_path) if d.full_name == node.full_name)
             cycle_descs = on_path[start:] + [node]
             cycle = [d.full_name for d in cycle_descs]
             is_wkt = all(d.file.name == _STRUCT_PROTO_FILE for d in cycle_descs)
@@ -349,6 +408,44 @@ def _reject_recursive(descriptor: Descriptor) -> None:
     raise RecursiveSchemaError(descriptor.full_name, tuple(cycle))
 
 
+def _unmodeled_byte_delta(message: Message) -> int | None:
+    """Wire bytes ``message`` carried that its descriptor does not model.
+
+    The serialized-size difference between ``message`` and a copy with its
+    unknown-field set discarded — recursively, into submessages, repeated
+    elements, and map entries (``DiscardUnknownFields`` clears the whole tree). A
+    non-zero delta means the message carried wire data outside the descriptor: a
+    proto2 out-of-range closed-enum value (which the runtime relegates to the
+    unknown-field set) or an *undeclared* unknown/extension field. ``0`` means
+    the descriptor modeled every byte — including proto3 open-enum out-of-range
+    values, which are preserved as the field value, not relegated.
+
+    Returns ``None`` ("cannot measure") when the message is not fully
+    initialized: ``ByteSize`` raises ``EncodeError`` on a proto2 message missing
+    a required field. ptars itself rejects such a record during conversion, so
+    the probe defers rather than letting the error escape its own pre-pass.
+
+    The signal is a causally-linked proxy computed on the parsed message, not on
+    ptars's column output: the same out-of-range value the descriptor cannot
+    model is what both lands in the unknown-field set here and is surfaced by
+    ptars in the column, so a non-empty set is exactly the divergence condition.
+    A field the descriptor *does* model but ptars drops — a *declared* proto2
+    extension (read into ``Extensions[...]`` with an empty unknown set) or a
+    group field — is invisible to this probe; that is a documented non-goal.
+    """
+    try:
+        # Typed locals: protobuf ships no stubs, so ByteSize() is Any; annotate so
+        # mypy --strict (warn_return_any) sees an int subtraction, not Any.
+        before: int = message.ByteSize()
+        clone = type(message)()
+        clone.CopyFrom(message)
+        clone.DiscardUnknownFields()
+        after: int = clone.ByteSize()
+        return before - after
+    except EncodeError:
+        return None
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
@@ -374,23 +471,17 @@ class _PtarsConversionAdapter:
         _reject_recursive(descriptor)
         files = _transitive_file_descriptors(descriptor)
         try:
-            self._pool = ptars.HandlerPool(
-                files, ptars.PtarsConfig(timestamp_unit=timestamp_unit)
-            )
+            self._pool = ptars.HandlerPool(files, ptars.PtarsConfig(timestamp_unit=timestamp_unit))
             # Canonical schema, descriptor-derived and record-independent (R13):
             # an empty conversion yields the full schema used to open the writer.
-            self.schema: pa.Schema = self._pool.messages_to_record_batch(
-                [], descriptor
-            ).schema
+            self.schema: pa.Schema = self._pool.messages_to_record_batch([], descriptor).schema
         except Exception as exc:  # noqa: BLE001 - any ptars build failure is one fault class
             raise HandlerBuildError(descriptor.full_name, str(exc)) from exc
 
     def to_record_batch(self, messages: list[Message]) -> pa.RecordBatch:
         for message in messages:
             if message.DESCRIPTOR is not self._descriptor:
-                raise SchemaMismatchError(
-                    self._descriptor.full_name, message.DESCRIPTOR.full_name
-                )
+                raise SchemaMismatchError(self._descriptor.full_name, message.DESCRIPTOR.full_name)
         batch = self._pool.messages_to_record_batch(messages, self._descriptor)
         if not batch.schema.equals(self.schema):
             # A drift between the canonical (empty-conversion) schema and a
@@ -476,7 +567,8 @@ def to_parquet(
     predicate: Callable[[Message], bool] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     timestamp_unit: TimestampUnit = "us",
-) -> int:
+    fidelity: Fidelity = "warn",
+) -> FidelityReport:
     """Convert one message type from a scan and write it to a Parquet file.
 
     Streams one row group per batch (peak memory O(``batch_size``)). An empty
@@ -485,7 +577,15 @@ def to_parquet(
     exception, the partially-written file is discarded and the error propagates —
     never a truncated file that reads as complete (R14/R12).
 
-    Returns the number of rows written.
+    Returns a :class:`FidelityReport` — the rows written plus the fidelity signal
+    (how many records carried wire data the descriptor does not model, and the
+    total such bytes). ``fidelity`` governs the signal: ``ignore`` skips the
+    per-record probe (no cost, ``measured=False``); ``warn`` (default) measures
+    and surfaces the count, writing the file regardless; ``error`` raises
+    :class:`FidelityError` and discards the partial file when any record carried
+    unmodeled data. The fidelity axis is orthogonal to ``on_error`` (hard-wired
+    ``collect``): a *decode* fault (:class:`IncompleteScanError`) takes precedence
+    over a fidelity fault.
 
     ``destination`` is a filesystem path (a path is required so the sink can own
     creation and discard a partial file on failure).
@@ -498,6 +598,14 @@ def to_parquet(
     result = scan(source, registry, predicate=predicate, on_error="collect")
     path = os.fspath(destination)
 
+    # The fidelity probe runs in this sink loop, on the same Message objects the
+    # adapter hands to ptars — not inside the adapter (its return is a RecordBatch
+    # and it is shared by to_arrow_batches). A loop-local accumulator means the
+    # report is per-call; the empty-result case builds it at the return site.
+    measure = fidelity != "ignore"
+    unmodeled_records = 0
+    unmodeled_bytes = 0
+
     writer: pq.ParquetWriter | None = None
     rows = 0
     try:
@@ -507,13 +615,30 @@ def to_parquet(
         for chunk in _batched(result, batch_size):
             writer.write_batch(adapter.to_record_batch(chunk))
             rows += len(chunk)
+            if measure:
+                for message in chunk:
+                    delta = _unmodeled_byte_delta(message)
+                    if delta:  # not None ("cannot measure") and > 0
+                        unmodeled_records += 1
+                        unmodeled_bytes += delta
         # Completion honesty (R14): withhold a complete-looking file on any fault.
+        # Decode faults take precedence over fidelity — a corrupt record is a
+        # stronger signal than a cleanly-decoded one carrying unmodeled bytes.
         faults = result.errors
         if faults:
             raise IncompleteScanError(faults)
+        # Strict fidelity: fail loud and discard the partial, like a decode fault.
+        # Raised inside the try (before writer.close) so the disposal below fires.
+        if fidelity == "error" and unmodeled_records:
+            raise FidelityError(unmodeled_records, unmodeled_bytes)
         writer.close()
         writer = None
-        return rows
+        return FidelityReport(
+            rows=rows,
+            measured=measure,
+            unmodeled_records=unmodeled_records,
+            unmodeled_bytes=unmodeled_bytes,
+        )
     except BaseException:
         # Partial-file disposition (R14 / R12 extended to the write phase): close
         # the writer, then discard ANY file the writer may have created so a
