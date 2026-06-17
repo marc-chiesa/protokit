@@ -1,7 +1,7 @@
 ---
 title: "Faithful proto-to-Arrow mapping: presence-class structure, Arrow-native values, lossless structs for Any/WKT"
 date: 2026-06-07
-last_updated: 2026-06-10
+last_updated: 2026-06-16
 category: docs/solutions/design-patterns
 module: protokit.storage
 problem_type: design_pattern
@@ -29,7 +29,7 @@ tags:
 
 protokit's storage layer already had a "faithful view" for proto→JSON (PR2): a rendering that mirrors proto3 presence semantics rather than naively dumping fields (see [Faithful proto-to-JSON field projection](proto-json-field-projection-presence-class-fill-then-prune-2026-06-01.md)). PR3 extends faithful representation to proto→Arrow/Parquet (`src/protokit/storage/_columnar.py`).
 
-The naive expectation — "the faithful view is the faithful view, so Parquet values should match the JSON output" — is wrong, and that is the central trap. Fidelity in a columnar export is **two independent axes with separate contracts**. All mappings below were verified against ptars 0.0.17 on the engine's real isolated-pool path on 2026-06-02 (brainstorm R5/R6/R7/R13) (provenance — verified against ptars 0.0.17; current behavior re-asserted by the `storage-parquet` CI job running `tests/storage` against the pinned extra).
+The naive expectation — "the faithful view is the faithful view, so Parquet values should match the JSON output" — is wrong, and that is the central trap. Fidelity in a columnar export is **two independent axes with separate contracts**. Both axes describe how the descriptor-*modeled* data maps; wire data the descriptor does **not** model — a proto2 out-of-range closed-enum value, an undeclared unknown/extension field — is a *third, out-of-band* fidelity concern these axes do not cover, surfaced separately by the unknown-field signal (see the Related learning below). All mappings below were verified against ptars 0.0.17 on the engine's real isolated-pool path on 2026-06-02 (brainstorm R5/R6/R7/R13) (provenance — verified against ptars 0.0.17; current behavior re-asserted by the `storage-parquet` CI job running `tests/storage` against the pinned extra).
 
 ## Guidance
 
@@ -131,4 +131,5 @@ The pattern in one line: *presence-class structure and Arrow-native value encodi
 - [Faithful proto-to-JSON field projection: fill-dense-then-prune, split by presence class](proto-json-field-projection-presence-class-fill-then-prune-2026-06-01.md) — the PR2 JSON faithful view whose presence-class structure axis this mirrors; same presence taxonomy, divergent leaf encoding.
 - [ptars over protarrow for proto-to-Arrow on isolated descriptor pools](../tooling-decisions/ptars-over-protarrow-proto-to-arrow-isolated-descriptor-pools.md) — the dependency choice that makes this mapping implementable on isolated pools and protobuf 5.x (that doc = the dependency; this doc = the mapping it enables).
 - [Atomic CLI file publish: sibling temp + umask-honoring mode + os.replace](atomic-cli-file-publish-sibling-temp-os-replace.md) — the CLI publish layer above this sink: the sink owns in-write disposal (the three-layer guard above — recursion pre-flight, handler-build fail-loud, mid-write unlink); the CLI wrapper owns only the atomic rename window.
+- [Detecting unmodeled wire data via a DiscardUnknownFields byte-delta probe](unmodeled-wire-data-probe-byte-delta-blind-to-declared-extensions.md) — the *third, out-of-band* fidelity channel referenced in Context: it detects wire data the descriptor does not model (which neither axis here covers), and names its own blind spot (declared proto2 extensions / groups land in `Extensions[...]` with an empty unknown set, so the probe misses them).
 - Origin: PR #17 (`feat/storage-pr3-columnar`); design recorded in `docs/brainstorms/2026-06-02-storage-pr3-columnar-parquet-requirements.md` (R5–R7, R11–R13).
