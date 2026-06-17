@@ -13,7 +13,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## Unreleased
+## 0.13.0 — 2026-06-17
 
 ### Added
 - **The columnar/Parquet path rejects recursive proto schemas up front.** A
