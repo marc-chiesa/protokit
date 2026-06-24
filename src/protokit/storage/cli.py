@@ -627,14 +627,25 @@ def _write_parquet(
                     fidelity=fidelity,
                 )
             except FidelityError as exc:
-                # fidelity='error': records carried wire data the descriptor does
-                # not model. All-or-nothing like a decode fault — nothing written.
+                # fidelity='error': unmodeled wire data — declared proto2
+                # extensions ptars drops (structural, raised at bind) and/or
+                # records carrying bytes the descriptor does not model
+                # (per-record). All-or-nothing like a decode fault — nothing written.
+                detail = []
+                if exc.dropped_extensions:
+                    detail.append(
+                        f"{len(exc.dropped_extensions)} declared extension(s) dropped "
+                        f"from the Parquet schema ({', '.join(exc.dropped_extensions)})"
+                    )
+                if exc.unmodeled_records:
+                    detail.append(
+                        f"{exc.unmodeled_records} record(s) carried "
+                        f"{exc.unmodeled_bytes} byte(s) the descriptor does not model"
+                    )
                 error_exit(
-                    f"fidelity check failed (--fidelity error): "
-                    f"{exc.unmodeled_records} record(s) carried "
-                    f"{exc.unmodeled_bytes} byte(s) the descriptor does not model; "
-                    f"no Parquet output is written. Use --fidelity warn to write "
-                    f"the file and report the count instead."
+                    f"fidelity check failed (--fidelity error): {'; '.join(detail)}; "
+                    f"no Parquet output is written. Use --fidelity warn to write the "
+                    f"file and report the signal instead."
                 )
             except IncompleteScanError as exc:
                 # The library message hints at on_error='skip', which parquet
@@ -749,6 +760,17 @@ def scan_cmd(
                 f"fidelity: {report.unmodeled_records} record(s) carried "
                 f"{report.unmodeled_bytes} byte(s) the descriptor does not model "
                 f"(unmodeled wire data, absent from the Parquet's modeled columns)",
+                err=True,
+            )
+        # Structural oracle: a distinct line from the per-record one above; both
+        # can fire under warn (declared extensions ptars drops are a separate loss
+        # class from undeclared per-record bytes).
+        if report.measured and report.dropped_extensions:
+            click.echo(
+                f"fidelity: {len(report.dropped_extensions)} declared extension(s) "
+                f"dropped from the Parquet schema "
+                f"({', '.join(report.dropped_extensions)}) — present on the wire but "
+                f"absent from the descriptor-driven columns",
                 err=True,
             )
         sys.exit(0)
