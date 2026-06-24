@@ -671,14 +671,10 @@ class _ArrowBatchStream:
         measure = self._fidelity != "ignore"
         # Structural oracle, same as to_parquet (computed once at bind). Under
         # `error` it raises here, on the first next(), before any batch is yielded.
-        dropped = (
-            _dropped_declared_extensions(descriptor, adapter.schema.names) if measure else ()
-        )
+        dropped = _dropped_declared_extensions(descriptor, adapter.schema.names) if measure else ()
         if self._fidelity == "error" and dropped:
             raise FidelityError(dropped_extensions=dropped)
-        result = scan(
-            self._source, self._registry, predicate=self._predicate, on_error="collect"
-        )
+        result = scan(self._source, self._registry, predicate=self._predicate, on_error="collect")
         per_record = _PerRecordFidelity(measure)
         rows = 0
         for chunk in _batched(result, self._batch_size):

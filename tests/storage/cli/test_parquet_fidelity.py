@@ -183,8 +183,18 @@ def _struct_desc(tmp_path: Path, *, with_extension: bool) -> Path:
 
 def _struct_argv(data: Path, desc: Path, out: Path, *extra: str) -> list[str]:
     return [
-        "storage", "scan", str(data), "--desc", str(desc), "--type", "so.Base",
-        "--format", "parquet", "-o", str(out), *extra,
+        "storage",
+        "scan",
+        str(data),
+        "--desc",
+        str(desc),
+        "--type",
+        "so.Base",
+        "--format",
+        "parquet",
+        "-o",
+        str(out),
+        *extra,
     ]
 
 
