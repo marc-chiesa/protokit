@@ -42,7 +42,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import os
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -615,6 +615,123 @@ def _batched(records: Iterable[ScanRecord], batch_size: int) -> Iterator[list[Me
         yield batch
 
 
+class _ArrowBatchStream:
+    """Iterable result of :func:`to_arrow_batches` carrying a post-exhaustion report.
+
+    A generator cannot carry a ``.report`` attribute, so the batches API returns
+    this wrapper to surface the fidelity signal. It implements the full iterator
+    protocol (``__iter__`` / ``__next__`` / ``send`` / ``throw`` / ``close``) by
+    delegating to one internal generator, so existing direct ``next(...)`` /
+    ``.close()`` usage keeps working — only the annotated return type changes.
+
+    ``.report`` is a :class:`FidelityReport` valid ONLY after the stream is fully
+    consumed; reading it before exhaustion, or after a mid-stream abort, raises
+    ``RuntimeError`` (mirroring :attr:`~protokit.storage.ScanResult.errors`). The
+    per-record byte-delta count is meaningful only over the whole stream, and the
+    decode-fault status is unknown until exhaustion, so a partial report would
+    oversell what it knows.
+
+    Bind — the parquet-extra check, the recursive-schema pre-flight, and the
+    structural oracle — is deferred to the first ``next()``, matching the
+    generator semantics this replaces: a caller that never iterates triggers
+    nothing, and under ``fidelity='error'`` a structural drop raises on the first
+    ``next()``, before any batch is yielded. The per-record signal accumulates as
+    batches are produced and never raises mid-stream — already-yielded batches
+    cannot be un-sent, so on the streaming path it is reported, not raised.
+    """
+
+    def __init__(
+        self,
+        source: Source,
+        registry: StreamRegistry,
+        *,
+        stream_id: str,
+        predicate: Callable[[Message], bool] | None,
+        batch_size: int,
+        timestamp_unit: TimestampUnit,
+        fidelity: Fidelity,
+    ) -> None:
+        self._source = source
+        self._registry = registry
+        self._stream_id = stream_id
+        self._predicate = predicate
+        self._batch_size = batch_size
+        self._timestamp_unit = timestamp_unit
+        self._fidelity = fidelity
+        self._report: FidelityReport | None = None
+        # Constructing the generator does NOT run its body — bind is deferred to
+        # the first next(), so __init__ stays cheap and pure (no extra check, no
+        # ptars import, no FindAllExtensions).
+        self._gen: Generator[pa.RecordBatch, None, None] = self._run()
+
+    def _run(self) -> Generator[pa.RecordBatch, None, None]:
+        _require_parquet()
+        descriptor = _resolve_descriptor(self._registry, self._stream_id)
+        adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=self._timestamp_unit)
+        measure = self._fidelity != "ignore"
+        # Structural oracle, same as to_parquet (computed once at bind). Under
+        # `error` it raises here, on the first next(), before any batch is yielded.
+        dropped = (
+            _dropped_declared_extensions(descriptor, adapter.schema.names) if measure else ()
+        )
+        if self._fidelity == "error" and dropped:
+            raise FidelityError(dropped_extensions=dropped)
+        result = scan(
+            self._source, self._registry, predicate=self._predicate, on_error="collect"
+        )
+        per_record = _PerRecordFidelity(measure)
+        rows = 0
+        for chunk in _batched(result, self._batch_size):
+            yield adapter.to_record_batch(chunk)
+            rows += len(chunk)
+            per_record.observe(chunk)
+        faults = result.errors
+        if faults:
+            raise IncompleteScanError(faults)
+        # No strict per-record raise on the streaming path: the per-record signal
+        # is surfaced via .report, never raised mid-stream. The report is set only
+        # on clean exhaustion, so an aborted/partial stream leaves it unavailable.
+        self._report = FidelityReport(
+            rows=rows,
+            measured=measure,
+            unmodeled_records=per_record.records,
+            unmodeled_bytes=per_record.bytes,
+            dropped_extensions=dropped,
+        )
+
+    def __iter__(self) -> _ArrowBatchStream:
+        return self
+
+    def __next__(self) -> pa.RecordBatch:
+        return next(self._gen)
+
+    def send(self, value: object) -> pa.RecordBatch:
+        return self._gen.send(value)  # type: ignore[arg-type]
+
+    def throw(self, exc: BaseException, /) -> pa.RecordBatch:
+        return self._gen.throw(exc)
+
+    def close(self) -> None:
+        self._gen.close()
+
+    @property
+    def report(self) -> FidelityReport:
+        """The :class:`FidelityReport`, valid only after full consumption.
+
+        Raises ``RuntimeError`` if read before the stream is exhausted or after a
+        mid-stream abort (a decode fault, a type mismatch, an early ptars error):
+        a partial per-record count and an unknown decode-fault status cannot form
+        an honest report.
+        """
+        if self._report is None:
+            raise RuntimeError(
+                "FidelityReport is available only after the batch stream is fully "
+                "consumed; iterate it to exhaustion (e.g. list(...) or a for loop) "
+                "before reading .report — a partial or aborted stream has no report"
+            )
+        return self._report
+
+
 def to_arrow_batches(
     source: Source,
     registry: StreamRegistry,
@@ -623,8 +740,15 @@ def to_arrow_batches(
     predicate: Callable[[Message], bool] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     timestamp_unit: TimestampUnit = "us",
-) -> Iterator[pa.RecordBatch]:
-    """Yield bounded Arrow ``RecordBatch``es for one message type from a scan.
+    fidelity: Fidelity = "warn",
+) -> _ArrowBatchStream:
+    """Stream bounded Arrow ``RecordBatch``es for one message type from a scan.
+
+    Returns an :class:`_ArrowBatchStream` — an iterable wrapper that yields the
+    batches and, after full consumption, exposes the fidelity signal on
+    ``.report`` (a :class:`FidelityReport`). Iterating it is runtime-compatible
+    with the prior bare-generator return (``for batch in ...`` / ``list(...)`` /
+    ``next(...)`` / ``.close()`` all work); only the annotated return type changed.
 
     Owns scan construction (``on_error='collect'`` hard-wired). Binds to the
     ``stream_id``'s message type; a record of a different type raises
@@ -632,25 +756,33 @@ def to_arrow_batches(
     collected fault raises :class:`IncompleteScanError` (R14). Peak memory is
     O(``batch_size``).
 
-    The fault check runs only after the stream is fully consumed, so a caller
-    that breaks early will not observe :class:`IncompleteScanError` — exhaust the
-    iterator, or use :func:`to_parquet` (all-or-nothing), when completeness
-    matters.
+    ``fidelity`` governs the signal exactly as on :func:`to_parquet` —
+    ``ignore`` / ``warn`` / ``error`` — with one streaming-specific rule: the
+    *structural* oracle (declared proto2 extensions ptars drops) fails fast under
+    ``error`` on the first ``next()``, before any batch is yielded; the per-record
+    byte-delta signal is surfaced via ``.report`` and never raises mid-stream,
+    because already-yielded batches cannot be un-sent. Read ``.report`` only after
+    the stream is fully consumed (it raises otherwise).
 
-    Because this is a generator, the descriptor pre-flight fires on the first
-    iteration, not at call time: a recursive bound type raises
-    :class:`RecursiveSchemaError` / :class:`UnsupportedWktError` when iteration
+    The fault check and the report are set only after the stream is fully
+    consumed, so a caller that breaks early observes neither
+    :class:`IncompleteScanError` nor a ``.report`` — exhaust the iterator, or use
+    :func:`to_parquet` (all-or-nothing), when completeness matters.
+
+    Bind is deferred to the first iteration, not call time: a recursive bound
+    type raises :class:`RecursiveSchemaError` / :class:`UnsupportedWktError`, and
+    a missing extra raises :class:`ParquetExtraNotInstalledError`, when iteration
     begins (:func:`to_parquet` is eager and raises at call time).
     """
-    _require_parquet()
-    descriptor = _resolve_descriptor(registry, stream_id)
-    adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=timestamp_unit)
-    result = scan(source, registry, predicate=predicate, on_error="collect")
-    for chunk in _batched(result, batch_size):
-        yield adapter.to_record_batch(chunk)
-    faults = result.errors
-    if faults:
-        raise IncompleteScanError(faults)
+    return _ArrowBatchStream(
+        source,
+        registry,
+        stream_id=stream_id,
+        predicate=predicate,
+        batch_size=batch_size,
+        timestamp_unit=timestamp_unit,
+        fidelity=fidelity,
+    )
 
 
 def to_parquet(

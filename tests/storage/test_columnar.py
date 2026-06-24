@@ -990,3 +990,101 @@ def test_structural_and_per_record_both_fire_under_warn(tmp_path):  # G2
     assert report.unmodeled_records == 1  # per-record, independent
     assert report.unmodeled_bytes == 3
     assert out.exists()
+
+
+# --- to_arrow_batches fidelity parity: the result wrapper (U4) ----------------
+
+
+def test_wrapper_report_after_exhaustion_carries_structural_drop():
+    reg = _struct_registry(with_extension=True)
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s")  # default warn
+    batches = list(stream)
+    assert sum(b.num_rows for b in batches) == 1
+    report = stream.report
+    assert report.measured is True
+    assert report.dropped_extensions == ("so.ext_val",)
+    assert report.rows == 1
+
+
+def test_wrapper_structural_error_fails_fast_on_first_next():  # AE7
+    reg = _struct_registry(with_extension=True)
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s", fidelity="error")
+    with pytest.raises(FidelityError) as excinfo:
+        next(stream)  # the structural error fires on the first next(), before any batch
+    assert excinfo.value.dropped_extensions == ("so.ext_val",)
+
+
+def test_wrapper_never_iterated_triggers_nothing():  # AE7 (the no-trigger half)
+    reg = _struct_registry(with_extension=True)
+    # build under error with a declared extension but never iterate: bind is
+    # deferred to first next(), so nothing fires; closing a never-started stream
+    # is clean.
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s", fidelity="error")
+    stream.close()  # no FidelityError
+
+
+def test_wrapper_per_record_does_not_raise_under_error():  # AE8
+    reg = _fid_registry()
+    # an undeclared-unknown record under fidelity='error': the per-record signal
+    # must NOT raise mid-stream; batches yield and the count lands on .report.
+    stream = to_arrow_batches(
+        [("s", _unmodeled_bytes(1, 99))], reg, stream_id="s", fidelity="error"
+    )
+    batches = list(stream)  # does not raise
+    assert sum(b.num_rows for b in batches) == 1
+    assert stream.report.unmodeled_records == 1
+
+
+def test_wrapper_report_parity_with_to_parquet(tmp_path):  # G5
+    reg = _fid_registry()
+    src = [
+        ("s", _unmodeled_bytes(1, 99)),
+        ("s", _modeled_bytes(2)),
+        ("s", _unmodeled_bytes(3, 7)),
+    ]
+    out = tmp_path / "parity.parquet"
+    pq_report = to_parquet(list(src), reg, out, stream_id="s")
+    stream = to_arrow_batches(list(src), reg, stream_id="s")
+    list(stream)
+    assert stream.report.unmodeled_records == pq_report.unmodeled_records
+    assert stream.report.unmodeled_bytes == pq_report.unmodeled_bytes
+    assert stream.report.rows == pq_report.rows
+
+
+def test_wrapper_report_before_exhaustion_raises():  # G3
+    reg = _fid_registry()
+    stream = to_arrow_batches([("s", _modeled_bytes(1))], reg, stream_id="s")
+    with pytest.raises(RuntimeError):
+        _ = stream.report  # not yet consumed
+
+
+def test_wrapper_report_after_midstream_abort_raises():  # G4
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    other_cls = reg.get("others").message_class
+    # batch_size=2: first batch ok, the second hits an 'others'-type record ->
+    # SchemaMismatchError mid-stream; the wrapper aborts and .report is unavailable.
+    src = _source("events", [msg_cls(id=1), msg_cls(id=2)]) + [
+        ("others", other_cls(v=9).SerializeToString()),
+    ]
+    stream = to_arrow_batches(src, reg, stream_id="events", batch_size=2)
+    with pytest.raises(SchemaMismatchError):
+        list(stream)
+    with pytest.raises(RuntimeError):
+        _ = stream.report  # aborted stream has no report
+
+
+def test_wrapper_list_then_report():  # G6
+    reg = _fid_registry()
+    stream = to_arrow_batches([("s", _modeled_bytes(1))], reg, stream_id="s")
+    batches = list(stream)
+    assert sum(b.num_rows for b in batches) == 1
+    assert stream.report.rows == 1  # readable after list()
+
+
+def test_wrapper_ignore_measured_false():
+    reg = _struct_registry(with_extension=True)
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s", fidelity="ignore")
+    list(stream)
+    assert stream.report.measured is False
+    assert stream.report.dropped_extensions == ()
