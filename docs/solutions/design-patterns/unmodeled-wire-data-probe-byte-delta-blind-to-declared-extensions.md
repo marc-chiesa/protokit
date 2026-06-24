@@ -10,7 +10,7 @@ applies_when:
   - "Converting parsed protobuf messages to Arrow/Parquet via a schema-driven encoder (e.g. ptars) that silently drops wire data the descriptor does not model"
   - "You need a per-record signal that the columnar output is lossy relative to the wire bytes, without changing the conversion itself"
   - "Messages may carry proto2 out-of-range closed-enum values or undeclared unknown/extension fields"
-  - "Deciding whether a DiscardUnknownFields + ByteSize delta is a sufficient completeness check (it is NOT — declared extensions and group fields are a blind spot)"
+  - "Deciding whether a DiscardUnknownFields + ByteSize delta is a sufficient completeness check (it is NOT — declared proto2 extensions are a blind spot; a populated group is a separate decode fault)"
   - "Reasoning about why a declared proto2 extension still drops its column despite an empty unknown-field set"
 tags:
   - proto-to-arrow
@@ -63,7 +63,7 @@ Read the serialized size, clone via `CopyFrom`, discard the clone's unknown-fiel
 
 **The signal is a proxy, and a proxy has a domain of validity — naming its exact boundary is the load-bearing part.** A naive reading ("non-empty unknown-field set <=> the encoder dropped a column") is wrong in two directions, and both directions are real protobuf semantics, not edge-case trivia.
 
-**1. The declared-extension / group blind spot (false negative — the dangerous one).** A *declared* proto2 extension is read into `Extensions[...]` with an **empty** unknown-field set — yet the encoder still drops the column (it isn't a regular descriptor field). The probe is structurally blind to it:
+**1. The declared-extension blind spot (false negative — the dangerous one).** A *declared* proto2 extension is read into `Extensions[...]` with an **empty** unknown-field set — yet the encoder still drops the column (it isn't a regular descriptor field). The probe is structurally blind to it:
 
 ```python
 # proto2 Base with `extensions 100 to 200` and a declared ext_val #100:
@@ -73,7 +73,9 @@ assert reparsed.Extensions[ext_field] == 42       # data is present, fully model
 assert _unmodeled_byte_delta(reparsed) == 0       # ...but the probe is SILENT
 ```
 
-This is the **"forbidden quadrant": descriptor-modeled, encoder-dropped, empty unknown set, signal silent.** It is not exotic — it's the common GTFS-RT / NYCT setup. The painful inversion: **compiling the vendor `.proto` to read the extensions moves the data OUT of the unknown set and *silences* the detector** on the very fields most likely to be lost. An unknown-field check is therefore **NOT a complete fidelity oracle** — it catches undeclared drift, not declared-but-uncolumnarized fields. Group fields are the same class.
+This is the **"forbidden quadrant": descriptor-modeled, encoder-dropped, empty unknown set, signal silent.** It is not exotic — it's the common GTFS-RT / NYCT setup. The painful inversion: **compiling the vendor `.proto` to read the extensions moves the data OUT of the unknown set and *silences* the detector** on the very fields most likely to be lost. An unknown-field check is therefore **NOT a complete fidelity oracle** — it catches undeclared drift, not declared-but-uncolumnarized fields. v2 closes this gap with a structural oracle (`_dropped_declared_extensions`): a descriptor-vs-encoder-schema diff that flags declared extensions ptars drops.
+
+**Correction (v2, verified against ptars 0.0.17): group fields are NOT this class.** This doc originally lumped groups in with declared extensions. They are not the same: ptars emits a `struct` column for a proto2 group (it *is* a regular `descriptor.fields` field), so it is not silently dropped — the structural oracle does not flag it. A *populated* group instead raises a raw ptars `ValueError` ("unsupported wire type") mid-conversion: a separate, pre-existing decode-robustness fault that escapes the typed fault channel, not a silent column drop. The v2 oracle covers declared extensions only; groups fall to the decode-fault path.
 
 **2. The proto2/proto3 enum asymmetry (the signal self-selects correctly).** A proto2 **closed** enum out-of-range value is relegated to the unknown-field set (`HasField` -> `False`, accessor returns the default), so the probe fires; the encoder surfaces the raw int in the column -> genuine divergence, correctly flagged. A proto3 **open** enum keeps the value *as the field value* (not in unknown fields), so the probe stays silent — and that is right: protobuf and the encoder *agree* (both show `8`), so there is no divergence to report. The probe needs no syntax switch; the runtime's own open/closed semantics make it self-select for exactly the proto2 case where divergence occurs.
 
@@ -89,7 +91,7 @@ The deeper lesson: **a side-channel detector that observes a different artifact 
 
 **Do NOT rely on it as a complete oracle when:**
 
-- **Declared extensions or group fields are in play** (GTFS-RT, legacy proto2). These are modeled-but-dropped and invisible to an unknown-field probe — you need a separate descriptor-vs-encoder-schema diff for those.
+- **Declared extensions are in play** (GTFS-RT, legacy proto2). These are modeled-but-dropped and invisible to an unknown-field probe — you need a separate descriptor-vs-encoder-schema diff (the v2 structural oracle, `_dropped_declared_extensions`) for those. A populated *group* is a different failure entirely: ptars columnizes the group field but raises a raw `ValueError` decoding populated group bytes — a decode fault, not a silent drop.
 - **You haven't pinned the byte-stream seam** with an end-to-end test through the real converter. The proxy's faithfulness depends on a runtime round-trip property that your test, not your hope, must verify.
 - **The probe can't measure** (uninitialized proto2 messages -> `EncodeError` -> `None`). Treat "cannot measure" as a third state, never as zero.
 
@@ -103,7 +105,9 @@ Empirical anchors (verified 2026-06-15/16 on the upb runtime / ptars 0.0.17; eac
 | proto3 open enum, same bytes | `08 08` | `m.c == 8` (kept as field value) | **0** | shows `8` — agrees, no divergence |
 | nested undeclared field | inner `extra` field | reachable via submessage | **> 0** (recursion fires) | dropped |
 | map-entry value undeclared field | `map<string,Inner>` value `extra` | reachable via map-entry value submessage | **> 0** (recursion fires) | dropped |
-| declared proto2 extension #100 (range 100-200, value 42) | reparse -> `Extensions[...]==42` | **empty** unknown set | **0 (BLIND)** | encoder schema `['id']` — column dropped, signal silent |
+| declared proto2 extension #100 (range 100-200, value 42) | reparse -> `Extensions[...]==42` | **empty** unknown set | **0 (BLIND)** | encoder schema `['id']` — column dropped, signal silent (the v2 structural oracle flags it) |
+| proto2 group, unpopulated | only `a` set | group is modeled | **0** | encoder emits a `struct` column — NOT dropped (oracle silent) |
+| proto2 group, populated | group `gx` set | group is modeled | **0** | encoder raises `ValueError` "unsupported wire type" — a decode fault, not a drop |
 | clean message | within descriptor | no unknown fields | **0** | full fidelity (no false positive) |
 | proto2 missing required field | `10 05` (field 2 set, required field 1 unset) | `IsInitialized()==False`; `ByteSize` raises `EncodeError` | **None** ("cannot measure") | encoder rejects the record anyway |
 
