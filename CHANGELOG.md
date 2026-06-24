@@ -13,6 +13,46 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
+## Unreleased
+
+### Added
+- **A structural fidelity oracle for declared proto2 extensions (columnar v2).**
+  The columnar path now detects, once per conversion at bind time, declared
+  proto2 extensions `ptars` drops from the Arrow schema — a loss the v1
+  per-record probe is structurally blind to (a declared extension reads into
+  `Extensions[...]` with an empty unknown-field set). It rides the existing
+  `--fidelity ignore | warn | error` knob and is surfaced on `FidelityReport`
+  through a new `dropped_extensions` tuple. Under `error` it fails fast at bind —
+  before any record is read or the writer opens — so a structural drop pre-empts
+  both decode faults and the per-record signal; the CLI prints a distinct stderr
+  line for it. `FidelityReport.dropped_extensions` and
+  `FidelityError.dropped_extensions` are additive (existing construction is
+  unchanged).
+- **`to_arrow_batches` gains a `fidelity=` parameter and surfaces the report.**
+  The batches API now carries the same fidelity signal as `to_parquet`: it
+  returns an iterable result exposing `.report` (a `FidelityReport`) after full
+  consumption. The structural signal fails fast on the first `next()` under
+  `error`; the per-record signal is reported, never raised mid-stream. Reading
+  `.report` before exhaustion or after a mid-stream abort raises `RuntimeError`.
+  The default is `warn` (matching `to_parquet`), so existing callers that omit
+  `fidelity=` now run the per-record probe and the bind-time oracle on iteration;
+  pass `fidelity='ignore'` to restore the v0.13.0 no-measurement behaviour.
+
+### Changed
+- **`to_arrow_batches` returns an iterable wrapper instead of a bare generator.**
+  Runtime-compatible — `for batch in ...`, `list(...)`, `next(...)`, and
+  `.close()` all work unchanged, and the wrapper is still a valid
+  `Iterator[pa.RecordBatch]`; only the annotated return type changed (to carry
+  `.report`).
+
+### Fixed
+- **Corrected the group-field framing in the columnar fidelity docs.** A proto2
+  group is *not* a silent structural drop (the v1 learnings called it the "same
+  class" as a declared extension): `ptars` emits a column for it, and a
+  *populated* group raises a decode `ValueError` instead — a separate,
+  pre-existing decode-robustness gap. The structural oracle covers declared
+  extensions only.
+
 ## 0.13.0 — 2026-06-17
 
 ### Added

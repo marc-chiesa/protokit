@@ -42,7 +42,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import os
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -230,19 +230,47 @@ class FidelityError(StorageError):
     whereas a fidelity fault is a cleanly-decoded record that carried unmodeled
     bytes.
 
+    It carries two signals, either of which can trigger it: the per-record probe
+    (``unmodeled_records`` / ``unmodeled_bytes``) and the *structural oracle*
+    (``dropped_extensions`` — declared proto2 extensions ptars drops from the
+    Arrow schema). The structural signal is known at bind time, so a structural
+    ``error`` fails fast before any record is read or written; in that case the
+    per-record counts are ``0``.
+
     Attributes:
         unmodeled_records: how many records carried unmodeled wire data.
         unmodeled_bytes: total unmodeled bytes across those records.
+        dropped_extensions: declared proto2 extensions ptars dropped from the
+            schema (empty when the trigger was the per-record signal).
+        summary: the composed one-line detail (which signal(s) fired), reusable
+            by surfaces (e.g. the CLI) so the wording is built once, not re-derived.
     """
 
-    def __init__(self, unmodeled_records: int, unmodeled_bytes: int) -> None:
+    def __init__(
+        self,
+        unmodeled_records: int = 0,
+        unmodeled_bytes: int = 0,
+        dropped_extensions: tuple[str, ...] = (),
+    ) -> None:
         self.unmodeled_records = unmodeled_records
         self.unmodeled_bytes = unmodeled_bytes
+        self.dropped_extensions = dropped_extensions
+        parts: list[str] = []
+        if dropped_extensions:
+            parts.append(
+                f"the descriptor declares {len(dropped_extensions)} extension(s) "
+                f"ptars drops from the Arrow schema ({', '.join(dropped_extensions)})"
+            )
+        if unmodeled_records:
+            parts.append(
+                f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) "
+                f"the descriptor does not model"
+            )
+        self.summary = "; ".join(parts) if parts else "unmodeled wire data was detected"
         super().__init__(
-            f"scan carried unmodeled wire data and fidelity='error': "
-            f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) the "
-            f"descriptor does not model; the Parquet output is withheld (use "
-            f"fidelity='warn' to write it and surface the count instead)"
+            f"scan carried unmodeled wire data and fidelity='error': {self.summary}; "
+            f"the Parquet output is withheld (use fidelity='warn' to write it and "
+            f"surface the signal instead)"
         )
 
 
@@ -256,22 +284,31 @@ class FidelityReport:
     unknown-field set) and the total such bytes.
 
     ``measured`` distinguishes a *measured zero* from *not measured*: under
-    ``fidelity='ignore'`` the per-record probe does not run, so ``measured`` is
-    ``False`` and the counts are ``0`` by convention (not a real observation).
-    Under ``fidelity='warn'`` / ``'error'`` ``measured`` is ``True`` and the
-    counts are real — check ``measured`` before reading them.
+    ``fidelity='ignore'`` neither signal runs, so ``measured`` is ``False``, the
+    counts are ``0``, and ``dropped_extensions`` is empty by convention (not a
+    real observation). Under ``fidelity='warn'`` / ``'error'`` ``measured`` is
+    ``True`` and both signals are real — check ``measured`` before reading them.
+
+    ``dropped_extensions`` is the *structural* signal: the fully-qualified names
+    of declared proto2 extensions ptars dropped from the Arrow schema. This is a
+    loss class the per-record probe is blind to — a declared extension reads into
+    ``Extensions[...]`` with an empty unknown-field set, so its byte delta is
+    ``0`` — and it is computed once per conversion, independent of record count.
 
     Attributes:
         rows: records written to the output.
         measured: whether fidelity detection ran (``False`` under ``'ignore'``).
         unmodeled_records: records carrying unmodeled wire data (``0`` if not measured).
         unmodeled_bytes: total unmodeled bytes across those records (``0`` if not measured).
+        dropped_extensions: declared proto2 extensions ptars dropped from the
+            schema (empty if none, or if not measured).
     """
 
     rows: int
     measured: bool
     unmodeled_records: int
     unmodeled_bytes: int
+    dropped_extensions: tuple[str, ...] = ()
 
 
 def _require_parquet() -> None:
@@ -446,6 +483,67 @@ def _unmodeled_byte_delta(message: Message) -> int | None:
         return None
 
 
+def _dropped_declared_extensions(
+    descriptor: Descriptor, schema_names: Iterable[str]
+) -> tuple[str, ...]:
+    """Declared proto2 extensions ptars drops from the produced Arrow schema.
+
+    ptars columnizes ``descriptor.fields`` only; declared extensions live in the
+    descriptor's pool, not in ``descriptor.fields``, so ptars emits no column for
+    them and they vanish from the Parquet even though a protobuf consumer that
+    compiled the extension's ``.proto`` reads them back via ``Extensions[...]``.
+    This is the structural blind spot the per-record :func:`_unmodeled_byte_delta`
+    probe cannot see: a *declared* extension lands in ``Extensions[...]`` with an
+    empty unknown-field set, so its byte delta is ``0``.
+
+    The check is keyed on extension identity, never on a union of field and
+    extension names — a regular field sharing a name with an extension must not
+    mask the dropped extension. ``schema_names`` is forward-defensive: an
+    extension is reported as dropped unless ptars produced a *non-field* column
+    attributable to it (its short name appears in the schema but is not one of the
+    descriptor's regular fields). For ptars 0.0.17 ptars columnizes no extension,
+    so every declared extension is reported (verified against ptars 0.0.17 and
+    re-asserted end to end by ``test_complementarity_populated_declared_extension``);
+    the pin guards that assumption against a future ptars that columnizes one.
+
+    Returns the fully-qualified name of each dropped extension, or an empty tuple
+    when the pool declares none for ``descriptor`` (the common case).
+    """
+    extensions = descriptor.file.pool.FindAllExtensions(descriptor)
+    if not extensions:
+        return ()
+    field_names = {field.name for field in descriptor.fields}
+    # Columns ptars produced that are NOT regular fields are the only place a
+    # (future) extension column could appear. Subtracting field names first means
+    # a regular field sharing a name with an extension cannot mask the extension.
+    extension_columns = set(schema_names) - field_names
+    return tuple(ext.full_name for ext in extensions if ext.name not in extension_columns)
+
+
+class _PerRecordFidelity:
+    """Accumulates the per-record byte-delta signal across batches.
+
+    Shared by :func:`to_parquet` and the :func:`to_arrow_batches` wrapper so the
+    two delta-accounting paths cannot drift (a parity test guards it). Under
+    ``fidelity='ignore'`` ``measure`` is ``False`` and :meth:`observe` is a no-op,
+    so the probe never runs.
+    """
+
+    def __init__(self, measure: bool) -> None:
+        self.measure = measure
+        self.records = 0
+        self.bytes = 0
+
+    def observe(self, messages: Iterable[Message]) -> None:
+        if not self.measure:
+            return
+        for message in messages:
+            delta = _unmodeled_byte_delta(message)
+            if delta:  # not None ("cannot measure") and > 0
+                self.records += 1
+                self.bytes += delta
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
@@ -520,6 +618,113 @@ def _batched(records: Iterable[ScanRecord], batch_size: int) -> Iterator[list[Me
         yield batch
 
 
+class _ArrowBatchStream:
+    """Iterable result of :func:`to_arrow_batches` carrying a post-exhaustion report.
+
+    A generator cannot carry a ``.report`` attribute, so the batches API returns
+    this wrapper to surface the fidelity signal. It implements the iterator
+    protocol (``__iter__`` / ``__next__`` / ``close``) by delegating to one
+    internal generator, so existing direct ``next(...)`` / ``list(...)`` /
+    ``.close()`` usage keeps working — only the annotated return type changes.
+
+    ``.report`` is a :class:`FidelityReport` valid ONLY after the stream is fully
+    consumed; reading it before exhaustion, or after a mid-stream abort, raises
+    ``RuntimeError`` (mirroring :attr:`~protokit.storage.ScanResult.errors`). The
+    per-record byte-delta count is meaningful only over the whole stream, and the
+    decode-fault status is unknown until exhaustion, so a partial report would
+    oversell what it knows.
+
+    Bind — the parquet-extra check, the recursive-schema pre-flight, and the
+    structural oracle — is deferred to the first ``next()``, matching the
+    generator semantics this replaces: a caller that never iterates triggers
+    nothing, and under ``fidelity='error'`` a structural drop raises on the first
+    ``next()``, before any batch is yielded. The per-record signal accumulates as
+    batches are produced and never raises mid-stream — already-yielded batches
+    cannot be un-sent, so on the streaming path it is reported, not raised.
+    """
+
+    def __init__(
+        self,
+        source: Source,
+        registry: StreamRegistry,
+        *,
+        stream_id: str,
+        predicate: Callable[[Message], bool] | None,
+        batch_size: int,
+        timestamp_unit: TimestampUnit,
+        fidelity: Fidelity,
+    ) -> None:
+        self._source = source
+        self._registry = registry
+        self._stream_id = stream_id
+        self._predicate = predicate
+        self._batch_size = batch_size
+        self._timestamp_unit = timestamp_unit
+        self._fidelity = fidelity
+        self._report: FidelityReport | None = None
+        # Constructing the generator does NOT run its body — bind is deferred to
+        # the first next(), so __init__ stays cheap and pure (no extra check, no
+        # ptars import, no FindAllExtensions).
+        self._gen: Generator[pa.RecordBatch, None, None] = self._run()
+
+    def _run(self) -> Generator[pa.RecordBatch, None, None]:
+        _require_parquet()
+        descriptor = _resolve_descriptor(self._registry, self._stream_id)
+        adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=self._timestamp_unit)
+        measure = self._fidelity != "ignore"
+        # Structural oracle, same as to_parquet (computed once at bind). Under
+        # `error` it raises here, on the first next(), before any batch is yielded.
+        dropped = _dropped_declared_extensions(descriptor, adapter.schema.names) if measure else ()
+        if self._fidelity == "error" and dropped:
+            raise FidelityError(dropped_extensions=dropped)
+        result = scan(self._source, self._registry, predicate=self._predicate, on_error="collect")
+        per_record = _PerRecordFidelity(measure)
+        rows = 0
+        for chunk in _batched(result, self._batch_size):
+            yield adapter.to_record_batch(chunk)
+            rows += len(chunk)
+            per_record.observe(chunk)
+        faults = result.errors
+        if faults:
+            raise IncompleteScanError(faults)
+        # No strict per-record raise on the streaming path: the per-record signal
+        # is surfaced via .report, never raised mid-stream. The report is set only
+        # on clean exhaustion, so an aborted/partial stream leaves it unavailable.
+        self._report = FidelityReport(
+            rows=rows,
+            measured=measure,
+            unmodeled_records=per_record.records,
+            unmodeled_bytes=per_record.bytes,
+            dropped_extensions=dropped,
+        )
+
+    def __iter__(self) -> _ArrowBatchStream:
+        return self
+
+    def __next__(self) -> pa.RecordBatch:
+        return next(self._gen)
+
+    def close(self) -> None:
+        self._gen.close()
+
+    @property
+    def report(self) -> FidelityReport:
+        """The :class:`FidelityReport`, valid only after full consumption.
+
+        Raises ``RuntimeError`` if read before the stream is exhausted or after a
+        mid-stream abort (a decode fault, a type mismatch, an early ptars error):
+        a partial per-record count and an unknown decode-fault status cannot form
+        an honest report.
+        """
+        if self._report is None:
+            raise RuntimeError(
+                "FidelityReport is available only after the batch stream is fully "
+                "consumed; iterate it to exhaustion (e.g. list(...) or a for loop) "
+                "before reading .report — a partial or aborted stream has no report"
+            )
+        return self._report
+
+
 def to_arrow_batches(
     source: Source,
     registry: StreamRegistry,
@@ -528,8 +733,15 @@ def to_arrow_batches(
     predicate: Callable[[Message], bool] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
     timestamp_unit: TimestampUnit = "us",
-) -> Iterator[pa.RecordBatch]:
-    """Yield bounded Arrow ``RecordBatch``es for one message type from a scan.
+    fidelity: Fidelity = "warn",
+) -> _ArrowBatchStream:
+    """Stream bounded Arrow ``RecordBatch``es for one message type from a scan.
+
+    Returns an :class:`_ArrowBatchStream` — an iterable wrapper that yields the
+    batches and, after full consumption, exposes the fidelity signal on
+    ``.report`` (a :class:`FidelityReport`). Iterating it is runtime-compatible
+    with the prior bare-generator return (``for batch in ...`` / ``list(...)`` /
+    ``next(...)`` / ``.close()`` all work); only the annotated return type changed.
 
     Owns scan construction (``on_error='collect'`` hard-wired). Binds to the
     ``stream_id``'s message type; a record of a different type raises
@@ -537,25 +749,33 @@ def to_arrow_batches(
     collected fault raises :class:`IncompleteScanError` (R14). Peak memory is
     O(``batch_size``).
 
-    The fault check runs only after the stream is fully consumed, so a caller
-    that breaks early will not observe :class:`IncompleteScanError` — exhaust the
-    iterator, or use :func:`to_parquet` (all-or-nothing), when completeness
-    matters.
+    ``fidelity`` governs the signal exactly as on :func:`to_parquet` —
+    ``ignore`` / ``warn`` / ``error`` — with one streaming-specific rule: the
+    *structural* oracle (declared proto2 extensions ptars drops) fails fast under
+    ``error`` on the first ``next()``, before any batch is yielded; the per-record
+    byte-delta signal is surfaced via ``.report`` and never raises mid-stream,
+    because already-yielded batches cannot be un-sent. Read ``.report`` only after
+    the stream is fully consumed (it raises otherwise).
 
-    Because this is a generator, the descriptor pre-flight fires on the first
-    iteration, not at call time: a recursive bound type raises
-    :class:`RecursiveSchemaError` / :class:`UnsupportedWktError` when iteration
+    The fault check and the report are set only after the stream is fully
+    consumed, so a caller that breaks early observes neither
+    :class:`IncompleteScanError` nor a ``.report`` — exhaust the iterator, or use
+    :func:`to_parquet` (all-or-nothing), when completeness matters.
+
+    Bind is deferred to the first iteration, not call time: a recursive bound
+    type raises :class:`RecursiveSchemaError` / :class:`UnsupportedWktError`, and
+    a missing extra raises :class:`ParquetExtraNotInstalledError`, when iteration
     begins (:func:`to_parquet` is eager and raises at call time).
     """
-    _require_parquet()
-    descriptor = _resolve_descriptor(registry, stream_id)
-    adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=timestamp_unit)
-    result = scan(source, registry, predicate=predicate, on_error="collect")
-    for chunk in _batched(result, batch_size):
-        yield adapter.to_record_batch(chunk)
-    faults = result.errors
-    if faults:
-        raise IncompleteScanError(faults)
+    return _ArrowBatchStream(
+        source,
+        registry,
+        stream_id=stream_id,
+        predicate=predicate,
+        batch_size=batch_size,
+        timestamp_unit=timestamp_unit,
+        fidelity=fidelity,
+    )
 
 
 def to_parquet(
@@ -577,15 +797,17 @@ def to_parquet(
     exception, the partially-written file is discarded and the error propagates —
     never a truncated file that reads as complete (R14/R12).
 
-    Returns a :class:`FidelityReport` — the rows written plus the fidelity signal
-    (how many records carried wire data the descriptor does not model, and the
-    total such bytes). ``fidelity`` governs the signal: ``ignore`` skips the
-    per-record probe (no cost, ``measured=False``); ``warn`` (default) measures
-    and surfaces the count, writing the file regardless; ``error`` raises
-    :class:`FidelityError` and discards the partial file when any record carried
-    unmodeled data. The fidelity axis is orthogonal to ``on_error`` (hard-wired
-    ``collect``): a *decode* fault (:class:`IncompleteScanError`) takes precedence
-    over a fidelity fault.
+    Returns a :class:`FidelityReport` — the rows written plus the fidelity signal:
+    how many records carried wire data the descriptor does not model (the
+    per-record probe), and which declared proto2 extensions ptars dropped from the
+    Arrow schema (the structural oracle, computed once at bind). ``fidelity``
+    governs both: ``ignore`` skips them (no cost, ``measured=False``); ``warn``
+    (default) measures and surfaces them, writing the file regardless; ``error``
+    raises :class:`FidelityError` and discards the partial file. The fidelity axis
+    is orthogonal to ``on_error`` (hard-wired ``collect``). Precedence under
+    ``error``: a structural drop fails fast at bind (before any record or file),
+    then a *decode* fault (:class:`IncompleteScanError`) takes precedence over the
+    per-record fidelity signal.
 
     ``destination`` is a filesystem path (a path is required so the sink can own
     creation and discard a partial file on failure).
@@ -595,16 +817,29 @@ def to_parquet(
 
     descriptor = _resolve_descriptor(registry, stream_id)
     adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=timestamp_unit)
+
+    # Structural oracle: which declared proto2 extensions ptars drops from the
+    # Arrow schema, computed once from the descriptor + the cached schema (no
+    # record needed). Under `error` it fails fast HERE — before the scan runs and
+    # before the writer opens — so no partial file is created and the structural
+    # drop pre-empts both decode faults and the per-record signal (the precedence
+    # ladder: recursion -> structural -> decode -> per-record). Skipped under
+    # `ignore` (no FindAllExtensions call), matching the per-record probe gate.
+    measure = fidelity != "ignore"
+    dropped_extensions = (
+        _dropped_declared_extensions(descriptor, adapter.schema.names) if measure else ()
+    )
+    if fidelity == "error" and dropped_extensions:
+        raise FidelityError(dropped_extensions=dropped_extensions)
+
     result = scan(source, registry, predicate=predicate, on_error="collect")
     path = os.fspath(destination)
 
-    # The fidelity probe runs in this sink loop, on the same Message objects the
+    # The per-record probe runs in this sink loop, on the same Message objects the
     # adapter hands to ptars — not inside the adapter (its return is a RecordBatch
-    # and it is shared by to_arrow_batches). A loop-local accumulator means the
-    # report is per-call; the empty-result case builds it at the return site.
-    measure = fidelity != "ignore"
-    unmodeled_records = 0
-    unmodeled_bytes = 0
+    # and it is shared by to_arrow_batches). The accumulator is shared with the
+    # to_arrow_batches wrapper so the two delta-accounting paths cannot drift.
+    per_record = _PerRecordFidelity(measure)
 
     writer: pq.ParquetWriter | None = None
     rows = 0
@@ -615,29 +850,26 @@ def to_parquet(
         for chunk in _batched(result, batch_size):
             writer.write_batch(adapter.to_record_batch(chunk))
             rows += len(chunk)
-            if measure:
-                for message in chunk:
-                    delta = _unmodeled_byte_delta(message)
-                    if delta:  # not None ("cannot measure") and > 0
-                        unmodeled_records += 1
-                        unmodeled_bytes += delta
+            per_record.observe(chunk)
         # Completion honesty (R14): withhold a complete-looking file on any fault.
-        # Decode faults take precedence over fidelity — a corrupt record is a
-        # stronger signal than a cleanly-decoded one carrying unmodeled bytes.
+        # Decode faults take precedence over the per-record fidelity signal — a
+        # corrupt record is a stronger signal than a cleanly-decoded one carrying
+        # unmodeled bytes. (A structural drop already fail-fasted at bind above.)
         faults = result.errors
         if faults:
             raise IncompleteScanError(faults)
         # Strict fidelity: fail loud and discard the partial, like a decode fault.
         # Raised inside the try (before writer.close) so the disposal below fires.
-        if fidelity == "error" and unmodeled_records:
-            raise FidelityError(unmodeled_records, unmodeled_bytes)
+        if fidelity == "error" and per_record.records:
+            raise FidelityError(per_record.records, per_record.bytes)
         writer.close()
         writer = None
         return FidelityReport(
             rows=rows,
             measured=measure,
-            unmodeled_records=unmodeled_records,
-            unmodeled_bytes=unmodeled_bytes,
+            unmodeled_records=per_record.records,
+            unmodeled_bytes=per_record.bytes,
+            dropped_extensions=dropped_extensions,
         )
     except BaseException:
         # Partial-file disposition (R14 / R12 extended to the write phase): close

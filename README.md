@@ -1665,6 +1665,18 @@ well-known types `google.protobuf.Struct`/`Value`/`ListValue`; the
 non-recursive WKTs (`Timestamp`, `Any`, `Duration`, `FieldMask`, wrappers)
 convert normally.
 
+**Fidelity signal (`--fidelity ignore | warn | error`).** A descriptor-driven
+Parquet conversion can silently diverge from what a protobuf consumer sees, two
+ways: a record may carry wire data the descriptor does not model (a proto2
+out-of-range closed enum, or an undeclared field), and the descriptor may declare
+a proto2 extension `ptars` cannot columnize — both dropped from the output.
+`--fidelity` surfaces both classes: `warn` (the default) writes the file and
+prints a stderr line per class; `error` fails the conversion (`exit 2`, nothing
+written) — a declared-extension drop fails fast before any record is read;
+`ignore` skips the check. The library mirrors this: `to_parquet` returns a
+`FidelityReport`, and `to_arrow_batches(..., fidelity=...)` exposes the same
+report on its result once the stream is consumed.
+
 **Value encoding is Arrow-native, not the JSON view.** Parquet leaf values
 deliberately diverge from the JSON output's encodings: `bytes` → Arrow binary
 (not base64 strings), enums → their int32 number (not names), int64 → int64

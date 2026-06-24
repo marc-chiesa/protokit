@@ -568,7 +568,7 @@ def test_unused_recursive_field_still_rejected(tmp_path):
 
 def test_to_arrow_batches_rejects_on_first_consumption():
     reg = _reg(_recursive_fds(), "n.Node")
-    gen = to_arrow_batches([], reg, stream_id="s")  # generator: body not yet run
+    gen = to_arrow_batches([], reg, stream_id="s")  # wrapper: bind deferred to first iteration
     with pytest.raises(RecursiveSchemaError):
         list(gen)
 
@@ -858,3 +858,348 @@ def test_fidelity_accumulates_across_batches(tmp_path):
     assert report.rows == 3
     assert report.unmodeled_records == 3
     assert report.unmodeled_bytes == 9  # 3 bytes each, summed across 3 batches
+
+
+# --- structural fidelity oracle: declared proto2 extensions ptars drops (U3) ---
+#
+# Setup: register a proto2 ``Base { optional int64 id = 1; extensions 100..200; }``
+# whose pool DECLARES extension ``ext_val`` #100. ptars columnizes ``id`` only and
+# drops the extension column — a loss the per-record byte-delta probe is blind to
+# (a declared extension reads into Extensions[...] with an empty unknown set). The
+# oracle fires on the DECLARED extension regardless of whether a record sets it.
+
+_BASE_ID7 = bytes([0x08, 0x07])  # Base{id=7}: field 1 (int64 varint) = 7
+
+
+def _struct_fds(*, with_extension: bool):
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "so.proto", "so", "proto2"
+    m = f.message_type.add()
+    m.name = "Base"
+    idf = m.field.add()
+    idf.name, idf.number, idf.type, idf.label = "id", 1, F.TYPE_INT64, F.LABEL_OPTIONAL
+    m.extension_range.add(start=100, end=201)
+    if with_extension:
+        ext = f.extension.add()
+        ext.name, ext.number, ext.type = "ext_val", 100, F.TYPE_INT32
+        ext.label, ext.extendee = F.LABEL_OPTIONAL, ".so.Base"
+    return fds
+
+
+def _struct_registry(*, with_extension: bool):
+    reg = StreamRegistry()
+    reg.register_stream(
+        "s", FileDescriptorSetSchema(_struct_fds(with_extension=with_extension), "so.Base")
+    )
+    return reg
+
+
+def test_structural_warn_reports_dropped_extension(tmp_path):  # AE1
+    reg = _struct_registry(with_extension=True)
+    out = tmp_path / "sw.parquet"
+    report = to_parquet([("s", _BASE_ID7)], reg, out, stream_id="s")  # default warn
+    assert report.measured is True
+    assert report.dropped_extensions == ("so.ext_val",)
+    assert report.rows == 1
+    assert out.exists()  # warn writes the file regardless
+    assert pq.read_table(out).schema.names == ["id"]  # extension is not a column
+
+
+def test_structural_clean_descriptor_silent(tmp_path):  # AE2
+    reg = _struct_registry(with_extension=False)
+    out = tmp_path / "sc.parquet"
+    report = to_parquet([("s", _BASE_ID7)], reg, out, stream_id="s")
+    assert report.measured is True
+    assert report.dropped_extensions == ()
+
+
+def test_structural_ignore_skips_computation(tmp_path, monkeypatch):  # AE10 / G8
+    reg = _struct_registry(with_extension=True)
+    out = tmp_path / "si.parquet"
+    import protokit.storage._columnar as columnar
+
+    def _boom(*a, **k):
+        raise AssertionError("oracle computed under fidelity='ignore'")
+
+    monkeypatch.setattr(columnar, "_dropped_declared_extensions", _boom)
+    report = to_parquet([("s", _BASE_ID7)], reg, out, stream_id="s", fidelity="ignore")
+    assert report.measured is False
+    assert report.dropped_extensions == ()
+    assert out.exists()
+
+
+def test_structural_error_fails_fast_before_scan(tmp_path):  # AE6
+    reg = _struct_registry(with_extension=True)
+    out = tmp_path / "se.parquet"
+    pulled = 0
+
+    def counting_source():
+        nonlocal pulled
+        for _ in range(3):
+            pulled += 1
+            yield ("s", _BASE_ID7)
+
+    with pytest.raises(FidelityError) as excinfo:
+        to_parquet(counting_source(), reg, out, stream_id="s", fidelity="error")
+    assert excinfo.value.dropped_extensions == ("so.ext_val",)
+    assert excinfo.value.unmodeled_records == 0  # bind-time: no record measured
+    assert "so.ext_val" in str(excinfo.value)
+    assert pulled == 0  # fail-fast: raised before the scan pulled any record
+    assert not out.exists()  # ...and before the writer opened
+
+
+def test_structural_error_pre_empts_decode_fault(tmp_path):  # G1
+    reg = _struct_registry(with_extension=True)
+    out = tmp_path / "sg1.parquet"
+    # A descriptor that trips the oracle AND a decode-faulting record: the
+    # structural error (bind) wins over IncompleteScanError (scan-end) — the
+    # inverse of v1's "decode beats fidelity," which holds only at scan-end.
+    src = [("s", _BASE_ID7), ("nope", b"\x00")]
+    with pytest.raises(FidelityError) as excinfo:
+        to_parquet(src, reg, out, stream_id="s", fidelity="error")
+    assert excinfo.value.dropped_extensions == ("so.ext_val",)
+    assert not out.exists()
+
+
+def test_structural_empty_scan_still_flags(tmp_path):  # G9
+    reg = _struct_registry(with_extension=True)
+    out = tmp_path / "sg9.parquet"
+    # The oracle is record-independent: a zero-record scan still flags the drop
+    # under warn (and writes a valid zero-row Parquet).
+    report = to_parquet([], reg, out, stream_id="s")
+    assert report.rows == 0
+    assert report.dropped_extensions == ("so.ext_val",)
+    assert out.exists()
+    # ...and fails fast under error even with no records.
+    out2 = tmp_path / "sg9b.parquet"
+    with pytest.raises(FidelityError):
+        to_parquet([], reg, out2, stream_id="s", fidelity="error")
+    assert not out2.exists()
+
+
+def test_structural_and_per_record_both_fire_under_warn(tmp_path):  # G2
+    reg = _struct_registry(with_extension=True)
+    out = tmp_path / "sboth.parquet"
+    # Base{id=7} + an UNDECLARED field #50 (tag 0x90 0x03, value 0x63): the
+    # undeclared field lands in the unknown set (per-record probe fires) while the
+    # declared ext_val drives the structural signal — both surface, no double-count.
+    record = _BASE_ID7 + bytes([0x90, 0x03, 0x63])
+    report = to_parquet([("s", record)], reg, out, stream_id="s")
+    assert report.dropped_extensions == ("so.ext_val",)  # structural
+    assert report.unmodeled_records == 1  # per-record, independent
+    assert report.unmodeled_bytes == 3
+    assert out.exists()
+
+
+# --- to_arrow_batches fidelity parity: the result wrapper (U4) ----------------
+
+
+def test_wrapper_report_after_exhaustion_carries_structural_drop():
+    reg = _struct_registry(with_extension=True)
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s")  # default warn
+    batches = list(stream)
+    assert sum(b.num_rows for b in batches) == 1
+    report = stream.report
+    assert report.measured is True
+    assert report.dropped_extensions == ("so.ext_val",)
+    assert report.rows == 1
+
+
+def test_wrapper_structural_error_fails_fast_on_first_next():  # AE7
+    reg = _struct_registry(with_extension=True)
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s", fidelity="error")
+    with pytest.raises(FidelityError) as excinfo:
+        next(stream)  # the structural error fires on the first next(), before any batch
+    assert excinfo.value.dropped_extensions == ("so.ext_val",)
+
+
+def test_wrapper_never_iterated_triggers_nothing():  # AE7 (the no-trigger half)
+    reg = _struct_registry(with_extension=True)
+    # build under error with a declared extension but never iterate: bind is
+    # deferred to first next(), so nothing fires; closing a never-started stream
+    # is clean.
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s", fidelity="error")
+    stream.close()  # no FidelityError
+
+
+def test_wrapper_per_record_does_not_raise_under_error():  # AE8
+    reg = _fid_registry()
+    # an undeclared-unknown record under fidelity='error': the per-record signal
+    # must NOT raise mid-stream; batches yield and the count lands on .report.
+    stream = to_arrow_batches(
+        [("s", _unmodeled_bytes(1, 99))], reg, stream_id="s", fidelity="error"
+    )
+    batches = list(stream)  # does not raise
+    assert sum(b.num_rows for b in batches) == 1
+    assert stream.report.unmodeled_records == 1
+
+
+def test_wrapper_report_parity_with_to_parquet(tmp_path):  # G5
+    reg = _fid_registry()
+    src = [
+        ("s", _unmodeled_bytes(1, 99)),
+        ("s", _modeled_bytes(2)),
+        ("s", _unmodeled_bytes(3, 7)),
+    ]
+    out = tmp_path / "parity.parquet"
+    pq_report = to_parquet(list(src), reg, out, stream_id="s")
+    stream = to_arrow_batches(list(src), reg, stream_id="s")
+    list(stream)
+    assert stream.report.unmodeled_records == pq_report.unmodeled_records
+    assert stream.report.unmodeled_bytes == pq_report.unmodeled_bytes
+    assert stream.report.rows == pq_report.rows
+    assert stream.report.dropped_extensions == pq_report.dropped_extensions  # () == ()
+    # ...and the structural field stays in parity when it is non-empty:
+    sreg = _struct_registry(with_extension=True)
+    s_pq = to_parquet([("s", _BASE_ID7)], sreg, tmp_path / "parity_struct.parquet", stream_id="s")
+    s_stream = to_arrow_batches([("s", _BASE_ID7)], sreg, stream_id="s")
+    list(s_stream)
+    assert s_stream.report.dropped_extensions == s_pq.dropped_extensions == ("so.ext_val",)
+
+
+def test_wrapper_report_after_incomplete_scan_raises():  # end-of-stream fault path
+    reg = _fid_registry()
+    # A decode fault collected at end-of-stream -> IncompleteScanError raised after
+    # the last batch yields, before .report is set. Distinct from a mid-stream abort
+    # (test_wrapper_report_after_midstream_abort_raises): here the loop completes,
+    # then the post-loop fault check raises, so .report is still unavailable.
+    src = [("s", _modeled_bytes(1)), ("nope", b"\x00")]
+    stream = to_arrow_batches(src, reg, stream_id="s")
+    with pytest.raises(IncompleteScanError):
+        list(stream)
+    with pytest.raises(RuntimeError):
+        _ = stream.report
+
+
+def test_wrapper_report_before_exhaustion_raises():  # G3
+    reg = _fid_registry()
+    stream = to_arrow_batches([("s", _modeled_bytes(1))], reg, stream_id="s")
+    with pytest.raises(RuntimeError):
+        _ = stream.report  # not yet consumed
+
+
+def test_wrapper_report_after_midstream_abort_raises():  # G4
+    reg = _registry()
+    msg_cls = _event_class(reg)
+    other_cls = reg.get("others").message_class
+    # batch_size=2: first batch ok, the second hits an 'others'-type record ->
+    # SchemaMismatchError mid-stream; the wrapper aborts and .report is unavailable.
+    src = _source("events", [msg_cls(id=1), msg_cls(id=2)]) + [
+        ("others", other_cls(v=9).SerializeToString()),
+    ]
+    stream = to_arrow_batches(src, reg, stream_id="events", batch_size=2)
+    with pytest.raises(SchemaMismatchError):
+        list(stream)
+    with pytest.raises(RuntimeError):
+        _ = stream.report  # aborted stream has no report
+
+
+def test_wrapper_list_then_report():  # G6
+    reg = _fid_registry()
+    stream = to_arrow_batches([("s", _modeled_bytes(1))], reg, stream_id="s")
+    batches = list(stream)
+    assert sum(b.num_rows for b in batches) == 1
+    assert stream.report.rows == 1  # readable after list()
+
+
+def test_wrapper_ignore_measured_false():
+    reg = _struct_registry(with_extension=True)
+    stream = to_arrow_batches([("s", _BASE_ID7)], reg, stream_id="s", fidelity="ignore")
+    list(stream)
+    assert stream.report.measured is False
+    assert stream.report.dropped_extensions == ()
+
+
+# --- U6: end-to-end ptars consistency, complementarity, group correction ------
+
+
+def test_complementarity_populated_declared_extension(tmp_path):
+    # A populated DECLARED extension: ptars omits the column AND the oracle flags
+    # it, while the per-record byte-delta is 0 (a declared extension reads into
+    # Extensions[...] with an empty unknown set). Pins the routing the
+    # complementarity claim rests on against the real ptars conversion.
+    reg = _struct_registry(with_extension=True)
+    cls = reg.get("s").message_class
+    ext = cls.DESCRIPTOR.file.pool.FindExtensionByName("so.ext_val")
+    m = cls()
+    m.id = 7
+    m.Extensions[ext] = 42
+    out = tmp_path / "comp.parquet"
+    report = to_parquet([("s", m.SerializeToString())], reg, out, stream_id="s")
+    assert report.dropped_extensions == ("so.ext_val",)  # oracle flags it
+    assert report.unmodeled_records == 0  # ...the per-record probe is blind to it
+    table = pq.read_table(out)
+    assert table.schema.names == ["id"]  # ptars dropped the extension column
+    assert table.column("id").to_pylist() == [7]
+
+
+def test_complementarity_extension_not_in_fds(tmp_path):  # AE11
+    # The producer set extension #100 but the consumer's pool never loaded its
+    # defining file: from the reduced descriptor's view the bytes are undeclared,
+    # so they land in the unknown set — the per-record probe catches them and the
+    # oracle stays silent (the other half of complementarity).
+    full = _struct_registry(with_extension=True).get("s").message_class
+    full_ext = full.DESCRIPTOR.file.pool.FindExtensionByName("so.ext_val")
+    m = full()
+    m.id = 7
+    m.Extensions[full_ext] = 42
+    wire = m.SerializeToString()
+
+    reduced = _struct_registry(with_extension=False)  # pool lacks ext_val
+    out = tmp_path / "nofds.parquet"
+    report = to_parquet([("s", wire)], reduced, out, stream_id="s")
+    assert report.dropped_extensions == ()  # oracle cannot see an unloaded ext
+    assert report.unmodeled_records == 1  # ...but the byte-delta probe catches it
+
+
+def _group_fds():
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "gp.proto", "gp", "proto2"
+    m = f.message_type.add()
+    m.name = "WithGroup"
+    a = m.field.add()
+    a.name, a.number, a.type, a.label = "a", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    g = m.nested_type.add()
+    g.name = "G"
+    gx = g.field.add()
+    gx.name, gx.number, gx.type, gx.label = "gx", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    gf = m.field.add()
+    gf.name, gf.number, gf.type, gf.label = "g", 2, F.TYPE_GROUP, F.LABEL_OPTIONAL
+    gf.type_name = ".gp.WithGroup.G"
+    return fds
+
+
+def _group_registry():
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_group_fds(), "gp.WithGroup"))
+    return reg
+
+
+def test_group_unpopulated_is_a_column_not_a_drop(tmp_path):  # AE4 (corrected)
+    # A proto2 group is a normal TYPE_GROUP field ptars columnizes (as a struct),
+    # NOT a structural drop — the oracle does not flag it. (Corrects the v1 docs.)
+    reg = _group_registry()
+    out = tmp_path / "grp.parquet"
+    report = to_parquet([("s", bytes([0x08, 0x07]))], reg, out, stream_id="s")  # a=7, group unset
+    assert report.dropped_extensions == ()  # a group is not an extension drop
+    table = pq.read_table(out)
+    assert "g" in table.schema.names  # the group IS a column
+    assert pa.types.is_struct(table.schema.field("g").type)
+
+
+def test_group_populated_raises_raw_ptars_error(tmp_path):  # AE5 (corrected)
+    # A POPULATED group is the real group failure: ptars 0.0.17 cannot decode the
+    # group wire type and raises a raw ValueError mid-conversion that escapes the
+    # IncompleteScanError fault channel and reaches the caller raw — a pre-existing
+    # decode-robustness gap, documented and out of v2 scope.
+    reg = _group_registry()
+    cls = reg.get("s").message_class
+    m = cls()
+    m.a = 7
+    m.g.gx = 42  # populate the group
+    out = tmp_path / "grppop.parquet"
+    with pytest.raises(ValueError, match="unsupported wire type"):
+        to_parquet([("s", m.SerializeToString())], reg, out, stream_id="s")
+    assert not out.exists()  # partial discarded by the sink's BaseException unlink

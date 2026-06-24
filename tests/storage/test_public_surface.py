@@ -181,6 +181,7 @@ class TestPr3SurfaceAdditions:
             "_has_parquet",
             "_transitive_file_descriptors",
             "_PtarsConversionAdapter",
+            "_ArrowBatchStream",
             "DEFAULT_BATCH_SIZE",
             "TimestampUnit",
         ):
@@ -244,10 +245,37 @@ class TestFidelitySignalSurfaceAdditions:
         assert FidelityReport.__dataclass_params__.frozen is True
         report = FidelityReport(rows=3, measured=True, unmodeled_records=1, unmodeled_bytes=2)
         assert (report.rows, report.measured, report.unmodeled_records) == (3, True, 1)
+        # v2: the structural-drop field is additive and defaulted, so the original
+        # four-field construction (positional or keyword) still works unchanged.
+        assert report.dropped_extensions == ()
+        assert FidelityReport(4, False, 0, 0).dropped_extensions == ()
+        report3 = FidelityReport(
+            rows=1,
+            measured=True,
+            unmodeled_records=0,
+            unmodeled_bytes=0,
+            dropped_extensions=("x.ext",),
+        )
+        assert report3.dropped_extensions == ("x.ext",)
+
+    def test_fidelity_error_carries_dropped_extensions(self) -> None:
+        # v2: the structural oracle surfaces through the same FidelityError channel.
+        from protokit.storage import FidelityError
+
+        # bind-time structural fail-fast: no per-record counts, only extensions.
+        err = FidelityError(dropped_extensions=("x.ext_val",))
+        assert err.dropped_extensions == ("x.ext_val",)
+        assert err.unmodeled_records == 0
+        assert "x.ext_val" in str(err)
+        # the v1 positional per-record construction still works unchanged.
+        err2 = FidelityError(2, 5)
+        assert err2.dropped_extensions == ()
+        assert "2 record(s)" in str(err2)
 
     def test_fidelity_internals_not_exported(self) -> None:
-        # The per-record probe is internal.
+        # Both fidelity probes are internal.
         assert "_unmodeled_byte_delta" not in storage.__all__
+        assert "_dropped_declared_extensions" not in storage.__all__
 
 
 class TestReadmeDocsPresence:

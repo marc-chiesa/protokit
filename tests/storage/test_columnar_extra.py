@@ -37,7 +37,8 @@ def test_ae6_missing_extra_raises_actionable_error(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", fake)
     reg = _registry()
     with pytest.raises(ParquetExtraNotInstalledError) as exc:
-        # to_arrow_batches is a generator — must consume it to trigger the guard
+        # to_arrow_batches defers bind to first iteration — must consume it
+        # (list) to trigger the extra guard, which runs inside the stream body
         list(_columnar.to_arrow_batches([], reg, stream_id="s"))
     assert "protokit[parquet]" in str(exc.value)
     assert exc.value.missing == "ptars"

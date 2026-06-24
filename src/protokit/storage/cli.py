@@ -27,11 +27,12 @@ write a file that under-represents the input), as are ``--fields`` and
 ``PROTOKIT_FORMAT=parquet`` (file-writing output must be explicit per
 invocation). Parquet faults are reported only after the input is read to
 exhaustion (collect mode) — unlike the text formats' first-fault abort under
-``raise``. ``--fidelity`` (ignore | warn | error, parquet only) governs records
-that carry wire data the descriptor does not model — an out-of-range proto2
-closed enum or an undeclared field — and is a distinct axis from the decode-fault
-``--on-error``: ``warn`` (default) writes the file and prints a stderr count,
-``error`` fails the conversion (exit 2, nothing written), ``ignore`` is silent.
+``raise``. ``--fidelity`` (ignore | warn | error, parquet only) governs wire data
+the descriptor does not model — per-record (an out-of-range proto2 closed enum or
+an undeclared field) and declared proto2 extensions ptars drops from the schema —
+and is a distinct axis from the decode-fault ``--on-error``: ``warn`` (default)
+writes the file and prints a stderr line per loss class, ``error`` fails the
+conversion (exit 2, nothing written), ``ignore`` is silent.
 
 Error policy (``--on-error``): ``raise`` (default, fail-loud) aborts on the first
 bad record; ``skip`` drops bad records; ``warn`` reports each to stderr live and
@@ -627,14 +628,16 @@ def _write_parquet(
                     fidelity=fidelity,
                 )
             except FidelityError as exc:
-                # fidelity='error': records carried wire data the descriptor does
-                # not model. All-or-nothing like a decode fault — nothing written.
+                # fidelity='error': unmodeled wire data — declared proto2
+                # extensions ptars drops (structural, raised at bind) and/or
+                # records carrying bytes the descriptor does not model (per-record).
+                # Reuse the error's composed summary so the wording is built once
+                # (in FidelityError) rather than re-derived here. All-or-nothing
+                # like a decode fault — nothing written.
                 error_exit(
-                    f"fidelity check failed (--fidelity error): "
-                    f"{exc.unmodeled_records} record(s) carried "
-                    f"{exc.unmodeled_bytes} byte(s) the descriptor does not model; "
-                    f"no Parquet output is written. Use --fidelity warn to write "
-                    f"the file and report the count instead."
+                    f"fidelity check failed (--fidelity error): {exc.summary}; no "
+                    f"Parquet output is written. Use --fidelity warn to write the "
+                    f"file and report the signal instead."
                 )
             except IncompleteScanError as exc:
                 # The library message hints at on_error='skip', which parquet
@@ -749,6 +752,17 @@ def scan_cmd(
                 f"fidelity: {report.unmodeled_records} record(s) carried "
                 f"{report.unmodeled_bytes} byte(s) the descriptor does not model "
                 f"(unmodeled wire data, absent from the Parquet's modeled columns)",
+                err=True,
+            )
+        # Structural oracle: a distinct line from the per-record one above; both
+        # can fire under warn (declared extensions ptars drops are a separate loss
+        # class from undeclared per-record bytes).
+        if report.measured and report.dropped_extensions:
+            click.echo(
+                f"fidelity: {len(report.dropped_extensions)} declared extension(s) "
+                f"dropped from the Parquet schema "
+                f"({', '.join(report.dropped_extensions)}) — present on the wire but "
+                f"absent from the descriptor-driven columns",
                 err=True,
             )
         sys.exit(0)
