@@ -13,7 +13,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## Unreleased
+## 0.14.0 — 2026-06-24
 
 ### Added
 - **A structural fidelity oracle for declared proto2 extensions (columnar v2).**
@@ -25,25 +25,34 @@ All notable changes to `protokit` are documented here. Format loosely follows
   through a new `dropped_extensions` tuple. Under `error` it fails fast at bind —
   before any record is read or the writer opens — so a structural drop pre-empts
   both decode faults and the per-record signal; the CLI prints a distinct stderr
-  line for it. `FidelityReport.dropped_extensions` and
-  `FidelityError.dropped_extensions` are additive (existing construction is
-  unchanged).
+  line for it. `FidelityReport.dropped_extensions`,
+  `FidelityError.dropped_extensions`, and a composed `FidelityError.summary`
+  (a one-line statement of which signal(s) fired) are additive (existing
+  construction is unchanged).
 - **`to_arrow_batches` gains a `fidelity=` parameter and surfaces the report.**
   The batches API now carries the same fidelity signal as `to_parquet`: it
   returns an iterable result exposing `.report` (a `FidelityReport`) after full
   consumption. The structural signal fails fast on the first `next()` under
   `error`; the per-record signal is reported, never raised mid-stream. Reading
   `.report` before exhaustion or after a mid-stream abort raises `RuntimeError`.
-  The default is `warn` (matching `to_parquet`), so existing callers that omit
-  `fidelity=` now run the per-record probe and the bind-time oracle on iteration;
-  pass `fidelity='ignore'` to restore the v0.13.0 no-measurement behaviour.
+  The default is `warn` (matching `to_parquet`); pass `fidelity='ignore'` to opt
+  out of all measurement.
 
-### Changed
-- **`to_arrow_batches` returns an iterable wrapper instead of a bare generator.**
-  Runtime-compatible — `for batch in ...`, `list(...)`, `next(...)`, and
-  `.close()` all work unchanged, and the wrapper is still a valid
-  `Iterator[pa.RecordBatch]`; only the annotated return type changed (to carry
-  `.report`).
+### Changed — BREAKING
+- **`to_arrow_batches` returns an `_ArrowBatchStream` wrapper, not a bare
+  generator.** The common patterns stay runtime-compatible — `for batch in ...`,
+  `list(...)`, `next(...)`, and `.close()` all work unchanged, and the wrapper is
+  a valid `Iterator[pa.RecordBatch]`. But the returned value is no longer a
+  generator and its annotated return type changed, so code that depends on
+  generator identity — `inspect.isgenerator(...)`, `isinstance(..., GeneratorType)`,
+  or the generator-only `.send()` / `.throw()` — breaks.
+- **`to_arrow_batches` now measures fidelity by default.** v0.13.0 had no
+  `fidelity` parameter and did no measurement; callers that omit `fidelity=` now
+  run the per-record probe and the bind-time structural oracle on iteration —
+  added per-record cost (the same `ByteSize`-based probe the Parquet path
+  benchmarks at ~1.63×) and, under the `warn` default, a surfaced `.report`
+  rather than silence. Pass `fidelity='ignore'` to restore the v0.13.0
+  no-measurement behaviour.
 
 ### Fixed
 - **Corrected the group-field framing in the columnar fidelity docs.** A proto2
