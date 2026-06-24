@@ -446,6 +446,42 @@ def _unmodeled_byte_delta(message: Message) -> int | None:
         return None
 
 
+def _dropped_declared_extensions(
+    descriptor: Descriptor, schema_names: Iterable[str]
+) -> tuple[str, ...]:
+    """Declared proto2 extensions ptars drops from the produced Arrow schema.
+
+    ptars columnizes ``descriptor.fields`` only; declared extensions live in the
+    descriptor's pool, not in ``descriptor.fields``, so ptars emits no column for
+    them and they vanish from the Parquet even though a protobuf consumer that
+    compiled the extension's ``.proto`` reads them back via ``Extensions[...]``.
+    This is the structural blind spot the per-record :func:`_unmodeled_byte_delta`
+    probe cannot see: a *declared* extension lands in ``Extensions[...]`` with an
+    empty unknown-field set, so its byte delta is ``0``.
+
+    The check is keyed on extension identity, never on a union of field and
+    extension names — a regular field sharing a name with an extension must not
+    mask the dropped extension. ``schema_names`` is forward-defensive: an
+    extension is reported as dropped unless ptars produced a *non-field* column
+    attributable to it (its short name appears in the schema but is not one of the
+    descriptor's regular fields). For ptars 0.0.17 ptars columnizes no extension,
+    so every declared extension is reported; the end-to-end pin guards that
+    assumption against a future ptars that columnizes one.
+
+    Returns the fully-qualified name of each dropped extension, or an empty tuple
+    when the pool declares none for ``descriptor`` (the common case).
+    """
+    extensions = descriptor.file.pool.FindAllExtensions(descriptor)
+    if not extensions:
+        return ()
+    field_names = {field.name for field in descriptor.fields}
+    # Columns ptars produced that are NOT regular fields are the only place a
+    # (future) extension column could appear. Subtracting field names first means
+    # a regular field sharing a name with an extension cannot mask the extension.
+    extension_columns = set(schema_names) - field_names
+    return tuple(ext.full_name for ext in extensions if ext.name not in extension_columns)
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
