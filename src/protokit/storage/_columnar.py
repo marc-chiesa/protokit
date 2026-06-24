@@ -230,19 +230,45 @@ class FidelityError(StorageError):
     whereas a fidelity fault is a cleanly-decoded record that carried unmodeled
     bytes.
 
+    It carries two signals, either of which can trigger it: the per-record probe
+    (``unmodeled_records`` / ``unmodeled_bytes``) and the *structural oracle*
+    (``dropped_extensions`` — declared proto2 extensions ptars drops from the
+    Arrow schema). The structural signal is known at bind time, so a structural
+    ``error`` fails fast before any record is read or written; in that case the
+    per-record counts are ``0``.
+
     Attributes:
         unmodeled_records: how many records carried unmodeled wire data.
         unmodeled_bytes: total unmodeled bytes across those records.
+        dropped_extensions: declared proto2 extensions ptars dropped from the
+            schema (empty when the trigger was the per-record signal).
     """
 
-    def __init__(self, unmodeled_records: int, unmodeled_bytes: int) -> None:
+    def __init__(
+        self,
+        unmodeled_records: int = 0,
+        unmodeled_bytes: int = 0,
+        dropped_extensions: tuple[str, ...] = (),
+    ) -> None:
         self.unmodeled_records = unmodeled_records
         self.unmodeled_bytes = unmodeled_bytes
+        self.dropped_extensions = dropped_extensions
+        parts: list[str] = []
+        if dropped_extensions:
+            parts.append(
+                f"the descriptor declares {len(dropped_extensions)} extension(s) "
+                f"ptars drops from the Arrow schema ({', '.join(dropped_extensions)})"
+            )
+        if unmodeled_records:
+            parts.append(
+                f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) "
+                f"the descriptor does not model"
+            )
+        detail = "; ".join(parts) if parts else "unmodeled wire data was detected"
         super().__init__(
-            f"scan carried unmodeled wire data and fidelity='error': "
-            f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) the "
-            f"descriptor does not model; the Parquet output is withheld (use "
-            f"fidelity='warn' to write it and surface the count instead)"
+            f"scan carried unmodeled wire data and fidelity='error': {detail}; the "
+            f"Parquet output is withheld (use fidelity='warn' to write it and "
+            f"surface the signal instead)"
         )
 
 
@@ -256,22 +282,31 @@ class FidelityReport:
     unknown-field set) and the total such bytes.
 
     ``measured`` distinguishes a *measured zero* from *not measured*: under
-    ``fidelity='ignore'`` the per-record probe does not run, so ``measured`` is
-    ``False`` and the counts are ``0`` by convention (not a real observation).
-    Under ``fidelity='warn'`` / ``'error'`` ``measured`` is ``True`` and the
-    counts are real — check ``measured`` before reading them.
+    ``fidelity='ignore'`` neither signal runs, so ``measured`` is ``False``, the
+    counts are ``0``, and ``dropped_extensions`` is empty by convention (not a
+    real observation). Under ``fidelity='warn'`` / ``'error'`` ``measured`` is
+    ``True`` and both signals are real — check ``measured`` before reading them.
+
+    ``dropped_extensions`` is the *structural* signal: the fully-qualified names
+    of declared proto2 extensions ptars dropped from the Arrow schema. This is a
+    loss class the per-record probe is blind to — a declared extension reads into
+    ``Extensions[...]`` with an empty unknown-field set, so its byte delta is
+    ``0`` — and it is computed once per conversion, independent of record count.
 
     Attributes:
         rows: records written to the output.
         measured: whether fidelity detection ran (``False`` under ``'ignore'``).
         unmodeled_records: records carrying unmodeled wire data (``0`` if not measured).
         unmodeled_bytes: total unmodeled bytes across those records (``0`` if not measured).
+        dropped_extensions: declared proto2 extensions ptars dropped from the
+            schema (empty if none, or if not measured).
     """
 
     rows: int
     measured: bool
     unmodeled_records: int
     unmodeled_bytes: int
+    dropped_extensions: tuple[str, ...] = ()
 
 
 def _require_parquet() -> None:

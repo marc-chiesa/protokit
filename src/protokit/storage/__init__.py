@@ -36,7 +36,8 @@ Public surface:
   ``RecordBatch``es, or stream it to a Parquet file one row group per batch.
   :func:`to_parquet` returns a :class:`FidelityReport` carrying the rows written
   plus the fidelity signal — how many records carried wire data the descriptor
-  does not model (the ``fidelity='ignore'/'warn'/'error'`` policy governs it).
+  does not model, and which declared proto2 extensions ptars dropped from the
+  schema (the ``fidelity='ignore'/'warn'/'error'`` policy governs both).
 - :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
   :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError` /
   :class:`ParquetExtraNotInstalledError` / :class:`SchemaMismatchError` /
