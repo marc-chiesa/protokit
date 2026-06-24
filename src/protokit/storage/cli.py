@@ -27,11 +27,12 @@ write a file that under-represents the input), as are ``--fields`` and
 ``PROTOKIT_FORMAT=parquet`` (file-writing output must be explicit per
 invocation). Parquet faults are reported only after the input is read to
 exhaustion (collect mode) — unlike the text formats' first-fault abort under
-``raise``. ``--fidelity`` (ignore | warn | error, parquet only) governs records
-that carry wire data the descriptor does not model — an out-of-range proto2
-closed enum or an undeclared field — and is a distinct axis from the decode-fault
-``--on-error``: ``warn`` (default) writes the file and prints a stderr count,
-``error`` fails the conversion (exit 2, nothing written), ``ignore`` is silent.
+``raise``. ``--fidelity`` (ignore | warn | error, parquet only) governs wire data
+the descriptor does not model — per-record (an out-of-range proto2 closed enum or
+an undeclared field) and declared proto2 extensions ptars drops from the schema —
+and is a distinct axis from the decode-fault ``--on-error``: ``warn`` (default)
+writes the file and prints a stderr line per loss class, ``error`` fails the
+conversion (exit 2, nothing written), ``ignore`` is silent.
 
 Error policy (``--on-error``): ``raise`` (default, fail-loud) aborts on the first
 bad record; ``skip`` drops bad records; ``warn`` reports each to stderr live and
@@ -629,22 +630,13 @@ def _write_parquet(
             except FidelityError as exc:
                 # fidelity='error': unmodeled wire data — declared proto2
                 # extensions ptars drops (structural, raised at bind) and/or
-                # records carrying bytes the descriptor does not model
-                # (per-record). All-or-nothing like a decode fault — nothing written.
-                detail = []
-                if exc.dropped_extensions:
-                    detail.append(
-                        f"{len(exc.dropped_extensions)} declared extension(s) dropped "
-                        f"from the Parquet schema ({', '.join(exc.dropped_extensions)})"
-                    )
-                if exc.unmodeled_records:
-                    detail.append(
-                        f"{exc.unmodeled_records} record(s) carried "
-                        f"{exc.unmodeled_bytes} byte(s) the descriptor does not model"
-                    )
+                # records carrying bytes the descriptor does not model (per-record).
+                # Reuse the error's composed summary so the wording is built once
+                # (in FidelityError) rather than re-derived here. All-or-nothing
+                # like a decode fault — nothing written.
                 error_exit(
-                    f"fidelity check failed (--fidelity error): {'; '.join(detail)}; "
-                    f"no Parquet output is written. Use --fidelity warn to write the "
+                    f"fidelity check failed (--fidelity error): {exc.summary}; no "
+                    f"Parquet output is written. Use --fidelity warn to write the "
                     f"file and report the signal instead."
                 )
             except IncompleteScanError as exc:

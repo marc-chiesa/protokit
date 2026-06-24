@@ -242,6 +242,8 @@ class FidelityError(StorageError):
         unmodeled_bytes: total unmodeled bytes across those records.
         dropped_extensions: declared proto2 extensions ptars dropped from the
             schema (empty when the trigger was the per-record signal).
+        summary: the composed one-line detail (which signal(s) fired), reusable
+            by surfaces (e.g. the CLI) so the wording is built once, not re-derived.
     """
 
     def __init__(
@@ -264,10 +266,10 @@ class FidelityError(StorageError):
                 f"{unmodeled_records} record(s) carried {unmodeled_bytes} byte(s) "
                 f"the descriptor does not model"
             )
-        detail = "; ".join(parts) if parts else "unmodeled wire data was detected"
+        self.summary = "; ".join(parts) if parts else "unmodeled wire data was detected"
         super().__init__(
-            f"scan carried unmodeled wire data and fidelity='error': {detail}; the "
-            f"Parquet output is withheld (use fidelity='warn' to write it and "
+            f"scan carried unmodeled wire data and fidelity='error': {self.summary}; "
+            f"the Parquet output is withheld (use fidelity='warn' to write it and "
             f"surface the signal instead)"
         )
 
@@ -500,8 +502,9 @@ def _dropped_declared_extensions(
     extension is reported as dropped unless ptars produced a *non-field* column
     attributable to it (its short name appears in the schema but is not one of the
     descriptor's regular fields). For ptars 0.0.17 ptars columnizes no extension,
-    so every declared extension is reported; the end-to-end pin guards that
-    assumption against a future ptars that columnizes one.
+    so every declared extension is reported (verified against ptars 0.0.17 and
+    re-asserted end to end by ``test_complementarity_populated_declared_extension``);
+    the pin guards that assumption against a future ptars that columnizes one.
 
     Returns the fully-qualified name of each dropped extension, or an empty tuple
     when the pool declares none for ``descriptor`` (the common case).
@@ -619,9 +622,9 @@ class _ArrowBatchStream:
     """Iterable result of :func:`to_arrow_batches` carrying a post-exhaustion report.
 
     A generator cannot carry a ``.report`` attribute, so the batches API returns
-    this wrapper to surface the fidelity signal. It implements the full iterator
-    protocol (``__iter__`` / ``__next__`` / ``send`` / ``throw`` / ``close``) by
-    delegating to one internal generator, so existing direct ``next(...)`` /
+    this wrapper to surface the fidelity signal. It implements the iterator
+    protocol (``__iter__`` / ``__next__`` / ``close``) by delegating to one
+    internal generator, so existing direct ``next(...)`` / ``list(...)`` /
     ``.close()`` usage keeps working — only the annotated return type changes.
 
     ``.report`` is a :class:`FidelityReport` valid ONLY after the stream is fully
@@ -700,12 +703,6 @@ class _ArrowBatchStream:
 
     def __next__(self) -> pa.RecordBatch:
         return next(self._gen)
-
-    def send(self, value: object) -> pa.RecordBatch:
-        return self._gen.send(value)  # type: ignore[arg-type]
-
-    def throw(self, exc: BaseException, /) -> pa.RecordBatch:
-        return self._gen.throw(exc)
 
     def close(self) -> None:
         self._gen.close()

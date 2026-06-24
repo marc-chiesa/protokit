@@ -38,6 +38,8 @@ Public surface:
   plus the fidelity signal — how many records carried wire data the descriptor
   does not model, and which declared proto2 extensions ptars dropped from the
   schema (the ``fidelity='ignore'/'warn'/'error'`` policy governs both).
+  :func:`to_arrow_batches` carries the same signal: it returns an iterable whose
+  ``.report`` exposes a :class:`FidelityReport` once the stream is consumed.
 - :class:`StorageError` / :class:`FrameError` / :class:`DuplicateStreamError` /
   :class:`SchemaCompileError` / :class:`WhereError` / :class:`FieldSelectionError` /
   :class:`ParquetExtraNotInstalledError` / :class:`SchemaMismatchError` /

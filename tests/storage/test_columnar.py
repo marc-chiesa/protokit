@@ -568,7 +568,7 @@ def test_unused_recursive_field_still_rejected(tmp_path):
 
 def test_to_arrow_batches_rejects_on_first_consumption():
     reg = _reg(_recursive_fds(), "n.Node")
-    gen = to_arrow_batches([], reg, stream_id="s")  # generator: body not yet run
+    gen = to_arrow_batches([], reg, stream_id="s")  # wrapper: bind deferred to first iteration
     with pytest.raises(RecursiveSchemaError):
         list(gen)
 
@@ -1049,6 +1049,27 @@ def test_wrapper_report_parity_with_to_parquet(tmp_path):  # G5
     assert stream.report.unmodeled_records == pq_report.unmodeled_records
     assert stream.report.unmodeled_bytes == pq_report.unmodeled_bytes
     assert stream.report.rows == pq_report.rows
+    assert stream.report.dropped_extensions == pq_report.dropped_extensions  # () == ()
+    # ...and the structural field stays in parity when it is non-empty:
+    sreg = _struct_registry(with_extension=True)
+    s_pq = to_parquet([("s", _BASE_ID7)], sreg, tmp_path / "parity_struct.parquet", stream_id="s")
+    s_stream = to_arrow_batches([("s", _BASE_ID7)], sreg, stream_id="s")
+    list(s_stream)
+    assert s_stream.report.dropped_extensions == s_pq.dropped_extensions == ("so.ext_val",)
+
+
+def test_wrapper_report_after_incomplete_scan_raises():  # end-of-stream fault path
+    reg = _fid_registry()
+    # A decode fault collected at end-of-stream -> IncompleteScanError raised after
+    # the last batch yields, before .report is set. Distinct from a mid-stream abort
+    # (test_wrapper_report_after_midstream_abort_raises): here the loop completes,
+    # then the post-loop fault check raises, so .report is still unavailable.
+    src = [("s", _modeled_bytes(1)), ("nope", b"\x00")]
+    stream = to_arrow_batches(src, reg, stream_id="s")
+    with pytest.raises(IncompleteScanError):
+        list(stream)
+    with pytest.raises(RuntimeError):
+        _ = stream.report
 
 
 def test_wrapper_report_before_exhaustion_raises():  # G3

@@ -34,6 +34,9 @@ All notable changes to `protokit` are documented here. Format loosely follows
   consumption. The structural signal fails fast on the first `next()` under
   `error`; the per-record signal is reported, never raised mid-stream. Reading
   `.report` before exhaustion or after a mid-stream abort raises `RuntimeError`.
+  The default is `warn` (matching `to_parquet`), so existing callers that omit
+  `fidelity=` now run the per-record probe and the bind-time oracle on iteration;
+  pass `fidelity='ignore'` to restore the v0.13.0 no-measurement behaviour.
 
 ### Changed
 - **`to_arrow_batches` returns an iterable wrapper instead of a bare generator.**

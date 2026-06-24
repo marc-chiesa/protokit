@@ -181,6 +181,7 @@ class TestPr3SurfaceAdditions:
             "_has_parquet",
             "_transitive_file_descriptors",
             "_PtarsConversionAdapter",
+            "_ArrowBatchStream",
             "DEFAULT_BATCH_SIZE",
             "TimestampUnit",
         ):

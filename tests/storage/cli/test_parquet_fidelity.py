@@ -241,7 +241,7 @@ def test_structural_error_exit2_no_file(
     assert result.stdout == ""
     assert "fidelity check failed" in result.stderr
     assert "so.ext_val" in result.stderr
-    assert "declared extension(s) dropped" in result.stderr
+    assert "extension(s) ptars drops" in result.stderr  # reuses FidelityError.summary
     assert not out.exists()
     assert _no_partial_left(tmp_path)
 
