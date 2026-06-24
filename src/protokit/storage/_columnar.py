@@ -517,6 +517,30 @@ def _dropped_declared_extensions(
     return tuple(ext.full_name for ext in extensions if ext.name not in extension_columns)
 
 
+class _PerRecordFidelity:
+    """Accumulates the per-record byte-delta signal across batches.
+
+    Shared by :func:`to_parquet` and the :func:`to_arrow_batches` wrapper so the
+    two delta-accounting paths cannot drift (a parity test guards it). Under
+    ``fidelity='ignore'`` ``measure`` is ``False`` and :meth:`observe` is a no-op,
+    so the probe never runs.
+    """
+
+    def __init__(self, measure: bool) -> None:
+        self.measure = measure
+        self.records = 0
+        self.bytes = 0
+
+    def observe(self, messages: Iterable[Message]) -> None:
+        if not self.measure:
+            return
+        for message in messages:
+            delta = _unmodeled_byte_delta(message)
+            if delta:  # not None ("cannot measure") and > 0
+                self.records += 1
+                self.bytes += delta
+
+
 class _PtarsConversionAdapter:
     """ptars-backed proto -> Arrow converter, bound to one message type.
 
@@ -648,15 +672,17 @@ def to_parquet(
     exception, the partially-written file is discarded and the error propagates —
     never a truncated file that reads as complete (R14/R12).
 
-    Returns a :class:`FidelityReport` — the rows written plus the fidelity signal
-    (how many records carried wire data the descriptor does not model, and the
-    total such bytes). ``fidelity`` governs the signal: ``ignore`` skips the
-    per-record probe (no cost, ``measured=False``); ``warn`` (default) measures
-    and surfaces the count, writing the file regardless; ``error`` raises
-    :class:`FidelityError` and discards the partial file when any record carried
-    unmodeled data. The fidelity axis is orthogonal to ``on_error`` (hard-wired
-    ``collect``): a *decode* fault (:class:`IncompleteScanError`) takes precedence
-    over a fidelity fault.
+    Returns a :class:`FidelityReport` — the rows written plus the fidelity signal:
+    how many records carried wire data the descriptor does not model (the
+    per-record probe), and which declared proto2 extensions ptars dropped from the
+    Arrow schema (the structural oracle, computed once at bind). ``fidelity``
+    governs both: ``ignore`` skips them (no cost, ``measured=False``); ``warn``
+    (default) measures and surfaces them, writing the file regardless; ``error``
+    raises :class:`FidelityError` and discards the partial file. The fidelity axis
+    is orthogonal to ``on_error`` (hard-wired ``collect``). Precedence under
+    ``error``: a structural drop fails fast at bind (before any record or file),
+    then a *decode* fault (:class:`IncompleteScanError`) takes precedence over the
+    per-record fidelity signal.
 
     ``destination`` is a filesystem path (a path is required so the sink can own
     creation and discard a partial file on failure).
@@ -666,16 +692,29 @@ def to_parquet(
 
     descriptor = _resolve_descriptor(registry, stream_id)
     adapter = _PtarsConversionAdapter(descriptor, timestamp_unit=timestamp_unit)
+
+    # Structural oracle: which declared proto2 extensions ptars drops from the
+    # Arrow schema, computed once from the descriptor + the cached schema (no
+    # record needed). Under `error` it fails fast HERE — before the scan runs and
+    # before the writer opens — so no partial file is created and the structural
+    # drop pre-empts both decode faults and the per-record signal (the precedence
+    # ladder: recursion -> structural -> decode -> per-record). Skipped under
+    # `ignore` (no FindAllExtensions call), matching the per-record probe gate.
+    measure = fidelity != "ignore"
+    dropped_extensions = (
+        _dropped_declared_extensions(descriptor, adapter.schema.names) if measure else ()
+    )
+    if fidelity == "error" and dropped_extensions:
+        raise FidelityError(dropped_extensions=dropped_extensions)
+
     result = scan(source, registry, predicate=predicate, on_error="collect")
     path = os.fspath(destination)
 
-    # The fidelity probe runs in this sink loop, on the same Message objects the
+    # The per-record probe runs in this sink loop, on the same Message objects the
     # adapter hands to ptars — not inside the adapter (its return is a RecordBatch
-    # and it is shared by to_arrow_batches). A loop-local accumulator means the
-    # report is per-call; the empty-result case builds it at the return site.
-    measure = fidelity != "ignore"
-    unmodeled_records = 0
-    unmodeled_bytes = 0
+    # and it is shared by to_arrow_batches). The accumulator is shared with the
+    # to_arrow_batches wrapper so the two delta-accounting paths cannot drift.
+    per_record = _PerRecordFidelity(measure)
 
     writer: pq.ParquetWriter | None = None
     rows = 0
@@ -686,29 +725,26 @@ def to_parquet(
         for chunk in _batched(result, batch_size):
             writer.write_batch(adapter.to_record_batch(chunk))
             rows += len(chunk)
-            if measure:
-                for message in chunk:
-                    delta = _unmodeled_byte_delta(message)
-                    if delta:  # not None ("cannot measure") and > 0
-                        unmodeled_records += 1
-                        unmodeled_bytes += delta
+            per_record.observe(chunk)
         # Completion honesty (R14): withhold a complete-looking file on any fault.
-        # Decode faults take precedence over fidelity — a corrupt record is a
-        # stronger signal than a cleanly-decoded one carrying unmodeled bytes.
+        # Decode faults take precedence over the per-record fidelity signal — a
+        # corrupt record is a stronger signal than a cleanly-decoded one carrying
+        # unmodeled bytes. (A structural drop already fail-fasted at bind above.)
         faults = result.errors
         if faults:
             raise IncompleteScanError(faults)
         # Strict fidelity: fail loud and discard the partial, like a decode fault.
         # Raised inside the try (before writer.close) so the disposal below fires.
-        if fidelity == "error" and unmodeled_records:
-            raise FidelityError(unmodeled_records, unmodeled_bytes)
+        if fidelity == "error" and per_record.records:
+            raise FidelityError(per_record.records, per_record.bytes)
         writer.close()
         writer = None
         return FidelityReport(
             rows=rows,
             measured=measure,
-            unmodeled_records=unmodeled_records,
-            unmodeled_bytes=unmodeled_bytes,
+            unmodeled_records=per_record.records,
+            unmodeled_bytes=per_record.bytes,
+            dropped_extensions=dropped_extensions,
         )
     except BaseException:
         # Partial-file disposition (R14 / R12 extended to the write phase): close
