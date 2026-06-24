@@ -1088,3 +1088,97 @@ def test_wrapper_ignore_measured_false():
     list(stream)
     assert stream.report.measured is False
     assert stream.report.dropped_extensions == ()
+
+
+# --- U6: end-to-end ptars consistency, complementarity, group correction ------
+
+
+def test_complementarity_populated_declared_extension(tmp_path):
+    # A populated DECLARED extension: ptars omits the column AND the oracle flags
+    # it, while the per-record byte-delta is 0 (a declared extension reads into
+    # Extensions[...] with an empty unknown set). Pins the routing the
+    # complementarity claim rests on against the real ptars conversion.
+    reg = _struct_registry(with_extension=True)
+    cls = reg.get("s").message_class
+    ext = cls.DESCRIPTOR.file.pool.FindExtensionByName("so.ext_val")
+    m = cls()
+    m.id = 7
+    m.Extensions[ext] = 42
+    out = tmp_path / "comp.parquet"
+    report = to_parquet([("s", m.SerializeToString())], reg, out, stream_id="s")
+    assert report.dropped_extensions == ("so.ext_val",)  # oracle flags it
+    assert report.unmodeled_records == 0  # ...the per-record probe is blind to it
+    table = pq.read_table(out)
+    assert table.schema.names == ["id"]  # ptars dropped the extension column
+    assert table.column("id").to_pylist() == [7]
+
+
+def test_complementarity_extension_not_in_fds(tmp_path):  # AE11
+    # The producer set extension #100 but the consumer's pool never loaded its
+    # defining file: from the reduced descriptor's view the bytes are undeclared,
+    # so they land in the unknown set — the per-record probe catches them and the
+    # oracle stays silent (the other half of complementarity).
+    full = _struct_registry(with_extension=True).get("s").message_class
+    full_ext = full.DESCRIPTOR.file.pool.FindExtensionByName("so.ext_val")
+    m = full()
+    m.id = 7
+    m.Extensions[full_ext] = 42
+    wire = m.SerializeToString()
+
+    reduced = _struct_registry(with_extension=False)  # pool lacks ext_val
+    out = tmp_path / "nofds.parquet"
+    report = to_parquet([("s", wire)], reduced, out, stream_id="s")
+    assert report.dropped_extensions == ()  # oracle cannot see an unloaded ext
+    assert report.unmodeled_records == 1  # ...but the byte-delta probe catches it
+
+
+def _group_fds():
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "gp.proto", "gp", "proto2"
+    m = f.message_type.add()
+    m.name = "WithGroup"
+    a = m.field.add()
+    a.name, a.number, a.type, a.label = "a", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    g = m.nested_type.add()
+    g.name = "G"
+    gx = g.field.add()
+    gx.name, gx.number, gx.type, gx.label = "gx", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    gf = m.field.add()
+    gf.name, gf.number, gf.type, gf.label = "g", 2, F.TYPE_GROUP, F.LABEL_OPTIONAL
+    gf.type_name = ".gp.WithGroup.G"
+    return fds
+
+
+def _group_registry():
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_group_fds(), "gp.WithGroup"))
+    return reg
+
+
+def test_group_unpopulated_is_a_column_not_a_drop(tmp_path):  # AE4 (corrected)
+    # A proto2 group is a normal TYPE_GROUP field ptars columnizes (as a struct),
+    # NOT a structural drop — the oracle does not flag it. (Corrects the v1 docs.)
+    reg = _group_registry()
+    out = tmp_path / "grp.parquet"
+    report = to_parquet([("s", bytes([0x08, 0x07]))], reg, out, stream_id="s")  # a=7, group unset
+    assert report.dropped_extensions == ()  # a group is not an extension drop
+    table = pq.read_table(out)
+    assert "g" in table.schema.names  # the group IS a column
+    assert pa.types.is_struct(table.schema.field("g").type)
+
+
+def test_group_populated_raises_raw_ptars_error(tmp_path):  # AE5 (corrected)
+    # A POPULATED group is the real group failure: ptars 0.0.17 cannot decode the
+    # group wire type and raises a raw ValueError mid-conversion that escapes the
+    # IncompleteScanError fault channel and reaches the caller raw — a pre-existing
+    # decode-robustness gap, documented and out of v2 scope.
+    reg = _group_registry()
+    cls = reg.get("s").message_class
+    m = cls()
+    m.a = 7
+    m.g.gx = 42  # populate the group
+    out = tmp_path / "grppop.parquet"
+    with pytest.raises(ValueError, match="unsupported wire type"):
+        to_parquet([("s", m.SerializeToString())], reg, out, stream_id="s")
+    assert not out.exists()  # partial discarded by the sink's BaseException unlink
