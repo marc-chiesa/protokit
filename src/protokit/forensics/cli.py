@@ -30,7 +30,11 @@ from google.protobuf.message import DecodeError
 
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
-from protokit.forensics._errors import CandidateSpecError, MessageTooLargeError
+from protokit.forensics._errors import (
+    CandidateSpecError,
+    ForensicsError,
+    MessageTooLargeError,
+)
 from protokit.forensics._match import (
     DEFAULT_TIE_MARGIN,
     Candidate,
@@ -81,6 +85,19 @@ def _parse_schema_spec(spec: str) -> tuple[str, Path]:
     return label, Path(raw_path)
 
 
+def _bounded_read(path: Path, limit: int) -> bytes:
+    """Read at most ``limit + 1`` bytes in a single open.
+
+    A single bounded read (not ``stat().st_size`` then ``read_bytes()``) caps the
+    work for *any* file — a non-regular file (FIFO, device, process substitution)
+    whose ``st_size`` is meaningless, or a regular file that grows between a stat
+    and a read — so the size guard is enforcing, not advisory. ``OSError``
+    propagates to the caller to translate into a typed error.
+    """
+    with path.open("rb") as handle:
+        return handle.read(limit + 1)
+
+
 def _build_candidate(
     label: str, path: Path, type_name: str, proto_paths: tuple[str, ...]
 ) -> Candidate:
@@ -88,9 +105,20 @@ def _build_candidate(
     if not path.exists():
         raise CandidateSpecError(f"--schema {label}={path}: file does not exist")
     if path.suffix in _FDS_SUFFIXES:
+        try:
+            raw = _bounded_read(path, _DEFAULT_MAX_MESSAGE_BYTES)
+        except OSError as exc:
+            raise CandidateSpecError(
+                f"--schema {label}={path}: cannot read ({exc})"
+            ) from exc
+        if len(raw) > _DEFAULT_MAX_MESSAGE_BYTES:
+            raise CandidateSpecError(
+                f"--schema {label}={path}: descriptor set exceeds "
+                f"{_DEFAULT_MAX_MESSAGE_BYTES} bytes"
+            )
         fds = descriptor_pb2.FileDescriptorSet()
         try:
-            fds.ParseFromString(path.read_bytes())
+            fds.ParseFromString(raw)
         except DecodeError as exc:
             raise CandidateSpecError(
                 f"--schema {label}={path}: not a valid FileDescriptorSet ({exc})"
@@ -100,11 +128,19 @@ def _build_candidate(
 
 
 def _read_message(path: Path, max_message_bytes: int) -> bytes:
-    """Enforce the size cap (KTD10) *before* reading, then read the message bytes."""
-    size = path.stat().st_size
-    if size > max_message_bytes:
-        raise MessageTooLargeError(path, size, max_message_bytes)
-    return path.read_bytes()
+    """Read the message, capping the read (KTD10) so untrusted input cannot OOM.
+
+    A single bounded read enforces the cap for non-regular and growing files
+    alike; an I/O error becomes a typed :class:`ForensicsError` (exit 2), never a
+    bare traceback.
+    """
+    try:
+        data = _bounded_read(path, max_message_bytes)
+    except OSError as exc:
+        raise ForensicsError(f"cannot read message {path}: {exc}") from exc
+    if len(data) > max_message_bytes:
+        raise MessageTooLargeError(path, path.stat().st_size, max_message_bytes)
+    return data
 
 
 def _fmt_opt(value: float | None, spec: str, dash: str) -> str:
@@ -114,7 +150,10 @@ def _fmt_opt(value: float | None, spec: str, dash: str) -> str:
 
 def _render_human(report: MatchReport) -> str:
     """Build the stdout ranking table for ``--format human``."""
-    lines = ["rank  label                outcome      fraction  coverage  residual"]
+    lines = [
+        f"{'rank':<4}  {'label':<20}  {'outcome':<11}  "
+        f"{'fraction':>8}  {'cover':>5}  {'resid':>5}"
+    ]
     for rank, fit in enumerate(report.ranked, start=1):
         fraction = _fmt_opt(fit.modeled_fraction, "8.3f", "    -   ")
         coverage = _fmt_opt(fit.declared_field_coverage, "5.2f", "   - ")
@@ -237,6 +276,13 @@ def match_cmd(
             _build_candidate(*_parse_schema_spec(spec), type_name, proto_paths)
             for spec in schema_specs
         ]
+        labels = [candidate.label for candidate in candidates]
+        duplicates = sorted({lbl for lbl in labels if labels.count(lbl) > 1})
+        if duplicates:
+            error_exit(
+                f"duplicate --schema label(s): {', '.join(duplicates)}; "
+                "use a unique LABEL per candidate"
+            )
         report = match(
             message_bytes,
             candidates,

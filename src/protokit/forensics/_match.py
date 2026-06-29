@@ -30,6 +30,7 @@ from protokit.storage._fidelity_probe import unmodeled_byte_delta
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
 
 Verdict = Literal["clean_winner", "multiple_clean_matches", "no_clean_match"]
+ParseOutcome = Literal["clean", "unmodeled", "incomplete", "decode_error"]
 
 #: Default closeness epsilon (a fraction of total bytes) below which two
 #: candidates' modeled-byte fractions are "near-identical" — the Phase-B
@@ -40,7 +41,7 @@ DEFAULT_TIE_MARGIN = 0.005
 class ParseTier(Enum):
     """Coarse parse outcome, ordered best-first by ``value`` (lower ranks higher)."""
 
-    CLEAN = 0  # parsed, every byte modeled (or within the residual tolerance)
+    CLEAN = 0  # parsed, delta == 0 (the residual tolerance is applied in match())
     UNMODELED = 1  # parsed, but carried bytes the descriptor does not model
     FAULT = 2  # un-parseable (DecodeError) or proto2-uninitialized (cannot measure)
 
@@ -59,7 +60,7 @@ class CandidateFit:
 
     label: str
     tier: ParseTier
-    parse_outcome: str  # "clean" | "unmodeled" | "incomplete" | "decode_error"
+    parse_outcome: ParseOutcome
     total_bytes: int
     unmodeled_bytes: int | None
     modeled_fraction: float | None
@@ -142,10 +143,11 @@ def fit_candidate(message_bytes: bytes, candidate: Candidate) -> CandidateFit:
 
     fraction = 1.0 - (delta / total) if total else 1.0
     tier = ParseTier.CLEAN if delta == 0 else ParseTier.UNMODELED
+    outcome: ParseOutcome = "clean" if delta == 0 else "unmodeled"
     return CandidateFit(
         label=candidate.label,
         tier=tier,
-        parse_outcome="clean" if delta == 0 else "unmodeled",
+        parse_outcome=outcome,
         total_bytes=total,
         unmodeled_bytes=delta,
         modeled_fraction=fraction,
@@ -156,17 +158,24 @@ def fit_candidate(message_bytes: bytes, candidate: Candidate) -> CandidateFit:
     )
 
 
+def _coerce_scalars(fit: CandidateFit) -> tuple[float, float]:
+    """The (fraction, coverage) pair with ``None`` coerced to the worst sentinel."""
+    fraction = fit.modeled_fraction if fit.modeled_fraction is not None else -1.0
+    coverage = (
+        fit.declared_field_coverage if fit.declared_field_coverage is not None else -1.0
+    )
+    return fraction, coverage
+
+
 def _sort_key(fit: CandidateFit, index: int) -> tuple[int, float, float, int]:
     """Rank key, lowest first: tier, then higher fraction, higher coverage, order."""
-    fraction = fit.modeled_fraction if fit.modeled_fraction is not None else -1.0
-    coverage = fit.declared_field_coverage if fit.declared_field_coverage is not None else -1.0
+    fraction, coverage = _coerce_scalars(fit)
     return (fit.tier.value, -fraction, -coverage, index)
 
 
 def _signature(fit: CandidateFit) -> tuple[int, float, float]:
     """The discriminating triple used to decide whether two fits are equivalent."""
-    fraction = fit.modeled_fraction if fit.modeled_fraction is not None else -1.0
-    coverage = fit.declared_field_coverage if fit.declared_field_coverage is not None else -1.0
+    fraction, coverage = _coerce_scalars(fit)
     return (fit.tier.value, fraction, coverage)
 
 
@@ -198,7 +207,9 @@ def match(
     clean = [
         f
         for f in ranked
-        if f.unmodeled_bytes is not None and f.unmodeled_bytes <= max_residual_bytes
+        if f.tier is not ParseTier.FAULT
+        and f.unmodeled_bytes is not None
+        and f.unmodeled_bytes <= max_residual_bytes
     ]
     if not clean:
         verdict: Verdict = "no_clean_match"
