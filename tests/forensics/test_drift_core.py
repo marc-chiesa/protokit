@@ -68,6 +68,29 @@ def test_reserved_tag_in_use_flagged() -> None:
     assert "reserved_in_use" in _kinds(report)
 
 
+def test_reserved_to_max_does_not_materialize() -> None:
+    """A valid `reserved N to max` must not allocate a half-billion-int set (P1)."""
+    producer = fdp({"x": 1, "y": 2})
+    reserved = fdp({"x": 1})
+    rng = reserved.message_type[0].reserved_range.add()
+    rng.start, rng.end = 2, 536_870_912  # `reserved 2 to max;`
+    report = drift(msg_bytes(producer, {"x": 5, "y": 7}), _src(reserved))  # must return fast
+    assert "reserved_in_use" in _kinds(report)
+
+
+def test_unpacked_repeated_undeclared_dedups_to_one_divergence() -> None:
+    """An undeclared unpacked repeated field is ONE divergence, not one per element."""
+    repeated = typed_fdp(
+        {"xs": (_F.TYPE_INT32, 5)}, syntax="proto2", repeated=frozenset({"xs"})
+    )
+    message = FileDescriptorSetSchema(fds(repeated), "a.A").resolve().message_class()
+    message.xs.extend([1, 2, 3, 4])  # 4 wire occurrences of field 5
+    report = drift(message.SerializeToString(), _src(fdp({"x": 1})))  # field 5 undeclared
+    undeclared = [d for d in report.divergences if d.kind == "undeclared"]
+    assert len(undeclared) == 1  # collapsed per distinct field number
+    assert report.observed_field_count == 1
+
+
 def test_declared_extension_not_flagged_undeclared() -> None:
     # proto2 a.A { optional int32 x = 1; extensions 100 to 200; }
     # extend a.A { optional int32 ext_y = 100; }

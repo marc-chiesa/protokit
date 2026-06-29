@@ -92,16 +92,23 @@ def _present_declared_field_count(message: Message) -> int:
     return sum(1 for fd, _ in message.ListFields() if not fd.is_extension)
 
 
-def fit_candidate(message_bytes: bytes, candidate: Candidate) -> CandidateFit:
+def fit_candidate(
+    message_bytes: bytes,
+    candidate: Candidate,
+    resolved: ResolvedSchema | None = None,
+) -> CandidateFit:
     """Parse ``message_bytes`` under one candidate and measure its fit.
 
     Resolution failures (a ``.proto`` that will not compile, an unknown type)
     propagate — a broken candidate schema is a user error, not a per-candidate
     fault. A ``DecodeError`` (the *message* does not parse under this schema) is
     caught and recorded as a fault so one bad fit never aborts the whole ranking.
+    ``resolved`` lets a caller (``match``) pass an already-resolved schema so the
+    pool/compile happens once per candidate, not again in the tie-break.
     """
     total = len(message_bytes)
-    resolved: ResolvedSchema = candidate.source.resolve()
+    if resolved is None:
+        resolved = candidate.source.resolve()
     descriptor: Descriptor = resolved.message_class.DESCRIPTOR
     declared_count: int = len(descriptor.fields)
 
@@ -183,12 +190,17 @@ def _signature(fit: CandidateFit) -> tuple[int, float, float]:
 
 def _coverage(fit: CandidateFit) -> float:
     """Declared-field coverage as a sortable float (``None`` -> worst)."""
-    return fit.declared_field_coverage if fit.declared_field_coverage is not None else -1.0
+    return _coerce_scalars(fit)[1]
 
 
 def _is_ambiguous(ranked: list[CandidateFit], tie_margin: float) -> bool:
-    """Whether the top-2 modeled fractions are within the closeness margin."""
-    if len(ranked) < 2:
+    """Whether the top-2 share a tier and their modeled fractions are within margin.
+
+    The tier guard mirrors :func:`_tied_group_len`'s same-tier requirement, so
+    ``ambiguous_top`` is never reported True when the tie-break would decline to
+    run (e.g. a CLEAN top with an UNMODELED runner-up within the margin).
+    """
+    if len(ranked) < 2 or ranked[0].tier is not ranked[1].tier:
         return False
     first, second = ranked[0].modeled_fraction, ranked[1].modeled_fraction
     return first is not None and second is not None and abs(first - second) <= tie_margin
@@ -218,6 +230,7 @@ def _tied_group_len(
 
 def _apply_tiebreak(
     message_bytes: bytes,
+    resolved: list[ResolvedSchema],
     paired: list[tuple[Candidate, CandidateFit]],
     order: list[int],
     tie_margin: float,
@@ -232,7 +245,7 @@ def _apply_tiebreak(
         return order, {}  # bytes the walker can't read — leave the scalar order
     compat: dict[int, int] = {}
     for i in order[:group_len]:
-        descriptor = paired[i][0].source.resolve().message_class.DESCRIPTOR
+        descriptor = resolved[i].message_class.DESCRIPTOR  # already resolved in match()
         compat[i] = compatibility_score(observations, descriptor)
     regrouped = sorted(
         order[:group_len], key=lambda i: (-compat[i], -_coverage(paired[i][1]), i)
@@ -290,13 +303,17 @@ def match(
         A :class:`MatchReport`: candidates ranked best-first and an honest
         verdict (``clean_winner`` / ``multiple_clean_matches`` / ``no_clean_match``).
     """
-    paired = [(candidate, fit_candidate(message_bytes, candidate)) for candidate in candidates]
+    resolved = [candidate.source.resolve() for candidate in candidates]
+    paired = [
+        (candidate, fit_candidate(message_bytes, candidate, res))
+        for candidate, res in zip(candidates, resolved, strict=True)
+    ]
     order = sorted(range(len(paired)), key=lambda i: _sort_key(paired[i][1], i))
 
     ambiguous_top = _is_ambiguous([paired[i][1] for i in order], tie_margin)
     compat: dict[int, int] = {}
     if ambiguous_top:
-        order, compat = _apply_tiebreak(message_bytes, paired, order, tie_margin)
+        order, compat = _apply_tiebreak(message_bytes, resolved, paired, order, tie_margin)
 
     ranked = tuple(paired[i][1] for i in order)
     verdict = _verdict([(i, paired[i][1]) for i in order], compat, max_residual_bytes)

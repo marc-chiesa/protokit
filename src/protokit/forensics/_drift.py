@@ -77,14 +77,34 @@ def _declared_numbers(
     return regular, extensions
 
 
-def _reserved_numbers(descriptor: Descriptor) -> set[int]:
-    """Field numbers the descriptor reserves (read via ``CopyToProto``)."""
+def _reserved_ranges(descriptor: Descriptor) -> tuple[tuple[int, int], ...]:
+    """The descriptor's reserved field-number ranges as half-open ``(start, end)`` pairs.
+
+    Deliberately not materialized into a set: a valid ``reserved N to max`` emits
+    ``end = 536_870_912``, so ``set(range(...))`` would allocate ~5e8 ints and OOM.
+    Membership is the only use — see :func:`_is_reserved`.
+    """
     proto = descriptor_pb2.DescriptorProto()
     descriptor.CopyToProto(proto)
-    reserved: set[int] = set()
-    for rng in proto.reserved_range:
-        reserved.update(range(rng.start, rng.end))  # end is exclusive
-    return reserved
+    return tuple((rng.start, rng.end) for rng in proto.reserved_range)
+
+
+def _is_reserved(number: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """Whether ``number`` falls in any half-open reserved range."""
+    return any(start <= number < end for start, end in ranges)
+
+
+def _observed_wire_types(observations: list[WireObservation]) -> dict[int, set[int]]:
+    """Collapse per-occurrence observations to ``{field_number: {wire_types}}``.
+
+    An unpacked repeated field appears once per element on the wire; collapsing to
+    distinct field numbers keeps drift (and the tie-break score) per-field rather
+    than per-occurrence, so a single high-cardinality field is not counted N times.
+    """
+    by_number: dict[int, set[int]] = {}
+    for obs in observations:
+        by_number.setdefault(obs.field_number, set()).add(obs.wire_type)
+    return by_number
 
 
 def _wire_type_ok(field: FieldDescriptor, observed: int) -> bool:
@@ -104,49 +124,50 @@ def _wire_type_ok(field: FieldDescriptor, observed: int) -> bool:
 def _classify(
     observations: list[WireObservation], descriptor: Descriptor
 ) -> list[FieldDivergence]:
-    """Classify each observation against ``descriptor`` and add required-missing."""
-    regular, extensions = _declared_numbers(descriptor)
-    reserved = _reserved_numbers(descriptor)
-    divergences: list[FieldDivergence] = []
-    observed_numbers: set[int] = set()
+    """Classify each distinct observed field against ``descriptor`` + required-missing.
 
-    for obs in observations:
-        observed_numbers.add(obs.field_number)
-        if obs.field_number in reserved:
+    One divergence per distinct field number (an unpacked repeated field is one
+    field, not one per element); a declared field is a wire-type mismatch only when
+    *no* observed wire type for it is compatible (so packed + unpacked both fit).
+    """
+    regular, extensions = _declared_numbers(descriptor)
+    reserved = _reserved_ranges(descriptor)
+    by_number = _observed_wire_types(observations)
+    divergences: list[FieldDivergence] = []
+
+    for number in sorted(by_number):
+        wire_types = by_number[number]
+        if _is_reserved(number, reserved):
             divergences.append(
                 FieldDivergence(
-                    obs.field_number,
-                    "reserved_in_use",
-                    f"field {obs.field_number} is reserved by the schema",
+                    number, "reserved_in_use", f"field {number} is reserved by the schema"
                 )
             )
             continue
-        field = regular.get(obs.field_number) or extensions.get(obs.field_number)
+        field = regular.get(number) or extensions.get(number)
         if field is None:
+            example = sorted(wire_types)[0]
             divergences.append(
                 FieldDivergence(
-                    obs.field_number,
+                    number,
                     "undeclared",
-                    f"field {obs.field_number} (wire type {obs.wire_type}) is not declared",
+                    f"field {number} (wire type {example}) is not declared",
                 )
             )
             continue
-        if not _wire_type_ok(field, obs.wire_type):
+        if not any(_wire_type_ok(field, wt) for wt in wire_types):
             expected = _WIRE_TYPE_BY_FIELD_TYPE.get(field.type)
             divergences.append(
                 FieldDivergence(
-                    obs.field_number,
+                    number,
                     "wire_type_mismatch",
-                    f"field {obs.field_number}: observed wire type {obs.wire_type}, "
+                    f"field {number}: observed wire type(s) {sorted(wire_types)}, "
                     f"schema declares wire type {expected}",
                 )
             )
 
     for field in descriptor.fields:
-        if (
-            field.label == FieldDescriptor.LABEL_REQUIRED
-            and field.number not in observed_numbers
-        ):
+        if field.label == FieldDescriptor.LABEL_REQUIRED and field.number not in by_number:
             divergences.append(
                 FieldDivergence(
                     field.number,
@@ -162,7 +183,8 @@ def drift(message_bytes: bytes, source: SchemaSource) -> DriftReport:
     resolved: ResolvedSchema = source.resolve()
     descriptor: Descriptor = resolved.message_class.DESCRIPTOR
     observations = walk_top_level(message_bytes)
-    return DriftReport(tuple(_classify(observations, descriptor)), len(observations))
+    distinct_fields = len({obs.field_number for obs in observations})
+    return DriftReport(tuple(_classify(observations, descriptor)), distinct_fields)
 
 
 def compatibility_score(
@@ -170,20 +192,21 @@ def compatibility_score(
 ) -> int:
     """Net per-field compatibility: declared-and-wire-type-agreeing minus the rest.
 
-    Higher is a tighter wire-level fit. Used by the Phase-B ``match`` tie-break to
-    separate candidates whose scalar modeled-byte fractions are near-identical.
+    Scored per distinct field number (not per wire occurrence) so a single
+    high-cardinality repeated field cannot dominate the tie-break. Higher is a
+    tighter wire-level fit.
     """
     regular, extensions = _declared_numbers(descriptor)
-    reserved = _reserved_numbers(descriptor)
+    reserved = _reserved_ranges(descriptor)
     score = 0
-    for obs in observations:
-        if obs.field_number in reserved:
+    for number, wire_types in _observed_wire_types(observations).items():
+        if _is_reserved(number, reserved):
             score -= 1
             continue
-        field = regular.get(obs.field_number) or extensions.get(obs.field_number)
+        field = regular.get(number) or extensions.get(number)
         if field is None:
             score -= 1
-        elif _wire_type_ok(field, obs.wire_type):
+        elif any(_wire_type_ok(field, wt) for wt in wire_types):
             score += 1
         else:
             score -= 1

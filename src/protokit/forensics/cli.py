@@ -402,3 +402,9 @@ def drift_cmd(
         click.echo(_render_drift_json(report))
     else:
         click.echo(_render_drift_human(report))
+        summary = (
+            "drift: consistent with the schema"
+            if not report.divergences
+            else f"drift: {len(report.divergences)} divergence(s)"
+        )
+        click.echo(summary, err=True)

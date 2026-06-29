@@ -32,6 +32,7 @@ from protokit.forensics._match import (
     Verdict,
     match,
 )
+from protokit.forensics._wire import WalkError
 
 __all__ = [
     "Candidate",
@@ -44,6 +45,7 @@ __all__ = [
     "MessageTooLargeError",
     "ParseTier",
     "Verdict",
+    "WalkError",
     "drift",
     "match",
 ]

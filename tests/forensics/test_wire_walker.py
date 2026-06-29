@@ -49,6 +49,21 @@ def test_group_flagged_and_body_skipped() -> None:
     assert walk_top_level(data) == [WireObservation(1, 3), WireObservation(3, 0)]
 
 
+def test_nested_groups_record_outer_once() -> None:
+    """A group nested inside a group: only the outer group + trailing field are top-level."""
+    # group(1){ group(2){ field3=5 } }  then  field4=7
+    data = b"\x0b" b"\x13" b"\x18\x05" b"\x14" b"\x0c" b"\x20\x07"
+    assert walk_top_level(data) == [WireObservation(1, 3), WireObservation(4, 0)]
+
+
+def test_mismatched_end_group_rejected() -> None:
+    """A start-group closed by a different field number is malformed -> WalkError."""
+    data = b"\x0b" b"\x14"  # start-group field 1, end-group field 2
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(data)
+    assert "mismatched end-group" in str(excinfo.value)
+
+
 def test_undeclared_field_number_observed() -> None:
     """The walker reports any field number with its wire type, schema-free."""
     # field 99, varint, value 1  ->  tag = (99 << 3) | 0 = 792 = 0x98 0x06
@@ -61,6 +76,8 @@ def test_undeclared_field_number_observed() -> None:
     [
         (b"\x80", "truncated varint"),  # continuation bit set, no next byte
         (b"\xff" * 10, "varint exceeds 64 bits"),  # 10th byte's low bits > 1
+        (b"\xff" * 9 + b"\x81", "varint exceeds 64 bits"),  # 10th byte continuation set
+        (b"\x80" * 11, "varint exceeds 64 bits"),  # > 10 bytes (consumed > max branch)
         (b"\x0a\x05ab", "length-delimited prefix exceeds"),  # declares 5, has 2
         (b"\x09\x00", "truncated fixed64"),  # wire type 1 needs 8 bytes
         (b"\x0d\x00", "truncated fixed32"),  # wire type 5 needs 4 bytes

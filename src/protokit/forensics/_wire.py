@@ -28,6 +28,12 @@ WIRETYPE_FIXED32 = 5
 
 _MAX_VARINT_BYTES = 10
 _VARINT_FINAL_BYTE_MAX = 0x01
+#: Safety ceiling on top-level observations. The input is byte-capped upstream
+#: (--max-message-bytes), but each observation is a namedtuple (~35x the cheapest
+#: 1-2 input bytes), so a pathological all-tags blob could amplify to GBs. A real
+#: single message never has this many top-level fields; exceeding it raises a typed
+#: WalkError (exit 2) rather than letting a MemoryError escape as a bare traceback.
+_MAX_OBSERVATIONS = 10_000_000
 
 
 class WalkError(ForensicsError):
@@ -59,8 +65,12 @@ def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
         pos += 1
         consumed += 1
         if consumed > _MAX_VARINT_BYTES or (
-            consumed == _MAX_VARINT_BYTES and byte & 0x7F > _VARINT_FINAL_BYTE_MAX
+            consumed == _MAX_VARINT_BYTES
+            and (byte & 0x80 or byte & 0x7F > _VARINT_FINAL_BYTE_MAX)
         ):
+            # The 10th byte must be the last (continuation bit clear) and carry only
+            # bit 63; otherwise the varint overflows 64 bits — a malformed encoding,
+            # not a truncated stream.
             raise WalkError("varint exceeds 64 bits (malformed)")
         result |= (byte & 0x7F) << shift
         if not byte & 0x80:
@@ -103,7 +113,7 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
     """
     observations: list[WireObservation] = []
     pos = 0
-    depth = 0
+    group_stack: list[int] = []  # open start-group field numbers (top of stack last)
     n = len(data)
     while pos < n:
         tag, pos = _read_varint(data, pos)
@@ -112,16 +122,24 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
         if field_number == 0:
             raise WalkError("field number 0 is invalid")
         if wire_type == WIRETYPE_EGROUP:
-            if depth == 0:
+            if not group_stack:
                 raise WalkError("unexpected end-group at the top level")
-            depth -= 1
+            opened = group_stack.pop()
+            if opened != field_number:
+                raise WalkError(
+                    f"mismatched end-group: field {field_number} closes group {opened}"
+                )
             continue
-        if depth == 0:
+        if not group_stack:  # only top-level (outside any open group) is recorded
             observations.append(WireObservation(field_number, wire_type))
+            if len(observations) > _MAX_OBSERVATIONS:
+                raise WalkError(
+                    f"message has more than {_MAX_OBSERVATIONS} top-level fields"
+                )
         if wire_type == WIRETYPE_SGROUP:
-            depth += 1
+            group_stack.append(field_number)
             continue
         pos = _skip_scalar_payload(data, pos, wire_type)
-    if depth != 0:
+    if group_stack:
         raise WalkError("unterminated group (no matching end-group)")
     return observations

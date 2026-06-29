@@ -31,6 +31,29 @@ def test_drift_clean_message(runner: CliRunner, tmp_path: Path) -> None:
     assert "no divergences" in result.stdout
 
 
+def test_drift_writes_grep_able_stderr_summary(runner: CliRunner, tmp_path: Path) -> None:
+    clean = fdp({"x": 1, "y": 2})
+    write_desc(tmp_path / "clean.desc", clean)
+    write_message(tmp_path / "clean.bin", clean, {"x": 5, "y": 7})
+    rich, poor = fdp({"x": 1, "y": 5}), fdp({"x": 1})
+    write_desc(tmp_path / "poor.desc", poor)
+    write_message(tmp_path / "drift.bin", rich, {"x": 5, "y": 7})
+
+    ok = _invoke(
+        runner, str(tmp_path / "clean.bin"),
+        "--schema", f"v={tmp_path / 'clean.desc'}", "--type", "a.A",
+    )
+    assert ok.exit_code == 0
+    assert "consistent" in ok.stderr  # match-style stderr verdict line
+
+    drifted = _invoke(
+        runner, str(tmp_path / "drift.bin"),
+        "--schema", f"poor={tmp_path / 'poor.desc'}", "--type", "a.A",
+    )
+    assert drifted.exit_code == 0
+    assert "divergence" in drifted.stderr
+
+
 def test_drift_reports_undeclared(runner: CliRunner, tmp_path: Path) -> None:
     rich, poor = fdp({"x": 1, "y": 5}), fdp({"x": 1})
     write_desc(tmp_path / "poor.desc", poor)

@@ -57,6 +57,20 @@ def test_ambiguous_top_not_flagged_for_far_fractions() -> None:
     assert report.ambiguous_top is False
 
 
+def test_ambiguous_top_not_flagged_across_tiers() -> None:
+    """A CLEAN top with an UNMODELED runner-up within the margin is not flagged ambiguous."""
+    producer = typed_fdp({"blob": (_BYTES, 1), "a": (_I32, 2)})
+    data = _bulky_message(producer, "blob", a=1)
+    full = candidate("full", typed_fdp({"blob": (_BYTES, 1), "a": (_I32, 2)}))  # CLEAN 1.0
+    poor = candidate("poor", typed_fdp({"blob": (_BYTES, 1)}))  # UNMODELED ~0.998
+
+    report = match(data, [full, poor])
+
+    assert report.ranked[0].tier.name == "CLEAN"
+    assert report.ranked[1].tier.name == "UNMODELED"
+    assert report.ambiguous_top is False  # tier guard: the tie-break would decline anyway
+
+
 def test_symmetric_tie_remains_multiple_clean() -> None:
     """Two indistinguishable candidates: the walker confirms the tie, not a fake winner."""
     schema = fdp({"x": 1})
@@ -76,4 +90,7 @@ def test_tiebreak_is_deterministic_under_input_reordering() -> None:
     forward = match(data, [a, b])
     reversed_ = match(data, [b, a])
 
-    assert [f.label for f in forward.ranked] == [f.label for f in reversed_.ranked]
+    # 'a' (declares the extra field -> higher wire compatibility) wins regardless of
+    # input order, so the tie-break — not the input index — decides the winner.
+    assert [f.label for f in forward.ranked] == ["a", "b"]
+    assert [f.label for f in reversed_.ranked] == ["a", "b"]
