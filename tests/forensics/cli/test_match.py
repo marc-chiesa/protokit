@@ -8,6 +8,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from protokit.cli import main
+from protokit.storage.schema_source import ProtoFileSchema
 from tests.forensics.fixtures import fdp, write_desc, write_message
 
 
@@ -142,6 +143,33 @@ def test_malformed_desc_exits_2(runner: CliRunner, tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "Error:" in result.stderr
+
+
+def test_match_with_proto_sources_compiles_and_ranks(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The headline .proto path: candidate schemas compiled end-to-end via the backend."""
+    v1 = tmp_path / "v1.proto"
+    v1.write_text('syntax = "proto3";\npackage ev;\nmessage E { int32 x = 1; }\n')
+    v2 = tmp_path / "v2.proto"
+    v2.write_text(
+        'syntax = "proto3";\npackage ev;\nmessage E { int32 x = 1; string y = 2; }\n'
+    )
+    produced = ProtoFileSchema(v2, "ev.E").resolve().message_class()
+    produced.x, produced.y = 5, "hi"
+    (tmp_path / "msg.bin").write_bytes(produced.SerializeToString())
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"v1={v1}",
+        "--schema", f"v2={v2}",
+        "--type", "ev.E",
+    )
+
+    assert result.exit_code == 0
+    assert "clean match" in result.stderr  # v2 fully models the message
+    assert result.stdout.splitlines()[1].split()[1] == "v2"  # v2 ranks first
 
 
 def test_unparseable_under_all_exits_2(runner: CliRunner, tmp_path: Path) -> None:
