@@ -26,6 +26,8 @@ from typing import Literal
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import DecodeError, Message
 
+from protokit.forensics._drift import compatibility_score
+from protokit.forensics._wire import WalkError, walk_top_level
 from protokit.storage._fidelity_probe import unmodeled_byte_delta
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
 
@@ -179,6 +181,93 @@ def _signature(fit: CandidateFit) -> tuple[int, float, float]:
     return (fit.tier.value, fraction, coverage)
 
 
+def _coverage(fit: CandidateFit) -> float:
+    """Declared-field coverage as a sortable float (``None`` -> worst)."""
+    return fit.declared_field_coverage if fit.declared_field_coverage is not None else -1.0
+
+
+def _is_ambiguous(ranked: list[CandidateFit], tie_margin: float) -> bool:
+    """Whether the top-2 modeled fractions are within the closeness margin."""
+    if len(ranked) < 2:
+        return False
+    first, second = ranked[0].modeled_fraction, ranked[1].modeled_fraction
+    return first is not None and second is not None and abs(first - second) <= tie_margin
+
+
+def _tied_group_len(
+    paired: list[tuple[Candidate, CandidateFit]], order: list[int], tie_margin: float
+) -> int:
+    """Length of the leading run that ties the top on tier and fraction-within-margin."""
+    top = paired[order[0]][1]
+    top_fraction = top.modeled_fraction
+    if top_fraction is None:
+        return 0
+    length = 0
+    for i in order:
+        fit = paired[i][1]
+        if (
+            fit.tier is top.tier
+            and fit.modeled_fraction is not None
+            and abs(fit.modeled_fraction - top_fraction) <= tie_margin
+        ):
+            length += 1
+        else:
+            break
+    return length
+
+
+def _apply_tiebreak(
+    message_bytes: bytes,
+    paired: list[tuple[Candidate, CandidateFit]],
+    order: list[int],
+    tie_margin: float,
+) -> tuple[list[int], dict[int, int]]:
+    """Re-order the near-tied top group by wire-level compatibility (U8)."""
+    group_len = _tied_group_len(paired, order, tie_margin)
+    if group_len < 2:
+        return order, {}
+    try:
+        observations = walk_top_level(message_bytes)
+    except WalkError:
+        return order, {}  # bytes the walker can't read — leave the scalar order
+    compat: dict[int, int] = {}
+    for i in order[:group_len]:
+        descriptor = paired[i][0].source.resolve().message_class.DESCRIPTOR
+        compat[i] = compatibility_score(observations, descriptor)
+    regrouped = sorted(
+        order[:group_len], key=lambda i: (-compat[i], -_coverage(paired[i][1]), i)
+    )
+    return regrouped + order[group_len:], compat
+
+
+def _full_signature(
+    fit: CandidateFit, index: int, compat: dict[int, int]
+) -> tuple[int, float, float, int | None]:
+    """The fit signature extended with wire compatibility (when the tie-break ran)."""
+    return (*_signature(fit), compat.get(index))
+
+
+def _verdict(
+    ranked_indexed: list[tuple[int, CandidateFit]],
+    compat: dict[int, int],
+    max_residual_bytes: int,
+) -> Verdict:
+    """Decide clean-winner / multiple-clean / no-clean from the final ordering."""
+    clean = [
+        (i, fit)
+        for i, fit in ranked_indexed
+        if fit.tier is not ParseTier.FAULT
+        and fit.unmodeled_bytes is not None
+        and fit.unmodeled_bytes <= max_residual_bytes
+    ]
+    if not clean:
+        return "no_clean_match"
+    top_index, top_fit = clean[0]
+    top_sig = _full_signature(top_fit, top_index, compat)
+    tied = sum(1 for i, fit in clean if _full_signature(fit, i, compat) == top_sig)
+    return "multiple_clean_matches" if tied >= 2 else "clean_winner"
+
+
 def match(
     message_bytes: bytes,
     candidates: Sequence[Candidate],
@@ -194,34 +283,21 @@ def match(
         max_residual_bytes: A candidate counts as a clean match when it parses
             and leaves at most this many unmodeled bytes (default ``0``).
         tie_margin: Top-2 modeled fractions within this epsilon flag an ambiguous
-            pair for the Phase-B wire-walker tie-break.
+            pair; the wire-walker tie-break (U8) then separates them by per-field
+            compatibility.
 
     Returns:
         A :class:`MatchReport`: candidates ranked best-first and an honest
         verdict (``clean_winner`` / ``multiple_clean_matches`` / ``no_clean_match``).
     """
-    fits = [fit_candidate(message_bytes, c) for c in candidates]
-    order = sorted(range(len(fits)), key=lambda i: _sort_key(fits[i], i))
-    ranked = tuple(fits[i] for i in order)
+    paired = [(candidate, fit_candidate(message_bytes, candidate)) for candidate in candidates]
+    order = sorted(range(len(paired)), key=lambda i: _sort_key(paired[i][1], i))
 
-    clean = [
-        f
-        for f in ranked
-        if f.tier is not ParseTier.FAULT
-        and f.unmodeled_bytes is not None
-        and f.unmodeled_bytes <= max_residual_bytes
-    ]
-    if not clean:
-        verdict: Verdict = "no_clean_match"
-    else:
-        top_sig = _signature(clean[0])
-        tied = sum(1 for f in clean if _signature(f) == top_sig)
-        verdict = "multiple_clean_matches" if tied >= 2 else "clean_winner"
+    ambiguous_top = _is_ambiguous([paired[i][1] for i in order], tie_margin)
+    compat: dict[int, int] = {}
+    if ambiguous_top:
+        order, compat = _apply_tiebreak(message_bytes, paired, order, tie_margin)
 
-    ambiguous_top = False
-    if len(ranked) >= 2:
-        f0, f1 = ranked[0].modeled_fraction, ranked[1].modeled_fraction
-        if f0 is not None and f1 is not None and abs(f0 - f1) <= tie_margin:
-            ambiguous_top = True
-
+    ranked = tuple(paired[i][1] for i in order)
+    verdict = _verdict([(i, paired[i][1]) for i in order], compat, max_residual_bytes)
     return MatchReport(ranked=ranked, verdict=verdict, ambiguous_top=ambiguous_top)

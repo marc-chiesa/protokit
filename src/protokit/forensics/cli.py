@@ -30,6 +30,7 @@ from google.protobuf.message import DecodeError
 
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
+from protokit.forensics._drift import DriftReport, drift
 from protokit.forensics._errors import (
     CandidateSpecError,
     ForensicsError,
@@ -61,6 +62,11 @@ _DEFAULT_MAX_MESSAGE_BYTES = 64 * 1024 * 1024  # 64 MiB, mirroring length_delimi
 # JSON object with no ``schema_version`` key predates this constant — treat it as
 # the implicit ``"0.1"`` shape, not an error.
 _MATCH_JSON_SCHEMA_VERSION = "0.1"
+
+# Wire-format version of the ``drift --format json`` object. Same dual-clause
+# contract as ``_MATCH_JSON_SCHEMA_VERSION``: bump on a new key / changed meaning
+# / removed key; absence means the implicit ``"0.1"`` shape.
+_DRIFT_JSON_SCHEMA_VERSION = "0.1"
 
 
 @click.group()
@@ -300,3 +306,99 @@ def match_cmd(
     else:
         click.echo(_render_human(report))
         click.echo(_verdict_line(report), err=True)
+
+
+def _render_drift_human(report: DriftReport) -> str:
+    """Build the stdout per-field divergence report for ``--format human``."""
+    if not report.divergences:
+        return (
+            f"{report.observed_field_count} fields observed — "
+            "no divergences from the schema"
+        )
+    header = (
+        f"{report.observed_field_count} fields observed, "
+        f"{len(report.divergences)} divergence(s):"
+    )
+    lines = [header]
+    lines.extend(
+        f"  field {d.field_number}: {d.kind} — {d.detail}" for d in report.divergences
+    )
+    return "\n".join(lines)
+
+
+def _render_drift_json(report: DriftReport) -> str:
+    """Build the stdout JSON object for ``drift --format json``."""
+    payload: dict[str, object] = {
+        "schema_version": _DRIFT_JSON_SCHEMA_VERSION,
+        "observed_fields": report.observed_field_count,
+        "divergences": [
+            {"field_number": d.field_number, "kind": d.kind, "detail": d.detail}
+            for d in report.divergences
+        ],
+    }
+    return json.dumps(payload)
+
+
+@main.command(name="drift")
+@click.argument(
+    "message_file", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@click.option(
+    "--schema",
+    "schema_spec",
+    metavar="[LABEL=]PATH",
+    help="Candidate schema to reconcile against (.proto or .desc).",
+)
+@click.option(
+    "--type",
+    "--message-type",
+    "type_name",
+    help="Fully-qualified message type name (required).",
+)
+@click.option(
+    "--proto-path",
+    "-I",
+    "proto_paths",
+    multiple=True,
+    metavar="DIR",
+    help="Import path for .proto compilation (-I). Repeatable.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["human", "json"]),
+    default="human",
+    help="human (default) | json (machine-readable, carries schema_version).",
+)
+@click.option(
+    "--max-message-bytes",
+    type=click.IntRange(min=1),
+    default=_DEFAULT_MAX_MESSAGE_BYTES,
+    help="Reject an input message larger than this (default 64 MiB), before reading.",
+)
+def drift_cmd(
+    message_file: Path,
+    schema_spec: str | None,
+    type_name: str | None,
+    proto_paths: tuple[str, ...],
+    output_format: str,
+    max_message_bytes: int,
+) -> None:
+    """Report how one schema-less MESSAGE_FILE diverges from one candidate schema."""
+    if not schema_spec:
+        error_exit("--schema [LABEL=]PATH is required")
+    if not type_name:
+        error_exit("--type is required")
+
+    try:
+        message_bytes = _read_message(message_file, max_message_bytes)
+        label, path = _parse_schema_spec(schema_spec)
+        candidate = _build_candidate(label, path, type_name, proto_paths)
+        report = drift(message_bytes, candidate.source)
+    except _TYPED_CLI_ERRORS as exc:
+        error_exit(str(exc))
+
+    if output_format == "json":
+        click.echo(_render_drift_json(report))
+    else:
+        click.echo(_render_drift_human(report))
