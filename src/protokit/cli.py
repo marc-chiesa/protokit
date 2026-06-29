@@ -10,12 +10,14 @@ Usage:
     protokit compat  ...  # schema compatibility check
     protokit lint    ...  # schema linting (D3+)
     protokit storage ...  # scan/head/count stored proto (PR1.5)
+    protokit forensics ...  # identify the schema behind schema-less proto
 """
 
 from __future__ import annotations
 
 import click
 
+from protokit.forensics.cli import main as _forensics_command
 from protokit.message.cli import main as _diff_command
 from protokit.schema.cli import main as _compat_command
 from protokit.schema.lint.cli import main as _lint_command
@@ -32,3 +34,4 @@ main.add_command(_diff_command, name="diff")
 main.add_command(_compat_command, name="compat")
 main.add_command(_lint_command, name="lint")
 main.add_command(_storage_command, name="storage")
+main.add_command(_forensics_command, name="forensics")

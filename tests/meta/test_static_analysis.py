@@ -37,10 +37,12 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/message/hamcrest.py",
     "src/protokit/message/matchers.py",
     "src/protokit/message/pytest_plugin.py",
+    "src/protokit/forensics",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/storage",
     "tests/_buf_helpers.py",
+    "tests/forensics",
     "tests/parity",
     "tests/schema/lint",
     "tests/storage",
@@ -71,6 +73,7 @@ _LINT_PATHS: tuple[str, ...] = (
 # here also update CI so local and CI stay in lockstep.
 _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
+    "src/protokit/forensics",
     "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/message/_presence.py",
     "src/protokit/message/_selector.py",
