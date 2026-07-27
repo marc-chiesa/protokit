@@ -2535,17 +2535,23 @@ class MessageDifferencer:
                         if tam_key
                         else None
                     )
-                    for i, elem in enumerate(value):
-                        if tam_key_fd and fd.type == TYPE_MESSAGE:
-                            # Use presence-aware check consistent with _extract_keys
-                            if not has_presence(tam_key_fd) or elem.HasField(tam_key):
-                                key_val = getattr(elem, tam_key)
-                                key_bracket = f"{tam_key}={format_key(key_val)}"
-                            else:
-                                key_bracket = str(i)
-                            elem_path = _replace_bracket(field_path, key_bracket)
-                        else:
-                            elem_path = _replace_bracket(field_path, str(i))
+                    if tam_key_fd is not None and tam_key is not None:
+                        # Derive the keys through the same validator the
+                        # two-sided path uses: ``compare()`` documents
+                        # DuplicateKeyError / MissingKeyError unconditionally,
+                        # so they must not depend on whether the other side
+                        # happened to carry this subtree. Silently keying here
+                        # collapsed duplicate-keyed elements onto one path and
+                        # demoted a missing key to an index bracket.
+                        keyed = self._extract_keys(value, tam_key, fd, field_path)
+                        bracketed = [
+                            (f"{tam_key}={format_key(key_val)}", elem)
+                            for key_val, elem in keyed.items()
+                        ]
+                    else:
+                        bracketed = [(str(i), elem) for i, elem in enumerate(value)]
+                    for key_bracket, elem in bracketed:
+                        elem_path = _replace_bracket(field_path, key_bracket)
                         if fd.type == TYPE_MESSAGE:
                             if _has_populated_fields(elem):
                                 emit_stack.append((elem, elem_path, cur_depth + 1))

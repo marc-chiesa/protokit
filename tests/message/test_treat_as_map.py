@@ -310,6 +310,63 @@ class TestTreatAsMapEmitAll:
         assert not any("items[1]" in p for p in paths)
 
 
+    def test_duplicate_key_in_added_subtree_raises(self) -> None:
+        """Key validation must not depend on whether the other side had the
+        subtree — two elements would otherwise collapse onto one path."""
+        b = ProtoBuilder()
+        b.message("test.Item", {
+            "id": (T.TYPE_STRING, 1),
+            "value": (T.TYPE_INT32, 2),
+        })
+        b.message_with_repeated(
+            "test.Inner",
+            {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
+            repeated_fields={"items"},
+        )
+        b.message("test.Outer", {
+            "name": (T.TYPE_STRING, 1),
+            "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
+        })
+        Item = b.get_message_class("test.Item")
+        Inner = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", name="hello")
+        msg2 = b.build("test.Outer",
+            name="hello",
+            inner=Inner(items=[Item(id="a", value=1), Item(id="a", value=2)]),
+        )
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        with pytest.raises(DuplicateKeyError, match="Duplicate key 'a' in 'inner.items'"):
+            d.compare(msg1, msg2)
+
+    def test_missing_key_in_added_subtree_raises(self) -> None:
+        """A proto2 element with an unset key silently fell back to an index
+        bracket here, while the two-sided path raises."""
+        b = ProtoBuilder()
+        b.message("test.Item", {
+            "id": (T.TYPE_STRING, 1),
+            "value": (T.TYPE_INT32, 2),
+        }, syntax="proto2")
+        b.message_with_repeated(
+            "test.Inner",
+            {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
+            repeated_fields={"items"},
+            syntax="proto2",
+        )
+        b.message("test.Outer", {
+            "name": (T.TYPE_STRING, 1),
+            "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
+        }, syntax="proto2")
+        Item = b.get_message_class("test.Item")
+        Inner = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", name="hello")
+        msg2 = b.build("test.Outer", name="hello", inner=Inner(items=[Item(value=1)]))
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        with pytest.raises(MissingKeyError, match="missing key field 'id'"):
+            d.compare(msg1, msg2)
+
+
 class TestTreatAsMapPath:
     def test_path_contains_key(self) -> None:
         """The diff path should include the key bracket notation."""

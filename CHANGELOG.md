@@ -300,6 +300,14 @@ All notable changes to `protokit` are documented here. Format loosely follows
   match while an extra *real* one passed. The actual-only branch now suppresses
   under partial like `map<k,v>` and index-paired repeated fields already do;
   `treat_as_set`'s strict KTD-8 carve-out is unaffected.
+- **`treat_as_map` key validation now also fires inside a one-sided subtree.**
+  When a whole sub-message was added or removed, the leaf emitter derived key
+  brackets itself instead of going through the shared extractor: duplicate keys
+  silently collapsed two elements onto one identical path, and an element
+  missing its key was demoted to an index bracket. `compare()` documents
+  `DuplicateKeyError` / `MissingKeyError` unconditionally, so a **schema+data
+  pair that previously produced diffs may now raise** — but only where the same
+  data raises already when the other side happens to carry the subtree.
 
 
 ### Changed
