@@ -34,6 +34,11 @@ _VARINT_FINAL_BYTE_MAX = 0x01
 #: single message never has this many top-level fields; exceeding it raises a typed
 #: WalkError (exit 2) rather than letting a MemoryError escape as a bare traceback.
 _MAX_OBSERVATIONS = 10_000_000
+#: Largest legal protobuf field number (2**29 - 1). A tag varint can encode far
+#: more, but no encoder can produce it and protobuf's own parser rejects it, so a
+#: bigger number is malformed input — not a field. Reporting it would put an
+#: impossible field number into a drift/match verdict.
+_MAX_FIELD_NUMBER = 536_870_911
 
 
 class WalkError(ForensicsError):
@@ -112,7 +117,7 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
     Group fields are recorded once at the top level (wire type 3) and their body
     is skipped iteratively to the matching end-group; nested fields inside a group
     are not recorded. Raises :class:`WalkError` on any truncation, an unknown wire
-    type, field number 0, or an unbalanced group.
+    type, a field number outside 1..``_MAX_FIELD_NUMBER``, or an unbalanced group.
     """
     observations: list[WireObservation] = []
     pos = 0
@@ -124,6 +129,10 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
         wire_type = tag & 0x07
         if field_number == 0:
             raise WalkError("field number 0 is invalid")
+        if field_number > _MAX_FIELD_NUMBER:
+            raise WalkError(
+                f"field number {field_number} exceeds the maximum {_MAX_FIELD_NUMBER}"
+            )
         if wire_type == WIRETYPE_EGROUP:
             if not group_stack:
                 raise WalkError("unexpected end-group at the top level")
