@@ -105,6 +105,23 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `CopyToProto` roundtrip** instead of two, halving the descriptor serialization
   cost of the rule on every message pair.
 
+### Changed — BREAKING
+- **`protokit.options.get_option_value` now honors extension presence.** An
+  extension that is *registered* in the pool but never *set* on the descriptor
+  used to come back as its type default — `0`, `""`, `b""`, an empty
+  sub-message, or a proto2 `default_value` — so the documented usage
+  `if get_option_value(fd, "pkg.limit") is not None:` fired on every
+  unannotated field in a schema. Tier 1 now gates on `HasExtension` (on
+  emptiness for repeated extensions, where `HasExtension` is unsupported) and
+  returns `None` for an absent option, as the docstring's strict-presence
+  promise always claimed. **Breaking for the previously documented proto3
+  carve-out:** the docstring said proto3 scalar extensions return the type
+  default because proto3 doesn't track unset-vs-default. That carve-out was
+  wrong — extension fields carry explicit presence whatever the syntax of the
+  file declaring them — and proto3 extensions now read as `None` when unset
+  like every other kind. Callers that relied on the default-return must read
+  `descriptor.GetOptions().Extensions[ext]` directly.
+
 ## 0.14.0 — 2026-06-24
 
 ### Added

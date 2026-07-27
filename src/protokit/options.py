@@ -23,12 +23,14 @@ value is itself a message and the caller wants a sub-field — tier
 2 matches the name exactly against the ``uninterpreted_option``
 ``NamePart`` sequence.
 
-Returns ``None`` when the option is not present in either tier.
+Returns ``None`` when the option is not present in either tier —
+"present" meaning explicitly set, never merely registered (see the
+presence guard in tier 1).
 """
 
 from __future__ import annotations
 
-from google.protobuf import descriptor_pool
+from google.protobuf import descriptor, descriptor_pool
 
 _UOP_VALUE_FIELDS: tuple[str, ...] = (
     "identifier_value",
@@ -76,13 +78,16 @@ def get_option_value(
             pool than the descriptor.
 
     Returns:
-        The option value (scalar Python value or message) when
-        found, else ``None``. For proto3 scalar extensions, the
-        returned value is the type default (0, "", b"") when the
-        extension is registered but not explicitly set — proto3
-        doesn't preserve the "unset vs. default" distinction for
-        scalars. Use proto2 or a message-valued extension if you
-        need strict presence semantics.
+        The option value (scalar Python value or message) when the
+        option is *present* on the descriptor, else ``None``.
+        Presence is strict: an extension that is registered in the
+        pool but never set on this descriptor reads as ``None``, not
+        as its type default (0, "", b"", an empty sub-message, or a
+        proto2 ``default_value``). That holds for proto3 extensions
+        too — extension fields always carry explicit presence,
+        whatever the syntax of the file that declares them.
+        Repeated extensions have no presence bit, so an empty
+        repeated extension is what reads as ``None``.
     """
     options = desc.GetOptions()
     if pool is None:
@@ -97,7 +102,24 @@ def get_option_value(
         except KeyError:
             continue
         try:
-            ext_value = options.Extensions[ext_desc]
+            # Presence guard. ``Extensions[]`` alone happily hands
+            # back the type default (or an empty sub-message) for an
+            # extension that is merely REGISTERED, which would make
+            # the caller's ``is not None`` test true on every
+            # unannotated descriptor in the schema. Extension fields
+            # always track explicit presence — in proto3 as much as
+            # proto2 — so ``HasExtension`` is authoritative for every
+            # singular extension; it is *unsupported* for repeated
+            # ones (raises), where emptiness is the only absence
+            # signal.
+            if ext_desc.label == descriptor.FieldDescriptor.LABEL_REPEATED:
+                ext_value = options.Extensions[ext_desc]
+                if len(ext_value) == 0:
+                    continue
+            else:
+                if not options.HasExtension(ext_desc):
+                    continue
+                ext_value = options.Extensions[ext_desc]
         except (KeyError, ValueError):
             continue
         sub_parts = parts[split_at:]
