@@ -632,6 +632,44 @@ def test_transitive_file_descriptors_deduped_and_ordered():
     assert names.index("google/protobuf/timestamp.proto") < names.index("ev.proto")
 
 
+def _import_chain_fds(depth: int):
+    """A linear import chain ``c0.proto <- c1.proto <- ... <- c{depth-1}.proto``.
+
+    Each file imports its predecessor, so the *file* graph is ``depth`` deep while
+    the message graph stays flat — the recursion guard proves the message graph
+    acyclic but says nothing about import depth.
+    """
+    fds = descriptor_pb2.FileDescriptorSet()
+    for i in range(depth):
+        f = fds.file.add()
+        f.name, f.package, f.syntax = f"c{i}.proto", "chain", "proto3"
+        if i:
+            f.dependency.append(f"c{i - 1}.proto")
+        m = f.message_type.add()
+        m.name = f"M{i}"
+        fld = m.field.add()
+        fld.name, fld.number, fld.type, fld.label = "id", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    return fds
+
+
+def test_transitive_file_descriptors_survives_deep_import_chain():
+    from protokit.storage._columnar import _transitive_file_descriptors
+
+    # Deeper than the interpreter's recursion limit: a recursive file walk raises
+    # RecursionError on a perfectly valid (acyclic) descriptor set, and `--desc`
+    # reads an attacker-supplyable descriptor file.
+    depth = 1200
+    reg = StreamRegistry()
+    reg.register_stream(
+        "s", FileDescriptorSetSchema(_import_chain_fds(depth), f"chain.M{depth - 1}")
+    )
+    desc = reg.get("s").message_class.DESCRIPTOR
+    names = [f.name for f in _transitive_file_descriptors(desc)]
+    assert len(names) == depth
+    assert names[0] == "c0.proto"  # deepest dependency first
+    assert names[-1] == f"c{depth - 1}.proto"
+
+
 # --- fidelity signal (U3 wiring + report, U4 strict mode) ---------------------
 #
 # Setup: register the stream with a REDUCED descriptor (M { int32 id }) but feed
