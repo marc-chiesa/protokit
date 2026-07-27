@@ -665,7 +665,7 @@ def _coerce_min_severity(value: Any) -> LintSeverity:
         "pyproject-config-invalid",
         (
             f"[tool.protokit.lint] min_severity must be one of "
-            f"{valid}; got {type(value).__name__!r}."
+            f"{valid}; got a severity name outside the closed set."
         ),
     )
 

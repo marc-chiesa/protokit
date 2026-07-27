@@ -225,6 +225,19 @@ class TestR3aMinSeverityTypeMismatches:
             substring="must be one of",
         )
 
+    def test_min_severity_unknown_value_names_the_condition(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # The out-of-set tail must describe what was wrong with the
+        # *value*, not restate its Python type — by this point the
+        # isinstance guard has already proven the input is a ``str``,
+        # so "got 'str'" tells the user nothing. Matches the wording
+        # of the two sibling severity coercers.
+        expect_invalid(
+            {"min_severity": "critical"}, {}, capsys,
+            substring="got a severity name outside the closed set",
+        )
+
     def test_min_severity_case_insensitive(self) -> None:
         # Boundary-normalize: WARNING / warning / Warning all accepted.
         for value in ("WARNING", "warning", "Warning", "  warning  "):
