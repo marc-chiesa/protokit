@@ -21,7 +21,11 @@ Design (per the plan KD-3, verified against the pinned runtime):
 - **Coercion is keyed on ``cpp_type``**, with ``field.type`` disambiguating
   ``TYPE_STRING`` from ``TYPE_BYTES``; enums accept a name **or** a number
   (open-enum numbers included); ``bool`` accepts only ``true`` / ``false`` (never
-  ``bool(str)``, which is ``True`` for ``"false"``). A coercion failure is a
+  ``bool(str)``, which is ``True`` for ``"false"``); a literal for a 32-bit
+  ``float`` field is **narrowed to single precision** so it is drawn from the same
+  value set as the field (a double ``0.1`` never equals the stored
+  0.10000000149011612), and ``nan`` is refused for both widths because it can
+  never compare equal. A coercion failure is a
   compile-time :class:`WhereError`; a well-typed non-match is a normal ``False``.
 - **Traversal through an unset intermediate message returns defaults** (protobuf
   semantics), so ``header.code == 0`` matches a record with no ``header``. This is
@@ -36,6 +40,7 @@ callables). Only :class:`WhereError` is re-exported from ``protokit.storage``.
 
 from __future__ import annotations
 
+import struct as _struct
 from collections.abc import Callable
 
 from google.protobuf import descriptor as _d
@@ -309,12 +314,7 @@ def _coerce(literal: str, fd: _d.FieldDescriptor, expr: str) -> object:
     if cpp in (_FD.CPPTYPE_UINT32, _FD.CPPTYPE_UINT64):
         return _coerce_int(literal, fd, expr, signed=False)
     if cpp in (_FD.CPPTYPE_DOUBLE, _FD.CPPTYPE_FLOAT):
-        try:
-            return float(literal)
-        except ValueError:
-            raise WhereError(
-                expr, f"{literal!r} is not a valid number for field {fd.name!r}"
-            ) from None
+        return _coerce_float(literal, fd, expr, single=cpp == _FD.CPPTYPE_FLOAT)
     if cpp == _FD.CPPTYPE_BOOL:
         low = literal.lower()
         if low == "true":
@@ -349,6 +349,51 @@ def _coerce_int(
             expr, f"field {fd.name!r} is unsigned; {literal!r} is negative"
         )
     return value
+
+
+def _coerce_float(
+    literal: str, fd: _d.FieldDescriptor, expr: str, *, single: bool
+) -> float:
+    """Coerce a numeric literal to the field's own value set.
+
+    ``float(literal)`` parses a *double*. For a 32-bit ``float`` field that is
+    the wrong value set: the runtime stores ``0.1`` as 0.10000000149011612, so a
+    double literal 0.1 equals nothing the field can hold and ``score == 0.1``
+    silently matches nothing. Narrowing through ``struct`` reproduces exactly
+    what an assignment to the field would store — including underflow of a
+    sub-subnormal magnitude to 0.0, which is a real match, not a lost one.
+
+    Overflow is the one case ``struct`` will not narrow (the runtime saturates a
+    too-large assignment to ``inf``). Rather than silently rewrite the user's
+    finite literal into infinity — a different value with different meaning — it
+    is rejected here, where the error is crisp and the fix (spell ``inf``) is
+    obvious. ``nan`` is rejected for both widths for the same reason the ``bool``
+    trap is refused: it compiles to a predicate that can never be true (and whose
+    ``!=`` form is always true, even for a nan-valued record).
+    """
+    try:
+        value = float(literal)
+    except ValueError:
+        raise WhereError(
+            expr, f"{literal!r} is not a valid number for field {fd.name!r}"
+        ) from None
+    if value != value:  # nan — never equal to itself, so never a useful filter
+        raise WhereError(
+            expr,
+            f"nan never compares equal, so this can never match field "
+            f"{fd.name!r}; {_API_HINT}",
+        )
+    if not single:
+        return value
+    try:
+        narrowed: float = _struct.unpack("<f", _struct.pack("<f", value))[0]
+    except OverflowError:
+        raise WhereError(
+            expr,
+            f"{literal!r} is out of range for the 32-bit float field "
+            f"{fd.name!r} (max ~3.4e38); use 'inf' to match an overflowed value",
+        ) from None
+    return narrowed
 
 
 def _coerce_enum(literal: str, fd: _d.FieldDescriptor, expr: str) -> int:
