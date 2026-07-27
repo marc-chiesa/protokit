@@ -193,6 +193,11 @@ def _coverage(fit: CandidateFit) -> float:
     return _coerce_scalars(fit)[1]
 
 
+def _fraction(fit: CandidateFit) -> float:
+    """Modeled-byte fraction as a sortable float (``None`` -> worst)."""
+    return _coerce_scalars(fit)[0]
+
+
 def _is_ambiguous(ranked: list[CandidateFit], tie_margin: float) -> bool:
     """Whether the top-2 share a tier and their modeled fractions are within margin.
 
@@ -248,7 +253,16 @@ def _apply_tiebreak(
         descriptor = resolved[i].message_class.DESCRIPTOR  # already resolved in match()
         compat[i] = compatibility_score(observations, descriptor)
     regrouped = sorted(
-        order[:group_len], key=lambda i: (-compat[i], -_coverage(paired[i][1]), i)
+        order[:group_len],
+        key=lambda i: (
+            -compat[i],
+            -_coverage(paired[i][1]),
+            # The group is only *near*-tied on fraction (within the margin), so the
+            # residual still separates candidates that wire compatibility and coverage
+            # cannot; dropping it here would let the input index crown the worse fit.
+            -_fraction(paired[i][1]),
+            i,
+        ),
     )
     return regrouped + order[group_len:], compat
 
