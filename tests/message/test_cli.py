@@ -339,6 +339,41 @@ class TestDiffOptions:
         assert len(data["differences"]) == 1
         assert data["differences"][0]["path"] == "name"
 
+    def test_negative_max_depth_exits_2_not_false_equal(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        # A negative depth truncates the ROOT work item (depth 0), so every
+        # difference vanishes and the CLI used to report two differing messages
+        # as "equal" with exit 0 — the exit-code contract (0=equal, 1=different,
+        # 2=error) inverted by a typo'd or templated flag value. Nonsense input
+        # is an error, not equality.
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--max-depth", "-1",
+        ])
+        assert result.exit_code == 2
+        assert "equal" not in result.output.lower()
+
+    def test_max_depth_zero_still_accepted(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        # Guards the negative-value rejection from over-correcting: 0 is a
+        # meaningful depth (root fields compared, nested subtrees truncated).
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--max-depth", "0",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert {d["path"] for d in data["differences"]} == {"name", "value"}
+
     def test_ignore_field(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
         result = runner.invoke(main, [
             str(simple_setup["left"]),

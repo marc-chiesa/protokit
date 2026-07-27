@@ -240,7 +240,11 @@ def _validate_flag_groups(
 @click.option("--ignore", multiple=True, help="Ignore field (bare name or dotted path). Repeatable.")
 @click.option("--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY", help="Treat repeated field as map with KEY.")
 @click.option("--float-mode", type=click.Choice(["exact", "approximate"]), default="exact", help="Float comparison mode.")
-@click.option("--max-depth", type=int, help="Max comparison depth.")
+# IntRange(min=0) matches every other numeric option in the CLI surface, and
+# here it also protects the exit-code contract: a negative depth truncates the
+# ROOT work item (depth 0), so two differing messages would compare as equal
+# and exit 0. A nonsense depth is a usage error (exit 2), not equality.
+@click.option("--max-depth", type=click.IntRange(min=0), help="Max comparison depth.")
 @click.option("--strict-schema", is_flag=True, help="Warn on message type name changes.")
 def main(
     left_file: str,
