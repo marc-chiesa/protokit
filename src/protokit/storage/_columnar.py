@@ -76,6 +76,21 @@ TimestampUnit = Literal["s", "ms", "us", "ns"]
 # from the ``on_error`` decode-fault axis (hard-wired ``collect`` here).
 Fidelity = Literal["ignore", "warn", "error"]
 
+_VALID_FIDELITY: tuple[Fidelity, ...] = ("ignore", "warn", "error")
+
+
+def _validate_fidelity(fidelity: Fidelity) -> None:
+    """Reject an unrecognised fidelity policy at the call site.
+
+    Every mode is selected by an equality test, so an unknown string matches no
+    branch and silently behaves like ``warn`` — a caller who typo'd ``'error'``
+    would get the file written instead of the raise they asked for, a silent
+    policy downgrade. Eager, like the engine's ``on_error`` check; the CLI is
+    already narrowed by ``click.Choice``, so this guards the Python API.
+    """
+    if fidelity not in _VALID_FIDELITY:
+        raise ValueError(f"fidelity must be one of {_VALID_FIDELITY!r}, got {fidelity!r}")
+
 
 class ParquetExtraNotInstalledError(StorageError):
     """The columnar API was used without the ``protokit[parquet]`` extra.
@@ -741,6 +756,9 @@ def to_arrow_batches(
     a missing extra raises :class:`ParquetExtraNotInstalledError`, when iteration
     begins (:func:`to_parquet` is eager and raises at call time).
     """
+    # Argument validation is NOT bind: an unrecognised `fidelity` is caller
+    # misuse, so it fails here, at the call site, not on the first next().
+    _validate_fidelity(fidelity)
     return _ArrowBatchStream(
         source,
         registry,
@@ -786,6 +804,7 @@ def to_parquet(
     ``destination`` is a filesystem path (a path is required so the sink can own
     creation and discard a partial file on failure).
     """
+    _validate_fidelity(fidelity)
     _require_parquet()
     import pyarrow.parquet as pq  # lazy
 

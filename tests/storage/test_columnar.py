@@ -1149,6 +1149,30 @@ def test_wrapper_ignore_measured_false():
     assert stream.report.dropped_extensions == ()
 
 
+# --- fidelity policy validation ------------------------------------------------
+
+
+def test_invalid_fidelity_rejected_by_to_parquet(tmp_path):
+    # An unrecognised policy read as `warn` would silently DOWNGRADE a caller who
+    # meant `error` (a typo, a case slip) into writing the file anyway.
+    reg = _fid_registry()
+    out = tmp_path / "bad.parquet"
+    for bad in ("erorr", "ERROR", "strict", ""):
+        with pytest.raises(ValueError) as excinfo:
+            to_parquet([("s", _unmodeled_bytes(1, 99))], reg, out, stream_id="s", fidelity=bad)
+        assert "fidelity must be one of" in str(excinfo.value)
+        assert repr(bad) in str(excinfo.value)  # names the rejected value
+        assert not out.exists()  # rejected before any file is created
+
+
+def test_invalid_fidelity_rejected_at_call_not_at_iteration():
+    # to_arrow_batches defers *bind* to the first next(); an argument misuse is
+    # not bind — it fails at the call site, like the engine's on_error check.
+    reg = _fid_registry()
+    with pytest.raises(ValueError, match="fidelity must be one of"):
+        to_arrow_batches([("s", _modeled_bytes(1))], reg, stream_id="s", fidelity="ERROR")
+
+
 # --- U6: end-to-end ptars consistency, complementarity, group correction ------
 
 
