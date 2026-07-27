@@ -173,10 +173,11 @@ def build_run(
             ``{"commit": sha}`` for aggregate kinds) attach to
             the result for downstream grouping.
         error_messages: ``(commit_or_None, message)`` pairs
-            recorded as
+            recorded as ``level: "error"`` entries in
             ``run.invocations[0].toolExecutionNotifications``.
-        warning_messages: similar, recorded as
-            ``run.invocations[0].toolConfigurationNotifications``.
+        warning_messages: similar, recorded as ``level: "warning"``
+            entries in the same array (see the rationale below for
+            why warnings do not use toolConfigurationNotifications).
         properties: arbitrary key/value bag attached to
             ``run.properties`` (e.g. for bisect's range_spec /
             breaking_commit metadata).

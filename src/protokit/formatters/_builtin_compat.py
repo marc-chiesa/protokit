@@ -244,8 +244,8 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
     declaring every fired rule_id in
     ``run.tool.driver.rules``. Diagnostic-level errors land in
     ``invocations[0].toolExecutionNotifications`` and flip
-    ``executionSuccessful`` to false; warnings go to
-    ``toolConfigurationNotifications``. Optionally pins the
+    ``executionSuccessful`` to false; warnings join them in that
+    same array, tagged ``level: "warning"``. Optionally pins the
     proto file as ``physicalLocation.artifactLocation.uri``
     when ``ctx.proto_file`` is set.
     """
