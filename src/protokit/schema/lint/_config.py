@@ -2081,9 +2081,22 @@ class ResolvedLintConfig:
                 # is omitted intentionally.
 
         # profile: CLI replaces pyproject; default ("default",).
+        #
+        # The CLI tier goes through `_coerce_profile` for the same
+        # reason the pyproject tier does: it is the ONE place where
+        # normalization (strip + lowercase) and `_PROFILE_ALIASES`
+        # resolution happen, so `--profile basic` and
+        # `profile = "basic"` cannot diverge. A bare `tuple(...)` here
+        # (the pre-fix shape) left `--profile basic` exiting 2 with
+        # `lint-unknown-profile` while the identical alias in
+        # pyproject resolved to `recommended`. `list(...)` because
+        # the documented CLI-override shape is `tuple[str, ...]` and
+        # `_coerce_profile` accepts scalar-str or list, not tuple.
         cli_profile = cli_overrides.get("profile")
         if cli_profile is not None:
-            resolved_profile: tuple[str, ...] = tuple(cli_profile)
+            resolved_profile: tuple[str, ...] = _coerce_profile(
+                list(cli_profile),
+            )
         elif "profile" in validated:
             resolved_profile = validated["profile"]
         else:

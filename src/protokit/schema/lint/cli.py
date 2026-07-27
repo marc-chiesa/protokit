@@ -733,9 +733,13 @@ def main(
     cli_disable_value = tuple(disable_rules) if disable_rules else None
     cli_enable_value = tuple(enable_rules) if enable_rules else None
     cli_overrides: dict[str, Any] = {
-        "profile": (
-            (profile_name.strip().lower(),) if profile_explicit else None
-        ),
+        # Handed over RAW: `ResolvedLintConfig.from_dict` runs
+        # `_coerce_profile` on this tier, which strips + lowercases AND
+        # resolves the buf-compatibility aliases (`basic`, `minimal`).
+        # A local `.strip().lower()` here used to duplicate half of that
+        # — enough to make the CLI look normalized while the alias half
+        # silently applied to pyproject only. One boundary, both halves.
+        "profile": (profile_name,) if profile_explicit else None,
         "min_severity": (
             _MIN_SEVERITY_CHOICES[min_severity.lower()]
             if min_severity is not None

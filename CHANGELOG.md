@@ -49,6 +49,18 @@ All notable changes to `protokit` are documented here. Format loosely follows
   sink and `forensics match` import one named function. Behavior-preserving —
   `protokit.storage._columnar._unmodeled_byte_delta` still resolves it.
 
+### Fixed — BREAKING
+- **`protokit lint --profile basic` now resolves the buf-compatibility alias
+  instead of exiting 2.** The `basic` → `recommended` and `minimal` →
+  `essentials` aliases were applied only to `[tool.protokit.lint] profile`; the
+  `--profile` flag bypassed the coercion boundary, so the same name that linted
+  fine from `pyproject.toml` failed on the command line with
+  `error[lint-unknown-profile]`. Both tiers now normalize (strip + lowercase)
+  and resolve aliases in one place. **This changes an exit code**: a script that
+  passes `--profile basic` previously always exited 2 and now lints for real
+  (exit 0 or 1, per findings). `--profile minimal` still fails, unchanged and on
+  both tiers: no built-in pack declares the `essentials` profile it aliases to.
+
 ## 0.14.0 — 2026-06-24
 
 ### Added
