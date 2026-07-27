@@ -648,6 +648,43 @@ def _is_well_known(import_path: str) -> bool:
     return any(import_path.startswith(p) for p in _WELL_KNOWN_PREFIXES)
 
 
+def _safe_dest_path(dest: Path, import_path: str) -> Path:
+    """Resolve ``dest/import_path``, refusing anything that escapes ``dest``.
+
+    **Security boundary.** ``import_path`` is attacker-controlled: it
+    comes from a ``.proto`` at an arbitrary git ref, which on the
+    documented ``protokit compat ci`` fork-PR path is untrusted. Both
+    write sites in :func:`_extract_proto_tree` compose ``dest /
+    import_path``, and ``pathlib`` silently *discards* ``dest`` when the
+    right-hand side is absolute (``Path("/tmp/x") / "/etc/passwd"`` is
+    ``Path("/etc/passwd")``), so an unguarded join escapes the
+    ``TemporaryDirectory`` and clobbers a real file. ``..`` segments
+    escape the same way.
+
+    A repo-tracked proto path can never legitimately be absolute or
+    contain ``..``, so this rejects nothing a valid schema would emit.
+
+    Raises:
+        ProtoImportError: if the import path is absolute, contains a
+            ``..`` segment, or otherwise resolves outside ``dest``.
+    """
+    candidate = Path(import_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ProtoImportError(
+            f"refusing import path {import_path!r}: absolute paths and "
+            f"'..' segments cannot appear in a repo-tracked .proto import"
+        )
+    resolved = (dest / candidate).resolve()
+    # `dest` may itself be a symlink (macOS /tmp -> /private/tmp), so
+    # compare resolved-to-resolved rather than against the raw `dest`.
+    if not resolved.is_relative_to(dest.resolve()):
+        raise ProtoImportError(
+            f"refusing import path {import_path!r}: resolves outside the "
+            f"extraction directory"
+        )
+    return resolved
+
+
 def _write_weak_stub(dest: Path, import_path: str) -> None:
     """Write an empty proto3 stub at ``dest/<import_path>``.
 
@@ -667,7 +704,9 @@ def _write_weak_stub(dest: Path, import_path: str) -> None:
     # Identifiers can't start with a digit. Prefix if necessary.
     if safe_id and safe_id[0].isdigit():
         safe_id = "_" + safe_id
-    stub_path = dest / import_path
+    # `safe_id` sanitises the package name written INTO the stub; the
+    # write LOCATION needs its own guard -- see `_safe_dest_path`.
+    stub_path = _safe_dest_path(dest, import_path)
     stub_path.parent.mkdir(parents=True, exist_ok=True)
     stub_path.write_text(
         'syntax = "proto3";\n'
@@ -747,7 +786,7 @@ def _extract_proto_tree(
             )
         _, content = resolved
 
-        out_path = dest / import_path
+        out_path = _safe_dest_path(dest, import_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(content)
 
