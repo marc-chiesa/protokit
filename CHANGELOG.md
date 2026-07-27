@@ -43,11 +43,51 @@ All notable changes to `protokit` are documented here. Format loosely follows
   tie-break that re-orders a near-tied top group by per-field wire compatibility.
   New public API `protokit.forensics.drift` with `DriftReport` / `FieldDivergence`.
 
+### Security
+- **Path traversal in the git-ref `.proto` extractor (`protokit compat`).**
+  *Severity: high. Affects: all released versions through 0.14.0 that expose
+  `protokit compat check | ci | history | bisect`.*
+
+  When protokit extracted a `.proto` import tree from a git ref, it composed the
+  on-disk write path as `dest / import_path` without validating `import_path`.
+  Because `pathlib` **discards** the left operand when the right is absolute
+  (`Path("/tmp/x") / "/etc/passwd"` is `Path("/etc/passwd")`), a `.proto`
+  containing `import weak "/abs/path";` — or a `..` traversal — escaped the
+  temporary extraction directory and **overwrote an arbitrary file the invoking
+  user could write**, with either a fixed synthetic stub or content taken from
+  the ref. Only the package identifier written *into* the stub was sanitised;
+  the write *location* was not.
+
+  *Impact:* file destruction/overwrite, not code execution — the compiler is
+  never pointed at the escaped path. *Exploitable via:* the documented
+  `protokit compat ci` fork-PR flow, where the compared ref is untrusted by
+  design. *Fixed by:* a single containment helper
+  (`protokit.schema.git._safe_dest_path`) that both write sites must go through;
+  it rejects absolute paths, `..` segments, and anything resolving outside the
+  extraction directory. A repo-tracked proto import can never legitimately be
+  any of those, so no valid schema is rejected.
+
+### Fixed
+- **`reserved N to max;` no longer OOM-kills every `compat` subcommand.**
+  The `reserved_field_reused` rule expanded each reserved range into a `set` of
+  integers. The standard proto idiom `reserved 1000 to max;` round-trips as
+  `end = 536_870_912`, so a single such declaration allocated ~536.8M ints —
+  **~32 GB measured by extrapolation (588 MB at 10M), ~107 s** — and the rule is
+  a default that runs on every visited message pair, so any schema using that
+  idiom killed the process instead of returning a report. Reserved ranges are
+  now kept as half-open `(start, end)` pairs and tested by membership, which is
+  all the rule ever needed: `to max` now completes in **1.9 KB and 0.018 ms**.
+  The sibling walker in `protokit.forensics._drift` already used this shape;
+  the fix brings `protokit.schema.rules` in line with it.
+
 ### Changed
 - **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
   (`protokit.storage._fidelity_probe.unmodeled_byte_delta`) so both the columnar
   sink and `forensics match` import one named function. Behavior-preserving —
   `protokit.storage._columnar._unmodeled_byte_delta` still resolves it.
+- **Internal: `reserved_field_reused` now reads reserved ranges and names in one
+  `CopyToProto` roundtrip** instead of two, halving the descriptor serialization
+  cost of the rule on every message pair.
 
 ## 0.14.0 — 2026-06-24
 
