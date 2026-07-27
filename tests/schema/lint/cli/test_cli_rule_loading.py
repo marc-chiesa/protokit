@@ -132,6 +132,44 @@ class TestRulePackLoadErrors:
         assert "kind=import:" in result.stderr
         assert "ZeroDivisionError" in result.stderr
 
+    def test_module_body_exception_message_cannot_forge_stderr_lines(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """Exception message with ``\\n`` must not forge an ``error[lint-`` line.
+
+        The pack-NAME slot is already neutralized (``_safe_module_name``),
+        but the exception-MESSAGE slot was interpolated raw —
+        ``_scrub_exc_message`` only redacts ``OSError`` filenames. A pack
+        whose module body raises with an embedded newline plus a fake
+        ``error[lint-rule-pack-load]:`` prefix therefore produced a second
+        physical stderr line carrying the stable prefix CI greps for.
+        Extends the "every interpolated slot" principle from
+        module-name-newline-injection-stderr-forge-2026-05-07 to this slot.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs."
+                "pack_module_raises_forged_line",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 2
+        # ``str.splitlines`` breaks on U+2028 as well as ``\n``, so this
+        # single assertion covers both the terminal and the
+        # log-aggregator vector.
+        forged = [
+            line for line in result.stderr.splitlines()
+            if line.startswith("error[lint-")
+        ]
+        assert len(forged) == 1, (
+            f"exception-message injection: expected one error[lint- "
+            f"line, got {len(forged)}: {forged!r}"
+        )
+        # Payload still surfaced (collapsed to spaces, not dropped).
+        assert "forged clean verdict" in forged[0]
+
     def test_module_body_sys_exits_routes_to_rule_pack_load_import(
         self, clean_descriptor_set: Path,
     ) -> None:

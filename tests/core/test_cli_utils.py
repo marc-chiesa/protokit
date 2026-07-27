@@ -576,3 +576,49 @@ class TestWktIncludePathDiscovery:
         argv = captured[0]
         i_targets = [argv[idx + 1] for idx, tok in enumerate(argv) if tok == "-I"]
         assert i_targets.count(str(fake_wkt)) == 1
+
+
+class TestScrubExcMessage:
+    """Direct unit coverage for ``_cli_utils._scrub_exc_message``.
+
+    The helper is exercised indirectly through the formatter and
+    rule-pack error paths, but a test-adequacy audit found its
+    ``OSError`` filename-redaction arm had NO coverage at all — the
+    whole helper could be deleted with zero test failures. Since that
+    arm is the one carrying the security guarantee (an absolute path
+    on stderr leaks filesystem layout, and path-shaped secrets with
+    it), it gets pinned directly here rather than only through a CLI
+    end-to-end whose assertions are substring-presence checks.
+    """
+
+    def test_oserror_filename_is_not_leaked(self, tmp_path: Path) -> None:
+        # ``OSError`` subclasses fold ``filename`` into their ``str()``,
+        # so a formatter that merely touched a missing file would put
+        # the absolute path on stderr via the generic error handler.
+        secret = tmp_path / "customer-data" / "prod.key"
+        try:
+            secret.open("rb")
+        except FileNotFoundError as exc:
+            scrubbed = _cli_utils._scrub_exc_message(exc)
+        else:  # pragma: no cover - the open above always raises
+            pytest.fail("expected FileNotFoundError")
+
+        assert str(secret) not in scrubbed
+        assert "customer-data" not in scrubbed
+        assert "prod.key" not in scrubbed
+        # Still recognisable as the same failure mode.
+        assert "ENOENT" in scrubbed
+        assert "No such file or directory" in scrubbed
+
+    def test_non_oserror_message_is_preserved(self) -> None:
+        # Only ``OSError`` is redacted; other exception messages carry
+        # the diagnostic the operator needs and pass through intact.
+        assert _cli_utils._scrub_exc_message(ValueError("plain boom")) == (
+            "plain boom"
+        )
+
+    def test_oserror_without_errno_still_labels(self) -> None:
+        # ``exc.errno`` is Optional[int]; a bare ``OSError()`` has
+        # ``None``. The helper must not crash on the
+        # ``errno.errorcode`` lookup.
+        assert "Errno-unknown" in _cli_utils._scrub_exc_message(OSError())

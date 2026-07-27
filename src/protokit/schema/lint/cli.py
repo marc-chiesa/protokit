@@ -932,7 +932,7 @@ def _main_impl(
                 error_exit_with_code(
                     "rule-pack-load",
                     f"kind=builtin: built-in pack {pack.__name__!r} failed "
-                    f"to load: {_scrub_exc_message(exc)}",
+                    f"to load: {_safe_for_stderr(_scrub_exc_message(exc))}",
                 )
             loaded_packs.append(pack)
 
@@ -958,7 +958,7 @@ def _main_impl(
                     "rule-pack-load",
                     (
                         f"kind=synthetic: synthetic custom-annotation pack "
-                        f"failed to load: {_scrub_exc_message(exc)}"
+                        f"failed to load: {_safe_for_stderr(_scrub_exc_message(exc))}"
                     ),
                 )
 
@@ -1020,7 +1020,7 @@ def _main_impl(
                     "rule-pack-load",
                     f"kind=shape: pack {_safe_module_name(pack)!r} has "
                     f"malformed RULES (engine reported: "
-                    f"{_scrub_exc_message(exc)})",
+                    f"{_safe_for_stderr(_scrub_exc_message(exc))})",
                 )
         composed_for_name = (
             per_pack_profiles[0]
