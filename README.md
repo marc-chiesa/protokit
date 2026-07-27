@@ -341,7 +341,7 @@ checker.register_field_rule("no_newly_deprecated", no_newly_deprecated_fields)
 report = checker.check(old_pool, "acme.User", new_pool, "acme.User")
 ```
 
-Message-level plugins fire once per visited message:
+Message-level plugins fire once per message type pair:
 
 ```python
 from protokit.schema import MessageRuleContext
@@ -352,6 +352,8 @@ def require_docs(ctx: MessageRuleContext) -> None:
 
 checker.register_message_rule("require_docs", require_docs)
 ```
+
+Both plugin kinds must be **path-independent**. A message type reachable by several paths is visited once, and the findings emitted during that visit are replayed under every other referencing path with the path rewritten — so a plugin that branches on `ctx.path`, or interpolates it into `message`, produces a finding reported at one path whose text names another.
 
 Plugin exceptions (and misuse like returning an awaitable) are caught — the engine records a `Warning` entry in `report.warnings` and continues with subsequent plugins. No single bad plugin can take down a compatibility check. When any `report.warnings` are present, `protokit compat` exits with code 2 so CI never silently passes a broken custom policy.
 
