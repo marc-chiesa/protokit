@@ -637,6 +637,20 @@ class MessageDifferencer:
                     f"already configured as treat_as_set"
                 )
 
+        # Re-registration: the dict is last-wins but the path list is
+        # append-only and first-wins at lookup, so silently overwriting would
+        # leave the two stores disagreeing about the key actually in force
+        # (and the conflict checks above read only the dict). Reject the
+        # conflict; an identical repeat is a harmless no-op.
+        existing_key = self._treat_as_map.get(field_selector)
+        if existing_key is not None:
+            if existing_key != key:
+                raise ValueError(
+                    f"Cannot treat_as_map field '{field_selector}' with key "
+                    f"'{key}': already configured with key '{existing_key}'"
+                )
+            return
+
         self._treat_as_map[field_selector] = key
         if "." in field_selector:
             self._treat_as_map_paths.append((FieldPath.parse(field_selector), key))
@@ -2299,6 +2313,15 @@ class MessageDifferencer:
             key_path = _replace_bracket(path, key_bracket) if path.segments else path
 
             if key not in left_by_key:
+                # Actual-only key: outside the expected sub-shape under partial
+                # (actual is allowed to be a superset, R5/U4) → suppressed, as
+                # in ``_compare_map``. Without this the populated element is
+                # already suppressed downstream (its one-sided work item hits
+                # the partial gate) while the EMPTY element leaks a vacuous
+                # ADDED here. treat_as_map is a keyed collection, not a set, so
+                # the KTD-8 carve-out does not apply.
+                if self._partial:
+                    continue
                 right_elem = right_by_key[key]
                 if _has_populated_fields(right_elem):
                     stack.append(_WorkItem(None, right_elem, key_path, depth + 1))
@@ -2512,17 +2535,23 @@ class MessageDifferencer:
                         if tam_key
                         else None
                     )
-                    for i, elem in enumerate(value):
-                        if tam_key_fd and fd.type == TYPE_MESSAGE:
-                            # Use presence-aware check consistent with _extract_keys
-                            if not has_presence(tam_key_fd) or elem.HasField(tam_key):
-                                key_val = getattr(elem, tam_key)
-                                key_bracket = f"{tam_key}={format_key(key_val)}"
-                            else:
-                                key_bracket = str(i)
-                            elem_path = _replace_bracket(field_path, key_bracket)
-                        else:
-                            elem_path = _replace_bracket(field_path, str(i))
+                    if tam_key_fd is not None and tam_key is not None:
+                        # Derive the keys through the same validator the
+                        # two-sided path uses: ``compare()`` documents
+                        # DuplicateKeyError / MissingKeyError unconditionally,
+                        # so they must not depend on whether the other side
+                        # happened to carry this subtree. Silently keying here
+                        # collapsed duplicate-keyed elements onto one path and
+                        # demoted a missing key to an index bracket.
+                        keyed = self._extract_keys(value, tam_key, fd, field_path)
+                        bracketed = [
+                            (f"{tam_key}={format_key(key_val)}", elem)
+                            for key_val, elem in keyed.items()
+                        ]
+                    else:
+                        bracketed = [(str(i), elem) for i, elem in enumerate(value)]
+                    for key_bracket, elem in bracketed:
+                        elem_path = _replace_bracket(field_path, key_bracket)
                         if fd.type == TYPE_MESSAGE:
                             if _has_populated_fields(elem):
                                 emit_stack.append((elem, elem_path, cur_depth + 1))

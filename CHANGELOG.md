@@ -285,6 +285,29 @@ All notable changes to `protokit` are documented here. Format loosely follows
   formatter dispatch. They are now echoed as indented continuation lines,
   sanitized through the shared stderr helper so compiler output cannot forge a
   stable `error[lint-...]:` prefix line.
+- **`treat_as_map` now raises on a conflicting re-registration, as documented.**
+  Configuring the same selector twice with different keys silently overwrote the
+  dict store while the parallel path list appended — and lookup reads the path
+  list first, so the engine kept keying on the *first* key while every conflict
+  check (including `ignore_fields`' key-field guard) read the *second*. Ignoring
+  the key field actually in use was therefore accepted. The documented
+  `ValueError` for "the same field is already configured with a different key"
+  now fires; an identical repeat stays a no-op.
+- **Partial matching no longer leaks a vacuous ADDED for an empty `treat_as_map`
+  element.** Under `set_partial()`, an actual-only keyed element was suppressed
+  when populated (its one-sided subtree hits the partial gate) but reported as
+  ADDED when it had no populated fields — so an extra *empty* element failed the
+  match while an extra *real* one passed. The actual-only branch now suppresses
+  under partial like `map<k,v>` and index-paired repeated fields already do;
+  `treat_as_set`'s strict KTD-8 carve-out is unaffected.
+- **`treat_as_map` key validation now also fires inside a one-sided subtree.**
+  When a whole sub-message was added or removed, the leaf emitter derived key
+  brackets itself instead of going through the shared extractor: duplicate keys
+  silently collapsed two elements onto one identical path, and an element
+  missing its key was demoted to an index bracket. `compare()` documents
+  `DuplicateKeyError` / `MissingKeyError` unconditionally, so a **schema+data
+  pair that previously produced diffs may now raise** — but only where the same
+  data raises already when the other side happens to carry the subtree.
 
 
 ### Changed

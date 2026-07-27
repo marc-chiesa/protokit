@@ -151,6 +151,42 @@ class TestTreatAsMapErrors:
             d.compare(msg1, msg2)
 
 
+class TestTreatAsMapReRegistration:
+    """Re-registering a selector must not silently desync the two config stores."""
+
+    def test_conflicting_key_raises(self) -> None:
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        with pytest.raises(ValueError, match="already configured with key 'id'"):
+            d.treat_as_map("items", key="name")
+
+    def test_conflicting_key_raises_for_dotted_selector(self) -> None:
+        d = MessageDifferencer()
+        d.treat_as_map("wrapper.items", key="id")
+        with pytest.raises(ValueError, match="already configured with key 'id'"):
+            d.treat_as_map("wrapper.items", key="name")
+
+    def test_conflicting_key_leaves_ignore_conflict_detection_intact(self) -> None:
+        """The rejected key must not become the one the ignore checks consult."""
+        d = MessageDifferencer()
+        d.treat_as_map("wrapper.items", key="id")
+        with pytest.raises(ValueError):
+            d.treat_as_map("wrapper.items", key="name")
+        # 'id' is still the key in force, so ignoring it must be rejected.
+        with pytest.raises(ValueError, match="key field"):
+            d.ignore_fields("wrapper.items.id")
+
+    def test_same_key_is_idempotent(self) -> None:
+        b = _make_items_builder()
+        Item = b.get_message_class("test.Item")
+        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
+        msg2 = b.build("test.Container", items=[Item(id="b", value=2), Item(id="a", value=1)])
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        d.treat_as_map("items", key="id")
+        assert not d.compare(msg1, msg2).has_changes()
+
+
 class TestTreatAsMapNonMessage:
     def test_non_message_field_emits_warning_and_falls_back(self) -> None:
         """treat_as_map on a repeated scalar should warn and use index comparison."""
@@ -272,6 +308,63 @@ class TestTreatAsMapEmitAll:
         # Should NOT use index-based brackets
         assert not any("items[0]" in p for p in paths)
         assert not any("items[1]" in p for p in paths)
+
+
+    def test_duplicate_key_in_added_subtree_raises(self) -> None:
+        """Key validation must not depend on whether the other side had the
+        subtree — two elements would otherwise collapse onto one path."""
+        b = ProtoBuilder()
+        b.message("test.Item", {
+            "id": (T.TYPE_STRING, 1),
+            "value": (T.TYPE_INT32, 2),
+        })
+        b.message_with_repeated(
+            "test.Inner",
+            {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
+            repeated_fields={"items"},
+        )
+        b.message("test.Outer", {
+            "name": (T.TYPE_STRING, 1),
+            "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
+        })
+        Item = b.get_message_class("test.Item")
+        Inner = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", name="hello")
+        msg2 = b.build("test.Outer",
+            name="hello",
+            inner=Inner(items=[Item(id="a", value=1), Item(id="a", value=2)]),
+        )
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        with pytest.raises(DuplicateKeyError, match="Duplicate key 'a' in 'inner.items'"):
+            d.compare(msg1, msg2)
+
+    def test_missing_key_in_added_subtree_raises(self) -> None:
+        """A proto2 element with an unset key silently fell back to an index
+        bracket here, while the two-sided path raises."""
+        b = ProtoBuilder()
+        b.message("test.Item", {
+            "id": (T.TYPE_STRING, 1),
+            "value": (T.TYPE_INT32, 2),
+        }, syntax="proto2")
+        b.message_with_repeated(
+            "test.Inner",
+            {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
+            repeated_fields={"items"},
+            syntax="proto2",
+        )
+        b.message("test.Outer", {
+            "name": (T.TYPE_STRING, 1),
+            "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
+        }, syntax="proto2")
+        Item = b.get_message_class("test.Item")
+        Inner = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", name="hello")
+        msg2 = b.build("test.Outer", name="hello", inner=Inner(items=[Item(value=1)]))
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        with pytest.raises(MissingKeyError, match="missing key field 'id'"):
+            d.compare(msg1, msg2)
 
 
 class TestTreatAsMapPath:
