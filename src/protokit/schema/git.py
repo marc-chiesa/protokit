@@ -89,12 +89,18 @@ class GitRefNotFoundError(ValueError):
 
 
 class ProtoImportError(ValueError):
-    """Raised when a required ``.proto`` import cannot be located.
+    """Raised when a ``.proto`` import cannot be located or is unsafe.
 
-    Standard and ``import public`` failures raise; ``import weak``
-    failures are skipped silently to match protobuf's own
-    semantics (weak imports tolerate missing dependencies at
-    compile time).
+    Standard and ``import public`` failures raise. A **missing**
+    ``import weak`` is tolerated silently, matching protobuf's own
+    semantics (weak imports tolerate absent dependencies at compile
+    time) -- a synthetic stub is written instead.
+
+    An **unsafe** import path raises regardless of import kind,
+    including ``weak``: a path that is absolute, contains ``..``, or
+    otherwise resolves outside the extraction directory is refused by
+    :func:`_safe_dest_path` rather than tolerated. Absence is a normal
+    condition to work around; an escape attempt is not.
     """
 
 
@@ -751,9 +757,17 @@ def _extract_proto_tree(
     ``root_files`` list) for the caller to feed to ``compile_proto``.
 
     Well-known imports (``google/protobuf/...``) are skipped on
-    the assumption that the compiler bundles them. ``import weak``
-    failures are skipped silently. Standard / ``import public``
-    failures raise :exc:`ProtoImportError`.
+    the assumption that the compiler bundles them. A **missing**
+    ``import weak`` is skipped silently (a stub is written instead).
+    Standard / ``import public`` failures raise
+    :exc:`ProtoImportError`.
+
+    Every write path is derived through :func:`_safe_dest_path`, so an
+    **unsafe** import path raises :exc:`ProtoImportError` for any import
+    kind including ``weak``. ``import_path`` originates in a ``.proto``
+    at a caller-supplied ref, which is untrusted on the ``compat ci``
+    fork-PR flow; containment is not negotiable for a weak import
+    merely because absence would be.
     """
     visited: set[str] = set()
     root_paths: list[Path] = []
@@ -850,8 +864,10 @@ def extract_pool_from_ref(
     Raises:
         GitRefNotFoundError: ``ref`` cannot be resolved.
         ProtoImportError: A required import (standard or
-            ``import public``) is missing at ``ref``. Weak
-            imports never raise — they're skipped silently.
+            ``import public``) is missing at ``ref``, or ANY import
+            (including ``weak``) has an unsafe path — absolute,
+            containing ``..``, or resolving outside the extraction
+            directory. A merely *missing* weak import does not raise.
         ShallowRepoError: ``ref`` isn't reachable in the local
             shallow history. Re-raised by callers; this function
             doesn't yet auto-deepen.

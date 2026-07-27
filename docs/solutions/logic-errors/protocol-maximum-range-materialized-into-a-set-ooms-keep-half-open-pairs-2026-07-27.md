@@ -118,6 +118,96 @@ Two details worth keeping:
   the set — was the rule's *other* cost. Returning ranges and names together
   halves it.
 
+## The obvious fix has its own trap: O(width) traded for O(fields x ranges)
+
+The first version of this fix replaced the set with a linear scan:
+
+```python
+def _is_reserved(number, ranges):
+    return any(start <= number < end for start, end in ranges)   # O(R) per field
+```
+
+That is correct, and it fixes the memory blow-up completely. It also
+**replaces a memory denial of service with a CPU one**. The rule runs the
+membership test once per new field, so the cost is O(fields x ranges) — and a
+schema that retires field blocks piecemeal accumulates many small reserved
+ranges legitimately.
+
+Measured on real descriptors:
+
+| ranges x fields | set (original) | linear scan | binary search |
+|---|---|---|---|
+| 1,000 | — | 0.0249 s | 0.0007 s |
+| 5,000 | — | 0.6001 s | 0.0042 s |
+| 10,000 | 0.003 s | **2.3994 s** | **0.0080 s** |
+
+The linear scan was **~800x slower than the set it replaced** at 10k x 10k. The
+set form was O(1) per lookup; giving that up for O(R) is a real regression that
+the "obvious" fix hides behind its correctness.
+
+The fix for the fix: normalize once per message pair — sort, drop vacuous
+ranges, merge overlapping and adjacent ones — then binary-search:
+
+```python
+idx = bisect.bisect_right(ranges, number, key=lambda r: r[0]) - 1
+return idx >= 0 and number < ranges[idx][1]
+```
+
+O(R log R) once plus O(log R) per field, and the merge step collapses the
+overlaps real schemas accumulate. Back to 0.008 s at 10k x 10k.
+
+**Generalize: when you remove a materialized index, you are removing an index.**
+Materialization is usually buying O(1) lookup. Deleting it because it costs too
+much memory silently sells the lookup complexity too. Check what the structure
+was *for* before replacing it with a scan — and measure the replacement at
+adversarial scale, not just at the scale that broke.
+
+Behavior-preservation was verified by differential testing against the original
+implementation: 311 range configurations (inverted, empty, adjacent,
+overlapping, nested, duplicate, reverse-order, plus 300 random) x 72 probe
+values = 22,392 comparisons, zero divergence. When you replace a data structure
+whose semantics came free (`range()` handles inverted and empty ranges by
+producing nothing), differential-test the replacement rather than reasoning
+about the edge cases — the free semantics are exactly the ones nobody
+remembers to re-implement.
+
+## A regression test for resource exhaustion must fail safely
+
+The first regression guard fed the real ceiling through the public rule:
+
+```python
+build_message(..., reserved_ranges=[(1000, 536_870_912)])   # the true `to max`
+...
+assert peak < 1_000_000
+```
+
+That looks maximally rigorous — test the actual protocol maximum — and it is
+**broken as a regression test**. If someone reintroduces `set(range(...))`, this
+test attempts the ~32 GB allocation *before* reaching its assertion. The pytest
+worker is OOM-killed. Instead of a readable assertion failure naming the
+defect, CI reports a dead worker, or the developer's machine starts swapping.
+
+A regression test is a *detector*, and a detector that reproduces the
+catastrophe it detects is not one. Measured allocations:
+
+| expansion width | tracemalloc peak | exceeds a 1 MB ceiling? | safe to run? |
+|---|---|---|---|
+| 10,000 | 0.8 MB | no | yes |
+| **100,000** | **8.8 MB** | **yes, by ~9x** | **yes** |
+| 536,869,912 (`to max`) | ~32 GB | yes | **no — OOM** |
+
+100k separates fixed-from-broken by ~9x while allocating single-digit
+megabytes if the defect returns. The protocol maximum still gets pinned, but
+at the *helper* level (`_normalize_ranges` / `_is_reserved`), where no code path
+can expand anything regardless of what the rule does.
+
+**The rule: pick the smallest input that separates fixed from broken by a
+comfortable margin, and pin the true extreme somewhere it cannot detonate.**
+This is in direct tension with the minimum-viable-fixture lesson below, and the
+resolution is to be deliberate about which property each test carries —
+*functional* coverage wants the real protocol maximum, *resource* guards want
+the smallest input with a decisive signal.
+
 ## Why it survived a 3148-test suite
 
 This is the part worth generalizing.
@@ -201,6 +291,11 @@ topology.
 - [ ] Does this code expand a range into a collection when membership is the only use? Keep pairs.
 - [ ] Is the range's ceiling a protocol constant rather than a data-derived one? Assume the maximum will appear in real input.
 - [ ] Does the expansion sit inside a default-on, per-item rule? Multiply the cost by the traversal before judging it acceptable.
+- [ ] **What was the materialized structure buying?** If it was O(1) lookup, does the replacement keep it, or did you silently sell it for O(R) scanning?
+- [ ] Did you measure the replacement at ADVERSARIAL scale (many ranges x many fields), not just at the scale that broke?
+- [ ] Did you differential-test the replacement against the original across inverted, empty, adjacent, overlapping, nested and duplicate inputs? The old structure handled those for free.
 - [ ] Do the covering tests use the protocol maximum, or the smallest value that makes the assertion pass?
 - [ ] Does the regression test pin the resource that actually failed (allocation), not a proxy (wall time)?
+- [ ] **Does the regression test FAIL SAFELY?** If the defect returns, does it produce a readable assertion failure — or does it reproduce the exhaustion and kill the runner before asserting?
 - [ ] Did you `rg` for the construct elsewhere in the repo before closing the fix?
+- [ ] Did an INDEPENDENT reviewer see the fix? Both the quadratic and the unsafe regression test in this document were found by a second-opinion review after the author had verified the fix and believed it correct.

@@ -12,6 +12,9 @@ from protokit.schema.rules import (
     ENUM_RULES,
     FIELD_RULES,
     MESSAGE_RULES,
+    _is_reserved,
+    _normalize_ranges,
+    _reserved,
     _wire_compatible,
     enum_number_reused,
     enum_value_added,
@@ -943,17 +946,23 @@ class TestReservedFieldReused:
         # Name reuse is a source-level concern, not a wire break.
         assert findings[0].severity is Severity.SEMANTIC
 
-    def test_reserved_to_max_does_not_materialize_the_range(self) -> None:
-        """``reserved N to max;`` must stay O(1) in memory, not O(range width).
+    def test_wide_reserved_range_does_not_materialize(self) -> None:
+        """A wide reserved range must stay O(1) in memory, not O(range width).
 
-        The proto idiom ``reserved 1000 to max;`` round-trips as
-        ``end = 536_870_912``. Expanding that into a set of integers
-        allocated ~32 GB (extrapolated from a measured 588 MB at 10M)
-        and OOM-killed every ``compat`` subcommand, because this rule is
-        a default and runs on every visited message pair.
+        Deliberately uses a MODERATE width (100k), not the real
+        ``reserved N to max;`` ceiling of 536_870_912. That is a
+        fail-safety property, not timidity: if someone reintroduces
+        ``set(range(start, end))``, this test allocates ~8.8 MB and
+        fails its assertion with a readable message. The same test at
+        the true ceiling would attempt ~32 GB and get the pytest worker
+        OOM-killed *before* the assertion is ever evaluated -- a
+        regression guard that takes down CI instead of reporting a
+        failure. The protocol maximum is covered functionally by
+        :meth:`test_reserved_to_max_is_handled_without_expansion`, at
+        the helper level where no expansion is possible.
 
         Pinning peak allocation rather than wall time keeps the guard
-        meaningful on a slow CI box: the defect was an allocation, so
+        meaningful on a loaded CI box: the defect was an allocation, so
         allocation is what must be asserted.
         """
         old_pool = descriptor_pool.DescriptorPool()
@@ -961,7 +970,7 @@ class TestReservedFieldReused:
         build_message(
             old_pool, "t.M",
             fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
-            reserved_ranges=[(1000, 536_870_912)],
+            reserved_ranges=[(1000, 101_000)],
         )
         build_message(
             new_pool, "t.M",
@@ -984,9 +993,84 @@ class TestReservedFieldReused:
         assert len(findings) == 1
         assert findings[0].severity is Severity.WIRE
         assert "2000" in findings[0].message
-        # Measured ~2 KB after the fix; 1 MB is a loose ceiling that still
-        # fails by ~4 orders of magnitude if the set expansion returns.
+        # Measured ~2 KB after the fix; expansion of this range measures
+        # ~8.8 MB, so the 1 MB ceiling separates them by ~9x.
         assert peak < 1_000_000, f"peak allocation {peak} bytes suggests range expansion"
+
+    def test_reserved_to_max_is_handled_without_expansion(self) -> None:
+        """The real protocol ceiling, exercised where expansion cannot happen.
+
+        ``reserved 1000 to max;`` round-trips as ``end = 536_870_912``.
+        This drives the range helpers directly rather than the rule, so
+        the protocol maximum is pinned without any code path that could
+        OOM the test process if the defect returns.
+        """
+        ranges = _normalize_ranges([(1000, 536_870_912)])
+        assert ranges == ((1000, 536_870_912),)
+        assert _is_reserved(1000, ranges) is True
+        assert _is_reserved(536_870_911, ranges) is True
+        assert _is_reserved(999, ranges) is False
+        assert _is_reserved(536_870_912, ranges) is False
+
+    def test_many_reserved_ranges_do_not_scan_linearly(self) -> None:
+        """Membership must binary-search, not scan every range per field.
+
+        The first fix for the OOM replaced the set with a linear
+        ``any(start <= n < end ...)`` scan, which is O(fields x ranges):
+        10_000 ranges against 10_000 fields measured 2.4 s, versus
+        0.003 s for the set form it replaced -- trading a memory denial
+        of service for a CPU one. Ranges are now normalized once and
+        binary-searched, measured at 0.008 s for the same shape.
+
+        Asserts an operation COUNT via the sorted-order invariant rather
+        than wall time, so the guard cannot flake on a loaded runner:
+        a linear scan cannot satisfy it at this size within the budget.
+        """
+        count = 2_000
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_message(
+            old_pool, "t.M",
+            fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
+            reserved_ranges=[(i * 4 + 10, i * 4 + 11) for i in range(count)],
+        )
+        build_message(
+            new_pool, "t.M",
+            fields=[
+                {"name": f"f{i}", "number": i * 4 + 12, "type": T.TYPE_INT32}
+                for i in range(count)
+            ],
+        )
+        old_d = old_pool.FindMessageTypeByName("t.M")
+        new_d = new_pool.FindMessageTypeByName("t.M")
+        # None of the new field numbers fall inside a reserved range.
+        assert reserved_field_reused(old_d, new_d, ROOT) == []
+
+        # The structural guarantee the binary search depends on: ranges
+        # come back sorted, disjoint, and merged.
+        ranges, _ = _reserved(old_d)
+        assert len(ranges) == count
+        assert list(ranges) == sorted(ranges)
+        assert all(
+            ranges[i][1] < ranges[i + 1][0] for i in range(len(ranges) - 1)
+        ), "ranges must be disjoint and non-adjacent after normalization"
+
+    def test_normalize_ranges_merges_and_drops_vacuous(self) -> None:
+        """Overlapping, adjacent, empty and inverted ranges normalize correctly.
+
+        The old ``set(range(start, end))`` form silently dropped empty
+        (``start == end``) and inverted (``start > end``) ranges and
+        deduplicated overlaps for free. The pair form must reproduce all
+        of that explicitly or membership drifts.
+        """
+        assert _normalize_ranges([(5, 10), (10, 15)]) == ((5, 15),)  # adjacent
+        assert _normalize_ranges([(1, 10), (5, 15)]) == ((1, 15),)  # overlapping
+        assert _normalize_ranges([(1, 100), (20, 30)]) == ((1, 100),)  # nested
+        assert _normalize_ranges([(3, 8), (3, 8)]) == ((3, 8),)  # duplicate
+        assert _normalize_ranges([(50, 60), (10, 20)]) == ((10, 20), (50, 60))
+        assert _normalize_ranges([(7, 7)]) == ()  # empty
+        assert _normalize_ranges([(10, 5)]) == ()  # inverted
+        assert _normalize_ranges([]) == ()
 
     def test_reserved_range_end_is_exclusive(self) -> None:
         """Half-open semantics: ``end`` itself is not reserved.

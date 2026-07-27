@@ -75,10 +75,19 @@ All notable changes to `protokit` are documented here. Format loosely follows
   **~32 GB measured by extrapolation (588 MB at 10M), ~107 s** — and the rule is
   a default that runs on every visited message pair, so any schema using that
   idiom killed the process instead of returning a report. Reserved ranges are
-  now kept as half-open `(start, end)` pairs and tested by membership, which is
-  all the rule ever needed: `to max` now completes in **1.9 KB and 0.018 ms**.
-  The sibling walker in `protokit.forensics._drift` already used this shape;
-  the fix brings `protokit.schema.rules` in line with it.
+  now normalized once per message pair — sorted, merged, vacuous ranges dropped
+  — and membership is a binary search, which is all the rule ever needed:
+  `to max` now completes in **1.9 KB and 0.018 ms**. The sibling walker in
+  `protokit.forensics._drift` already used the pair shape; the fix brings
+  `protokit.schema.rules` in line with it.
+
+  Normalizing rather than scanning also avoids trading the memory exhaustion
+  for a CPU one: a linear `any(start <= n < end ...)` membership test is
+  O(fields x ranges), measured at **2.4 s** for a schema declaring 10,000 small
+  reserved ranges against 10,000 fields — ~800x slower than the set form it
+  replaced. Binary search over merged ranges returns that to **0.008 s**.
+  Verified behavior-preserving against the original implementation by
+  differential test: 311 range configurations x 72 probes, zero divergence.
 
 ### Changed
 - **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
