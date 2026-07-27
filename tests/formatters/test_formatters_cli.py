@@ -239,6 +239,72 @@ class TestFormatterModule:
         assert "conflicts with a reserved built-in name" in result.output
         assert "junit" in result.output
 
+    def test_repeated_formatter_module_flag_is_idempotent(
+        self, tmp_path: Path,
+    ) -> None:
+        # ``--formatter-module`` is ``multiple=True``; naming the same
+        # pack twice (shell history, a wrapper script that appends the
+        # flag unconditionally) must not hard-fail on the pack's own
+        # second registration. Matches the lint side's ``--rule-pack``
+        # early-return on an already-loaded module.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            from protokit.formatters import FormatterKind
+            def my_format(report, ctx):
+                return "USER-FORMATTER " + str(report.has_changes())
+            FORMATTERS = [("my-format", my_format, FormatterKind.DIFF)]
+        """))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+            "--formatter-module", pack,
+            "--format", "my-format",
+        ])
+        assert result.exit_code == 0
+        assert "USER-FORMATTER False" in result.output
+
+    def test_duplicate_name_across_packs_is_not_labelled_reserved(
+        self, tmp_path: Path,
+    ) -> None:
+        # A collision between two user packs is a duplicate, not a
+        # built-in shadow — it must not borrow the reserved-name
+        # prefix that agents branch on.
+        body = textwrap.dedent("""
+            from protokit.formatters import FormatterKind
+            def mine(report, ctx):
+                return "mine"
+            FORMATTERS = [("dup-format", mine, FormatterKind.DIFF)]
+        """)
+        first = _write_pack(tmp_path, body)
+        second = _write_pack(tmp_path, body)
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", first,
+            "--formatter-module", second,
+            "--format", "dup-format",
+        ])
+        assert result.exit_code == 2
+        assert "conflicts with a reserved built-in name" not in result.output
+        assert "failed to load formatter pack" in result.output
+        assert "already registered" in result.output
+
     def test_pack_partial_load_rolls_back(self, tmp_path: Path) -> None:
         pack = _write_pack(tmp_path, textwrap.dedent("""
             from protokit.formatters import FormatterKind

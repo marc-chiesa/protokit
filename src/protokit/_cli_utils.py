@@ -29,6 +29,7 @@ from protokit.formatters import (
     FormatterContext,
     FormatterError,
     FormatterKind,
+    ReservedFormatterNameError,
     get_formatter,
     list_formatters,
     load_formatter_pack,
@@ -623,7 +624,15 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     pattern-matching agents can branch without parsing the
     embedded exception text — collisions with reserved built-in
     names are conceptually different from "the pack failed to
-    load" and benefit from their own surface.
+    load" and benefit from their own surface. The branch keys on
+    :class:`~protokit.formatters.ReservedFormatterNameError`, not
+    on the base ``FormatterError``, which a plain duplicate
+    registration also raises.
+
+    Repeated names are deduped so ``--formatter-module p
+    --formatter-module p`` stays a no-op rather than tripping the
+    registry's duplicate guard, matching the lint side's
+    ``--rule-pack`` early-return on an already-loaded module.
 
     **Three-arm guard chain on import.** Both ``except SystemExit``
     and ``except KeyboardInterrupt`` are placed BEFORE the broad
@@ -661,7 +670,11 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     interpolated bare). Mirrors the lint side's ``_safe_module_name``
     pattern via Python's built-in repr escaping.
     """
-    for name in module_names:
+    # ``dict.fromkeys`` dedupes while preserving first-seen order:
+    # ``--formatter-module`` is repeatable, and naming the same pack
+    # twice would otherwise hit the registry's duplicate guard and
+    # hard-fail the CLI on what the user meant as a no-op.
+    for name in dict.fromkeys(module_names):
         try:
             module = importlib.import_module(name)
         except SystemExit as exc:
@@ -678,12 +691,12 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
             error_exit(f"failed to import formatter pack {name!r}: {exc}")
         try:
             load_formatter_pack(module)
-        except FormatterError as exc:
+        except ReservedFormatterNameError as exc:
             error_exit(
                 f"formatter pack {name!r} conflicts with a reserved "
                 f"built-in name: {exc}"
             )
-        except (AttributeError, TypeError) as exc:
+        except (FormatterError, AttributeError, TypeError) as exc:
             error_exit(f"failed to load formatter pack {name!r}: {exc}")
 
 
