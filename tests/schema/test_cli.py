@@ -1804,3 +1804,91 @@ class TestEntryPointDispatch:
         # top-level group.
         assert result.exit_code == 0
         assert "COMPATIBLE" in result.output
+
+
+class TestUnclassifiedGitFailureExitCode:
+    """P2-12: a ``git show`` failure that ``_git_show`` deliberately
+    does NOT classify must exit 2 (error), never 1.
+
+    The documented contract is 0=compatible / 1=incompatible /
+    2=error. ``_git_show`` re-raises the bare
+    ``subprocess.CalledProcessError`` for anything outside its six
+    known stderr substrings — on purpose, because re-labelling the
+    unknown as ``FileNotFoundError`` would turn a corrupt object DB
+    or an unreadable ``.git`` into "this import doesn't exist" and
+    silently produce a truncated dependency graph. The CLI boundary
+    is therefore where the unclassified failure must be caught:
+    without that catch it escapes through Click as a traceback and
+    the process exits 1, so a pipeline gating on exit codes records
+    a compatibility BREAK that never happened.
+    """
+
+    def test_path_outside_repository_exits_2_not_1(
+        self, git_repo: Path,
+    ) -> None:
+        # ``git show HEAD:../outside.proto`` fails with "fatal:
+        # '../outside.proto' is outside repository", which matches
+        # none of _git_show's classifier substrings.
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "../outside.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2, (
+            f"expected exit 2 (error), got {result.exit_code}; "
+            f"exception={result.exception!r}"
+        )
+        assert "Error:" in result.stderr
+
+    @pytest.mark.parametrize(
+        "subcommand,extra_args",
+        [
+            ("check", ["--since", "HEAD~"]),
+            ("ci", ["--base", "main"]),
+            ("history", ["--range", "HEAD~..HEAD"]),
+            ("bisect", ["--old", "HEAD~", "--new", "HEAD"]),
+        ],
+    )
+    def test_unclassified_git_failure_exits_2_for_every_subcommand(
+        self,
+        git_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        subcommand: str,
+        extra_args: list[str],
+    ) -> None:
+        """Every git-mode subcommand needs the same boundary guard.
+
+        Simulates the general case (corrupt object DB, permission
+        denied on .git, gitlink) by forcing ``_git_show`` down its
+        deliberate bare-``raise`` path.
+        """
+        import subprocess as _subprocess
+
+        from protokit.schema import git as git_mod
+
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+
+        def _boom(ref: str, path: str, **kwargs: object) -> bytes:
+            raise _subprocess.CalledProcessError(
+                128,
+                ["git", "show", f"{ref}:{path}"],
+                output=b"",
+                stderr=b"fatal: unable to read tree (deadbeef)",
+            )
+
+        monkeypatch.setattr(git_mod, "_git_show", _boom)
+        result = _invoke_in_repo(git_repo, [
+            subcommand, *extra_args,
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+        ])
+        assert result.exit_code == 2, (
+            f"{subcommand}: expected exit 2 (error), got "
+            f"{result.exit_code}; exception={result.exception!r}"
+        )
+        assert "unable to read tree" in result.stderr
