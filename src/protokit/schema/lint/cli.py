@@ -851,6 +851,48 @@ def _main_impl(
                     f"diagnostic[{diag.category}]: {diag.message}",
                     err=True,
                 )
+                # ``diag.message`` is a protokit-authored summary
+                # ("protoc compilation failed"); the actionable text —
+                # ``file:line:col: Expected field name.`` — lives ONLY on
+                # the structured ``command``/``exit_code``/``stderr``
+                # fields. Nothing else renders them: no formatter reads
+                # ``.stderr``, and ``error_exit_with_code`` below raises
+                # SystemExit before formatter dispatch, so not even
+                # ``--format=json`` can recover it. Without these
+                # continuation lines the "see stderr for details"
+                # promise is unbacked and the user is left to re-run the
+                # compiler by hand to learn what is wrong with the file.
+                #
+                # Compiler output is EXTERNAL, untrusted input, so it
+                # goes through ``_safe_for_stderr`` (control characters,
+                # including the newlines of a multi-line protoc dump,
+                # collapse to spaces) per the stderr-forge discipline in
+                # docs/solutions/security-issues/
+                # module-name-newline-injection-stderr-forge-2026-05-07.md
+                # — a compiler message must not be able to synthesise a
+                # line beginning with a stable ``error[lint-...]:``
+                # prefix that CI greps. Continuation lines are indented
+                # so they read as detail for the diagnostic above and
+                # can never be mistaken for a stable-prefix line.
+                if diag.command is not None or diag.exit_code is not None:
+                    cmd_str = (
+                        " ".join(diag.command)
+                        if diag.command is not None
+                        else ""
+                    )
+                    exit_str = (
+                        "" if diag.exit_code is None else str(diag.exit_code)
+                    )
+                    click.echo(
+                        f"  cmd={_safe_for_stderr(cmd_str)!r} "
+                        f"exit={exit_str}",
+                        err=True,
+                    )
+                if diag.stderr:
+                    click.echo(
+                        f"  {_safe_for_stderr(diag.stderr)}",
+                        err=True,
+                    )
             error_exit_with_code(
                 "compile-failed",
                 "source compile produced error-level diagnostics; "
