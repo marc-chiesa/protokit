@@ -135,6 +135,33 @@ class TestFlagValidation:
         assert result.exit_code == 2
         assert "Conflicting" in result.output
 
+    def test_proto_path_without_proto(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """--proto-path is a group-C flag; silently discarding it in
+        group A would let a user believe their import path took effect.
+        """
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--proto-path", str(tmp_path),
+        ])
+        assert result.exit_code == 2
+        assert "--proto-path" in result.output
+
+    def test_proto_path_with_no_descriptor_source(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path
+    ) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--proto-path", str(tmp_path),
+        ])
+        assert result.exit_code == 2
+        assert "--proto-path" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Same-schema mode (Group A)

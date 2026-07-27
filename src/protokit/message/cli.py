@@ -162,6 +162,12 @@ def _validate_flag_groups(
             "or (--proto + --message-type)."
         )
 
+    # --proto-path only feeds protoc, which only group C runs. Reject it
+    # elsewhere rather than discard it: a user who passed an import path
+    # would otherwise get a clean diff and assume it was honoured.
+    if proto_path and not group_c:
+        _error("--proto-path only applies with --proto.")
+
     if desc is not None:
         if message_type is None:
             _error("--desc requires --message-type.")
