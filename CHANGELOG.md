@@ -308,19 +308,6 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `DuplicateKeyError` / `MissingKeyError` unconditionally, so a **schema+data
   pair that previously produced diffs may now raise** — but only where the same
   data raises already when the other side happens to carry the subtree.
-
-
-### Changed
-- **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
-  (`protokit.storage._fidelity_probe.unmodeled_byte_delta`) so both the columnar
-  sink and `forensics match` import one named function. Behavior-preserving —
-  `protokit.storage._columnar._unmodeled_byte_delta` still resolves it.
-- **Internal: `reserved_field_reused` now reads reserved ranges and names in one
-  `CopyToProto` roundtrip** instead of two, halving the descriptor serialization
-  cost of the rule on every message pair.
-
-
-### Fixed
 - **`--formatter-module` no longer mislabels duplicate formatter names as
   built-in shadowing, and repeating the same pack is a no-op.** A pack whose
   formatter name collides with one another pack already registered reported
@@ -338,6 +325,87 @@ All notable changes to `protokit` are documented here. Format loosely follows
   number, `nan` and `inf` now fall back to the 60s default instead of killing
   every compile instantly (`<= 0`) or restoring the indefinite hang the
   ceiling exists to prevent (`nan`/`inf`).
+- **`treat_as_map` re-registration with a different key now raises.** The
+  selector was stored twice — a dict (last-wins) and an append-only path list
+  (first-wins at lookup) — so re-registering desynced them: the engine keyed on
+  the *old* key while every conflict check read the *new* one, which let
+  `ignore_fields` ignore the key field actually in use. The documented
+  `ValueError` now fires; an identical repeat stays a silent no-op.
+- **Partial mode no longer leaks an ADDED for an actual-only `treat_as_map` key
+  whose element is empty.** A *populated* extra element was suppressed (its
+  one-sided work item hit the partial gate) while an *empty* one emitted a
+  vacuous `ADDED` — so an extra empty element failed the match and an extra real
+  one passed. Now consistent with `_compare_map` / `_compare_repeated`;
+  `treat_as_set`'s force-emit carve-out is untouched.
+- **One-sided `treat_as_map` subtrees now validate keys.** An ADDED/REMOVED
+  subtree derived its brackets inline instead of through the shared validator,
+  so duplicate keys silently collapsed two elements onto one identical path and
+  an element with an unset proto2 key was demoted to an index bracket.
+  `DuplicateKeyError` / `MissingKeyError` now fire as they do on the two-sided
+  path; valid data produces byte-identical paths.
+- **`protokit lint` `[severities]` overrides reach every kind-mangled custom
+  rule.** A key naming a bare `custom/<suffix>` whose spec declares multiple
+  `element_kinds` applied to only the *first* one, so a severity override
+  silently governed part of the rule family — while the `"off"` sentinel already
+  applied to all of them.
+- **An invalid `min_severity` now names the out-of-set value** instead of
+  reporting the Python type (`got 'str'`), which the `isinstance` guard directly
+  above already proved. Matches the two sibling severity coercers.
+- **`forensics` rejects field numbers past protobuf's legal maximum.** The wire
+  walker emitted any tag as an observation, so `536_870_912` and `2**35` walked
+  clean and an impossible field number could reach a `drift` or `match` verdict —
+  input protobuf's own parser rejects outright.
+- **An unrecognised `fidelity=` value is now an error, not a silent `warn`.**
+  `to_parquet(..., fidelity="strict")` behaved like `warn` — writing the file
+  when the caller plainly meant `error`. It now raises `ValueError` naming the
+  valid set.
+- **A deep `.proto` import chain no longer exhausts the stack.**
+  `_transitive_file_descriptors` recursed per file, so a 1200-deep valid chain
+  raised `RecursionError` instead of converting. Now an iterative post-order DFS;
+  emitted order is unchanged.
+- **JUnit assembly is no longer quadratic.** `add_testcase` scanned children
+  *forward* for the seeded `<system-out>` on every insert, rescanning every prior
+  testcase: 20,000 findings took **4.49 s**. The scan now runs backwards (the
+  element is always second-to-last), making each insert O(1). Output is
+  byte-identical.
+- **History SARIF no longer notifies each CLI diagnostic twice.** The per-entry
+  and aggregate passes both fed `toolExecutionNotifications`, and for a
+  CLI-built report the two sources fully overlap, so every diagnostic appeared
+  twice. Deduped on `(level, commit, message)` *with multiplicity*, so a
+  hand-built report carrying genuinely distinct aggregates keeps them.
+- **`get_option_value` resolves the owning pool per descriptor kind.** The
+  default-pool hop assumed `desc.file`, which `FileDescriptor` and
+  `EnumValueDescriptor` do not expose under the **upb** backend — the default —
+  so both raised `AttributeError` while the module docstring listed them as
+  supported. Resolution now tries `.file`, then `.pool`, then `.type.file.pool`.
+  (Pure-Python protobuf was unaffected, which is why it went unnoticed.)
+- **`protokit diff --proto-path` outside the `--proto` flag group is now a usage
+  error** instead of being silently accepted and ignored.
+- **`compat --range` endpoint resolution goes through the shared git helper**
+  rather than an inline `subprocess` call, so it inherits the locale forcing and
+  error classification every other git call already had. New public
+  `protokit.schema.git.resolve_ref_sha`.
+- **Documentation corrections (no behaviour change):** the SARIF docstrings no
+  longer claim warnings land in `toolConfigurationNotifications` (they join
+  errors in `toolExecutionNotifications`, tagged `level: "warning"`); the lint
+  epilog no longer advertises a `--no-builtin-rules --enable-rule` workflow that
+  always exits 2 (`--enable-rule` does not *load* rules — a pack is required);
+  the wire walker's varint comments no longer claim coverage of an unreachable
+  guard arm; and `register_field_rule` / `register_message_rule` now state the
+  **path-independence contract** — the engine visits each `(old, new)` type pair
+  once and *replays* those findings at every other referencing path with the
+  prefix rewritten, so plugin logic and message text must not depend on the path
+  they were first computed at.
+
+### Changed
+- **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
+  (`protokit.storage._fidelity_probe.unmodeled_byte_delta`) so both the columnar
+  sink and `forensics match` import one named function. Behavior-preserving —
+  `protokit.storage._columnar._unmodeled_byte_delta` still resolves it.
+- **Internal: `reserved_field_reused` now reads reserved ranges and names in one
+  `CopyToProto` roundtrip** instead of two, halving the descriptor serialization
+  cost of the rule on every message pair.
+
 
 ## 0.14.0 — 2026-06-24
 
