@@ -162,6 +162,101 @@ class TestStrictSchemaMode:
         type_warnings = [w for w in result.warnings if "type name" in str(w).lower()]
         assert len(type_warnings) == 0
 
+    def test_root_message_type_name_mismatch_warns(self) -> None:
+        """The ROOT pair is checked too, not just message-typed fields.
+
+        The root work item has no field descriptor, so the per-field
+        declared check can never see it; two entirely different root types
+        with identically shaped fields used to compare completely clean.
+        """
+        b1 = ProtoBuilder()
+        b1.message("test.Left", {"x": (T.TYPE_INT32, 1)})
+        b2 = ProtoBuilder()
+        b2.message("test.Right", {"x": (T.TYPE_INT32, 1)})
+
+        result = diff_messages(
+            b1.build("test.Left", x=1),
+            b2.build("test.Right", x=1),
+            strict_schema=True,
+        )
+
+        type_warnings = [w for w in result.warnings if "type name" in str(w).lower()]
+        assert len(type_warnings) == 1
+        assert "test.Left" in str(type_warnings[0])
+        assert "test.Right" in str(type_warnings[0])
+        assert type_warnings[0].path is None  # reported at the root
+        assert result.differences == ()
+
+    def test_root_type_name_match_does_not_warn(self) -> None:
+        """Identically named roots in isolated pools stay silent."""
+        b1 = ProtoBuilder()
+        b1.message("test.Same", {"x": (T.TYPE_INT32, 1)})
+        b2 = ProtoBuilder()
+        b2.message("test.Same", {"x": (T.TYPE_INT32, 1)})
+
+        result = diff_messages(
+            b1.build("test.Same", x=1),
+            b2.build("test.Same", x=1),
+            strict_schema=True,
+        )
+
+        assert result.warnings == ()
+
+    def test_nested_mismatch_warns_exactly_once(self) -> None:
+        """The declared check and the work-item check must not both fire.
+
+        ``inner`` is reported once by the parent's declared-type check; the
+        work item later popped for that same sub-message would otherwise
+        repeat the identical finding at the identical path.
+        """
+        b1 = ProtoBuilder()
+        b1.message("test.InnerV1", {"x": (T.TYPE_INT32, 1)})
+        b1.message("test.Outer", {"inner": (T.TYPE_MESSAGE, 1, ".test.InnerV1")})
+        b2 = ProtoBuilder()
+        b2.message("test.InnerV2", {"x": (T.TYPE_INT32, 1)})
+        b2.message("test.Outer", {"inner": (T.TYPE_MESSAGE, 1, ".test.InnerV2")})
+        InnerV1 = b1.get_message_class("test.InnerV1")
+        InnerV2 = b2.get_message_class("test.InnerV2")
+
+        result = diff_messages(
+            b1.build("test.Outer", inner=InnerV1(x=1)),
+            b2.build("test.Outer", inner=InnerV2(x=1)),
+            strict_schema=True,
+        )
+
+        type_warnings = [w for w in result.warnings if "type name" in str(w).lower()]
+        assert len(type_warnings) == 1
+        assert type_warnings[0].path == "inner"
+
+    def test_repeated_elements_warn_exactly_once(self) -> None:
+        """One declared drift stays one diagnostic however many elements."""
+        b1 = ProtoBuilder()
+        b1.message("test.InnerV1", {"x": (T.TYPE_INT32, 1)})
+        b1.message(
+            "test.Outer",
+            {"items": (T.TYPE_MESSAGE, 1, ".test.InnerV1")},
+            repeated_fields={"items"},
+        )
+        b2 = ProtoBuilder()
+        b2.message("test.InnerV2", {"x": (T.TYPE_INT32, 1)})
+        b2.message(
+            "test.Outer",
+            {"items": (T.TYPE_MESSAGE, 1, ".test.InnerV2")},
+            repeated_fields={"items"},
+        )
+        InnerV1 = b1.get_message_class("test.InnerV1")
+        InnerV2 = b2.get_message_class("test.InnerV2")
+
+        result = diff_messages(
+            b1.build("test.Outer", items=[InnerV1(x=1), InnerV1(x=2)]),
+            b2.build("test.Outer", items=[InnerV2(x=1), InnerV2(x=2)]),
+            strict_schema=True,
+        )
+
+        type_warnings = [w for w in result.warnings if "type name" in str(w).lower()]
+        assert len(type_warnings) == 1
+        assert type_warnings[0].path == "items"
+
 
 class TestFieldPresenceEvolution:
     def test_unset_proto2_field_not_reported_as_added(self) -> None:
