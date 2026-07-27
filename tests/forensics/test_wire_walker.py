@@ -7,6 +7,7 @@ from google.protobuf import descriptor_pb2
 
 from protokit.forensics._wire import (
     _MAX_GROUP_DEPTH,
+    WIRETYPE_VARINT,
     WalkError,
     WireObservation,
     walk_top_level,
@@ -109,13 +110,44 @@ def test_undeclared_field_number_observed() -> None:
     assert walk_top_level(data) == [WireObservation(99, 0)]
 
 
+def _tag(field_number: int, wire_type: int) -> bytes:
+    """Encode a raw ``(field_number, wire_type)`` tag as a varint — no schema needed."""
+    value = (field_number << 3) | wire_type
+    out = bytearray()
+    while value > 0x7F:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def test_largest_legal_field_number_observed() -> None:
+    """2**29 - 1 is protobuf's largest legal field number — the walker must accept it."""
+    data = _tag(536_870_911, WIRETYPE_VARINT) + b"\x01"
+    assert walk_top_level(data) == [WireObservation(536_870_911, 0)]
+
+
+@pytest.mark.parametrize("field_number", [536_870_912, 2**35])
+def test_field_number_above_the_legal_maximum_rejected(field_number: int) -> None:
+    """A field number past 2**29 - 1 cannot come from any encoder; protobuf itself
+    rejects these bytes (``DecodeError``), so reporting them as a real observation
+    would put an impossible field number into a drift/match verdict."""
+    data = _tag(field_number, WIRETYPE_VARINT) + b"\x01"
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(data)
+    assert "field number" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     "data, reason",
     [
         (b"\x80", "truncated varint"),  # continuation bit set, no next byte
         (b"\xff" * 10, "varint exceeds 64 bits"),  # 10th byte's low bits > 1
         (b"\xff" * 9 + b"\x81", "varint exceeds 64 bits"),  # 10th byte continuation set
-        (b"\x80" * 11, "varint exceeds 64 bits"),  # > 10 bytes (consumed > max branch)
+        # A long all-continuation run still stops *at* the 10th byte — the reader
+        # never consumes an 11th, so this exits through the same `consumed == max`
+        # arm as the case above, not a separate `>` branch.
+        (b"\x80" * 11, "varint exceeds 64 bits"),
         (b"\x0a\x05ab", "length-delimited prefix exceeds"),  # declares 5, has 2
         (b"\x09\x00", "truncated fixed64"),  # wire type 1 needs 8 bytes
         (b"\x0d\x00", "truncated fixed32"),  # wire type 5 needs 4 bytes
