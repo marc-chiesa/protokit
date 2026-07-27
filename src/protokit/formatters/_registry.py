@@ -129,6 +129,19 @@ class FormatterError(Exception):
     """
 
 
+class ReservedFormatterNameError(FormatterError):
+    """A pack tried to register under a reserved built-in name.
+
+    Split out from the plain duplicate-registration failure
+    because the CLI surfaces the two with different prefixes
+    (``conflicts with a reserved built-in name`` vs. the generic
+    ``failed to load formatter pack``) and text-matching the
+    embedded message to tell them apart is exactly what those
+    prefixes exist to avoid. Subclasses ``FormatterError`` so
+    existing ``except FormatterError`` callers keep working.
+    """
+
+
 def register_formatter(
     name: str,
     fn: Formatter,
@@ -167,12 +180,13 @@ def register_formatter(
             names — those always raise.
 
     Raises:
-        FormatterError: Built-in shadowing, or non-replace
-            re-registration of an existing name.
+        ReservedFormatterNameError: Built-in shadowing.
+        FormatterError: Non-replace re-registration of an
+            existing name.
     """
     key = (kind, name.lower())
     if key in _BUILTIN_NAMES:
-        raise FormatterError(
+        raise ReservedFormatterNameError(
             f"cannot override built-in formatter ({kind.value}, {name.lower()!r}); "
             "built-in names are reserved"
         )

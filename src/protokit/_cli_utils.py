@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import importlib
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -27,8 +28,8 @@ from protokit import _pools
 from protokit.formatters import (
     Formatter,
     FormatterContext,
-    FormatterError,
     FormatterKind,
+    ReservedFormatterNameError,
     get_formatter,
     list_formatters,
     load_formatter_pack,
@@ -68,15 +69,24 @@ def _protoc_timeout_seconds() -> float:
     """Return the configured protoc subprocess timeout in seconds.
 
     Reads ``PROTOKIT_PROTOC_TIMEOUT`` from the environment; falls back
-    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset or unparseable.
+    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset, unparseable,
+    or not a usable duration. The override is meant to raise or lower
+    the ceiling, never to remove it: ``float`` happily accepts ``0``,
+    ``-1``, ``nan`` and ``inf``, and passing those to
+    ``subprocess.run`` would respectively kill every compile
+    instantly or restore the indefinite hang the ceiling exists to
+    prevent.
     """
     raw = os.environ.get("PROTOKIT_PROTOC_TIMEOUT")
     if raw is None:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
     try:
-        return float(raw)
+        parsed = float(raw)
     except ValueError:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    if not math.isfinite(parsed) or parsed <= 0:
+        return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    return parsed
 
 
 # Sentinel file used to validate a candidate WKT include directory.
@@ -623,7 +633,15 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     pattern-matching agents can branch without parsing the
     embedded exception text — collisions with reserved built-in
     names are conceptually different from "the pack failed to
-    load" and benefit from their own surface.
+    load" and benefit from their own surface. The branch keys on
+    :class:`~protokit.formatters.ReservedFormatterNameError`, not
+    on the base ``FormatterError``, which a plain duplicate
+    registration also raises.
+
+    Repeated names are deduped so ``--formatter-module p
+    --formatter-module p`` stays a no-op rather than tripping the
+    registry's duplicate guard, matching the lint side's
+    ``--rule-pack`` early-return on an already-loaded module.
 
     **Three-arm guard chain on import.** Both ``except SystemExit``
     and ``except KeyboardInterrupt`` are placed BEFORE the broad
@@ -680,7 +698,11 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     interpolated bare). Mirrors the lint side's ``_safe_module_name``
     pattern via Python's built-in repr escaping.
     """
-    for name in module_names:
+    # ``dict.fromkeys`` dedupes while preserving first-seen order:
+    # ``--formatter-module`` is repeatable, and naming the same pack
+    # twice would otherwise hit the registry's duplicate guard and
+    # hard-fail the CLI on what the user meant as a no-op.
+    for name in dict.fromkeys(module_names):
         try:
             module = importlib.import_module(name)
         except SystemExit as exc:
@@ -707,11 +729,19 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
                 f"failed to load formatter pack {name!r}: "
                 f"raised KeyboardInterrupt at pack-load time"
             )
-        except FormatterError as exc:
+        # Narrower than FormatterError on purpose: only the built-in-shadow
+        # branch raises this, so a plain duplicate registration no longer
+        # gets mislabelled as a reserved-name conflict. Must precede the
+        # catch-all below, being a FormatterError subclass.
+        except ReservedFormatterNameError as exc:
             error_exit(
                 f"formatter pack {name!r} conflicts with a reserved "
                 f"built-in name: {exc}"
             )
+        # Deliberately broad: a pack can defer arbitrary work into
+        # ``FORMATTERS.__iter__``, so anything it raises here must become a
+        # clean exit 2 rather than a traceback. Subsumes FormatterError /
+        # AttributeError / TypeError.
         except Exception as exc:
             error_exit(f"failed to load formatter pack {name!r}: {exc}")
 

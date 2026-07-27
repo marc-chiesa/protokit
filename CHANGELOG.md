@@ -320,6 +320,25 @@ All notable changes to `protokit` are documented here. Format loosely follows
   cost of the rule on every message pair.
 
 
+### Fixed
+- **`--formatter-module` no longer mislabels duplicate formatter names as
+  built-in shadowing, and repeating the same pack is a no-op.** A pack whose
+  formatter name collides with one another pack already registered reported
+  `formatter pack 'X' conflicts with a reserved built-in name: ... already
+  registered`; it now reports `failed to load formatter pack 'X': ...`, leaving
+  the reserved-name prefix to genuine built-in collisions. Repeated
+  `--formatter-module P --formatter-module P` (the flag is repeatable) used to
+  hard-fail with exit 2 on the pack's own second registration and now dedupes,
+  matching `lint --rule-pack`. New public
+  `protokit.formatters.ReservedFormatterNameError` (a `FormatterError`
+  subclass) makes the two cases type-distinguishable; `except FormatterError`
+  still catches both.
+- **`PROTOKIT_PROTOC_TIMEOUT` can no longer disable the protoc timeout
+  ceiling.** Only a finite, positive value is honoured; `0`, a negative
+  number, `nan` and `inf` now fall back to the 60s default instead of killing
+  every compile instantly (`<= 0`) or restoring the indefinite hang the
+  ceiling exists to prevent (`nan`/`inf`).
+
 ## 0.14.0 — 2026-06-24
 
 ### Added

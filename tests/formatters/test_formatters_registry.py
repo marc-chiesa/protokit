@@ -10,6 +10,7 @@ from protokit.formatters import (
     FormatterContext,
     FormatterError,
     FormatterKind,
+    ReservedFormatterNameError,
     clear_user_formatters,
     get_formatter,
     list_formatters,
@@ -152,6 +153,21 @@ class TestBuiltinReservation:
                 "junit", _identity_formatter,
                 kind=FormatterKind.COMPAT, replace=True,
             )
+
+    def test_shadowing_raises_the_reserved_name_subclass(self) -> None:
+        # The CLI branches on the exception type to pick its error
+        # prefix, so shadowing must be type-distinguishable from a
+        # plain duplicate rather than only text-distinguishable.
+        with pytest.raises(ReservedFormatterNameError):
+            register_formatter(
+                "human", _identity_formatter, kind=FormatterKind.DIFF,
+            )
+
+    def test_duplicate_is_not_the_reserved_name_subclass(self) -> None:
+        register_formatter("foo", _identity_formatter, kind=FormatterKind.COMPAT)
+        with pytest.raises(FormatterError) as excinfo:
+            register_formatter("foo", _identity_formatter, kind=FormatterKind.COMPAT)
+        assert not isinstance(excinfo.value, ReservedFormatterNameError)
 
     def test_case_insensitive_shadowing_check(self) -> None:
         # The reservation lowercases names; uppercase still rejects.
