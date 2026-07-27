@@ -908,6 +908,11 @@ class MessageDifferencer:
 
         stack: list[_WorkItem] = [_WorkItem(left, right, FieldPath(segments=()), 0)]
 
+        # Strict-schema type-name findings already emitted on this call, so the
+        # per-field declared check and the per-work-item instance check never
+        # say the same thing twice. See ``_check_message_type_names``.
+        reported_type_names: set[tuple[tuple[str, ...], str, str]] = set()
+
         try:
             while stack:
                 item = stack.pop()
@@ -954,6 +959,21 @@ class MessageDifferencer:
                     continue
 
                 assert item.left_msg is not None and item.right_msg is not None
+
+                # Strict schema, checked per work item and not only per field:
+                # the ROOT pair never reaches the per-field loop below (it has
+                # no field descriptor), so two entirely different root types
+                # with aligned field shapes used to compare completely clean.
+                # It also catches drift the declared check structurally cannot
+                # see — a map whose VALUE message type changed, where both
+                # sides' declared field type is the identically named synthetic
+                # MapEntry.
+                if self.strict_schema:
+                    self._check_message_type_names(
+                        item.left_msg.DESCRIPTOR.full_name,
+                        item.right_msg.DESCRIPTOR.full_name,
+                        item.path, warnings, reported_type_names,
+                    )
 
                 left_fields = get_field_map(item.left_msg.DESCRIPTOR)
                 right_fields = get_field_map(item.right_msg.DESCRIPTOR)
@@ -1034,7 +1054,8 @@ class MessageDifferencer:
 
                     # Schema evolution checks
                     self._check_schema_evolution(
-                        left_fd, right_fd, field_path, differences, warnings
+                        left_fd, right_fd, field_path, differences, warnings,
+                        reported_type_names,
                     )
 
                     # Cardinality change -> no value comparison
@@ -1147,6 +1168,7 @@ class MessageDifferencer:
         path: FieldPath,
         diffs: list[Difference],
         warnings: list[Diagnostic],
+        reported_type_names: set[tuple[tuple[str, ...], str, str]],
     ) -> None:
         """Check for schema evolution between two field descriptors.
 
@@ -1160,6 +1182,9 @@ class MessageDifferencer:
             path: The current field path for reporting.
             diffs: Accumulator list for Difference objects.
             warnings: Accumulator list for Diagnostic objects.
+            reported_type_names: Per-``compare`` dedupe state shared with the
+                per-work-item type-name check (see
+                ``_check_message_type_names``).
         """
         # Field number change
         if left_fd.number != right_fd.number:
@@ -1191,21 +1216,55 @@ class MessageDifferencer:
                 right_label=label_name(right_fd),
             ))
 
-        # Strict schema: message type name mismatch warning
+        # Strict schema: message type name mismatch warning. Reported from the
+        # DECLARED types so drift is still caught when the sub-message is unset
+        # on both sides — the recursive walk only ever sees populated types.
         if (
             self.strict_schema
             and left_fd.type == TYPE_MESSAGE
             and right_fd.type == TYPE_MESSAGE
-            and left_fd.message_type.full_name != right_fd.message_type.full_name
         ):
-            warnings.append(Diagnostic(
-                path=str(path),
-                message=(
-                    f"message type name changed: "
-                    f"{left_fd.message_type.full_name} -> "
-                    f"{right_fd.message_type.full_name}"
-                ),
-            ))
+            self._check_message_type_names(
+                left_fd.message_type.full_name,
+                right_fd.message_type.full_name,
+                path, warnings, reported_type_names,
+            )
+
+    def _check_message_type_names(
+        self,
+        left_name: str,
+        right_name: str,
+        path: FieldPath,
+        warnings: list[Diagnostic],
+        reported: set[tuple[tuple[str, ...], str, str]],
+    ) -> None:
+        """Emit at most one strict-schema type-name diagnostic per finding.
+
+        Both the per-field declared check and the per-work-item instance check
+        funnel through here so a single drift is announced once: a message
+        field's declared drift is reported at the field path, and the work item
+        later popped for that same sub-message would otherwise repeat it. The
+        dedupe key ignores bracket segments, which also collapses a repeated
+        field's ``items[0]`` / ``items[1]`` elements — one declared drift, one
+        diagnostic — onto the ``items`` path the declared check already used.
+
+        Args:
+            left_name: Fully qualified type name on the left/expected side.
+            right_name: Fully qualified type name on the right/actual side.
+            path: Path to report the finding at (empty for the root pair).
+            warnings: Accumulator list for Diagnostic objects.
+            reported: Per-``compare`` set of findings already emitted.
+        """
+        if left_name == right_name:
+            return
+        key = (tuple(seg.name for seg in path.segments), left_name, right_name)
+        if key in reported:
+            return
+        reported.add(key)
+        warnings.append(Diagnostic(
+            path=str(path) if path else None,
+            message=f"message type name changed: {left_name} -> {right_name}",
+        ))
 
     def _compare_leaf(
         self,
