@@ -2,8 +2,10 @@
 
 Shared by the schema checker plugin system and the differ hook
 system. Reads a custom option from any descriptor that exposes
-``GetOptions()`` and ``file`` — FieldDescriptor, Descriptor,
-EnumDescriptor, EnumValueDescriptor, FileDescriptor.
+``GetOptions()`` and can name its owning pool — FieldDescriptor,
+Descriptor, EnumDescriptor, EnumValueDescriptor, FileDescriptor.
+Those five don't reach their pool the same way (see
+``_owning_pool``), so don't assume ``desc.file`` exists.
 
 The helper has two access tiers:
 
@@ -42,6 +44,33 @@ _UOP_VALUE_FIELDS: tuple[str, ...] = (
 )
 
 
+def _owning_pool(desc: object) -> descriptor_pool.DescriptorPool:
+    """Resolve the descriptor pool that ``desc`` was loaded into.
+
+    The accepted descriptor types don't agree on how to reach their
+    file, and the disagreement is backend-specific. Under upb (the
+    default backend) a ``FileDescriptor`` has no ``file`` — it *is*
+    the file, and exposes ``pool`` directly — while an
+    ``EnumValueDescriptor`` has neither and reaches its file only
+    through its enum type. Pure-python protobuf gives both a
+    ``file``, so ``file`` is tried first and the fallbacks only
+    engage where it is genuinely absent.
+
+    ``file`` must be probed before ``type``: a ``FieldDescriptor``
+    has a ``type`` attribute too, but it holds the wire type, not
+    the owning enum.
+    """
+    file = getattr(desc, "file", None)
+    if file is not None:
+        return file.pool
+    pool = getattr(desc, "pool", None)
+    if pool is not None:
+        return pool
+    # EnumValueDescriptor. A descriptor type with none of the three
+    # is a caller bug, so let the AttributeError propagate.
+    return desc.type.file.pool
+
+
 def get_option_value(
     desc: object,
     option_path: str,
@@ -61,10 +90,10 @@ def get_option_value(
     access on the extension's value message.
 
     Args:
-        desc: Any descriptor exposing ``GetOptions()`` and a
-            ``file`` attribute. Raises ``AttributeError`` if not
-            — the helper treats a wrong descriptor type as a
-            programming error, not an "option absent" result.
+        desc: Any descriptor exposing ``GetOptions()`` and a route
+            to its pool. Raises ``AttributeError`` if not — the
+            helper treats a wrong descriptor type as a programming
+            error, not an "option absent" result.
         option_path: Dotted path of the option, e.g.
             ``"validate.rules.repeated.max_items"``. For a top-
             level extension with a scalar value, just the
@@ -73,9 +102,9 @@ def get_option_value(
             name followed by the field path
             (``"my_ext.nested.deeper"``).
         pool: Descriptor pool to search for the extension in tier
-            1. When ``None``, uses ``desc.file.pool``. Pass an
-            explicit pool when the extension lives in a different
-            pool than the descriptor.
+            1. When ``None``, uses the pool that owns ``desc``.
+            Pass an explicit pool when the extension lives in a
+            different pool than the descriptor.
 
     Returns:
         The option value (scalar Python value or message) when the
@@ -91,7 +120,7 @@ def get_option_value(
     """
     options = desc.GetOptions()
     if pool is None:
-        pool = desc.file.pool
+        pool = _owning_pool(desc)
     parts = option_path.split(".")
 
     # Tier 1: extension lookup with greedy prefix matching.

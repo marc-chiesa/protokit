@@ -944,6 +944,52 @@ class TestCheckAgainstBase:
         assert "mutually exclusive" in result.output
 
 
+class TestRangeEndpointResolution:
+    """``--range`` endpoint resolution must go through the shared
+    ``schema.git`` helper, which is the only place protokit is
+    supposed to shell out to git. Shelling out inline skipped both
+    of the guarantees that helper exists to provide: C-locale
+    forcing and the no-git-on-PATH translation.
+    """
+
+    def _fake_git(self, tmp_path: Path, body: str) -> Path:
+        bin_dir = tmp_path / "fakebin"
+        bin_dir.mkdir()
+        shim = bin_dir / "git"
+        shim.write_text(f"#!/bin/sh\n{body}\n")
+        shim.chmod(0o755)
+        return bin_dir
+
+    def test_missing_git_exits_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """No git on PATH is a user-fixable environment problem, not a
+        traceback — and an unhandled exit 1 here would read as a
+        compatibility BREAK.
+        """
+        from protokit.schema.cli import _resolve_range_endpoints
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+        with pytest.raises(SystemExit) as excinfo:
+            _resolve_range_endpoints("HEAD~1..HEAD")
+        assert excinfo.value.code == 2
+        assert "git not found on PATH" in capsys.readouterr().err
+
+    def test_forces_c_locale(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """The endpoint SHAs come back from a git child whose locale
+        was pinned to C, so downstream stderr matching stays reliable.
+        """
+        from protokit.schema.cli import _resolve_range_endpoints
+        bin_dir = self._fake_git(tmp_path, 'printf "%s\\n" "$LC_ALL"')
+        monkeypatch.setenv("PATH", str(bin_dir))
+        monkeypatch.setenv("LC_ALL", "es_ES.UTF-8")
+        assert _resolve_range_endpoints("HEAD~1..HEAD") == ("C", "C")
+
+
 class TestHistory:
     def test_empty_range_exits_0_with_message(
         self, git_repo: Path,

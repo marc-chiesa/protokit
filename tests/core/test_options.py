@@ -318,7 +318,9 @@ class TestUninterpretedOption:
 
 
 class TestDescriptorVariants:
-    """The helper accepts any descriptor with ``GetOptions()`` + ``file``."""
+    """The helper accepts any descriptor with ``GetOptions()`` that can
+    name its owning pool — which the five accepted types do differently.
+    """
 
     def test_accepts_message_descriptor(self) -> None:
         """Message-level options (e.g., ``[message_set_wire_format]``)
@@ -338,6 +340,42 @@ class TestDescriptorVariants:
         m_desc = pool.FindMessageTypeByName("t.M")
         assert get_option_value(m_desc, "my_msg_opt") == b"ping"
 
+    def test_accepts_file_descriptor(self) -> None:
+        """A ``FileDescriptor`` has no ``file`` attribute under the
+        upb backend — it *is* the file — so the default-pool hop has
+        to read ``desc.pool`` instead of ``desc.file.pool``.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="fileopt.proto", package="t", syntax="proto3",
+        )
+        uo = fdp.options.uninterpreted_option.add()
+        uo.name.add(name_part="my_file_opt", is_extension=True)
+        uo.string_value = b"whole-file"
+        pool.Add(fdp)
+        f_desc = pool.FindFileByName("fileopt.proto")
+        assert get_option_value(f_desc, "my_file_opt") == b"whole-file"
+
+    def test_accepts_enum_value_descriptor(self) -> None:
+        """An ``EnumValueDescriptor`` exposes neither ``file`` nor
+        ``pool`` under the upb backend; the owning file is reachable
+        only through its enum type (``desc.type.file``).
+        """
+        pool = descriptor_pool.DescriptorPool()
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="enumvalopt.proto", package="t", syntax="proto3",
+        )
+        ep = fdp.enum_type.add()
+        ep.name = "E"
+        vp = ep.value.add()
+        vp.name, vp.number = "E_UNSPECIFIED", 0
+        uo = vp.options.uninterpreted_option.add()
+        uo.name.add(name_part="my_value_opt", is_extension=True)
+        uo.string_value = b"zero"
+        pool.Add(fdp)
+        ev_desc = pool.FindEnumTypeByName("t.E").values_by_name["E_UNSPECIFIED"]
+        assert get_option_value(ev_desc, "my_value_opt") == b"zero"
+
     def test_raises_attribute_error_on_non_descriptor(self) -> None:
         """Passing something without ``GetOptions()`` is a bug — the
         helper lets ``AttributeError`` propagate rather than
@@ -349,10 +387,10 @@ class TestDescriptorVariants:
 
 
 class TestPoolArgument:
-    """The ``pool`` kwarg lets the caller override ``desc.file.pool``."""
+    """The ``pool`` kwarg lets the caller override the owning pool."""
 
     def test_default_pool_is_descriptor_file_pool(self) -> None:
-        """When pool=None, the helper uses ``desc.file.pool``. Since
+        """When pool=None, the helper uses the descriptor's own pool. Since
         no extension is registered, the tier-1 path can't match and
         the tier-2 fallback runs. Verified end-to-end by
         ``TestUninterpretedOption``.

@@ -168,6 +168,22 @@ class SchemaChecker:
         ``CompatibilityReport.warnings`` so comparison continues and
         the CLI can fail loudly.
 
+        Plugin contract — plugins must be path-independent. The
+        engine processes each ``(old, new)`` message type pair once,
+        not once per path at which the pair appears: a shared type is
+        descended into at whichever path the traversal reaches first,
+        plugins are dispatched only during that single visit, and the
+        findings they emit are then replayed at every other
+        referencing path with the path prefix rewritten (see this
+        module's docstring on sharing). Two consequences bind the
+        plugin author: the ``ctx`` a plugin receives carries only one
+        of the paths its finding will be reported under, and the
+        finding's ``message`` is reproduced verbatim under all of
+        them. A plugin that branches on ``ctx.path``, or interpolates
+        it into the message text, emits a finding reported at
+        ``a.shared`` whose wording talks about ``b.shared``. Derive
+        both the decision and the wording from the descriptors.
+
         Args:
             rule_id: Identifier stored on every emitted ``Finding``.
                 Should be unique within the checker for clean
@@ -188,9 +204,12 @@ class SchemaChecker:
     def register_message_rule(self, rule_id: str, plugin_fn: MessagePlugin) -> None:
         """Register an emit-style message-level plugin.
 
-        Fires once per message visited during traversal, before
-        descent into the message's fields. Same exception-safety
-        guarantee as ``register_field_rule``.
+        Fires once per ``(old, new)`` message type pair, before
+        descent into that pair's fields — not once per path the pair
+        appears at. Same exception-safety guarantee and the same
+        path-independence contract as ``register_field_rule``; see
+        there for what replaying findings across paths demands of the
+        plugin.
 
         Args:
             rule_id: Identifier stored on every emitted ``Finding``.
