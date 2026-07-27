@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from protokit.schema.lint._config import ResolvedLintConfig
+from protokit.schema.lint._config import LintSeverity, ResolvedLintConfig
 
 from .conftest import expect_invalid
 
@@ -194,6 +194,56 @@ class TestCustomPrefixExpansion:
                 "custom/audit-required__service",
             },
         )
+
+    def test_expansion_applies_to_non_off_severity_override(self) -> None:
+        """``[severities] "custom/X" = "warning"`` must reach every kind
+        of a multi-kind X, exactly as the ``"off"`` sentinel does.
+
+        Without expansion the engine's ``rule_severity_overrides.get(
+        spec.rule_id)`` lookup misses the ``__<kind>`` forms, so the
+        same bare key would silently retune only the first kind."""
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "custom_annotation_rules": [
+                    {
+                        "rule_suffix": "audit-required",
+                        "option": "example.audit_level",
+                        "element_kinds": ["method", "service"],
+                    },
+                ],
+                "severities": {"custom/audit-required": "warning"},
+            },
+            {},
+        )
+        assert dict(resolved.severities) == {
+            "custom/audit-required": LintSeverity.WARNING,
+            "custom/audit-required__service": LintSeverity.WARNING,
+        }
+
+    def test_explicit_mangled_severity_key_wins_over_expansion(self) -> None:
+        """A per-kind key stated alongside the bare family key keeps its
+        own severity — expansion must not clobber the more specific
+        entry regardless of table order."""
+        resolved = ResolvedLintConfig.from_dict(
+            {
+                "custom_annotation_rules": [
+                    {
+                        "rule_suffix": "audit-required",
+                        "option": "example.audit_level",
+                        "element_kinds": ["method", "service"],
+                    },
+                ],
+                "severities": {
+                    "custom/audit-required": "warning",
+                    "custom/audit-required__service": "info",
+                },
+            },
+            {},
+        )
+        assert dict(resolved.severities) == {
+            "custom/audit-required": LintSeverity.WARNING,
+            "custom/audit-required__service": LintSeverity.INFO,
+        }
 
 
 class TestIntraFromDictOrdering:

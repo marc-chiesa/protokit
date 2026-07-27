@@ -648,8 +648,12 @@ effective rule set.
 `[[custom_annotation_rules]]` entries, the bare form
 `disabled_rules = ["custom/<suffix>"]` suppresses every kind
 of `<suffix>` (multi-kind expansion at config-resolution).
-Per-kind disable still works via the explicit mangled form:
-`disabled_rules = ["custom/<suffix>__method"]`.
+The same expansion applies to `enabled_rules` and to
+`[tool.protokit.lint.severities]` keys, so
+`"custom/<suffix>" = "warning"` retunes every kind just as
+`= "off"` disables every kind. Per-kind targeting still works
+via the explicit mangled form (`"custom/<suffix>__method"`),
+which takes precedence over the bare family entry.
 
 **Escape hatch**: `--no-config` bypasses the entire pyproject
 table (profile, exclude, severities, custom_annotation_rules,
