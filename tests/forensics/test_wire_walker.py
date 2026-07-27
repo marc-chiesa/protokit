@@ -77,7 +77,10 @@ def test_undeclared_field_number_observed() -> None:
         (b"\x80", "truncated varint"),  # continuation bit set, no next byte
         (b"\xff" * 10, "varint exceeds 64 bits"),  # 10th byte's low bits > 1
         (b"\xff" * 9 + b"\x81", "varint exceeds 64 bits"),  # 10th byte continuation set
-        (b"\x80" * 11, "varint exceeds 64 bits"),  # > 10 bytes (consumed > max branch)
+        # A long all-continuation run still stops *at* the 10th byte — the reader
+        # never consumes an 11th, so this exits through the same `consumed == max`
+        # arm as the case above, not a separate `>` branch.
+        (b"\x80" * 11, "varint exceeds 64 bits"),
         (b"\x0a\x05ab", "length-delimited prefix exceeds"),  # declares 5, has 2
         (b"\x09\x00", "truncated fixed64"),  # wire type 1 needs 8 bytes
         (b"\x0d\x00", "truncated fixed32"),  # wire type 5 needs 4 bytes

@@ -70,7 +70,10 @@ def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
         ):
             # The 10th byte must be the last (continuation bit clear) and carry only
             # bit 63; otherwise the varint overflows 64 bits — a malformed encoding,
-            # not a truncated stream.
+            # not a truncated stream. The `consumed >` half is unreachable today (a
+            # 10th byte either raises here or returns below, so an 11th is never
+            # read) and is kept only as a belt should the loop's exits ever change —
+            # do not write a test claiming to cover it.
             raise WalkError("varint exceeds 64 bits (malformed)")
         result |= (byte & 0x7F) << shift
         if not byte & 0x80:
