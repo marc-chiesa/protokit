@@ -47,8 +47,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
-from google.protobuf.message import EncodeError, Message
+from google.protobuf.message import Message
 
+from protokit.storage._fidelity_probe import (
+    unmodeled_byte_delta as _unmodeled_byte_delta,
+)
 from protokit.storage.engine import ScanRecord, scan
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.source import FrameError, Source, StorageError
@@ -443,44 +446,6 @@ def _reject_recursive(descriptor: Descriptor) -> None:
     if is_wkt:
         raise UnsupportedWktError(descriptor.full_name, tuple(cycle))
     raise RecursiveSchemaError(descriptor.full_name, tuple(cycle))
-
-
-def _unmodeled_byte_delta(message: Message) -> int | None:
-    """Wire bytes ``message`` carried that its descriptor does not model.
-
-    The serialized-size difference between ``message`` and a copy with its
-    unknown-field set discarded — recursively, into submessages, repeated
-    elements, and map entries (``DiscardUnknownFields`` clears the whole tree). A
-    non-zero delta means the message carried wire data outside the descriptor: a
-    proto2 out-of-range closed-enum value (which the runtime relegates to the
-    unknown-field set) or an *undeclared* unknown/extension field. ``0`` means
-    the descriptor modeled every byte — including proto3 open-enum out-of-range
-    values, which are preserved as the field value, not relegated.
-
-    Returns ``None`` ("cannot measure") when the message is not fully
-    initialized: ``ByteSize`` raises ``EncodeError`` on a proto2 message missing
-    a required field. ptars itself rejects such a record during conversion, so
-    the probe defers rather than letting the error escape its own pre-pass.
-
-    The signal is a causally-linked proxy computed on the parsed message, not on
-    ptars's column output: the same out-of-range value the descriptor cannot
-    model is what both lands in the unknown-field set here and is surfaced by
-    ptars in the column, so a non-empty set is exactly the divergence condition.
-    A field the descriptor *does* model but ptars drops — a *declared* proto2
-    extension (read into ``Extensions[...]`` with an empty unknown set) or a
-    group field — is invisible to this probe; that is a documented non-goal.
-    """
-    try:
-        # Typed locals: protobuf ships no stubs, so ByteSize() is Any; annotate so
-        # mypy --strict (warn_return_any) sees an int subtraction, not Any.
-        before: int = message.ByteSize()
-        clone = type(message)()
-        clone.CopyFrom(message)
-        clone.DiscardUnknownFields()
-        after: int = clone.ByteSize()
-        return before - after
-    except EncodeError:
-        return None
 
 
 def _dropped_declared_extensions(

@@ -13,6 +13,30 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
+## Unreleased
+
+### Added
+- **`protokit forensics match` — schema-less single-message schema identification
+  (Phase 2, increment 1).** A new read-only `forensics` command namespace. Given
+  one serialized proto message that carries no co-located schema and a set of
+  candidate `.proto` (or `FileDescriptorSet`) versions, it ranks which version
+  most plausibly produced the message and reports an honest verdict —
+  `clean_winner`, `multiple_clean_matches`, or `no_clean_match` — never asserting
+  that a candidate *is* the schema. Fit combines parse outcome, the modeled-byte
+  fraction (`1 − unmodeled / total`), and declared-field coverage, so an exact
+  producer outranks a superset that also models every byte. Each candidate
+  resolves to its own isolated descriptor pool. `--format human | json` (the JSON
+  carries a `schema_version`); `--max-message-bytes` caps the input before it is
+  read; `--max-residual-bytes` and `--tie-margin` tune the verdict. New public
+  API `protokit.forensics.match` with `Candidate` / `CandidateFit` /
+  `MatchReport`, and a `ForensicsError` / `MessageTooLargeError` family.
+
+### Changed
+- **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
+  (`protokit.storage._fidelity_probe.unmodeled_byte_delta`) so both the columnar
+  sink and `forensics match` import one named function. Behavior-preserving —
+  `protokit.storage._columnar._unmodeled_byte_delta` still resolves it.
+
 ## 0.14.0 — 2026-06-24
 
 ### Added
