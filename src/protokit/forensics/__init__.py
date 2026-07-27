@@ -18,6 +18,7 @@ Public surface:
 
 from __future__ import annotations
 
+from protokit.forensics._drift import DriftReport, FieldDivergence, drift
 from protokit.forensics._errors import (
     CandidateSpecError,
     ForensicsError,
@@ -31,15 +32,20 @@ from protokit.forensics._match import (
     Verdict,
     match,
 )
+from protokit.forensics._wire import WalkError
 
 __all__ = [
     "Candidate",
     "CandidateFit",
     "CandidateSpecError",
+    "DriftReport",
+    "FieldDivergence",
     "ForensicsError",
     "MatchReport",
     "MessageTooLargeError",
     "ParseTier",
     "Verdict",
+    "WalkError",
+    "drift",
     "match",
 ]

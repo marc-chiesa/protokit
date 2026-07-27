@@ -30,6 +30,18 @@ All notable changes to `protokit` are documented here. Format loosely follows
   read; `--max-residual-bytes` and `--tie-margin` tune the verdict. New public
   API `protokit.forensics.match` with `Candidate` / `CandidateFit` /
   `MatchReport`, and a `ForensicsError` / `MessageTooLargeError` family.
+- **`protokit forensics drift` + a schema-less wire-format field walker (Phase 2,
+  increment 2).** A net-new walker decodes the top-level `(field_number,
+  wire_type)` observations from raw, untrusted message bytes with no descriptor —
+  rejecting an over-long varint or a length prefix past the buffer, flagging
+  groups without recursing, and capping work to the top level. `forensics drift`
+  reconciles those observations against one chosen candidate schema and reports
+  per-field divergences: an undeclared tag, a wire-type mismatch on a declared
+  field (a packable repeated scalar accepts both packed and unpacked), a reserved
+  tag in use, or a proto2 declared `required` field absent. A populated declared
+  proto2 extension counts as declared. The same reconciliation powers a `match`
+  tie-break that re-orders a near-tied top group by per-field wire compatibility.
+  New public API `protokit.forensics.drift` with `DriftReport` / `FieldDivergence`.
 
 ### Changed
 - **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
