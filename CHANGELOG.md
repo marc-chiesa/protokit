@@ -42,6 +42,25 @@ All notable changes to `protokit` are documented here. Format loosely follows
   proto2 extension counts as declared. The same reconciliation powers a `match`
   tie-break that re-orders a near-tied top group by per-field wire compatibility.
   New public API `protokit.forensics.drift` with `DriftReport` / `FieldDivergence`.
+- **New built-in compat rule `enum_value_number_changed` (WIRE / BOTH),
+  bringing the built-in set to 18.** An enum value that keeps its name but is
+  assigned a new number fell through every existing enum rule — the two
+  name-matched rules see the name on both sides, and `enum_number_reused` is
+  number-keyed so it needs the number present on both sides. `E {A = 1}` →
+  `E {A = 2}` was therefore reported fully compatible while being a
+  bidirectional wire break: old bytes carrying `1` name nothing under the new
+  schema, and new producers emit `2` the old schema cannot name. The rule
+  compares each surviving name against its set of numbers, so `allow_alias`
+  enums only fire when a name's own number genuinely moved.
+
+### Changed — BREAKING
+- **Enum renumbers now fail `protokit compat` at every profile.** Schema pairs
+  that renumber an enum value under an unchanged name previously reported
+  `COMPATIBLE` with zero findings; they now emit an `enum_value_number_changed`
+  WIRE / BOTH finding, so `compat` exits non-zero even under the narrowest
+  `WIRE` profile. This is a true-positive that was always missing — but CI
+  pipelines pinned to the old behaviour will start failing. Suppress per path
+  with `SchemaChecker.ignore(...)` if a renumber is deliberate.
 
 ### Changed
 - **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**

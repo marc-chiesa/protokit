@@ -1,4 +1,4 @@
-"""Tests for the 17 built-in compatibility rules."""
+"""Tests for the 18 built-in compatibility rules."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from protokit.schema.rules import (
     _wire_compatible,
     enum_number_reused,
     enum_value_added,
+    enum_value_number_changed,
     enum_value_removed,
     field_added,
     field_number_changed,
@@ -89,7 +90,7 @@ class TestWireCompatible:
 
 class TestRegistries:
     def test_total_rule_count(self) -> None:
-        assert len(FIELD_RULES) + len(ENUM_RULES) + len(MESSAGE_RULES) == 17
+        assert len(FIELD_RULES) + len(ENUM_RULES) + len(MESSAGE_RULES) == 18
 
     def test_unique_rule_ids(self) -> None:
         ids = (
@@ -250,7 +251,7 @@ class TestFieldTypeNameChanged:
         assert field_type_name_changed(old_fd, new_fd, ROOT) == []
 
     def test_enum_registry_count(self) -> None:
-        assert len(ENUM_RULES) == 3
+        assert len(ENUM_RULES) == 4
 
     def test_message_registry_count(self) -> None:
         assert len(MESSAGE_RULES) == 1
@@ -887,6 +888,94 @@ class TestEnumNumberReused:
         old_e = old_pool.FindEnumTypeByName("t.E")
         new_e = new_pool.FindEnumTypeByName("t.E")
         assert enum_number_reused(old_e, new_e, ROOT) == []
+
+
+class TestEnumValueNumberChanged:
+    def test_fires_when_surviving_name_is_renumbered(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"ZERO": 0, "A": 1, "B": 3})
+        build_enum(new_pool, "t.E", {"ZERO": 0, "A": 2, "B": 3})
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        findings = enum_value_number_changed(old_e, new_e, ROOT)
+        assert len(findings) == 1
+        # Old bytes carrying 1 name nothing under the new schema and
+        # new producers emit 2, which the old schema can't name.
+        assert findings[0].severity is Severity.WIRE
+        assert findings[0].direction is Direction.BOTH
+        assert "'A'" in findings[0].message
+        assert "1" in findings[0].message
+        assert "2" in findings[0].message
+        assert findings[0].old_descriptor.number == 1
+        assert findings[0].new_descriptor.number == 2
+
+    def test_silent_when_identical(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"A": 0, "B": 1})
+        build_enum(new_pool, "t.E", {"A": 0, "B": 1})
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_silent_for_rename_at_the_same_number(self) -> None:
+        # B -> C at number 1 is a removal + an addition (and a number
+        # reuse) — no surviving name moved, so this rule stays out.
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"A": 0, "B": 1})
+        build_enum(new_pool, "t.E", {"A": 0, "C": 1})
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_alias_pair_silent_when_numbers_unchanged(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(
+            old_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        build_enum(
+            new_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_alias_sibling_added_at_same_number_silent(self) -> None:
+        # ALIAS joining number 1 doesn't move A — enum_number_reused
+        # and enum_value_added own that change, not this rule.
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"ZERO": 0, "A": 1})
+        build_enum(
+            new_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_alias_pair_renumbered_fires_once_per_name(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(
+            old_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        build_enum(
+            new_pool, "t.E", {"ZERO": 0, "A": 2, "ALIAS": 2}, allow_alias=True,
+        )
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        findings = enum_value_number_changed(old_e, new_e, ROOT)
+        assert {f.old_descriptor.name for f in findings} == {"A", "ALIAS"}
+
+    def test_silent_when_either_side_missing(self) -> None:
+        pool = descriptor_pool.DescriptorPool()
+        build_enum(pool, "t.E", {"A": 0})
+        e = pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(None, e, ROOT) == []
+        assert enum_value_number_changed(e, None, ROOT) == []
 
 
 # ---------------------------------------------------------------------------

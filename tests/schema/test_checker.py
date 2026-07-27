@@ -299,6 +299,52 @@ class TestEnumViaField:
         assert f.path == FieldPath.parse("color")
         assert "BLUE" in f.message
 
+    def test_enum_value_renumbered_is_a_wire_break(self) -> None:
+        # A renumber under an unchanged name slips past every
+        # name-matched rule (removed/added) and past
+        # enum_number_reused (which needs the number on BOTH
+        # sides) — it must still surface as a WIRE break.
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.E", {"ZERO": 0, "A": 1, "B": 3})
+        build_enum(new, "t.E", {"ZERO": 0, "A": 2, "B": 3})
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.M", fields=[
+                {"name": "e", "number": 1, "type": T.TYPE_ENUM, "type_name": "t.E"},
+            ], file_name=f"renum_{label}.proto")
+        report = check_compatibility(
+            old, "t.M", new, "t.M", level=CompatibilityLevel.WIRE,
+        )
+        assert not report.is_compatible
+        f = next(
+            f for f in report.findings
+            if f.rule_id == "enum_value_number_changed"
+        )
+        assert f.severity is Severity.WIRE
+        assert f.direction is Direction.BOTH
+        assert f.path == FieldPath.parse("e")
+        assert "A" in f.message
+
+    def test_number_swap_emits_reuse_before_renumber(self) -> None:
+        # Pins the ENUM_RULES tuple position: registry order is emit
+        # order, and enum_value_number_changed is registered last so a
+        # swap reports the number-keyed view before the name-keyed one.
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.E", {"ZERO": 0, "A": 1, "B": 2})
+        build_enum(new, "t.E", {"ZERO": 0, "A": 2, "B": 1})
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.M", fields=[
+                {"name": "e", "number": 1, "type": T.TYPE_ENUM, "type_name": "t.E"},
+            ], file_name=f"swap_{label}.proto")
+        report = check_compatibility(
+            old, "t.M", new, "t.M", level=CompatibilityLevel.WIRE,
+        )
+        assert [f.rule_id for f in report.findings] == [
+            "enum_number_reused", "enum_number_reused",
+            "enum_value_number_changed", "enum_value_number_changed",
+        ]
+
     def test_enum_in_nested_message(self) -> None:
         old = descriptor_pool.DescriptorPool()
         new = descriptor_pool.DescriptorPool()

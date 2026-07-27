@@ -116,7 +116,7 @@ class SchemaChecker:
                 ``CompatibilityLevel.STRICT`` which surfaces every
                 finding. Can be reassigned later via the ``level``
                 attribute.
-            include_builtin: When True (default), the 17 built-in
+            include_builtin: When True (default), the 18 built-in
                 rules from ``protokit.schema.rules`` are pre-registered.
                 Pass False to start with an empty rule set — useful
                 when you want only custom rules to fire.
