@@ -80,6 +80,9 @@ BUILTIN_RULE_DESCRIPTIONS: dict[str, str] = {
         "Enum value added; old consumer sees unknown number."
     ),
     "enum_number_reused": "Enum number now binds a different name.",
+    "enum_value_number_changed": (
+        "Enum value kept its name but moved to a different number."
+    ),
     "reserved_field_reused": "Reserved number/name reused.",
 }
 

@@ -894,6 +894,74 @@ def enum_number_reused(
     return findings
 
 
+def enum_value_number_changed(
+    old_enum: proto_descriptor.EnumDescriptor | None,
+    new_enum: proto_descriptor.EnumDescriptor | None,
+    path: FieldPath,
+) -> list[Finding]:
+    """Detect an enum value that kept its name but changed its number.
+
+    Severity WIRE, direction BOTH. Enum values travel on the wire as
+    their number, so a renumber breaks both readers at once: old bytes
+    carrying the previous number decode to no name under the new
+    schema, and new producers emit a number the old schema cannot
+    name. Neither name-matched sibling fires (the name survives on
+    both sides), and ``enum_number_reused`` is number-keyed so it
+    stays silent whenever the old number is absent from the new
+    schema — this rule closes that gap.
+
+    Values are grouped name -> number *set* rather than name -> single
+    number so aliasing stays quiet: under ``allow_alias`` several
+    names share one number, and comparing per surviving name means an
+    alias fires only when its own number moved, never because a
+    sibling name appeared at or vanished from the same number. Names
+    present on only one side belong to ``enum_value_removed`` /
+    ``enum_value_added``.
+
+    Args:
+        old_enum: Old-side ``EnumDescriptor`` (must be present).
+        new_enum: New-side ``EnumDescriptor`` (must be present).
+        path: Dotted ``FieldPath`` to the field that uses this enum.
+
+    Returns:
+        One finding per surviving name whose number changed, in
+        old-side declaration order. Empty list when every surviving
+        name kept its number or when either side is missing.
+    """
+    if old_enum is None or new_enum is None:
+        return []
+    old_values_by_name: dict[str, list[proto_descriptor.EnumValueDescriptor]] = {}
+    for v in old_enum.values:
+        old_values_by_name.setdefault(v.name, []).append(v)
+    new_values_by_name: dict[str, list[proto_descriptor.EnumValueDescriptor]] = {}
+    for v in new_enum.values:
+        new_values_by_name.setdefault(v.name, []).append(v)
+
+    findings: list[Finding] = []
+    for name, old_vs in old_values_by_name.items():
+        new_vs = new_values_by_name.get(name)
+        if new_vs is None:
+            continue
+        old_numbers = sorted({v.number for v in old_vs})
+        new_numbers = sorted({v.number for v in new_vs})
+        if old_numbers == new_numbers:
+            continue
+        findings.append(Finding(
+            path=path,
+            rule_id="enum_value_number_changed",
+            severity=Severity.WIRE,
+            direction=Direction.BOTH,
+            message=(
+                f"enum value '{name}' number changed from "
+                f"{', '.join(str(n) for n in old_numbers)} to "
+                f"{', '.join(str(n) for n in new_numbers)}"
+            ),
+            old_descriptor=old_vs[0],
+            new_descriptor=new_vs[0],
+        ))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Message-level rules
 # ---------------------------------------------------------------------------
@@ -1083,10 +1151,22 @@ FIELD_RULES: tuple[tuple[str, FieldRuleFn], ...] = (
     ("presence_changed", presence_changed),
 )
 
+# Registry order is emit order: ``SchemaChecker`` iterates each list in
+# registration order and ``CompatibilityReport.findings`` preserves it,
+# so tuple position is load-bearing wherever two rules co-fire (see
+# docs/solutions/logic-errors/rules-tuple-insertion-order-load-bearing-engine-dispatch-2026-05-19.md
+# for the same property on the lint side).
 ENUM_RULES: tuple[tuple[str, EnumRuleFn], ...] = (
     ("enum_value_removed", enum_value_removed),
     ("enum_value_added", enum_value_added),
     ("enum_number_reused", enum_number_reused),
+    # Appended LAST deliberately: a number swap co-fires this with
+    # enum_number_reused, and appending is the only position that
+    # cannot reorder the three pre-existing rules relative to each
+    # other. It also reads top-down as membership -> number reuse ->
+    # renumber, narrowing from "which names changed" to "which name
+    # moved".
+    ("enum_value_number_changed", enum_value_number_changed),
 )
 
 MESSAGE_RULES: tuple[tuple[str, MessageRuleFn], ...] = (

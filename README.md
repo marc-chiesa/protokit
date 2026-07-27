@@ -4,7 +4,7 @@ Python toolkit for Protocol Buffers — four pillars: message diffing, schema co
 
 `protokit diff` — structural, filterable message diffs with cross-descriptor-pool comparison, schema evolution detection, and a pytest hook.
 
-`protokit compat` — descriptor-level schema compatibility checks with 17 built-in rules, four profiles, and a pluggable rule API.
+`protokit compat` — descriptor-level schema compatibility checks with 18 built-in rules, four profiles, and a pluggable rule API.
 
 `protokit lint` — descriptor-level linting with full **buf BASIC parity** (26/26 rules), AIP-122 naming, a `[tool.protokit.lint]` pyproject table, and pluggable rule packs.
 
@@ -302,6 +302,7 @@ Four profiles control which findings surface. Each is a pair of filters: a sever
 | `enum_value_removed`       | SEMANTIC | FORWARD  | Enum value deleted — new consumer sees unknown number in old data. |
 | `enum_value_added`         | SEMANTIC | BACKWARD | Enum value added — old consumer sees unknown number in new data. |
 | `enum_number_reused`       | WIRE     | BOTH     | Enum number now binds a different name. |
+| `enum_value_number_changed` | WIRE    | BOTH     | Same enum value name, different number — old bytes decode to no name, new bytes to an unknown one. |
 | `reserved_field_reused`    | WIRE / SEMANTIC | BOTH | Reserved number reused → WIRE; reserved name reused → SEMANTIC. |
 
 > **Note:** Directions indicate **which reader is at risk**, not which side

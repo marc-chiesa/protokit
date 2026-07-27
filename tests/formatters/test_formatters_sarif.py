@@ -98,7 +98,7 @@ class TestSeverityMapping:
 
 
 class TestRuleCatalog:
-    def test_all_17_builtin_rules_have_descriptions(self) -> None:
+    def test_all_18_builtin_rules_have_descriptions(self) -> None:
         # Sanity check that the catalog covers every rule_id the
         # built-in checker can emit. If a new rule lands without
         # an entry it falls back to a generic "Custom rule" stub —
@@ -110,7 +110,8 @@ class TestRuleCatalog:
             "map_to_repeated", "oneof_membership_changed",
             "oneof_field_added", "required_field_added", "options_changed",
             "presence_changed", "enum_value_removed", "enum_value_added",
-            "enum_number_reused", "reserved_field_reused",
+            "enum_number_reused", "enum_value_number_changed",
+            "reserved_field_reused",
         }
         assert expected.issubset(BUILTIN_RULE_DESCRIPTIONS.keys())
 
