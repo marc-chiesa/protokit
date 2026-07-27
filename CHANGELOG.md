@@ -45,7 +45,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ### Security
 - **Path traversal in the git-ref `.proto` extractor (`protokit compat`).**
-  *Severity: high. Affects: all released versions through 0.14.0 that expose
+  *Found by an internal code audit, not a user report. No exploitation is known
+  and no affected user has been identified — protokit is pre-1.0 with no known
+  production deployment of the `compat ci` flow. Documented here rather than as
+  a published advisory for that reason. The flaw was present in all released
+  versions through 0.14.0 that expose
   `protokit compat check | ci | history | bisect`.*
 
   When protokit extracted a `.proto` import tree from a git ref, it composed the
@@ -58,10 +62,13 @@ All notable changes to `protokit` are documented here. Format loosely follows
   the ref. Only the package identifier written *into* the stub was sanitised;
   the write *location* was not.
 
-  *Impact:* file destruction/overwrite, not code execution — the compiler is
-  never pointed at the escaped path. *Exploitable via:* the documented
+  *Impact:* file destruction/overwrite within the invoking user's own
+  permissions, not code execution or privilege escalation — the compiler is
+  never pointed at the escaped path, and the written content is either a fixed
+  stub or the ref's own bytes. *Reachable via:* the documented
   `protokit compat ci` fork-PR flow, where the compared ref is untrusted by
-  design. *Fixed by:* a single containment helper
+  design; a purely local `compat check` against your own refs was never at
+  risk. *Fixed by:* a single containment helper
   (`protokit.schema.git._safe_dest_path`) that both write sites must go through;
   it rejects absolute paths, `..` segments, and anything resolving outside the
   extraction directory. A repo-tracked proto import can never legitimately be
