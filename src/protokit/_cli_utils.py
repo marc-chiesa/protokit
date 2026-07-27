@@ -763,6 +763,86 @@ def reject_quiet_plus_structured(
         )
 
 
+#: Translation table that maps every ASCII control character
+#: (``0x00``–``0x1f`` plus ``0x7f`` DEL) to a single space. Used by
+#: :func:`_safe_for_stderr` so attacker-controlled strings flowing into
+#: per-line ``click.echo`` output can never:
+#:
+#: - Forge a fake error line via embedded ``\n`` / ``\r`` (the original
+#:   ``module-name-newline-injection-stderr-forge-2026-05-07.md`` concern).
+#: - Truncate the stderr line via embedded ``\x00`` (NUL terminates
+#:   strings in syslog / many log-ingestion pipelines).
+#: - Smuggle ANSI escape sequences via embedded ``\x1b`` (terminal
+#:   color/cursor injection that can obscure the stable error prefix
+#:   CI scripts grep for).
+#:
+#: Built once at module-load time (cheap; lazy import via ``str.translate``).
+#:
+#: Lives here, in the shared CLI-utils module, rather than in the lint
+#: subpackage where it was introduced: BOTH prefix families (compat's
+#: ``Error:`` and lint's ``error[lint-CODE]:``) need it, and
+#: ``protokit.schema.lint._cli_utils`` already imports upward from this
+#: module, so the reverse import would be circular. The lint module
+#: re-exports both names for source compatibility.
+_CONTROL_CHAR_TABLE: dict[int, int] = {
+    codepoint: ord(" ") for codepoint in range(0x20)
+}
+_CONTROL_CHAR_TABLE[0x7F] = ord(" ")
+# Unicode line-terminator codepoints beyond ASCII. The terminal does
+# not treat these as line breaks, but log aggregators (Datadog,
+# Splunk, CloudWatch Logs) split records on them per Unicode's
+# line-terminator rules — a crafted message containing one of these
+# can inject a fake aggregator record beginning with a forged
+# stable prefix even though the on-disk stderr output looks like a
+# single line. The widening matches the spirit of the original
+# ``module-name-newline-injection-stderr-forge-2026-05-07`` defense
+# applied to Unicode-defined breaks.
+_CONTROL_CHAR_TABLE[0x85] = ord(" ")  # U+0085 NEXT LINE (NEL)
+_CONTROL_CHAR_TABLE[0x2028] = ord(" ")  # U+2028 LINE SEPARATOR
+_CONTROL_CHAR_TABLE[0x2029] = ord(" ")  # U+2029 PARAGRAPH SEPARATOR
+
+
+def _safe_for_stderr(value: object) -> str:
+    """Collapse all line-break / control characters in a stringified value to spaces.
+
+    Defense-in-depth against attacker-controlled strings flowing into
+    single-line ``click.echo(..., err=True)`` output. Paths, exception
+    messages, module names, and any other stringified field that may
+    include user-controlled bytes is passed through this helper before
+    being interpolated into stderr error messages.
+
+    Sanitization scope (extended beyond the original
+    ``module-name-newline-injection-stderr-forge-2026-05-07.md`` rule):
+
+    - Newlines (``\\n``, ``\\r``) — prevent forged error-line injection.
+    - Null bytes (``\\x00``) — prevent stderr-line truncation in syslog
+      and log-ingestion pipelines that treat NUL as string terminator.
+    - ANSI escape sequences (``\\x1b...``) — prevent terminal color/cursor
+      injection that can obscure stable error prefixes for CI grep.
+    - Other ASCII control characters (``\\t``, ``\\b``, etc.) — same
+      defense-in-depth reasoning.
+    - Unicode line terminators (``U+0085`` NEL, ``U+2028`` LSEP,
+      ``U+2029`` PSEP) — terminals do not break on these but Unicode-
+      aware log aggregators do, so a message containing one of these
+      can inject a fake aggregator record beginning with a forged
+      stable-prefix line.
+
+    Deliberately kept SEPARATE from :func:`_scrub_exc_message`, which
+    redacts ``OSError`` filenames. The two are independent layers with
+    different inputs: this one takes any stringified value, that one
+    takes an exception. Emission sites that surface an exception need
+    BOTH, composed as ``_safe_for_stderr(_scrub_exc_message(exc))`` —
+    folding the translate into the scrubber would make one of the two
+    calls at the composed sites silently redundant and would leave
+    non-exception slots (paths, module names, rule ids) uncovered.
+
+    Single source of truth for stderr-safe stringification across the
+    package; ``protokit.schema.lint._cli_utils._safe_module_name`` is a
+    thin wrapper that extracts ``module.__name__`` first.
+    """
+    return str(value).translate(_CONTROL_CHAR_TABLE)
+
+
 def _scrub_exc_message(exc: BaseException) -> str:
     """Return a safe ``str(exc)`` for error-path surfacing.
 
@@ -840,9 +920,14 @@ def run_formatter_safely(
         )
         raise SystemExit(2) from None  # backstop: error_exit_fn contract is NoReturn
     except Exception as exc:
+        # Two independent layers, both required: ``_scrub_exc_message``
+        # redacts OSError filenames, ``_safe_for_stderr`` collapses the
+        # control characters that would otherwise let the message forge
+        # its own ``Error:``-prefixed stderr line (or split a log
+        # aggregator record via U+2028).
         error_exit_fn(
             f"formatter '{name}' raised {type(exc).__name__}: "
-            f"{_scrub_exc_message(exc)}"
+            f"{_safe_for_stderr(_scrub_exc_message(exc))}"
         )
         raise SystemExit(2) from None  # backstop: error_exit_fn contract is NoReturn
     leaked = buffer.getvalue()

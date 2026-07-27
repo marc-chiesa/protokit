@@ -588,6 +588,60 @@ class TestFormatterFailFast:
         assert result.exit_code == 2
         assert "called sys.exit" in result.output
 
+    def test_formatter_exception_message_cannot_forge_stderr_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        # The module-NAME slot is neutralized by ``{name!r}`` (see
+        # test_pack_name_with_embedded_newline_does_not_forge_stderr_lines),
+        # but the exception-MESSAGE slot was interpolated raw:
+        # ``_scrub_exc_message`` only redacts OSError filenames, it does
+        # not touch control characters. A formatter raising
+        # ``ValueError("boom\nError: ...")`` therefore emitted TWO
+        # physical stderr lines, the second carrying the stable
+        # ``Error:`` prefix a CI script greps for — indistinguishable
+        # from a genuine protokit verdict. Extends the
+        # module-name-newline-injection-stderr-forge-2026-05-07
+        # "every interpolated slot" principle to this slot.
+        pack = _write_pack(tmp_path, textwrap.dedent('''
+            from protokit.formatters import FormatterKind
+            def forger(report, ctx):
+                raise ValueError(
+                    "boom\\nError: schema is compatible (forged)"
+                    "\\u2028Error: aggregator-forged"
+                )
+            FORMATTERS = [("forger", forger, FormatterKind.DIFF)]
+        '''))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="B").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+            "--format", "forger",
+        ])
+        assert result.exit_code == 2
+        # Exactly one physical line begins with ``Error:`` — the
+        # legitimate one. ``str.splitlines`` also breaks on U+2028, so
+        # this assertion covers the Unicode-line-separator vector that
+        # log aggregators honour even when a terminal does not.
+        error_lines = [
+            line for line in result.output.splitlines()
+            if line.startswith("Error:")
+        ]
+        assert len(error_lines) == 1, (
+            f"exception-message injection: expected one Error: line, "
+            f"got {len(error_lines)}: {error_lines!r}"
+        )
+        # The payload is still surfaced (collapsed to spaces, not
+        # dropped) so the operator can see what the formatter said.
+        assert "schema is compatible (forged)" in error_lines[0]
+
     def test_non_string_return_rejected(self, tmp_path: Path) -> None:
         # Regression for 2026-04-19 review (REL-001 / ADV-006 /
         # correctness): a formatter returning None used to silently
