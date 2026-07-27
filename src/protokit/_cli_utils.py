@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import importlib
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -69,15 +70,24 @@ def _protoc_timeout_seconds() -> float:
     """Return the configured protoc subprocess timeout in seconds.
 
     Reads ``PROTOKIT_PROTOC_TIMEOUT`` from the environment; falls back
-    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset or unparseable.
+    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset, unparseable,
+    or not a usable duration. The override is meant to raise or lower
+    the ceiling, never to remove it: ``float`` happily accepts ``0``,
+    ``-1``, ``nan`` and ``inf``, and passing those to
+    ``subprocess.run`` would respectively kill every compile
+    instantly or restore the indefinite hang the ceiling exists to
+    prevent.
     """
     raw = os.environ.get("PROTOKIT_PROTOC_TIMEOUT")
     if raw is None:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
     try:
-        return float(raw)
+        parsed = float(raw)
     except ValueError:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    if not math.isfinite(parsed) or parsed <= 0:
+        return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    return parsed
 
 
 # Sentinel file used to validate a candidate WKT include directory.

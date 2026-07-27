@@ -62,6 +62,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `protokit.formatters.ReservedFormatterNameError` (a `FormatterError`
   subclass) makes the two cases type-distinguishable; `except FormatterError`
   still catches both.
+- **`PROTOKIT_PROTOC_TIMEOUT` can no longer disable the protoc timeout
+  ceiling.** Only a finite, positive value is honoured; `0`, a negative
+  number, `nan` and `inf` now fall back to the 60s default instead of killing
+  every compile instantly (`<= 0`) or restoring the indefinite hang the
+  ceiling exists to prevent (`nan`/`inf`).
 
 ## 0.14.0 — 2026-06-24
 

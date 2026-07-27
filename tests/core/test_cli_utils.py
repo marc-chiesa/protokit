@@ -576,3 +576,41 @@ class TestWktIncludePathDiscovery:
         argv = captured[0]
         i_targets = [argv[idx + 1] for idx, tok in enumerate(argv) if tok == "-I"]
         assert i_targets.count(str(fake_wkt)) == 1
+
+
+class TestProtocTimeoutEnvOverride:
+    """``PROTOKIT_PROTOC_TIMEOUT`` must not be able to remove the ceiling.
+
+    The env var exists to raise or lower a bound on protoc's runtime, so
+    values that are not a usable duration — zero, negative, NaN, inf —
+    fall back to the default rather than being handed to
+    ``subprocess.run``, where they would either kill every compile
+    instantly (<= 0) or restore the indefinite hang the ceiling exists
+    to prevent (NaN/inf).
+    """
+
+    @pytest.mark.parametrize("raw", ["30", "0.5", "120.0", " 45 "])
+    def test_usable_values_are_honoured(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str,
+    ) -> None:
+        monkeypatch.setenv("PROTOKIT_PROTOC_TIMEOUT", raw)
+        assert _cli_utils._protoc_timeout_seconds() == float(raw)
+
+    @pytest.mark.parametrize(
+        "raw", ["0", "0.0", "-1", "-0.5", "nan", "inf", "-inf", "abc", ""],
+    )
+    def test_unusable_values_fall_back_to_the_default(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str,
+    ) -> None:
+        monkeypatch.setenv("PROTOKIT_PROTOC_TIMEOUT", raw)
+        assert (
+            _cli_utils._protoc_timeout_seconds()
+            == _cli_utils._PROTOC_TIMEOUT_SECONDS_DEFAULT
+        )
+
+    def test_unset_uses_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PROTOKIT_PROTOC_TIMEOUT", raising=False)
+        assert (
+            _cli_utils._protoc_timeout_seconds()
+            == _cli_utils._PROTOC_TIMEOUT_SECONDS_DEFAULT
+        )
