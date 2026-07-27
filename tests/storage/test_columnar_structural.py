@@ -95,3 +95,90 @@ def test_forward_defensive_columnized_extension_not_reported():
     desc = _desc(_base_with_extensions([("ext_val", 100)]))
     # simulate a future ptars that emitted an "ext_val" column (not a field):
     assert _dropped_declared_extensions(desc, ["id", "ext_val"]) == ()
+
+
+# --- reachable nested message types, not just the bound root -----------------
+#
+# ptars columnizes the whole reachable message graph, so an extension declared on
+# any reachable NESTED type is dropped exactly like a root one. This is the
+# GTFS-RT / NYCT shape: the extension extends a nested type (TripDescriptor), not
+# the bound root (FeedMessage).
+
+
+def _nested_fdp(
+    *,
+    ext_on_inner: bool = True,
+    ext_on_outer: bool = False,
+    unreachable_extendee: bool = False,
+) -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``Outer { optional Inner inner = 1; }`` over
+    ``Inner { optional int32 k = 1; extensions 100 to 200; }``, plus optional
+    extensions on ``Inner`` / ``Outer`` / an unreachable ``Orphan``."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="n.proto", syntax="proto2", package="n")
+    inner = fdp.message_type.add()
+    inner.name = "Inner"
+    k = inner.field.add()
+    k.name, k.number, k.type, k.label = "k", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    inner.extension_range.add(start=100, end=201)
+    outer = fdp.message_type.add()
+    outer.name = "Outer"
+    nf = outer.field.add()
+    nf.name, nf.number, nf.type, nf.label = "inner", 1, F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    nf.type_name = ".n.Inner"
+    outer.extension_range.add(start=100, end=201)
+    orphan = fdp.message_type.add()  # never referenced from Outer
+    orphan.name = "Orphan"
+    orphan.extension_range.add(start=100, end=201)
+    specs = []
+    if ext_on_inner:
+        specs.append(("inner_ext", 100, ".n.Inner"))
+    if ext_on_outer:
+        specs.append(("outer_ext", 100, ".n.Outer"))
+    if unreachable_extendee:
+        specs.append(("orphan_ext", 100, ".n.Orphan"))
+    for name, number, extendee in specs:
+        ext = fdp.extension.add()
+        ext.name, ext.number, ext.type = name, number, F.TYPE_INT32
+        ext.label, ext.extendee = F.LABEL_OPTIONAL, extendee
+    return fdp
+
+
+def test_extension_on_reachable_nested_type_reported():
+    """The bound root declares no extension, but a reachable nested type does —
+    ptars drops it just the same, so the oracle must report it."""
+    desc = _desc(_nested_fdp(), "Outer")
+    assert _dropped_declared_extensions(desc, ["inner"]) == ("n.inner_ext",)
+
+
+def test_root_and_nested_extensions_both_reported():
+    desc = _desc(_nested_fdp(ext_on_outer=True), "Outer")
+    assert set(_dropped_declared_extensions(desc, ["inner"])) == {"n.inner_ext", "n.outer_ext"}
+
+
+def test_unreachable_message_type_extensions_not_reported():
+    """Only the graph ptars actually columnizes is inspected: an extension on a
+    type unreachable from the bound root is not this conversion's loss."""
+    desc = _desc(_nested_fdp(unreachable_extendee=True), "Outer")
+    assert _dropped_declared_extensions(desc, ["inner"]) == ("n.inner_ext",)
+
+
+def test_nested_extension_reported_once_when_type_reachable_twice():
+    """A DAG diamond (the same nested type reached by two paths) must not
+    double-report its extension — the walk is identity-deduplicated."""
+    fdp = _nested_fdp()
+    outer = next(m for m in fdp.message_type if m.name == "Outer")
+    second = outer.field.add()
+    second.name, second.number = "also_inner", 2
+    second.type, second.label = F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    second.type_name = ".n.Inner"
+    desc = _desc(fdp, "Outer")
+    assert _dropped_declared_extensions(desc, ["inner", "also_inner"]) == ("n.inner_ext",)
+
+
+def test_nested_extension_not_suppressed_by_a_top_level_column():
+    """The Arrow-side match stays NON-recursive (a deliberate anti-requirement):
+    the produced-column check applies to root extensions only. A nested
+    extension's column could only ever live inside the nested struct, so a
+    same-named TOP-LEVEL column must not suppress it."""
+    desc = _desc(_nested_fdp(), "Outer")
+    assert _dropped_declared_extensions(desc, ["inner", "inner_ext"]) == ("n.inner_ext",)

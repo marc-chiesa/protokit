@@ -261,7 +261,7 @@ class FidelityError(StorageError):
         parts: list[str] = []
         if dropped_extensions:
             parts.append(
-                f"the descriptor declares {len(dropped_extensions)} extension(s) "
+                f"the message graph declares {len(dropped_extensions)} extension(s) "
                 f"ptars drops from the Arrow schema ({', '.join(dropped_extensions)})"
             )
         if unmodeled_records:
@@ -293,10 +293,12 @@ class FidelityReport:
     ``True`` and both signals are real — check ``measured`` before reading them.
 
     ``dropped_extensions`` is the *structural* signal: the fully-qualified names
-    of declared proto2 extensions ptars dropped from the Arrow schema. This is a
-    loss class the per-record probe is blind to — a declared extension reads into
-    ``Extensions[...]`` with an empty unknown-field set, so its byte delta is
-    ``0`` — and it is computed once per conversion, independent of record count.
+    of declared proto2 extensions ptars dropped from the Arrow schema — on the
+    bound type or on any message type reachable from it, since ptars columnizes
+    the whole reachable graph. This is a loss class the per-record probe is blind
+    to — a declared extension reads into ``Extensions[...]`` with an empty
+    unknown-field set, so its byte delta is ``0`` — and it is computed once per
+    conversion, independent of record count.
 
     Attributes:
         rows: records written to the output.
@@ -448,6 +450,32 @@ def _reject_recursive(descriptor: Descriptor) -> None:
     raise RecursiveSchemaError(descriptor.full_name, tuple(cycle))
 
 
+def _reachable_message_types(descriptor: Descriptor) -> list[Descriptor]:
+    """Every message type ptars columnizes for ``descriptor``, root first.
+
+    The same reachable graph :func:`_find_recursive_cycle` walks — each
+    message-/group-typed field descended into, map entries included as ordinary
+    nodes — deduplicated by full name so a DAG diamond is visited once. Iterative,
+    like the cycle walk, and terminating on its own ``seen`` set rather than on
+    the acyclicity :func:`_reject_recursive` has already proven: the guarantee
+    holds today, but a walk that cannot loop is cheaper insurance than one that
+    depends on a caller ordering.
+    """
+    ordered: list[Descriptor] = [descriptor]
+    seen: set[str] = {descriptor.full_name}
+    queue: list[Descriptor] = [descriptor]
+    while queue:
+        node = queue.pop(0)
+        for field in node.fields:
+            if field.is_extension:  # not columnized; its own drop is reported below
+                continue
+            if field.type in _MESSAGE_FIELD_TYPES and field.message_type.full_name not in seen:
+                seen.add(field.message_type.full_name)
+                ordered.append(field.message_type)
+                queue.append(field.message_type)
+    return ordered
+
+
 def _dropped_declared_extensions(
     descriptor: Descriptor, schema_names: Iterable[str]
 ) -> tuple[str, ...]:
@@ -461,28 +489,49 @@ def _dropped_declared_extensions(
     probe cannot see: a *declared* extension lands in ``Extensions[...]`` with an
     empty unknown-field set, so its byte delta is ``0``.
 
+    The whole *reachable* message graph is inspected, not just the bound root:
+    ptars columnizes nested types too, so an extension declared on a reachable
+    nested type is dropped exactly like a root one. That is the common real shape
+    — GTFS-RT / NYCT extend the nested ``TripDescriptor``, never the
+    ``FeedMessage`` root — so a root-only oracle reports clean for precisely the
+    workload it exists to protect. Types the root cannot reach are not inspected:
+    ptars never columnizes them, so their extensions are not this conversion's
+    loss.
+
     The check is keyed on extension identity, never on a union of field and
     extension names — a regular field sharing a name with an extension must not
-    mask the dropped extension. ``schema_names`` is forward-defensive: an
+    mask the dropped extension. ``schema_names`` is forward-defensive: a *root*
     extension is reported as dropped unless ptars produced a *non-field* column
     attributable to it (its short name appears in the schema but is not one of the
-    descriptor's regular fields). For ptars 0.0.17 ptars columnizes no extension,
-    so every declared extension is reported (verified against ptars 0.0.17 and
-    re-asserted end to end by ``test_complementarity_populated_declared_extension``);
-    the pin guards that assumption against a future ptars that columnizes one.
+    root's regular fields). That match stays deliberately non-recursive: a nested
+    type's extension column could only appear inside that type's Arrow struct, and
+    descending into struct types to look for it would rebuild the descriptor walk
+    on the Arrow side, so a nested extension is reported unconditionally — a
+    same-named *top-level* column is not evidence about it. For ptars 0.0.17 ptars
+    columnizes no extension at any depth, so every declared extension is reported
+    (verified against ptars 0.0.17 and re-asserted end to end by
+    ``test_complementarity_populated_declared_extension``); the pin guards that
+    assumption against a future ptars that columnizes one.
 
-    Returns the fully-qualified name of each dropped extension, or an empty tuple
-    when the pool declares none for ``descriptor`` (the common case).
+    Returns the fully-qualified name of each dropped extension — root's first,
+    then nested in traversal order — or an empty tuple when the pool declares none
+    for any reachable type (the common case).
     """
-    extensions = descriptor.file.pool.FindAllExtensions(descriptor)
-    if not extensions:
-        return ()
-    field_names = {field.name for field in descriptor.fields}
-    # Columns ptars produced that are NOT regular fields are the only place a
-    # (future) extension column could appear. Subtracting field names first means
-    # a regular field sharing a name with an extension cannot mask the extension.
-    extension_columns = set(schema_names) - field_names
-    return tuple(ext.full_name for ext in extensions if ext.name not in extension_columns)
+    dropped: list[str] = []
+    for node in _reachable_message_types(descriptor):
+        extensions = node.file.pool.FindAllExtensions(node)
+        if not extensions:
+            continue
+        if node is not descriptor:
+            dropped.extend(ext.full_name for ext in extensions)
+            continue
+        field_names = {field.name for field in node.fields}
+        # Columns ptars produced that are NOT regular fields are the only place a
+        # (future) extension column could appear. Subtracting field names first means
+        # a regular field sharing a name with an extension cannot mask the extension.
+        extension_columns = set(schema_names) - field_names
+        dropped.extend(ext.full_name for ext in extensions if ext.name not in extension_columns)
+    return tuple(dropped)
 
 
 class _PerRecordFidelity:

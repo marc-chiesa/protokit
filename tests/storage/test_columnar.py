@@ -1203,3 +1203,71 @@ def test_group_populated_raises_raw_ptars_error(tmp_path):  # AE5 (corrected)
     with pytest.raises(ValueError, match="unsupported wire type"):
         to_parquet([("s", m.SerializeToString())], reg, out, stream_id="s")
     assert not out.exists()  # partial discarded by the sink's BaseException unlink
+
+
+# --- U7: the oracle covers the whole reachable graph, not just the bound root -
+#
+# The GTFS-RT / NYCT shape: the extension extends a NESTED type (TripDescriptor),
+# never the bound root (FeedMessage). ptars columnizes the nested type too and
+# drops its extension exactly like a root one, so a root-only oracle reports
+# clean for the very workload the oracle exists to protect.
+
+
+def _nested_ext_fds():
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "no.proto", "no", "proto2"
+    inner = f.message_type.add()
+    inner.name = "Inner"
+    k = inner.field.add()
+    k.name, k.number, k.type, k.label = "k", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    inner.extension_range.add(start=100, end=201)
+    outer = f.message_type.add()
+    outer.name = "Outer"
+    nf = outer.field.add()
+    nf.name, nf.number, nf.type, nf.label = "inner", 1, F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    nf.type_name = ".no.Inner"
+    ext = f.extension.add()
+    ext.name, ext.number, ext.type = "ext_val", 100, F.TYPE_INT32
+    ext.label, ext.extendee = F.LABEL_OPTIONAL, ".no.Inner"
+    return fds
+
+
+def _nested_ext_registry():
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_nested_ext_fds(), "no.Outer"))
+    return reg
+
+
+def _nested_ext_wire(reg):
+    cls = reg.get("s").message_class
+    inner_ext = cls.DESCRIPTOR.file.pool.FindExtensionByName("no.ext_val")
+    m = cls()
+    m.inner.k = 5
+    m.inner.Extensions[inner_ext] = 42
+    return m.SerializeToString()
+
+
+def test_structural_nested_declared_extension_reported(tmp_path):
+    # The bound root (Outer) declares no extension; the reachable Inner does.
+    # ptars writes the nested struct with `k` only, so the extension value is gone
+    # from the Parquet while the per-record probe sees a clean (declared) record.
+    reg = _nested_ext_registry()
+    out = tmp_path / "nested_ext.parquet"
+    report = to_parquet([("s", _nested_ext_wire(reg))], reg, out, stream_id="s")
+    assert report.measured is True
+    assert report.dropped_extensions == ("no.ext_val",)
+    assert report.unmodeled_records == 0  # per-record probe is blind to it
+    table = pq.read_table(out)
+    inner_type = table.schema.field("inner").type
+    assert [inner_type.field(i).name for i in range(inner_type.num_fields)] == ["k"]
+    assert table.column("inner").to_pylist() == [{"k": 5}]  # the 42 is nowhere
+
+
+def test_structural_nested_extension_fails_fast_under_error(tmp_path):
+    reg = _nested_ext_registry()
+    out = tmp_path / "nested_ext_err.parquet"
+    with pytest.raises(FidelityError) as excinfo:
+        to_parquet([("s", _nested_ext_wire(reg))], reg, out, stream_id="s", fidelity="error")
+    assert excinfo.value.dropped_extensions == ("no.ext_val",)
+    assert not out.exists()

@@ -9,7 +9,7 @@ severity: medium
 applies_when:
   - "A per-record / byte-delta / unknown-field probe is your only fidelity check and you also need to catch data the descriptor MODELS but the encoder OMITS"
   - "A schema-driven encoder (e.g. ptars) drops descriptor-declared proto2 extensions from its Arrow/Parquet output, leaving an empty unknown-field set (byte delta 0)"
-  - "You can enumerate the declared set (pool.FindAllExtensions via descriptor.file.pool) and the encoder's produced columns (a cached schema from an empty conversion) and diff them at bind time"
+  - "You can enumerate the declared set (pool.FindAllExtensions over every message type reachable from the bound root, not just the root) and the encoder's produced columns (a cached schema from an empty conversion) and diff them at bind time"
   - "You want an O(1)-per-conversion, bind-time completeness check that fails fast under an error policy, keyed by stable identity rather than a fragile name union"
   - "You need the oracle to be forward-defensive so a future encoder that DOES emit the column automatically stops reporting"
 tags:
@@ -53,8 +53,9 @@ Add a **second, structural oracle** alongside the per-record probe. Instead of i
 each record's runtime state, diff two *schemas* at bind time: what the descriptor
 **declares** versus what the encoder **produced**.
 
-- **"Declared":** `descriptor.file.pool.FindAllExtensions(descriptor)` — every extension
-  the pool knows extends this message.
+- **"Declared":** `pool.FindAllExtensions(node)` for **every message type reachable from
+  the bound root** — every extension the pool knows extends any type the encoder will
+  columnize.
 - **"Produced":** the encoder's own output schema, which ptars yields for free via an
   *empty* conversion (`messages_to_record_batch([], descriptor).schema`), cached once on
   the adapter. Record-independent, so the whole oracle is O(1) per conversion.
@@ -63,33 +64,56 @@ The shipped diff (`_dropped_declared_extensions` in `src/protokit/storage/_colum
 
 ```python
 def _dropped_declared_extensions(descriptor, schema_names):
-    extensions = descriptor.file.pool.FindAllExtensions(descriptor)
-    if not extensions:
-        return ()
-    field_names = {field.name for field in descriptor.fields}
-    # Only a NON-field column the encoder produced could be an extension column.
-    # Subtracting field names first means a regular field sharing a name with an
-    # extension cannot mask the extension.
-    extension_columns = set(schema_names) - field_names
-    return tuple(
-        ext.full_name for ext in extensions if ext.name not in extension_columns
-    )
+    dropped = []
+    for node in _reachable_message_types(descriptor):   # root first, then nested
+        extensions = node.file.pool.FindAllExtensions(node)
+        if not extensions:
+            continue
+        if node is not descriptor:
+            # Nested: the Arrow-side match stays non-recursive, so report all.
+            dropped.extend(ext.full_name for ext in extensions)
+            continue
+        field_names = {field.name for field in node.fields}
+        # Only a NON-field column the encoder produced could be an extension column.
+        # Subtracting field names first means a regular field sharing a name with an
+        # extension cannot mask the extension.
+        extension_columns = set(schema_names) - field_names
+        dropped.extend(
+            ext.full_name for ext in extensions if ext.name not in extension_columns
+        )
+    return tuple(dropped)
 ```
 
-Two choices carry the weight:
+Three choices carry the weight:
 
-1. **Key on identity, never a name-union.** Iterate the extension *objects* and report by
+1. **Enumerate the *reachable graph*, not the bound root.** The encoder columnizes nested
+   message types too, so an extension on a reachable nested type is dropped exactly like a
+   root one. Scoping the declared set to the root descriptor was the v2.0 defect: the
+   common real shape (GTFS-RT / NYCT extend the nested `TripDescriptor`, never the
+   `FeedMessage` root) reported clean — the oracle was silent for exactly the workload it
+   was built to protect. Reuse the traversal the recursion pre-flight already performs
+   (iterative, deduplicated by full name so a DAG diamond is visited once). Types the root
+   cannot reach are correctly *not* inspected: the encoder never columnizes them, so their
+   extensions are not this conversion's loss.
+
+2. **Key on identity, never a name-union.** Iterate the extension *objects* and report by
    `ext.full_name`. Do **not** build `field_names ∪ extension_names` and look for
    absences — a regular field named `id` would then mask a dropped extension also named
    `id`. Subtracting `field_names` from the produced columns *first* makes a same-named
    field unable to suppress the report.
 
-2. **Forward-defensive against a future encoder.** An extension is reported dropped
-   *unless* the encoder produced a non-field column attributable to it. For ptars 0.0.17
-   no extension is ever columnized, so every declared extension is reported — but a future
-   ptars that emits an `ext_val` column would suppress the report automatically, no code
-   change. Pin that encoder-behavior assumption **end to end** so a dependency upgrade
-   fails a test rather than silently shifting the signal.
+3. **Forward-defensive against a future encoder — on the root only, by design.** A *root*
+   extension is reported dropped *unless* the encoder produced a non-field column
+   attributable to it. For ptars 0.0.17 no extension is ever columnized at any depth, so
+   every declared extension is reported — but a future ptars that emits an `ext_val`
+   column would suppress the root report automatically, no code change. Pin that
+   encoder-behavior assumption **end to end** so a dependency upgrade fails a test rather
+   than silently shifting the signal. Keep the produced-side match **non-recursive**: a
+   nested type's extension column could only live inside that type's Arrow struct, and
+   descending struct types to look for it would rebuild the descriptor walk on the Arrow
+   side (two traversals to keep in step, for a case no encoder exhibits). So a nested
+   extension is reported unconditionally, and a same-named *top-level* column is
+   explicitly not evidence about it.
 
 Gate it behind the same `fidelity != "ignore"` switch as the per-record probe (so
 `ignore` pays nothing — not even the `FindAllExtensions` call), and wire it into the
@@ -174,6 +198,18 @@ _dropped_declared_extensions(desc, ["id", "ext_val"]) # ()         future encode
 _dropped_declared_extensions(outer_desc, [])          # ()         modeled fields are never inspected
 ```
 
+**Reachability — the v2.0 defect and its scope (the NYCT/GTFS-RT shape):**
+
+```python
+# Outer { Inner inner = 1; }  extend Inner { optional int32 ext_val = 100; }
+_dropped_declared_extensions(outer_desc, ["inner"])   # v2.0: ()  <- silent, root-only
+                                                      # now: ("n.ext_val",)
+_dropped_declared_extensions(outer_desc, ["inner", "ext_val"])  # ("n.ext_val",) still:
+                                                      # a TOP-LEVEL column is not evidence
+                                                      # about a NESTED extension
+# an extension on a type the root cannot reach is never reported (never columnized)
+```
+
 **The group counter-example — *not* this loss class.** A proto2 group is a `TYPE_GROUP`
 field the encoder *does* columnize (a struct column), so the oracle correctly does not
 flag it; a *populated* group is a loud decode crash (a raw `ValueError`, a separate
@@ -191,4 +227,4 @@ ptars-consistency tests that guard the encoder-behavior assumption).
 - [Recursive proto schemas segfault ptars during Arrow schema build](../security-issues/recursive-proto-schema-segfaults-ptars-arrow-build.md) — the same "Python-side bind-time pre-flight, before the C boundary, raising a typed error" move the oracle mirrors.
 - [ptars over protarrow for proto-to-Arrow on isolated descriptor pools](../tooling-decisions/ptars-over-protarrow-proto-to-arrow-isolated-descriptor-pools.md) — why ptars omits declared extensions (descriptor-handed Rust core; extensions are not regular `descriptor.fields`), the root cause this oracle detects.
 - [Tolerant-iteration error taxonomy: narrow typed catch + loud completion guard](tolerant-iteration-error-taxonomy-narrow-catch-loud-completion-guard-2026-05-30.md) — the fail-loud typed-fault channel the oracle's `error`-policy raise slots into.
-- **Origin:** issue #25 (columnar real-data go/no-go) surfaced the blind spot; shipped in PR #44.
+- **Origin:** issue #25 (columnar real-data go/no-go) surfaced the blind spot; shipped in PR #44. The reachable-graph scope (choice 1) landed after 0.14.0, which enumerated the bound root only and so stayed silent on the nested-extendee shape the oracle exists to protect.
