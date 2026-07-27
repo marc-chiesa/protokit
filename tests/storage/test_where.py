@@ -35,6 +35,7 @@ message Event {
   repeated int32 tags = 9;
   map<string, int32> labels = 10;
   oneof choice { int32 a = 11; string b = 12; }
+  float score = 13;
 }
 """
 
@@ -247,6 +248,64 @@ class TestParsingEdges:
     def test_unterminated_single_quote(self, event_cls: type) -> None:
         with pytest.raises(WhereError, match="unterminated"):
             _pred("name == 'x", event_cls)
+
+
+class TestFloat32Literal:
+    """A ``float`` (32-bit) field is compared against a 32-bit literal.
+
+    ``0.1`` parses to the *double* 0.1, which the runtime stores in a ``float``
+    field as 0.10000000149011612 — so a double literal can never equal the
+    stored value and the filter silently matches nothing. The literal must be
+    drawn from the same value set as the field.
+    """
+
+    def test_inexact_literal_matches_float32_field(self, event_cls: type) -> None:
+        pred = _pred("score == 0.1", event_cls)
+        assert pred(event_cls(score=0.1)) is True
+        assert pred(event_cls(score=0.2)) is False
+
+    def test_inequality_is_negation_of_equality(self, event_cls: type) -> None:
+        assert _pred("score != 0.1", event_cls)(event_cls(score=0.1)) is False
+
+    def test_double_sibling_keeps_full_precision(self, event_cls: type) -> None:
+        # The narrowing is keyed on cpp_type: a double field must NOT be
+        # narrowed, or 0.1 would stop matching a double 0.1.
+        pred = _pred("ratio == 0.1", event_cls)
+        assert pred(event_cls(ratio=0.1)) is True
+        assert pred(event_cls(ratio=0.10000000149011612)) is False
+
+    def test_exactly_representable_literal_still_matches(self, event_cls: type) -> None:
+        assert _pred("score == 0.5", event_cls)(event_cls(score=0.5)) is True
+
+    def test_underflowing_literal_narrows_like_an_assignment(
+        self, event_cls: type
+    ) -> None:
+        # 1e-50 is below float32's subnormal range; the runtime stores 0.0 for
+        # it, so the literal must too (the filter matches, it does not error).
+        assert _pred("score == 1e-50", event_cls)(event_cls(score=1e-50)) is True
+
+    def test_infinity_literal_is_comparable(self, event_cls: type) -> None:
+        assert _pred("score == inf", event_cls)(event_cls(score=float("inf"))) is True
+        assert _pred("score == -inf", event_cls)(event_cls(score=float("-inf"))) is True
+
+    def test_out_of_float32_range_literal_is_error(self, event_cls: type) -> None:
+        # 1e40 is finite but larger than float32's max; the field can never hold
+        # it, so reject at compile time rather than scan for a value that is not
+        # in the field's value set.
+        with pytest.raises(WhereError, match="out of range"):
+            _pred("score == 1e40", event_cls)
+
+    def test_out_of_range_literal_is_fine_for_a_double_field(
+        self, event_cls: type
+    ) -> None:
+        assert _pred("ratio == 1e40", event_cls)(event_cls(ratio=1e40)) is True
+
+    @pytest.mark.parametrize("path", ["score", "ratio"])
+    def test_nan_literal_is_error(self, event_cls: type, path: str) -> None:
+        # nan never compares equal to itself, so `== nan` can never match and
+        # `!= nan` always matches — a silent never-match filter either way.
+        with pytest.raises(WhereError, match="nan"):
+            _pred(f"{path} == nan", event_cls)
 
 
 class TestUnsetTraversalSemantics:

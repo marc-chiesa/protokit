@@ -1554,7 +1554,12 @@ fully-qualified message name; `--message-type` is an alias).
 (enums by name or number) and `has:path` for field presence. Anything richer
 (`and`/`or`, `<`/`>`, functions) is rejected with a pointer back to the Python
 `predicate=` API. Traversal through an unset intermediate message reads
-defaults, so `header.code == 0` matches a record with no `header`.
+defaults, so `header.code == 0` matches a record with no `header`. A literal for
+a 32-bit `float` field is narrowed to single precision so it comes from the same
+value set as the field (`score == 0.1` matches the stored 0.10000000149011612);
+a literal too large for that field, and `nan` for any float/double field (it
+never compares equal), are rejected at compile time rather than compiled into a
+filter that matches nothing.
 
 **`--on-error`** is `raise` (default, fail-loud), `skip`, or `warn` (report each
 fault to stderr and continue). **Recovery limit:** with the length-delimited
