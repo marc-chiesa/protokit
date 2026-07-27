@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tracemalloc
+
 from google.protobuf import descriptor_pool
 
 from protokit.message.model import FieldPath
@@ -940,6 +942,79 @@ class TestReservedFieldReused:
         assert "old_field" in findings[0].message
         # Name reuse is a source-level concern, not a wire break.
         assert findings[0].severity is Severity.SEMANTIC
+
+    def test_reserved_to_max_does_not_materialize_the_range(self) -> None:
+        """``reserved N to max;`` must stay O(1) in memory, not O(range width).
+
+        The proto idiom ``reserved 1000 to max;`` round-trips as
+        ``end = 536_870_912``. Expanding that into a set of integers
+        allocated ~32 GB (extrapolated from a measured 588 MB at 10M)
+        and OOM-killed every ``compat`` subcommand, because this rule is
+        a default and runs on every visited message pair.
+
+        Pinning peak allocation rather than wall time keeps the guard
+        meaningful on a slow CI box: the defect was an allocation, so
+        allocation is what must be asserted.
+        """
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_message(
+            old_pool, "t.M",
+            fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
+            reserved_ranges=[(1000, 536_870_912)],
+        )
+        build_message(
+            new_pool, "t.M",
+            fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_INT32},
+                {"name": "b", "number": 2000, "type": T.TYPE_STRING},
+            ],
+        )
+        old_d = old_pool.FindMessageTypeByName("t.M")
+        new_d = new_pool.FindMessageTypeByName("t.M")
+
+        tracemalloc.start()
+        try:
+            findings = reserved_field_reused(old_d, new_d, ROOT)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        # The reuse is still detected -- this is not a "skip the work" fix.
+        assert len(findings) == 1
+        assert findings[0].severity is Severity.WIRE
+        assert "2000" in findings[0].message
+        # Measured ~2 KB after the fix; 1 MB is a loose ceiling that still
+        # fails by ~4 orders of magnitude if the set expansion returns.
+        assert peak < 1_000_000, f"peak allocation {peak} bytes suggests range expansion"
+
+    def test_reserved_range_end_is_exclusive(self) -> None:
+        """Half-open semantics: ``end`` itself is not reserved.
+
+        The set-based implementation got this right via ``range()``;
+        the range-pair implementation must not drift to inclusive.
+        """
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_message(
+            old_pool, "t.M",
+            fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
+            reserved_ranges=[(5, 10)],
+        )
+        build_message(
+            new_pool, "t.M",
+            fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_INT32},
+                {"name": "edge_lo", "number": 5, "type": T.TYPE_STRING},
+                {"name": "edge_hi", "number": 10, "type": T.TYPE_STRING},
+            ],
+        )
+        old_d = old_pool.FindMessageTypeByName("t.M")
+        new_d = new_pool.FindMessageTypeByName("t.M")
+        findings = reserved_field_reused(old_d, new_d, ROOT)
+        # 5 is reserved (inclusive start); 10 is not (exclusive end).
+        assert len(findings) == 1
+        assert "edge_lo" in findings[0].message
 
     def test_silent_when_no_reservations_used(self) -> None:
         old_pool = descriptor_pool.DescriptorPool()

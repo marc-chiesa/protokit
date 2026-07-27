@@ -898,21 +898,35 @@ def enum_number_reused(
 # ---------------------------------------------------------------------------
 
 
-def _reserved_numbers(desc: proto_descriptor.Descriptor) -> set[int]:
-    """Expand reserved ranges of the message into a set of integers."""
+def _reserved(
+    desc: proto_descriptor.Descriptor,
+) -> tuple[tuple[tuple[int, int], ...], set[str]]:
+    """The message's reserved field-number ranges and reserved names.
+
+    Ranges are returned as half-open ``(start, end)`` pairs and are
+    **deliberately not materialized** into a set of integers: a valid
+    ``reserved N to max;`` emits ``end = 536_870_912``, so
+    ``set(range(...))`` would allocate ~5e8 ints (~32 GB measured by
+    extrapolation) and OOM the process. Membership is the only use --
+    see :func:`_is_reserved`. The sibling walker in
+    ``protokit.forensics._drift`` keeps the same shape for the same
+    reason.
+
+    Both halves come back together because reading either one requires
+    a ``CopyToProto`` roundtrip on the upb backend (the live
+    ``Descriptor`` doesn't expose reserved data), and that roundtrip is
+    the expensive part -- doing it once per message pair instead of
+    twice halves the serialization cost of this rule.
+    """
     dp = descriptor_pb2.DescriptorProto()
     desc.CopyToProto(dp)
-    numbers: set[int] = set()
-    for rng in dp.reserved_range:
-        numbers.update(range(rng.start, rng.end))
-    return numbers
+    ranges = tuple((rng.start, rng.end) for rng in dp.reserved_range)
+    return ranges, set(dp.reserved_name)
 
 
-def _reserved_names(desc: proto_descriptor.Descriptor) -> set[str]:
-    """Return the set of reserved field names on the message."""
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
-    return set(dp.reserved_name)
+def _is_reserved(number: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """Whether ``number`` falls in any half-open reserved range."""
+    return any(start <= number < end for start, end in ranges)
 
 
 def reserved_field_reused(
@@ -949,13 +963,12 @@ def reserved_field_reused(
     """
     if old_desc is None or new_desc is None:
         return []
-    old_res_numbers = _reserved_numbers(old_desc)
-    old_res_names = _reserved_names(old_desc)
+    old_res_ranges, old_res_names = _reserved(old_desc)
     findings: list[Finding] = []
     for fd in new_desc.fields:
         if fd.is_extension:
             continue
-        if fd.number in old_res_numbers:
+        if _is_reserved(fd.number, old_res_ranges):
             findings.append(Finding(
                 path=path.child(fd.name),
                 rule_id="reserved_field_reused",
