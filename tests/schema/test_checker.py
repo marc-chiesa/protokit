@@ -278,6 +278,79 @@ class TestCycles:
         report = check_compatibility(old, "t.A", new, "t.A")
         assert report.is_compatible
 
+    def test_cycle_truncated_subtree_not_replayed_at_sibling_path(self) -> None:
+        """A pair whose subtree was cut short by the cycle guard must
+        not have that truncated result cached and replayed elsewhere.
+
+        ``Root.n`` is walked first, and inside it ``n.m`` hits the
+        ``N`` cycle cut — so ``M``'s subtree is missing everything
+        under ``M.n``. Caching that stunted result and replaying it
+        at ``Root.m`` would drop the equally-real break at
+        ``m.n.tag``: with ``--ignore n`` the schema would report
+        clean while a wire break survives.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        self._build_root_m_n_cycle(old, tag_type=T.TYPE_STRING)
+        self._build_root_m_n_cycle(new, tag_type=T.TYPE_BYTES)
+        report = check_compatibility(old, "t.Root", new, "t.Root")
+        paths = sorted({str(f.path) for f in report.findings})
+        assert paths == ["m.n.tag", "n.tag"]
+
+    def test_cycle_truncation_still_terminates_on_self_reference(self) -> None:
+        """The in-progress guard is the termination proof — skipping
+        the cache for truncated pairs must not weaken it.
+
+        ``Root`` reaches the mutually-recursive ``M``/``N`` pair from
+        two sides, so the truncated ``M`` is re-traversed rather than
+        replayed; the walk must still finish.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        self._build_root_m_n_cycle(old, tag_type=T.TYPE_STRING)
+        self._build_root_m_n_cycle(new, tag_type=T.TYPE_STRING)
+        report = check_compatibility(old, "t.Root", new, "t.Root")
+        assert report.is_compatible
+
+    @staticmethod
+    def _build_root_m_n_cycle(
+        pool: descriptor_pool.DescriptorPool, *, tag_type: int,
+    ) -> None:
+        """Build ``Root{m:M, n:N}``, ``N{m:M, tag}``, ``M{n:N, leaf}``.
+
+        ``M`` and ``N`` are mutually recursive and both reachable from
+        ``Root``, so whichever of them the DFS enters second sees the
+        other already in progress — the shape that produces a
+        cycle-truncated subtree under a shared type.
+        """
+        from google.protobuf import descriptor_pb2
+        fp = descriptor_pb2.FileDescriptorProto(
+            name=f"root_mn_{id(pool):x}.proto", package="t", syntax="proto2",
+        )
+
+        def _field(msg, name, number, ftype, type_name=None):
+            f = msg.field.add()
+            f.name, f.number, f.type = name, number, ftype
+            f.label = T.LABEL_OPTIONAL
+            if type_name is not None:
+                f.type_name = type_name
+
+        root = fp.message_type.add()
+        root.name = "Root"
+        _field(root, "m", 1, T.TYPE_MESSAGE, "t.M")
+        _field(root, "n", 2, T.TYPE_MESSAGE, "t.N")
+
+        n = fp.message_type.add()
+        n.name = "N"
+        _field(n, "m", 1, T.TYPE_MESSAGE, "t.M")
+        _field(n, "tag", 2, tag_type)
+
+        m = fp.message_type.add()
+        m.name = "M"
+        _field(m, "n", 1, T.TYPE_MESSAGE, "t.N")
+        _field(m, "leaf", 2, T.TYPE_INT32)
+        pool.Add(fp)
+
 
 # ---------------------------------------------------------------------------
 # Enum recursion via fields
