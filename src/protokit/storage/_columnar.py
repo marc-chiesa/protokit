@@ -76,6 +76,21 @@ TimestampUnit = Literal["s", "ms", "us", "ns"]
 # from the ``on_error`` decode-fault axis (hard-wired ``collect`` here).
 Fidelity = Literal["ignore", "warn", "error"]
 
+_VALID_FIDELITY: tuple[Fidelity, ...] = ("ignore", "warn", "error")
+
+
+def _validate_fidelity(fidelity: Fidelity) -> None:
+    """Reject an unrecognised fidelity policy at the call site.
+
+    Every mode is selected by an equality test, so an unknown string matches no
+    branch and silently behaves like ``warn`` — a caller who typo'd ``'error'``
+    would get the file written instead of the raise they asked for, a silent
+    policy downgrade. Eager, like the engine's ``on_error`` check; the CLI is
+    already narrowed by ``click.Choice``, so this guards the Python API.
+    """
+    if fidelity not in _VALID_FIDELITY:
+        raise ValueError(f"fidelity must be one of {_VALID_FIDELITY!r}, got {fidelity!r}")
+
 
 class ParquetExtraNotInstalledError(StorageError):
     """The columnar API was used without the ``protokit[parquet]`` extra.
@@ -344,19 +359,28 @@ def _transitive_file_descriptors(descriptor: Descriptor) -> list[FileDescriptor]
     order (each dependency before the file that imports it), deduplicated by
     name, walking the live descriptor graph since the source
     ``FileDescriptorProto``s are not retained by ``build_pool``.
+
+    Iterative post-order DFS, like :func:`_find_recursive_cycle`: the *file*
+    import graph has its own depth, independent of the message graph the
+    recursion pre-flight bounds, so a deep-but-valid import chain from an
+    attacker-supplyable descriptor set would otherwise raise ``RecursionError``
+    here — a failure outside the storage error taxonomy. Deps are pushed in
+    reverse so they are visited left to right, preserving the emitted order.
     """
     ordered: list[FileDescriptor] = []
     seen: set[str] = set()
-
-    def visit(fd: FileDescriptor) -> None:
+    stack: list[tuple[str, FileDescriptor]] = [("enter", descriptor.file)]
+    while stack:
+        action, fd = stack.pop()
+        if action == "leave":
+            ordered.append(fd)  # every dependency already emitted
+            continue
         if fd.name in seen:
-            return
+            continue
         seen.add(fd.name)
-        for dep in fd.dependencies:
-            visit(dep)
-        ordered.append(fd)
-
-    visit(descriptor.file)
+        stack.append(("leave", fd))
+        for dep in reversed(fd.dependencies):
+            stack.append(("enter", dep))
     return ordered
 
 
@@ -781,6 +805,9 @@ def to_arrow_batches(
     a missing extra raises :class:`ParquetExtraNotInstalledError`, when iteration
     begins (:func:`to_parquet` is eager and raises at call time).
     """
+    # Argument validation is NOT bind: an unrecognised `fidelity` is caller
+    # misuse, so it fails here, at the call site, not on the first next().
+    _validate_fidelity(fidelity)
     return _ArrowBatchStream(
         source,
         registry,
@@ -826,6 +853,7 @@ def to_parquet(
     ``destination`` is a filesystem path (a path is required so the sink can own
     creation and discard a partial file on failure).
     """
+    _validate_fidelity(fidelity)
     _require_parquet()
     import pyarrow.parquet as pq  # lazy
 
