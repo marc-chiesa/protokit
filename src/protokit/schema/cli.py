@@ -50,6 +50,7 @@ from protokit.schema.git import (
     extract_pool_from_ref,
     merge_base,
     resolve_default_base,
+    resolve_ref_sha,
     verify_ref,
 )
 from protokit.schema.model import (
@@ -420,7 +421,8 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
 
     Raises:
         SystemExit: via ``error_exit`` if ``range_spec`` lacks
-            ``..`` or either side fails to resolve.
+            ``..``, either side fails to resolve, or git is not
+            on PATH.
     """
     # Support both two-dot and three-dot forms; we only need the
     # endpoints, and ``A...B`` is just a different walk semantics.
@@ -439,20 +441,14 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
         )
     old_name, new_name = parts
     try:
-        import subprocess
-        old_sha = subprocess.run(
-            ["git", "rev-parse", old_name],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-        new_sha = subprocess.run(
-            ["git", "rev-parse", new_name],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
+        old_sha = resolve_ref_sha(old_name)
+        new_sha = resolve_ref_sha(new_name)
+    except GitRefNotFoundError as exc:
         error_exit(
-            f"could not resolve range endpoints {range_spec!r}: {stderr}"
+            f"could not resolve range endpoints {range_spec!r}: {exc}"
         )
+    except RuntimeError as exc:  # git missing from PATH
+        error_exit(str(exc))
     return old_sha, new_sha
 
 

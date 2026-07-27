@@ -18,6 +18,7 @@ Public surface:
 
 - :func:`extract_pool_from_ref` — high-level extractor.
 - :func:`is_shallow_repository` — predicate for CI guard rails.
+- :func:`resolve_ref_sha` — pin a moving ref name to a SHA.
 - :exc:`GitRefNotFoundError`, :exc:`ProtoImportError`,
   :exc:`ShallowRepoError` — typed errors callers can branch on.
 """
@@ -174,6 +175,33 @@ def verify_ref(ref: str, *, cwd: Path | None = None) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def resolve_ref_sha(ref: str, *, cwd: Path | None = None) -> str:
+    """Resolve ``ref`` to the SHA it names right now.
+
+    Callers that record what they examined want a fixed SHA, not
+    the moving name the user typed — ``HEAD~20`` means something
+    different an hour later.
+
+    Args:
+        ref: Any git revision expression.
+        cwd: Working directory for the git invocation.
+
+    Returns:
+        The full resolved SHA, without trailing newline.
+
+    Raises:
+        GitRefNotFoundError: ``ref`` does not resolve.
+    """
+    try:
+        out = _run_git(["rev-parse", ref], cwd=cwd, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise GitRefNotFoundError(
+            f"could not resolve {ref!r}: {stderr}"
+        ) from exc
+    return str(out).strip()
 
 
 def commit_subject(ref: str, *, cwd: Path | None = None) -> str:
