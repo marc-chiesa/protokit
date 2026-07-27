@@ -637,6 +637,20 @@ class MessageDifferencer:
                     f"already configured as treat_as_set"
                 )
 
+        # Re-registration: the dict is last-wins but the path list is
+        # append-only and first-wins at lookup, so silently overwriting would
+        # leave the two stores disagreeing about the key actually in force
+        # (and the conflict checks above read only the dict). Reject the
+        # conflict; an identical repeat is a harmless no-op.
+        existing_key = self._treat_as_map.get(field_selector)
+        if existing_key is not None:
+            if existing_key != key:
+                raise ValueError(
+                    f"Cannot treat_as_map field '{field_selector}' with key "
+                    f"'{key}': already configured with key '{existing_key}'"
+                )
+            return
+
         self._treat_as_map[field_selector] = key
         if "." in field_selector:
             self._treat_as_map_paths.append((FieldPath.parse(field_selector), key))

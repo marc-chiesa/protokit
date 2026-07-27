@@ -151,6 +151,42 @@ class TestTreatAsMapErrors:
             d.compare(msg1, msg2)
 
 
+class TestTreatAsMapReRegistration:
+    """Re-registering a selector must not silently desync the two config stores."""
+
+    def test_conflicting_key_raises(self) -> None:
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        with pytest.raises(ValueError, match="already configured with key 'id'"):
+            d.treat_as_map("items", key="name")
+
+    def test_conflicting_key_raises_for_dotted_selector(self) -> None:
+        d = MessageDifferencer()
+        d.treat_as_map("wrapper.items", key="id")
+        with pytest.raises(ValueError, match="already configured with key 'id'"):
+            d.treat_as_map("wrapper.items", key="name")
+
+    def test_conflicting_key_leaves_ignore_conflict_detection_intact(self) -> None:
+        """The rejected key must not become the one the ignore checks consult."""
+        d = MessageDifferencer()
+        d.treat_as_map("wrapper.items", key="id")
+        with pytest.raises(ValueError):
+            d.treat_as_map("wrapper.items", key="name")
+        # 'id' is still the key in force, so ignoring it must be rejected.
+        with pytest.raises(ValueError, match="key field"):
+            d.ignore_fields("wrapper.items.id")
+
+    def test_same_key_is_idempotent(self) -> None:
+        b = _make_items_builder()
+        Item = b.get_message_class("test.Item")
+        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
+        msg2 = b.build("test.Container", items=[Item(id="b", value=2), Item(id="a", value=1)])
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        d.treat_as_map("items", key="id")
+        assert not d.compare(msg1, msg2).has_changes()
+
+
 class TestTreatAsMapNonMessage:
     def test_non_message_field_emits_warning_and_falls_back(self) -> None:
         """treat_as_map on a repeated scalar should warn and use index comparison."""

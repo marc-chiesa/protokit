@@ -285,6 +285,14 @@ All notable changes to `protokit` are documented here. Format loosely follows
   formatter dispatch. They are now echoed as indented continuation lines,
   sanitized through the shared stderr helper so compiler output cannot forge a
   stable `error[lint-...]:` prefix line.
+- **`treat_as_map` now raises on a conflicting re-registration, as documented.**
+  Configuring the same selector twice with different keys silently overwrote the
+  dict store while the parallel path list appended — and lookup reads the path
+  list first, so the engine kept keying on the *first* key while every conflict
+  check (including `ignore_fields`' key-field guard) read the *second*. Ignoring
+  the key field actually in use was therefore accepted. The documented
+  `ValueError` for "the same field is already configured with a different key"
+  now fires; an identical repeat stays a no-op.
 
 
 ### Changed
