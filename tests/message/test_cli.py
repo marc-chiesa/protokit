@@ -196,6 +196,62 @@ class TestSameSchemaMode:
 
 
 # ---------------------------------------------------------------------------
+# Input-file I/O errors
+# ---------------------------------------------------------------------------
+
+
+class TestInputFileErrors:
+    """Unreadable message inputs must exit 2, never 1 ("messages differ")."""
+
+    @pytest.mark.parametrize("position", [0, 1])
+    def test_directory_argument_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path, position: int,
+    ) -> None:
+        # ``exists=True`` alone lets a directory through, and the unguarded
+        # read then raised IsADirectoryError as a traceback under Click's
+        # standalone mode — which exits 1, the code reserved for "different".
+        # A CI gate keying on the exit code would record an unreadable input
+        # as a real diff.
+        adir = tmp_path / "adir"
+        adir.mkdir()
+        args = [str(simple_setup["left"]), str(simple_setup["right_same"])]
+        args[position] = str(adir)
+        result = runner.invoke(main, [
+            *args,
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+
+    def test_read_failure_after_click_check_exits_2(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Click's up-front existence/readability check is a TOCTOU snapshot:
+        # the file can be deleted or chmod'ed between the check and the read.
+        # The read itself must therefore route to exit 2 as well.
+        real_read_bytes = Path.read_bytes
+        target = simple_setup["left"]
+
+        def fail_for_left(self: Path) -> bytes:
+            if self == target:
+                raise PermissionError(13, "Permission denied")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_for_left)
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+        assert "cannot read" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
 # Output formats
 # ---------------------------------------------------------------------------
 
