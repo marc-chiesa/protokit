@@ -128,7 +128,12 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
             proto_file=ctx.proto_file,
         )
         suite = _build_compat_testsuite(entry.report, entry_ctx)
-        suite.set("name", f"{type_prefix}-commit-{entry.commit_sha[:12]}")
+        # Overwrites the name make_testsuite already scrubbed, so it
+        # has to re-scrub: type_prefix embeds the user-supplied
+        # ``--type`` verbatim.
+        suite.set("name", junit.xml_safe_text(
+            f"{type_prefix}-commit-{entry.commit_sha[:12]}",
+        ))
         suite.set("package", junit.xml_safe_text(entry.commit_subject or ""))
         suite.set("id", str(index))
         root.append(suite)
