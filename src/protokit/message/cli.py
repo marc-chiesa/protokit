@@ -77,6 +77,23 @@ def _safe_load_pool(path: Path) -> descriptor_pool.DescriptorPool:
         _error(f"failed to load descriptor set ({path}): {exc}")
 
 
+def _read_input(path: str) -> bytes:
+    """Read a message input file, translating I/O failures to a clean exit-code-2.
+
+    ``click.Path(exists=True, dir_okay=False)`` rejects the common bad paths
+    up front, but that check is a TOCTOU snapshot — the file can be deleted or
+    chmod'ed between the check and this read. Without this arm the resulting
+    ``OSError`` escapes Click's standalone mode as a traceback with exit 1,
+    the code the exit contract reserves for "messages differ" (module
+    docstring), so a CI gate would record an unreadable input as a real diff.
+    Mirrors :func:`_safe_load_pool` for the descriptor-set half.
+    """
+    try:
+        return Path(path).read_bytes()
+    except OSError as exc:
+        _error(f"cannot read {path}: {exc}")
+
+
 def _parse_message(
     cls: type,
     data: bytes,
@@ -199,8 +216,8 @@ def _validate_flag_groups(
 
 
 @click.command()
-@click.argument("left_file", type=click.Path(exists=True))
-@click.argument("right_file", type=click.Path(exists=True))
+@click.argument("left_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("right_file", type=click.Path(exists=True, dir_okay=False))
 # Group A: same-schema
 @click.option("--desc", type=click.Path(exists=True), help="Descriptor set file (same-schema mode).")
 @click.option("--message-type", help="Fully-qualified message type name.")
@@ -240,7 +257,11 @@ def _validate_flag_groups(
 @click.option("--ignore", multiple=True, help="Ignore field (bare name or dotted path). Repeatable.")
 @click.option("--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY", help="Treat repeated field as map with KEY.")
 @click.option("--float-mode", type=click.Choice(["exact", "approximate"]), default="exact", help="Float comparison mode.")
-@click.option("--max-depth", type=int, help="Max comparison depth.")
+# IntRange(min=0) matches every other numeric option in the CLI surface, and
+# here it also protects the exit-code contract: a negative depth truncates the
+# ROOT work item (depth 0), so two differing messages would compare as equal
+# and exit 0. A nonsense depth is a usage error (exit 2), not equality.
+@click.option("--max-depth", type=click.IntRange(min=0), help="Max comparison depth.")
 @click.option("--strict-schema", is_flag=True, help="Warn on message type name changes.")
 def main(
     left_file: str,
@@ -296,8 +317,8 @@ def main(
         right_cls = left_cls
 
     # Read and parse input files
-    left_data = Path(left_file).read_bytes()
-    right_data = Path(right_file).read_bytes()
+    left_data = _read_input(left_file)
+    right_data = _read_input(right_file)
 
     left_msg = _parse_message(
         left_cls, left_data, left_file,

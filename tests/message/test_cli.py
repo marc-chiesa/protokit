@@ -196,6 +196,62 @@ class TestSameSchemaMode:
 
 
 # ---------------------------------------------------------------------------
+# Input-file I/O errors
+# ---------------------------------------------------------------------------
+
+
+class TestInputFileErrors:
+    """Unreadable message inputs must exit 2, never 1 ("messages differ")."""
+
+    @pytest.mark.parametrize("position", [0, 1])
+    def test_directory_argument_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path, position: int,
+    ) -> None:
+        # ``exists=True`` alone lets a directory through, and the unguarded
+        # read then raised IsADirectoryError as a traceback under Click's
+        # standalone mode — which exits 1, the code reserved for "different".
+        # A CI gate keying on the exit code would record an unreadable input
+        # as a real diff.
+        adir = tmp_path / "adir"
+        adir.mkdir()
+        args = [str(simple_setup["left"]), str(simple_setup["right_same"])]
+        args[position] = str(adir)
+        result = runner.invoke(main, [
+            *args,
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+
+    def test_read_failure_after_click_check_exits_2(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Click's up-front existence/readability check is a TOCTOU snapshot:
+        # the file can be deleted or chmod'ed between the check and the read.
+        # The read itself must therefore route to exit 2 as well.
+        real_read_bytes = Path.read_bytes
+        target = simple_setup["left"]
+
+        def fail_for_left(self: Path) -> bytes:
+            if self == target:
+                raise PermissionError(13, "Permission denied")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_for_left)
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+        assert "cannot read" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
 # Output formats
 # ---------------------------------------------------------------------------
 
@@ -338,6 +394,41 @@ class TestDiffOptions:
         data = json.loads(result.output)
         assert len(data["differences"]) == 1
         assert data["differences"][0]["path"] == "name"
+
+    def test_negative_max_depth_exits_2_not_false_equal(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        # A negative depth truncates the ROOT work item (depth 0), so every
+        # difference vanishes and the CLI used to report two differing messages
+        # as "equal" with exit 0 — the exit-code contract (0=equal, 1=different,
+        # 2=error) inverted by a typo'd or templated flag value. Nonsense input
+        # is an error, not equality.
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--max-depth", "-1",
+        ])
+        assert result.exit_code == 2
+        assert "equal" not in result.output.lower()
+
+    def test_max_depth_zero_still_accepted(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        # Guards the negative-value rejection from over-correcting: 0 is a
+        # meaningful depth (root fields compared, nested subtrees truncated).
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--max-depth", "0",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert {d["path"] for d in data["differences"]} == {"name", "value"}
 
     def test_ignore_field(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
         result = runner.invoke(main, [
