@@ -115,6 +115,20 @@ All notable changes to `protokit` are documented here. Format loosely follows
   Verified behavior-preserving against the original implementation by
   differential test: 311 range configurations x 72 probes, zero divergence.
 
+### Fixed
+- **The columnar structural fidelity oracle now inspects the whole reachable
+  message graph, not just the bound root type.** 0.14.0 enumerated declared
+  proto2 extensions on the bound descriptor only, so an extension declared on a
+  reachable *nested* type — the common real shape, where GTFS-RT / NYCT extend
+  the nested `TripDescriptor` rather than the `FeedMessage` root — was reported
+  clean even though `ptars` dropped it from the Parquet. A conversion that
+  previously returned `dropped_extensions=()` may now report those extensions,
+  and under `--fidelity error` may raise `FidelityError` at bind where 0.14.0
+  wrote the file. The Arrow-side match stays deliberately non-recursive (the
+  produced-column check applies to root extensions only), extensions on types
+  the root cannot reach are still not reported, and the precedence ladder
+  (recursion → structural → decode fault → per-record) is unchanged.
+
 ### Changed
 - **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
   (`protokit.storage._fidelity_probe.unmodeled_byte_delta`) so both the columnar
