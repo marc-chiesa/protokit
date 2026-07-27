@@ -293,6 +293,13 @@ All notable changes to `protokit` are documented here. Format loosely follows
   the key field actually in use was therefore accepted. The documented
   `ValueError` for "the same field is already configured with a different key"
   now fires; an identical repeat stays a no-op.
+- **Partial matching no longer leaks a vacuous ADDED for an empty `treat_as_map`
+  element.** Under `set_partial()`, an actual-only keyed element was suppressed
+  when populated (its one-sided subtree hits the partial gate) but reported as
+  ADDED when it had no populated fields — so an extra *empty* element failed the
+  match while an extra *real* one passed. The actual-only branch now suppresses
+  under partial like `map<k,v>` and index-paired repeated fields already do;
+  `treat_as_set`'s strict KTD-8 carve-out is unaffected.
 
 
 ### Changed

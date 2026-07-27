@@ -2313,6 +2313,15 @@ class MessageDifferencer:
             key_path = _replace_bracket(path, key_bracket) if path.segments else path
 
             if key not in left_by_key:
+                # Actual-only key: outside the expected sub-shape under partial
+                # (actual is allowed to be a superset, R5/U4) → suppressed, as
+                # in ``_compare_map``. Without this the populated element is
+                # already suppressed downstream (its one-sided work item hits
+                # the partial gate) while the EMPTY element leaks a vacuous
+                # ADDED here. treat_as_map is a keyed collection, not a set, so
+                # the KTD-8 carve-out does not apply.
+                if self._partial:
+                    continue
                 right_elem = right_by_key[key]
                 if _has_populated_fields(right_elem):
                     stack.append(_WorkItem(None, right_elem, key_path, depth + 1))

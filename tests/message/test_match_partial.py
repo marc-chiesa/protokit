@@ -500,6 +500,82 @@ class TestPartialMapExtras:
         assert [r.left_value for r in removed] == ["core"]
 
 
+class TestPartialTreatAsMapExtras:
+    """``treat_as_map`` is a keyed collection like ``map<k,v>`` — not a set — so
+    it takes the same actual-is-a-superset suppression, for empty and populated
+    actual-only elements alike."""
+
+    def test_extra_empty_keyed_element_on_actual_suppressed(self) -> None:
+        b = _set_elem_builder()
+        expected = b.build(
+            "test.Container", items=[b.build("test.Item", id="a", value=1)],
+        )
+        actual = b.build(
+            "test.Container",
+            items=[b.build("test.Item", id="a", value=1), b.build("test.Item")],
+        )
+
+        # Baseline: full mode reports the empty actual-only element as ADDED.
+        full = MessageDifferencer()
+        full.treat_as_map("items", key="id")
+        added_full = [a for a in full.compare(expected, actual)
+                      if a.change_type == ChangeType.ADDED]
+        assert [str(a.path) for a in added_full] == ['items[id=""]']
+
+        # Mechanism: partial suppresses it.
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        d.set_partial()
+        assert not d.compare(expected, actual).has_changes()
+
+    def test_extra_populated_keyed_element_on_actual_suppressed(self) -> None:
+        b = _set_elem_builder()
+        expected = b.build(
+            "test.Container", items=[b.build("test.Item", id="a", value=1)],
+        )
+        actual = b.build(
+            "test.Container",
+            items=[
+                b.build("test.Item", id="a", value=1),
+                b.build("test.Item", id="z", value=9),
+            ],
+        )
+
+        full = MessageDifferencer()
+        full.treat_as_map("items", key="id")
+        added_full = [a for a in full.compare(expected, actual)
+                      if a.change_type == ChangeType.ADDED]
+        assert [str(a.path) for a in added_full] == ['items[id="z"].id',
+                                                     'items[id="z"].value']
+
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        d.set_partial()
+        assert not d.compare(expected, actual).has_changes()
+
+    def test_missing_expected_keyed_element_still_removed(self) -> None:
+        """An expected key absent on actual is still REMOVED under partial."""
+        b = _set_elem_builder()
+        expected = b.build(
+            "test.Container",
+            items=[
+                b.build("test.Item", id="a", value=1),
+                b.build("test.Item", id="b", value=2),
+            ],
+        )
+        actual = b.build(
+            "test.Container", items=[b.build("test.Item", id="a", value=1)],
+        )
+
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        d.set_partial()
+        removed = [r for r in d.compare(expected, actual)
+                   if r.change_type == ChangeType.REMOVED]
+        assert [str(r.path) for r in removed] == ['items[id="b"].id',
+                                                  'items[id="b"].value']
+
+
 class TestPartialPresenceBranch:
     """Exercise the ``has_presence`` branch of ``_present_on_expected`` under
     partial via a proto3 ``optional`` field (explicit presence)."""
