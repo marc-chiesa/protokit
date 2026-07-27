@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -424,6 +425,100 @@ class TestFormatterModule:
         # NOT a standalone line.
         assert "\\n" in result.output
         assert "schema is compatible (forged)" not in result.output.splitlines()
+
+    # -- Deferred-FORMATTERS-evaluation guard -------------------------------
+    #
+    # The import-phase guard chain above only wraps
+    # ``importlib.import_module``. ``load_formatter_pack`` is a separate
+    # statement, and it evaluates ``module.FORMATTERS`` (``list(...)``,
+    # i.e. ``__iter__``) AFTER import returns — so a pack can defer its
+    # payload into an iterator and reach a guard chain that used to catch
+    # only ``FormatterError`` / ``(AttributeError, TypeError)``. That is
+    # the same trust boundary (user-supplied Python executing during
+    # pack load) the formatter-systemexit-exit-code-bypass and
+    # keyboardinterrupt-baseexception-bypass-rule-pack-load learnings
+    # cover, one level deferred.
+
+    def test_pack_formatters_iter_sys_exit_does_not_false_green(
+        self, tmp_path: Path,
+    ) -> None:
+        # A ``FORMATTERS`` object whose ``__iter__`` calls
+        # ``sys.exit(0)`` used to terminate the CLI with code 0 and no
+        # error output — the exact false-green CI bypass the
+        # module-body ``except SystemExit`` arm closes, smuggled past
+        # it by deferring the call to iteration time.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            import sys
+            class _Deferred:
+                def __iter__(self):
+                    sys.exit(0)
+            FORMATTERS = _Deferred()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "failed to load formatter pack" in result.output
+        assert "called sys.exit(0)" in result.output
+
+    def test_pack_formatters_iter_keyboard_interrupt_does_not_bypass_guard(
+        self, tmp_path: Path,
+    ) -> None:
+        # Sibling arm: ``KeyboardInterrupt`` from the deferred
+        # evaluation used to escape past ``except (AttributeError,
+        # TypeError)`` and exit via Click's ``Aborted!`` banner at code
+        # 1 — indistinguishable from a legitimate "diff found
+        # incompatibilities" verdict by the CI grep contract.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            class _Deferred:
+                def __iter__(self):
+                    raise KeyboardInterrupt()
+            FORMATTERS = _Deferred()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "failed to load formatter pack" in result.output
+        assert "KeyboardInterrupt" in result.output
+
+    def test_pack_formatters_iter_runtime_error_exits_2(
+        self, tmp_path: Path,
+    ) -> None:
+        # Non-adversarial variant: a plain ``RuntimeError`` raised
+        # during deferred evaluation is neither ``AttributeError`` nor
+        # ``TypeError``, so it used to escape the load guard entirely
+        # and crash the CLI with a raw traceback instead of the
+        # documented exit-2 + ``Error:`` one-liner.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            class _Deferred:
+                def __iter__(self):
+                    raise RuntimeError("deferred boom")
+            FORMATTERS = _Deferred()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert result.exception is None or isinstance(
+            result.exception, SystemExit,
+        ), result.exception
+        assert "failed to load formatter pack" in result.output
+        assert "deferred boom" in result.output
+
+    def test_empty_formatters_under_strict_warnings_exits_2(
+        self, tmp_path: Path,
+    ) -> None:
+        # Third, entirely non-adversarial manifestation: the registry
+        # warns (``UserWarning``) on an empty ``FORMATTERS`` list. Under
+        # ``PYTHONWARNINGS=error`` (common in strict CI) that warning is
+        # raised as an exception from inside ``load_formatter_pack`` and
+        # used to escape the narrow ``(AttributeError, TypeError)``
+        # catch, crashing the CLI with a traceback.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            FORMATTERS = []
+        """))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "failed to load formatter pack" in result.output
 
 
 # ---------------------------------------------------------------------------

@@ -644,6 +644,25 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     ``keyboardinterrupt-baseexception-bypass-rule-pack-load``
     learning's per-surface framework.
 
+    **Same three-arm chain on the pack-load phase.** The import
+    guard above wraps ``importlib.import_module`` only —
+    :func:`~protokit.formatters.load_formatter_pack` is a separate
+    statement, and it evaluates ``module.FORMATTERS`` (iterating it)
+    AFTER import returns. A pack can therefore defer arbitrary code
+    past the import guard by making ``FORMATTERS`` an object whose
+    ``__iter__`` runs the payload: ``sys.exit(0)`` there produced a
+    false-green exit 0, exactly the bypass the import arm closes,
+    one level deferred. The load phase executes user-supplied Python
+    at the same trust boundary, so it gets the same chain. The final
+    arm is the broad ``except Exception`` rather than the original
+    ``(AttributeError, TypeError)``: those two cover only the shapes
+    :func:`load_formatter_pack` raises deliberately, so anything
+    else raised during deferred evaluation — a plain ``RuntimeError``
+    from ``__iter__``, or the registry's own empty-``FORMATTERS``
+    ``UserWarning`` promoted to an error under ``PYTHONWARNINGS=
+    error`` — escaped as a raw traceback instead of the documented
+    exit-2 + ``Error:`` one-liner.
+
     **Output-contract divergences from the lint sibling** (legacy
     compat behavior, intentionally retained):
 
@@ -678,12 +697,22 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
             error_exit(f"failed to import formatter pack {name!r}: {exc}")
         try:
             load_formatter_pack(module)
+        except SystemExit as exc:
+            error_exit(
+                f"failed to load formatter pack {name!r}: "
+                f"called sys.exit({exc.code!r}) at pack-load time"
+            )
+        except KeyboardInterrupt:
+            error_exit(
+                f"failed to load formatter pack {name!r}: "
+                f"raised KeyboardInterrupt at pack-load time"
+            )
         except FormatterError as exc:
             error_exit(
                 f"formatter pack {name!r} conflicts with a reserved "
                 f"built-in name: {exc}"
             )
-        except (AttributeError, TypeError) as exc:
+        except Exception as exc:
             error_exit(f"failed to load formatter pack {name!r}: {exc}")
 
 
