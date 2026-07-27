@@ -121,10 +121,16 @@ def add_testcase(suite: ET.Element, case: ET.Element) -> None:
     suite with empty properties + system-out + system-err
     placeholders, so testcases must be inserted BEFORE the
     first system-out child to satisfy the schema.
+
+    The scan runs BACKWARDS: system-out/system-err are always the
+    last two children (nothing is ever appended after them), so the
+    target is one step from the tail. A forward scan would rescan
+    every already-inserted testcase, making suite construction
+    quadratic — 20k cases took ~4.5s.
     """
     sys_out_index = None
-    for i, child in enumerate(suite):
-        if child.tag == "system-out":
+    for i in range(len(suite) - 1, -1, -1):
+        if suite[i].tag == "system-out":
             sys_out_index = i
             break
     if sys_out_index is None:

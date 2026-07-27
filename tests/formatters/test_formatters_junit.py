@@ -8,6 +8,7 @@ validation against the vendored Apache Ant JUnit schema.
 
 from __future__ import annotations
 
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from protokit.formatters import (
     FormatterKind,
     get_formatter,
 )
+from protokit.formatters import _junit_xml as junit
 from protokit.message import MessageDifferencer
 from protokit.message.model import Diagnostic
 from protokit.schema.model import (
@@ -531,3 +533,65 @@ class TestBisectJunit:
         cases = suite.findall("testcase")
         assert len(cases) == 1
         assert cases[0].find("error") is not None
+
+
+# ---------------------------------------------------------------------------
+# add_testcase scaling guard
+# ---------------------------------------------------------------------------
+
+
+class TestAddTestcaseScaling:
+    """Suite construction must stay linear in the number of testcases.
+
+    ``add_testcase`` locates the seeded ``<system-out>`` placeholder so
+    each case lands before it. A FORWARD scan rescans every previously
+    inserted testcase, making a suite of n cases O(n^2) — 20k cases took
+    ~4.5s. Nothing is ever appended after ``<system-err>``, so the
+    placeholder is always at the tail and a backward scan finds it in
+    O(1).
+    """
+
+    @staticmethod
+    def _median_of_3_s(n: int) -> float:
+        """Build an n-case suite 3 times (plus warmup); return median secs."""
+        def build() -> None:
+            suite = junit.make_testsuite(
+                name="scale", tests=n, failures=0, errors=0,
+            )
+            for i in range(n):
+                junit.add_testcase(
+                    suite, junit.make_testcase(classname="c", name=f"t{i}"),
+                )
+
+        build()  # warmup
+        timings = []
+        for _ in range(3):
+            start = time.perf_counter()
+            build()
+            timings.append(time.perf_counter() - start)
+        timings.sort()
+        return timings[1]
+
+    @pytest.mark.slow
+    def test_suite_construction_scales_linearly(self) -> None:
+        small = self._median_of_3_s(2_000)
+        large = self._median_of_3_s(8_000)
+        # 4x the cases: linear ~4x, quadratic ~16x. 8x leaves generous
+        # headroom for timer noise while still failing a forward scan.
+        ratio = large / small if small else float("inf")
+        assert ratio < 8.0, (
+            f"add_testcase looks superlinear: 2000 cases {small * 1000:.1f}ms, "
+            f"8000 cases {large * 1000:.1f}ms (ratio {ratio:.1f}x)"
+        )
+
+    def test_cases_precede_system_out(self) -> None:
+        # Guards the ordering invariant the fast path relies on.
+        suite = junit.make_testsuite(name="s", tests=3, failures=0, errors=0)
+        for i in range(3):
+            junit.add_testcase(
+                suite, junit.make_testcase(classname="c", name=f"t{i}"),
+            )
+        assert [c.tag for c in suite] == [
+            "properties", "testcase", "testcase", "testcase",
+            "system-out", "system-err",
+        ]
