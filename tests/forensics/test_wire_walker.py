@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from google.protobuf import descriptor_pb2
 
-from protokit.forensics._wire import WalkError, WireObservation, walk_top_level
+from protokit.forensics._wire import (
+    _MAX_GROUP_DEPTH,
+    WalkError,
+    WireObservation,
+    walk_top_level,
+)
 from tests.forensics.fixtures import cls_for
 from tests.forensics.wire_ground_truth import assert_walker_recovers, typed_fdp
 
@@ -54,6 +59,39 @@ def test_nested_groups_record_outer_once() -> None:
     # group(1){ group(2){ field3=5 } }  then  field4=7
     data = b"\x0b" b"\x13" b"\x18\x05" b"\x14" b"\x0c" b"\x20\x07"
     assert walk_top_level(data) == [WireObservation(1, 3), WireObservation(4, 0)]
+
+
+def test_group_nesting_at_the_depth_limit_is_accepted() -> None:
+    """Nesting exactly at the cap still walks — the cap is protobuf's own limit."""
+    # _MAX_GROUP_DEPTH nested start-groups (field 1), all closed, then field 2 = 7.
+    data = b"\x0b" * _MAX_GROUP_DEPTH + b"\x0c" * _MAX_GROUP_DEPTH + b"\x10\x07"
+    assert walk_top_level(data) == [WireObservation(1, 3), WireObservation(2, 0)]
+
+
+def test_group_nesting_beyond_the_depth_limit_rejected() -> None:
+    """One level past the cap is refused, even though the groups are all balanced.
+
+    Without the bound the walk succeeds and the group stack grows with the input,
+    so an attacker's tags — not the byte cap — set the memory ceiling.
+    """
+    depth = _MAX_GROUP_DEPTH + 1
+    data = b"\x0b" * depth + b"\x0c" * depth
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(data)
+    assert "group nesting depth" in str(excinfo.value)
+
+
+def test_deep_start_group_run_fails_on_depth_not_after_the_whole_buffer() -> None:
+    """A start-group flood is refused at the cap, not after the buffer is consumed.
+
+    This is the amplification path the observation ceiling cannot see: every tag
+    pushes onto the group stack while ``observations`` stays empty, so the walk
+    must stop on depth rather than run the input out and report an unterminated
+    group.
+    """
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(b"\x0b" * 100_000)
+    assert "group nesting depth" in str(excinfo.value)
 
 
 def test_mismatched_end_group_rejected() -> None:
