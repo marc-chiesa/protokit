@@ -1,8 +1,8 @@
 """Tests for native protobuf map field comparison."""
 
-from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from protokit.message import ChangeType, diff_messages
+from protokit.message import ChangeType, MessageDifferencer, diff_messages
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -235,3 +235,113 @@ class TestMapOrdering:
         paths = [str(d.path) for d in result]
         # Should be sorted by key
         assert paths == sorted(paths)
+
+
+def _make_map_value_type_change_pools() -> tuple[type, type]:
+    """Two isolated pools where ``t.M.labels`` changed its VALUE type.
+
+    Left declares ``map<string, t.Inner>``; right declares
+    ``map<string, string>``. Both sides' map fields are TYPE_MESSAGE at
+    the outer dispatch (the synthetic MapEntry), so the value-type change
+    is invisible until the entry's ``value`` field is resolved.
+    """
+    left_pool = descriptor_pool.DescriptorPool()
+    lf = descriptor_pb2.FileDescriptorProto(
+        name="map_value_msg.proto", package="t", syntax="proto3",
+    )
+    inner = lf.message_type.add()
+    inner.name = "Inner"
+    ix = inner.field.add()
+    ix.name, ix.number, ix.type = "x", 1, T.TYPE_INT32
+    ix.label = T.LABEL_OPTIONAL
+
+    lm = lf.message_type.add()
+    lm.name = "M"
+    lentry = lm.nested_type.add()
+    lentry.name = "LabelsEntry"
+    lentry.options.CopyFrom(descriptor_pb2.MessageOptions(map_entry=True))
+    lk = lentry.field.add()
+    lk.name, lk.number, lk.type = "key", 1, T.TYPE_STRING
+    lk.label = T.LABEL_OPTIONAL
+    lv = lentry.field.add()
+    lv.name, lv.number, lv.type = "value", 2, T.TYPE_MESSAGE
+    lv.type_name = ".t.Inner"
+    lv.label = T.LABEL_OPTIONAL
+    lmf = lm.field.add()
+    lmf.name, lmf.number, lmf.type = "labels", 1, T.TYPE_MESSAGE
+    lmf.type_name = ".t.M.LabelsEntry"
+    lmf.label = T.LABEL_REPEATED
+    left_pool.Add(lf)
+
+    right_pool = descriptor_pool.DescriptorPool()
+    rf = descriptor_pb2.FileDescriptorProto(
+        name="map_value_scalar.proto", package="t", syntax="proto3",
+    )
+    rm = rf.message_type.add()
+    rm.name = "M"
+    rentry = rm.nested_type.add()
+    rentry.name = "LabelsEntry"
+    rentry.options.CopyFrom(descriptor_pb2.MessageOptions(map_entry=True))
+    rk = rentry.field.add()
+    rk.name, rk.number, rk.type = "key", 1, T.TYPE_STRING
+    rk.label = T.LABEL_OPTIONAL
+    rv = rentry.field.add()
+    rv.name, rv.number, rv.type = "value", 2, T.TYPE_STRING
+    rv.label = T.LABEL_OPTIONAL
+    rmf = rm.field.add()
+    rmf.name, rmf.number, rmf.type = "labels", 1, T.TYPE_MESSAGE
+    rmf.type_name = ".t.M.LabelsEntry"
+    rmf.label = T.LABEL_REPEATED
+    right_pool.Add(rf)
+
+    left_cls = message_factory.GetMessageClass(
+        left_pool.FindMessageTypeByName("t.M"),
+    )
+    right_cls = message_factory.GetMessageClass(
+        right_pool.FindMessageTypeByName("t.M"),
+    )
+    return left_cls, right_cls
+
+
+class TestMapValueTypeChange:
+    """A map whose VALUE type changed message <-> scalar across pools."""
+
+    def test_shared_key_diagnoses_instead_of_crashing(self) -> None:
+        """Both sides holding the key must not push a raw scalar as work."""
+        Left, Right = _make_map_value_type_change_pools()
+        left = Left()
+        left.labels["a"].x = 5
+        right = Right(labels={"a": "hello"})
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert result.warnings, "expected a map-value type-change Diagnostic"
+        msg = str(result.warnings[0])
+        assert "map value" in msg.lower()
+        assert "not compared" in msg.lower()
+        assert result.differences == ()
+
+    def test_left_only_key_diagnoses_instead_of_crashing(self) -> None:
+        """The left-only key branch reads left_value_fd.type independently."""
+        Left, Right = _make_map_value_type_change_pools()
+        left = Left()
+        left.labels["only_left"].x = 5
+        right = Right()
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert result.warnings
+        assert "map value" in str(result.warnings[0]).lower()
+        assert result.differences == ()
+
+    def test_right_only_key_diagnoses_instead_of_crashing(self) -> None:
+        """The right-only key branch reads right_value_fd.type independently."""
+        Left, Right = _make_map_value_type_change_pools()
+        left = Left()
+        right = Right(labels={"only_right": "hello"})
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert result.warnings
+        assert "map value" in str(result.warnings[0]).lower()
+        assert result.differences == ()

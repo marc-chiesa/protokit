@@ -1915,6 +1915,22 @@ class MessageDifferencer:
         left_value_fd = left_fd.message_type.fields_by_name["value"]
         right_value_fd = right_fd.message_type.fields_by_name["value"]
 
+        # Value-type change -> no value comparison. The outer dispatch's
+        # ``_types_compatible`` gate only sees the map field itself, which is
+        # TYPE_MESSAGE (the synthetic MapEntry) on both sides no matter what
+        # the entry's value type is; a message->scalar change therefore slips
+        # through and would push a raw scalar onto the message work stack.
+        # Same disposition as the map<->repeated cardinality change: diagnose
+        # and skip the whole field.
+        if not _types_compatible(left_value_fd.type, right_value_fd.type):
+            warnings.append(Diagnostic(
+                path=str(path),
+                message=f"map value type changed from "
+                        f"{type_name(left_value_fd.type)} to "
+                        f"{type_name(right_value_fd.type)}; values not compared",
+            ))
+            return
+
         for key in sorted(all_keys, key=lambda k: (type(k).__name__, k)):
             key_str = format_key(key)
             key_path = _replace_bracket(path, key_str) if path.segments else path
