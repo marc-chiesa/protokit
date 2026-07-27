@@ -1026,6 +1026,7 @@ class MessageDifferencer:
                         self._emit_one_sided(
                             item.right_msg, right_fd, field_path,
                             differences, stack, item.depth, is_new=True,
+                            warnings=warnings,
                         )
                         continue
                     if left_fd is not None and right_fd is None:
@@ -1035,6 +1036,7 @@ class MessageDifferencer:
                         self._emit_one_sided(
                             item.left_msg, left_fd, field_path,
                             differences, stack, item.depth, is_new=False,
+                            warnings=warnings,
                         )
                         continue
 
@@ -1511,6 +1513,60 @@ class MessageDifferencer:
         )
         # COMPARE is skipped: a missing element is a structural
         # change, not something an equality override should rewrite.
+        self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
+
+    def _emit_one_sided_leaf_with_hooks(
+        self,
+        path: FieldPath,
+        change_type: ChangeType,
+        value: Any,
+        fd: proto_descriptor.FieldDescriptor,
+        parent_msg: Message,
+        *,
+        is_new: bool,
+        diffs: list[Difference],
+        warnings: list[Diagnostic],
+    ) -> None:
+        """Emit a leaf from a one-sided subtree/field through the hooks.
+
+        Sibling of ``_compare_one_sided_scalar_with_hooks``, for the case
+        where the leaf's whole *container* is absent on the other side —
+        a sub-message present on one side only (``_emit_all_fields``) or a
+        field that exists in only one schema (``_emit_one_sided``). Hook
+        coverage must not depend on whether the parent happened to exist:
+        the identical leaf already fires both stages when it is added
+        under an already-present parent.
+
+        Because the other side contributes neither a descriptor nor a
+        parent message, ``left_fd``/``left_msg`` (or the right-hand pair)
+        go into the context as ``None`` — the documented one-sided shape.
+
+        VALIDATE fires; COMPARE is skipped (a presence change is
+        structural, not something an equality override should rewrite);
+        REPORT fires on the diff. Same stage discipline as the
+        both-present one-sided element/key path.
+        """
+        diff = self._make_leaf_diff(path, change_type, value, fd, is_new=is_new)
+        if not self._has_field_hooks():
+            diffs.append(diff)
+            return
+
+        ctx_state = _FieldHookState()
+        ctx = FieldHookContext(
+            path=path,
+            left_fd=None if is_new else fd,
+            right_fd=fd if is_new else None,
+            left_value=None if is_new else value,
+            right_value=value if is_new else None,
+            left_msg=None if is_new else parent_msg,
+            right_msg=parent_msg if is_new else None,
+            left_pool=self._left_pool,
+            right_pool=self._right_pool,
+            _state=ctx_state,
+        )
+        self._fire_field_stage(
+            HookStage.VALIDATE, self._validate_hooks, ctx_state, ctx, warnings,
+        )
         self._emit_with_report(diff, ctx_state, ctx, diffs, warnings, path)
 
     def _compare_scalar_pair_with_hooks(
@@ -2364,8 +2420,8 @@ class MessageDifferencer:
         diffs: list[Difference],
         *,
         is_new: bool,
+        warnings: list[Diagnostic],
         depth: int = 0,
-        warnings: list[Diagnostic] | None = None,
         truncated_paths: list[FieldPath] | None = None,
     ) -> None:
         """Emit leaf-level diffs for all populated fields in a message.
@@ -2380,8 +2436,10 @@ class MessageDifferencer:
             diffs: Accumulator list for Difference objects.
             is_new: If True, values go into ``right_value``; otherwise
                 ``left_value``.
+            warnings: Accumulator list for Diagnostic objects (truncation,
+                and anything raised or reported by a field hook — required
+                because every leaf here is emitted through the hooks).
             depth: Current comparison depth for max_depth enforcement.
-            warnings: Accumulator list for Diagnostic objects (truncation).
             truncated_paths: Accumulator list for truncated FieldPaths.
         """
         # Use an internal stack to handle arbitrary nesting depth.
@@ -2395,12 +2453,11 @@ class MessageDifferencer:
             if self.max_depth is not None and cur_depth > self.max_depth:
                 if truncated_paths is not None:
                     truncated_paths.append(cur_path)
-                if warnings is not None:
-                    warnings.append(Diagnostic(
-                        path=str(cur_path) if cur_path else None,
-                        message=f"comparison truncated at depth {self.max_depth}; "
-                                "differences below this path are not reported",
-                    ))
+                warnings.append(Diagnostic(
+                    path=str(cur_path) if cur_path else None,
+                    message=f"comparison truncated at depth {self.max_depth}; "
+                            "differences below this path are not reported",
+                ))
                 continue
 
             populated = cur_msg.ListFields()
@@ -2435,9 +2492,10 @@ class MessageDifferencer:
                                     field_type=type_name(value_fd.type),
                                 ))
                         else:
-                            diffs.append(self._make_leaf_diff(
-                                key_path, change_type, v, value_fd, is_new=is_new,
-                            ))
+                            self._emit_one_sided_leaf_with_hooks(
+                                key_path, change_type, v, value_fd, cur_msg,
+                                is_new=is_new, diffs=diffs, warnings=warnings,
+                            )
                 elif fd.type == TYPE_MESSAGE and not is_repeated(fd):
                     # Singular sub-message: push for full recursion
                     emit_stack.append((value, field_path, cur_depth + 1))
@@ -2474,13 +2532,15 @@ class MessageDifferencer:
                                     field_type=type_name(fd.type),
                                 ))
                         else:
-                            diffs.append(self._make_leaf_diff(
-                                elem_path, change_type, elem, fd, is_new=is_new,
-                            ))
+                            self._emit_one_sided_leaf_with_hooks(
+                                elem_path, change_type, elem, fd, cur_msg,
+                                is_new=is_new, diffs=diffs, warnings=warnings,
+                            )
                 else:
-                    diffs.append(self._make_leaf_diff(
-                        field_path, change_type, value, fd, is_new=is_new,
-                    ))
+                    self._emit_one_sided_leaf_with_hooks(
+                        field_path, change_type, value, fd, cur_msg,
+                        is_new=is_new, diffs=diffs, warnings=warnings,
+                    )
 
     def _emit_one_sided(
         self,
@@ -2492,6 +2552,7 @@ class MessageDifferencer:
         depth: int,
         *,
         is_new: bool,
+        warnings: list[Diagnostic],
     ) -> None:
         """Handle a field that only exists on one side (ADDED or REMOVED).
 
@@ -2503,6 +2564,9 @@ class MessageDifferencer:
             stack: The iterative comparison work stack.
             depth: Current comparison depth.
             is_new: True for ADDED (right-only), False for REMOVED (left-only).
+            warnings: Accumulator list for Diagnostic objects — every leaf
+                here is emitted through the field hooks, which report
+                raised/warned messages on this list.
         """
         change_type = ChangeType.ADDED if is_new else ChangeType.REMOVED
 
@@ -2536,9 +2600,10 @@ class MessageDifferencer:
                             field_type=type_name(value_fd.type),
                         ))
                 else:
-                    diffs.append(self._make_leaf_diff(
-                        key_path, change_type, v, value_fd, is_new=is_new,
-                    ))
+                    self._emit_one_sided_leaf_with_hooks(
+                        key_path, change_type, v, value_fd, msg,
+                        is_new=is_new, diffs=diffs, warnings=warnings,
+                    )
         elif is_repeated(fd):
             vals = getattr(msg, fd.name)
             for i, elem in enumerate(vals):
@@ -2552,9 +2617,10 @@ class MessageDifferencer:
                             field_type=type_name(fd.type),
                         ))
                 else:
-                    diffs.append(self._make_leaf_diff(
-                        idx_path, change_type, elem, fd, is_new=is_new,
-                    ))
+                    self._emit_one_sided_leaf_with_hooks(
+                        idx_path, change_type, elem, fd, msg,
+                        is_new=is_new, diffs=diffs, warnings=warnings,
+                    )
         else:
             val = getattr(msg, fd.name)
             # Skip unset fields: use HasField for presence-aware fields,
@@ -2564,9 +2630,10 @@ class MessageDifferencer:
                     return
             elif val == fd.default_value:
                 return
-            diffs.append(self._make_leaf_diff(
-                path, change_type, val, fd, is_new=is_new,
-            ))
+            self._emit_one_sided_leaf_with_hooks(
+                path, change_type, val, fd, msg,
+                is_new=is_new, diffs=diffs, warnings=warnings,
+            )
 
 
 # ---------------------------------------------------------------------------
