@@ -480,3 +480,55 @@ class TestProfileCaseNormalization:
         )
         assert result.exit_code == 0, result.output
         assert "error[lint-unknown-profile]:" not in result.stderr
+
+
+class TestProfileAliasOnCliSurface:
+    """Buf-compatibility aliases must resolve through the ``--profile``
+    FLAG, not only through ``[tool.protokit.lint] profile``.
+
+    ``_PROFILE_ALIASES`` claims (comment at its declaration, and
+    ``_coerce_profile``'s docstring) that "both pyproject and CLI input
+    paths flow through ``_coerce_profile``", and README's profiles table
+    advertises ``basic``/``minimal`` with no CLI-vs-pyproject caveat.
+    The unit tests in ``tests/schema/lint/_config/test_profile_aliases.py``
+    cannot pin the CLI half of that claim — they never run the
+    flag-parsing layer — so it lives here, end to end through
+    ``CliRunner``.
+
+    Only ``basic`` is exercised: ``minimal -> essentials`` is a forward
+    placeholder that no shipped pack declares, so it fires R11
+    unknown-profile on BOTH surfaces and is not a divergence.
+    """
+
+    def test_basic_alias_resolves_like_recommended(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """``--profile basic`` must behave exactly like the primary
+        name it aliases. Equivalence (rather than "exit code is not 2")
+        is the assertion because the alias contract is "same profile",
+        not merely "does not error".
+        """
+        alias = CliRunner().invoke(
+            lint_main,
+            ["--profile", "basic", str(clean_descriptor_set)],
+        )
+        primary = CliRunner().invoke(
+            lint_main,
+            ["--profile", "recommended", str(clean_descriptor_set)],
+        )
+        assert "error[lint-unknown-profile]:" not in alias.stderr
+        assert alias.exit_code == primary.exit_code, alias.output
+        assert alias.stdout == primary.stdout
+
+    def test_basic_alias_normalized_before_resolution(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """Case/whitespace normalization runs BEFORE the alias lookup on
+        the CLI surface too, so ``--profile '  BASIC  '`` resolves.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            ["--profile", "  BASIC  ", str(clean_descriptor_set)],
+        )
+        assert "error[lint-unknown-profile]:" not in result.stderr
+        assert result.exit_code != 2, result.output

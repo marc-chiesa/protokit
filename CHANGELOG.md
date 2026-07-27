@@ -122,6 +122,29 @@ All notable changes to `protokit` are documented here. Format loosely follows
   like every other kind. Callers that relied on the default-return must read
   `descriptor.GetOptions().Extensions[ext]` directly.
 
+### Fixed — BREAKING
+- **`protokit lint --profile basic` now resolves the buf-compatibility alias
+  instead of exiting 2.** The `basic` → `recommended` and `minimal` →
+  `essentials` aliases were applied only to `[tool.protokit.lint] profile`; the
+  `--profile` flag bypassed the coercion boundary, so the same name that linted
+  fine from `pyproject.toml` failed on the command line with
+  `error[lint-unknown-profile]`. Both tiers now normalize (strip + lowercase)
+  and resolve aliases in one place. **This changes an exit code**: a script that
+  passes `--profile basic` previously always exited 2 and now lints for real
+  (exit 0 or 1, per findings). `--profile minimal` still fails, unchanged and on
+  both tiers: no built-in pack declares the `essentials` profile it aliases to.
+
+### Fixed
+- **`--proto` compile failures now show the compiler's own error text.** The
+  `error[lint-compile-failed]:` path promised "see stderr for details" while
+  emitting only protokit's own summary line ("protoc compilation failed"); the
+  `file:line:col: ...` text the compiler actually produced, plus the failing
+  command and its exit code, were carried on the diagnostic and never rendered
+  by any code path — not even under `--format=json`, which exits before
+  formatter dispatch. They are now echoed as indented continuation lines,
+  sanitized through the shared stderr helper so compiler output cannot forge a
+  stable `error[lint-...]:` prefix line.
+
 ## 0.14.0 — 2026-06-24
 
 ### Added

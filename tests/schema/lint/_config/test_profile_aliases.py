@@ -119,25 +119,40 @@ class TestAliasesAcrossInputSurfaces:
         assert resolved.profile == ("recommended",)
 
     def test_cli_alias_resolves(self) -> None:
-        """CLI overrides pass the value through ``_coerce_profile``
-        upstream of ``from_dict`` (via the CLI argument-parsing layer);
-        for this unit test we simulate the post-coercion result by
-        passing the alias-resolved value directly. The contract is
-        that BOTH input paths produce the same final tuple.
+        """The CLI override is passed RAW — exactly the
+        ``tuple[str, ...]`` shape ``cli.py`` builds from the flag value,
+        with no coercion pre-applied by the test.
+
+        Pre-applying ``_coerce_profile`` here (the shape this test used
+        to have) made it pass whether or not ``from_dict`` coerced the
+        CLI tier at all, which is how ``--profile basic`` shipped
+        exiting 2 while ``profile = "basic"`` linted. The end-to-end
+        flag path is pinned in
+        ``tests/schema/lint/cli/test_cli_profile_resolution.py``
+        (``TestProfileAliasOnCliSurface``).
+        """
+        resolved = ResolvedLintConfig.from_dict(None, {"profile": ("basic",)})
+        assert resolved.profile == ("recommended",)
+
+    def test_cli_raw_value_is_normalized_then_resolved(self) -> None:
+        """``from_dict`` is the single normalization boundary for the CLI
+        tier: case and surrounding whitespace are folded before the alias
+        lookup, so the flag layer hands its value over untouched.
         """
         resolved = ResolvedLintConfig.from_dict(
-            None, {"profile": _coerce_profile("basic")},
+            None, {"profile": ("  BASIC  ",)},
         )
         assert resolved.profile == ("recommended",)
 
     def test_cli_replaces_pyproject_alias_with_alias(self) -> None:
         """CLI replaces pyproject for ``profile`` — both sides going
         through ``_coerce_profile`` means the CLI's alias takes
-        precedence and resolves through the same mapping.
+        precedence and resolves through the same mapping. The CLI value
+        is raw here for the same reason as above.
         """
         resolved = ResolvedLintConfig.from_dict(
             {"profile": "basic"},
-            {"profile": _coerce_profile("minimal")},
+            {"profile": ("minimal",)},
         )
         assert resolved.profile == ("essentials",)
 
