@@ -281,6 +281,19 @@ class TestLoadFormatterPack:
         with pytest.warns(UserWarning, match="empty FORMATTERS"):
             load_formatter_pack(mod)
 
+    def test_generator_formatters_still_register(self) -> None:
+        # The docstring contract is "an iterable of (name, fn, kind)
+        # 3-tuples", so a generator is in-contract. The emptiness
+        # probe used to drain the one-shot iterable, leaving the
+        # staging loop with nothing to iterate — the pack registered
+        # zero formatters with no warning and no exception.
+        mod = types.ModuleType("pack_generator")
+        mod.FORMATTERS = iter([
+            ("gen-fmt", _identity_formatter, FormatterKind.DIFF),
+        ])
+        load_formatter_pack(mod)
+        assert get_formatter("gen-fmt", FormatterKind.DIFF) is _identity_formatter
+
     def test_two_phase_rollback_on_partial_failure(self) -> None:
         # Pre-populate so the third entry collides and aborts mid-load.
         register_formatter(
