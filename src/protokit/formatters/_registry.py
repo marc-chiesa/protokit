@@ -272,7 +272,12 @@ def load_formatter_pack(module: Any) -> None:
         module: Imported Python module (typically returned by
             ``importlib.import_module``).
     """
-    formatters_attr = module.FORMATTERS  # AttributeError propagates
+    # Materialize once. ``FORMATTERS`` is documented as an
+    # *iterable*, so a one-shot generator is in-contract — probing
+    # emptiness on the raw attribute would drain it and leave the
+    # staging loop below with nothing to iterate, registering zero
+    # formatters with no warning and no error.
+    entries = list(module.FORMATTERS)  # AttributeError propagates
     # An empty FORMATTERS list registers nothing. Most common
     # cause is a typo (the intended list was bound to a
     # differently-named attribute). Warn loudly so the
@@ -283,7 +288,7 @@ def load_formatter_pack(module: Any) -> None:
     # imports) can silence via
     # ``warnings.filterwarnings("ignore", ...)`` on their
     # side.
-    if not list(formatters_attr):
+    if not entries:
         warnings.warn(
             f"formatter pack {module.__name__!r} exposes an "
             "empty FORMATTERS list; no formatters registered",
@@ -292,7 +297,7 @@ def load_formatter_pack(module: Any) -> None:
         )
         return
     staged: list[tuple[str, Formatter, FormatterKind]] = []
-    for entry in formatters_attr:
+    for entry in entries:
         if not (isinstance(entry, tuple) and len(entry) == 3):
             raise TypeError(
                 f"formatter pack {module.__name__!r}: "
