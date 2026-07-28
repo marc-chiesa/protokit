@@ -16,7 +16,9 @@ output then comes from the existing CLI integration tests in
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import xml.etree.ElementTree as ET
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
@@ -26,7 +28,7 @@ from protokit.formatters import (
     get_formatter,
 )
 from protokit.message import MessageDifferencer
-from protokit.message.model import Diagnostic
+from protokit.message.model import Diagnostic, DiffResult
 from protokit.schema.model import (
     BisectReport,
     CommitDiagnostic,
@@ -100,6 +102,55 @@ class TestBuiltinRegistration:
 # ---------------------------------------------------------------------------
 # DIFF — formatter output matches legacy CLI rendering
 # ---------------------------------------------------------------------------
+
+
+class TestDiffJunitErrorDiagnostics:
+    """An error-level diagnostic must not render as a clean pass.
+
+    ``Diagnostic``'s own contract says an ``"error"`` means the tool
+    itself broke and "CI callers should treat any ``error`` as a
+    fail-closed condition **even if the filtered findings list is
+    empty**". ``diff_junit`` hard-coded ``errors=0`` and piped only
+    ``result.warnings`` into ``<system-out>``, so ``result.errors``
+    reached no output at all: a plugin crash or hook exception during a
+    comparison that found no differences produced
+    ``tests=1 failures=0 errors=0`` and a green CI job.
+    """
+
+    @staticmethod
+    def _equal_result_with_error() -> DiffResult:
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        result = MessageDifferencer().compare(cls(name="A"), cls(name="A"))
+        assert not result.has_changes()
+        return dataclasses.replace(
+            result,
+            diagnostics=(
+                Diagnostic(level="error", path=None, message="plugin exploded"),
+            ),
+        )
+
+    def test_error_diagnostic_is_counted_and_rendered(self) -> None:
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(self._equal_result_with_error(), FormatterContext(subcommand="diff"))
+        root = ET.fromstring(out)
+        assert root.get("errors") == "1", "error diagnostic not counted in the suite"
+        assert "plugin exploded" in out, "error diagnostic text absent from the output"
+
+    def test_warning_only_result_still_reports_zero_errors(self) -> None:
+        """The existing warning path must keep its current shape."""
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        base = MessageDifferencer().compare(cls(name="A"), cls(name="A"))
+        result = dataclasses.replace(
+            base,
+            diagnostics=(Diagnostic(level="warning", path=None, message="heads up"),),
+        )
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(result, FormatterContext(subcommand="diff"))
+        root = ET.fromstring(out)
+        assert root.get("errors") == "0"
+        assert "heads up" in out
 
 
 class TestDiffFormatters:

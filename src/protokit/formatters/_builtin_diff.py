@@ -338,12 +338,17 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
     has_changes = result.has_changes()
     n = len(result)
     failures = 1 if has_changes else 0
+    # An error-level diagnostic means the tool itself broke (plugin crash,
+    # hook exception), and Diagnostic's contract is that CI must treat it as
+    # fail-closed EVEN WHEN no differences were found. Counting it here is
+    # what stops an equal-but-broken comparison rendering as a green job.
+    errors = 1 if result.errors else 0
 
     suite = junit.make_testsuite(
         name="protokit-diff",
         tests=1,
         failures=failures,
-        errors=0,
+        errors=errors,
     )
     case = junit.make_testcase(
         classname="diff", name="messages-equal",
@@ -356,6 +361,16 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
             message=f"{n} difference{plural} found",
             type_="diff",
             body=body,
+        )
+    if result.errors:
+        # Separate from <failure>: a failure is "the messages differ" (a real
+        # verdict), an error is "the comparison itself is untrustworthy", and
+        # the two can co-occur. Both belong on the single testcase.
+        junit.append_error(
+            case,
+            message=f"{len(result.errors)} error-level diagnostic(s)",
+            type_="diagnostic",
+            body="\n".join(str(d) for d in result.errors),
         )
     junit.add_testcase(suite, case)
     if result.warnings:
