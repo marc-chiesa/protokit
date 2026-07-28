@@ -43,6 +43,15 @@ class _IncompleteVarintError(Exception):
         super().__init__(reason)
 
 
+class _NonBlockingStreamError(_IncompleteVarintError):
+    """Internal: the stream returned ``None`` — no data ready, not EOF.
+
+    A subclass so the existing ``_IncompleteVarintError`` handler routes it
+    into the same ``FrameError`` channel as any other framing fault; the
+    distinct type keeps the two causes separable for callers that care.
+    """
+
+
 def _read_varint(file: BinaryIO) -> tuple[int, int] | None:
     """Read one base-128 varint from ``file``.
 
@@ -56,6 +65,16 @@ def _read_varint(file: BinaryIO) -> tuple[int, int] | None:
     consumed = 0
     while True:
         chunk = file.read(1)
+        if chunk is None:
+            # RawIOBase.read returns None when no data is READY, which is
+            # distinct from b"" (end of stream). `not None` is True, so this
+            # used to take the clean-EOF branch below: every remaining frame
+            # was dropped, the generator completed normally, and the caller
+            # got a silently truncated result with no fault to inspect.
+            raise _NonBlockingStreamError(
+                "non-blocking stream returned None mid-scan; "
+                "length_delimited requires a blocking stream"
+            )
         if not chunk:
             if consumed == 0:
                 return None  # clean EOF — no partial frame in progress
@@ -89,6 +108,13 @@ def _read_exact(file: BinaryIO, n: int) -> bytes:
     remaining = n
     while remaining > 0:
         chunk = file.read(remaining)
+        if chunk is None:
+            # None = no data READY (non-blocking); b"" = end of stream. Without
+            # this the body would be silently short and reported as truncation.
+            raise _NonBlockingStreamError(
+                "non-blocking stream returned None mid-frame; "
+                "length_delimited requires a blocking stream"
+            )
         if not chunk:  # 0-byte read = genuine EOF / truncation
             break
         chunks.append(chunk)
