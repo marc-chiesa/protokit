@@ -169,8 +169,16 @@ class MatchPolicy:
         ``presence`` invariant rejects a non-``MessageFieldComparison`` value
         before it silently no-ops at compare time.
         """
-        object.__setattr__(self, "as_set", tuple(self.as_set))
-        object.__setattr__(self, "ignore", tuple(self.ignore))
+        # `_as_tuple`, not `tuple(...)`: a bare `str` is a single dotted path
+        # but is also iterable, so `tuple("name")` silently yields four
+        # single-character selectors that match nothing — the field the caller
+        # asked to ignore gets compared anyway, with no error to notice. The
+        # front-ends already coerce through `_as_tuple`; this makes direct
+        # construction agree with them.
+        object.__setattr__(self, "as_set", _as_tuple(self.as_set))
+        object.__setattr__(self, "ignore", _as_tuple(self.ignore))
+        # approx_overlays holds (selector, Approx) PAIRS, not bare selectors,
+        # so a plain snapshot is right here — a tuple of 2-tuples.
         object.__setattr__(self, "approx_overlays", tuple(self.approx_overlays))
 
         # Paired-field invariant: ``presence`` discriminates how float/message
