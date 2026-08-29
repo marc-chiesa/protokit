@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -69,8 +70,9 @@ _LINT_PATHS: tuple[str, ...] = (
 )
 
 # Paths gated by ``mypy --strict`` (configuration in pyproject.toml).
-# Mirrors the CI step in .github/workflows/ci.yml; if you add a path
-# here also update CI so local and CI stay in lockstep.
+# Mirrors the CI step in .github/workflows/ci.yml; add a path to BOTH
+# sites in one commit. ``test_ci_mypy_step_matches_type_check_paths``
+# enforces that — this list alone is not the gate.
 _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/forensics",
@@ -139,6 +141,59 @@ def test_ruff_check_clean_on_gated_paths() -> None:
         "ruff check failed on gated paths.\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
+    )
+
+
+_CI_YAML = ".github/workflows/ci.yml"
+_CI_MYPY_STEP = "Run mypy (scoped to ratcheted surface)"
+
+
+def _ci_mypy_paths() -> tuple[str, ...]:
+    """The paths ci.yml's scoped mypy step actually passes to mypy.
+
+    Reads the workflow's own YAML (``safe_load``, never ``load``) rather than
+    regexing the file, so a reformatted ``run:`` block does not silently start
+    matching nothing and reporting an empty — and therefore trivially
+    "in-lockstep" — path list.
+    """
+    workflow = yaml.safe_load((_REPO_ROOT / _CI_YAML).read_text())
+    scripts = [
+        step["run"]
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("name") == _CI_MYPY_STEP
+    ]
+    assert len(scripts) == 1, (
+        f"expected exactly one {_CI_MYPY_STEP!r} step in {_CI_YAML}, "
+        f"found {len(scripts)}. Update this test alongside the workflow."
+    )
+    tokens = scripts[0].replace("\\\n", " ").split()
+    assert tokens[:4] == ["python", "-m", "mypy"] or tokens[:3] == [
+        "python", "-m", "mypy",
+    ], f"unexpected mypy invocation shape in {_CI_YAML}: {tokens[:4]!r}"
+    return tuple(t.rstrip("/") for t in tokens[3:] if not t.startswith("-"))
+
+
+def test_ci_mypy_step_matches_type_check_paths() -> None:
+    """``ci.yml``'s mypy step and ``_TYPE_CHECK_PATHS`` gate the same paths.
+
+    The two lists are maintained by hand in two files, and until this test
+    existed nothing compared them: ``test_mypy_strict_clean_on_gated_paths``
+    reads only ``_TYPE_CHECK_PATHS`` and never opens the workflow, so a path
+    added to one and not the other left a green ratchet that was **not**
+    evidence of the lockstep the workflow's comment claimed. It drifted
+    exactly that way — ``src/protokit/forensics`` was ratcheted locally while
+    CI never type-checked it.
+
+    If this fails, add the path to BOTH sites in the same commit.
+    """
+    assert set(_ci_mypy_paths()) == set(_TYPE_CHECK_PATHS), (
+        f"mypy gate drift between {_CI_YAML} and _TYPE_CHECK_PATHS.\n"
+        f"  only in {_CI_YAML}: "
+        f"{sorted(set(_ci_mypy_paths()) - set(_TYPE_CHECK_PATHS))}\n"
+        f"  only in _TYPE_CHECK_PATHS: "
+        f"{sorted(set(_TYPE_CHECK_PATHS) - set(_ci_mypy_paths()))}\n"
+        "Add the path to BOTH sites in the same commit."
     )
 
 

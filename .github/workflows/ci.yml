@@ -138,14 +138,19 @@ jobs:
         # Strict-mode mypy is configured in pyproject.toml but the
         # broader codebase has ~30 pre-existing strict-mode errors.
         # This step gates ONLY the modules currently in
-        # tests/meta/test_static_analysis.py:_TYPE_CHECK_PATHS — the lockstep
-        # is enforced by that test (any divergence between this list
-        # and the ratchet trips the ratchet test). Future deliveries
+        # tests/meta/test_static_analysis.py:_TYPE_CHECK_PATHS. The
+        # lockstep is enforced by
+        # test_ci_mypy_step_matches_type_check_paths, which parses THIS
+        # step's path list out of this file and compares it to
+        # _TYPE_CHECK_PATHS — the mypy ratchet itself never reads this
+        # file, so before that guard existed a path could be added to
+        # one side only and the ratchet still passed. Future deliveries
         # widen the scope by extending BOTH the path list here AND
         # _TYPE_CHECK_PATHS in tests/meta/test_static_analysis.py.
         run: |
           python -m mypy \
             src/protokit/_cli_utils.py \
+            src/protokit/forensics/ \
             src/protokit/formatters/_builtin_lint.py \
             src/protokit/message/_presence.py \
             src/protokit/message/_selector.py \
