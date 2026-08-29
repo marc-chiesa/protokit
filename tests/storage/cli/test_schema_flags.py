@@ -131,3 +131,30 @@ def test_bad_where_is_exit_2(
     )
     assert result.exit_code == 2
     assert "Python callable API" in result.stderr
+
+
+def test_proto_path_with_desc_is_exit_2(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """``-I`` is a .proto compile flag; with ``--desc`` it was silently ignored.
+
+    A descriptor set carries its imports already resolved, so nothing consumes
+    ``proto_paths`` on that branch. Accepting the flag and dropping it tells the
+    user their import path took effect when it never could.
+    """
+    desc, _cls = desc_and_cls
+    data = data_file_factory([])
+    result = _run(
+        runner,
+        [
+            "storage", "count", str(data),
+            "--desc", str(desc), "--type", "a.A",
+            "-I", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "--proto-path" in result.stderr
+    assert "--desc" in result.stderr

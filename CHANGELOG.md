@@ -16,7 +16,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 ## Unreleased
 
 > **Upgrade note.** This release is dominated by an internal code audit that
-> found and fixed 20 defects. Five of them change observable behaviour, and a
+> found and fixed 20 defects. Seven of them change observable behaviour, and a
 > passing pipeline can go red on upgrade **without any schema or code change on
 > your side** — in every case because protokit previously returned a wrong
 > answer quietly:
@@ -28,6 +28,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | Cycle-truncated cache | recursive schemas surface breaks that were silently dropped, so `compat` may report more findings |
 > | `get_option_value` | returns `None` for an unset extension instead of its type default |
 > | `lint --profile basic` | resolves the alias and lints, instead of always exiting 2 |
+> | `storage --where ''` | exits 2 (`empty expression`) instead of silently scanning every record |
+> | `storage -I` with `--desc` | exits 2 instead of accepting an import path it could never apply |
 >
 > Field hooks also now fire for one-sided subtrees, and `strict_schema` now
 > validates the root message type — both mean opt-in callers see diagnostics or
@@ -131,6 +133,20 @@ All notable changes to `protokit` are documented here. Format loosely follows
   any of those, so no valid schema is rejected.
 
 ### Fixed — BREAKING
+- **`protokit storage` now rejects two flag forms it used to accept and ignore.**
+  Both silently discarded what the user asked for:
+  - An **empty `--where ''`** was truthiness-tested, so it read as "no filter"
+    and every record was returned. It now reaches the expression compiler like
+    any other value and fails with `empty expression` (exit 2) — the contract
+    `--fields ''` already had.
+  - **`-I` / `--proto-path` alongside `--desc`** was parsed and dropped, because
+    a descriptor set carries its imports already resolved and nothing on that
+    branch reads an import path. It is now a usage error (exit 2) naming the
+    `--proto` branch it belongs to, like the other flag-group violations.
+
+  **Both change an exit code**: a script passing either form previously exited 0
+  and now exits 2. Neither could ever have done what it looked like it did.
+
 - **`protokit lint --profile basic` now resolves the buf-compatibility alias
   instead of exiting 2.** The `basic` → `recommended` and `minimal` →
   `essentials` aliases were applied only to `[tool.protokit.lint] profile`; the
