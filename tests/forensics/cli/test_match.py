@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from protokit.cli import main
@@ -134,6 +135,35 @@ def test_oversized_message_exits_2(runner: CliRunner, tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "exceeding --max-message-bytes" in result.stderr
+    assert "is 2 bytes" in result.stderr  # regular file: the real size, exactly
+
+
+@pytest.mark.skipif(not Path("/dev/zero").exists(), reason="needs a POSIX /dev/zero")
+def test_oversized_non_regular_input_does_not_claim_zero_bytes(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """A non-regular input must not be refused as "0 bytes".
+
+    ``stat().st_size`` is 0 for exactly the inputs the cap matters most for — a
+    FIFO, ``/dev/stdin``, a process substitution — so reporting it there claimed
+    the input was 0 bytes while refusing it for being too large. ``/dev/zero``
+    stands in: an endless reader whose ``st_size`` is 0.
+    """
+    schema = fdp({"x": 1})
+    write_desc(tmp_path / "v.desc", schema)
+
+    result = _invoke(
+        runner,
+        "/dev/zero",
+        "--schema", f"v={tmp_path / 'v.desc'}",
+        "--type", "a.A",
+        "--max-message-bytes", "16",
+    )
+
+    assert result.exit_code == 2
+    assert "exceeding --max-message-bytes" in result.stderr
+    assert "is 0 bytes" not in result.stderr
+    assert "at least 17 bytes" in result.stderr
 
 
 def test_malformed_desc_exits_2(runner: CliRunner, tmp_path: Path) -> None:

@@ -19,16 +19,31 @@ class ForensicsError(StorageError):
 class MessageTooLargeError(ForensicsError):
     """The input message exceeds the configured ``--max-message-bytes`` cap.
 
-    Raised before the file is read or parsed (KTD10) so a crafted or accidental
-    huge blob cannot drive a large read or the N per-candidate parses.
+    Raised as soon as a bounded read of ``limit + 1`` bytes comes back full
+    (KTD10), so a crafted or accidental huge blob drives neither a large read
+    nor the N per-candidate parses.
+
+    Attributes:
+        size: The input's size in bytes. Exact only when ``size_is_exact``;
+            otherwise a lower bound, because the reported size comes from the
+            bounded read rather than ``stat()``.
+        size_is_exact: Whether :attr:`size` is the input's true size.
+            ``stat().st_size`` is meaningful only for a regular file — it is 0
+            for a FIFO, ``/dev/stdin``, or a process substitution, exactly the
+            inputs a cap matters most for — so for those the bounded read's
+            length is reported instead, and this is ``False``.
     """
 
-    def __init__(self, path: Path, size: int, limit: int) -> None:
+    def __init__(
+        self, path: Path, size: int, limit: int, *, size_is_exact: bool = True
+    ) -> None:
         self.path = path
         self.size = size
         self.limit = limit
+        self.size_is_exact = size_is_exact
+        measured = f"{size} bytes" if size_is_exact else f"at least {size} bytes"
         super().__init__(
-            f"message {path} is {size} bytes, exceeding --max-message-bytes "
+            f"message {path} is {measured}, exceeding --max-message-bytes "
             f"{limit} (raise --max-message-bytes to allow)"
         )
 
