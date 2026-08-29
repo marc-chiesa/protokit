@@ -16,7 +16,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 ## Unreleased
 
 > **Upgrade note.** This release is dominated by an internal code audit that
-> found and fixed 20 defects. Seven of them change observable behaviour, and a
+> found and fixed 20 defects. Eight of them change observable behaviour, and a
 > passing pipeline can go red on upgrade **without any schema or code change on
 > your side** — in every case because protokit previously returned a wrong
 > answer quietly:
@@ -30,6 +30,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint --profile basic` | resolves the alias and lints, instead of always exiting 2 |
 > | `storage --where ''` | exits 2 (`empty expression`) instead of silently scanning every record |
 > | `storage -I` with `--desc` | exits 2 instead of accepting an import path it could never apply |
+> | `proto_matcher(expected, partial=…)` | raises `MatcherError` instead of returning a default-policy matcher |
 >
 > Field hooks also now fire for one-sided subtrees, and `strict_schema` now
 > validates the root message type — both mean opt-in callers see diagnostics or
@@ -133,6 +134,19 @@ All notable changes to `protokit` are documented here. Format loosely follows
   any of those, so no valid schema is rejected.
 
 ### Fixed — BREAKING
+- **The `proto_matcher` fixture's fluent form now rejects single-call policy
+  keywords instead of dropping them.** `proto_matcher(expected, partial=True)`
+  reads as configuring the matcher, but the policy keywords are single-call-only:
+  the fluent branch returned a **default-policy** matcher and discarded them. A
+  test written that way silently asserted something stricter than its author
+  intended, and passed only while the messages happened to be fully equal.
+  Passing any of `partial` / `as_set` / `ignore` / `presence` / `approx` /
+  `margin` / `fraction` to the one-message form now raises `MatcherError`
+  naming each offender and its fluent equivalent (`.partially()`,
+  `.ignoring(...)`, …). Passing a keyword at its default value is still a no-op.
+  **This can turn a passing test into an error** — that test was not applying
+  the policy it named.
+
 - **`protokit storage` now rejects two flag forms it used to accept and ignore.**
   Both silently discarded what the user asked for:
   - An **empty `--where ''`** was truthiness-tested, so it read as "no filter"
