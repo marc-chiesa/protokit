@@ -143,6 +143,25 @@ All notable changes to `protokit` are documented here. Format loosely follows
   both tiers: no built-in pack declares the `essentials` profile it aliases to.
 
 ### Fixed
+- **`lint`'s R6 deprecated-replacement rules no longer scale quadratically with
+  file size.** Each of the five rules resolved its element's leading comment by
+  walking the file's *entire* `SourceCodeInfo` for one matching `Location`, and a
+  rule fires once per element — so the cost of linting one file grew with the
+  square of its size. A message with 100 / 200 / 400 / 800 deprecated fields cost
+  **11 / 42 / 168 / 677 ms**, the exact 4x-per-doubling signature. The
+  `{path: leading comment}` map is now built in a single pass and cached per file
+  for the duration of an `engine.run()`, which is all the rules ever needed:
+  the same walk now costs **1.0 / 1.7 / 3.2 / 6.4 ms** — linear, and 106x faster
+  at 800 fields. Findings are unchanged; the index preserves the old scan's
+  first-`Location`-wins tie-break. This was the second measured quadratic found
+  by the audit (the JUnit one is also fixed in this release).
+
+  The cache is keyed per engine and reset on each `engine.run()`, so a long-lived
+  runtime that recycles an engine across sessions re-indexes rather than serving
+  a stale map. That per-engine/per-run mechanism now lives in one shared helper
+  (`protokit.schema.lint._engine_run_state`) rather than being open-coded a third
+  time; the two existing dedup call sites were migrated onto it.
+
 - **`reserved N to max;` no longer OOM-kills every `compat` subcommand.**
   The `reserved_field_reused` rule expanded each reserved range into a `set` of
   integers. The standard proto idiom `reserved 1000 to max;` round-trips as

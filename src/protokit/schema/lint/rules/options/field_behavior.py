@@ -111,6 +111,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr
+from protokit.schema.lint._engine_run_state import engine_for_ctx, per_run_state
 from protokit.schema.lint._extension_access import (
     get_pool_bound_options_class,
     resolve_enum_value_for_comparison,
@@ -119,7 +120,6 @@ from protokit.schema.lint.decorator import lint_rule
 from protokit.schema.lint.model import (
     ElementKind,
     FieldLintContext,
-    LintRuleError,
     LintRuntimeWarning,
     LintSeverity,
 )
@@ -210,53 +210,15 @@ assert all(a < b for a, b in _CONTRADICTORY_PAIRS), (
 #: The zero-value identifier the rule flags as ``unspecified-value``.
 _UNSPECIFIED_VALUE: str = "FIELD_BEHAVIOR_UNSPECIFIED"
 
-# Per-engine + per-run dedup map for unresolved-extension warnings.
-# Keyed by engine instance (via ``WeakKeyDictionary`` so dedup state
-# is collected when the engine is GC'd — no cross-engine leakage, no
-# manual reset). Value is ``(runtime_warnings_list_id, dedup_set)``;
-# ``id(engine._runtime_warnings)`` changes on every ``engine.run()``
-# entry (the engine assigns a fresh list at engine.py:418), so a
-# mismatched id signals a NEW run and the dedup set is reset
-# automatically. This closes the cross-run dedup leak documented at
-# ce:review COR-1 / ADV-1: without the per-run reset, a second
-# ``engine.run()`` on the same engine would silently emit zero
-# warnings even though the unresolved-extension condition still
-# holds for the second run.
+# Per-engine + per-run dedup map for unresolved-extension warnings, read
+# through :func:`~protokit.schema.lint._engine_run_state.per_run_state`.
+# That helper owns the isolation and reset mechanics; the leak it closes
+# is a second ``engine.run()`` on the same engine silently emitting zero
+# warnings while the unresolved-extension condition still holds (ce:review
+# COR-1 / ADV-1).
 _UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
     weakref.WeakKeyDictionary()
 )
-
-
-def _engine_for_ctx(ctx: FieldLintContext) -> LintEngine:
-    """Return the active ``LintEngine`` for a given context.
-
-    ``FieldLintContext`` doesn't expose a public ``engine`` attribute,
-    but the engine threads itself in via ``ctx._emit_fn``, which is
-    the engine's bound ``_emit`` method. The bound method's
-    ``__self__`` IS the active engine instance — the cleanest path
-    for built-in rules that need to enqueue runtime warnings without
-    requiring a public surface change on ``LintContext``.
-
-    Raises:
-        LintRuleError: if ``ctx._emit_fn`` is not a bound method (the
-            engine's context-construction shape changed). Raising
-            ``LintRuleError`` (NOT bare ``RuntimeError``) routes the
-            failure through ``_RULE_EXCEPTION_TUPLE`` so the engine
-            records a ``rule_exception`` runtime warning and continues
-            walking remaining files rather than hard-crashing
-            ``engine.run()``. Failing loudly via the rule_exception
-            channel is the project's discipline for structural-env
-            failures inside rule callables.
-    """
-    emit_fn = ctx._emit_fn
-    engine = getattr(emit_fn, "__self__", None)
-    if engine is None:
-        raise LintRuleError(
-            "options/field-behavior-consistent could not resolve the "
-            "active LintEngine through ctx._emit_fn. The context shape "
-            "changed; update _engine_for_ctx accordingly."
-        )
-    return engine  # type: ignore[no-any-return]
 
 
 def _emit_unresolved_extension(ctx: FieldLintContext) -> None:
@@ -278,16 +240,8 @@ def _emit_unresolved_extension(ctx: FieldLintContext) -> None:
     on the same engine (via the id-mismatch detection) without
     needing a public engine-side reset hook.
     """
-    engine = _engine_for_ctx(ctx)
-    current_id = id(engine._runtime_warnings)
-    state = _UNRESOLVED_SEEN.get(engine)
-    if state is None or state[0] != current_id:
-        # New engine (no prior state) OR same engine but fresh
-        # _runtime_warnings list (= new run() call).
-        seen: set[tuple[str, str]] = set()
-        _UNRESOLVED_SEEN[engine] = (current_id, seen)
-    else:
-        seen = state[1]
+    engine = engine_for_ctx(ctx, RULE_ID)
+    seen = per_run_state(_UNRESOLVED_SEEN, engine, set)
     file_name = ctx.file.name
     dedup_key = (RULE_ID, file_name)
     if dedup_key in seen:

@@ -4,7 +4,7 @@ Bridges :attr:`protokit.schema.compile.CompileResult.source_info_descriptors`
 to rule bodies that need to read proto-source comments — currently the
 R6 deprecated-replacement rule family.
 
-Two module-level free functions:
+Three module-level free functions plus one cached accessor:
 
 * :func:`descriptor_path` — encode a descriptor as the
   ``source_code_info.location[].path`` ``tuple[int, ...]`` coordinates.
@@ -12,22 +12,33 @@ Two module-level free functions:
   ``MethodDescriptor``, ``Descriptor`` (message), and ``EnumDescriptor``.
   Handles both top-level and nested cases by walking the descriptor's
   parent chain (``containing_type``, ``containing_service``, ``type``).
-* :func:`leading_comment` — leaf lookup that walks a
-  ``FileDescriptorProto``'s ``source_code_info.location[]`` for the
-  ``Location`` whose ``path`` matches, returning the stripped
-  ``leading_comments`` or ``None`` for every shape of missing data.
+* :func:`comment_index` — build one file's whole
+  ``{path: leading comment}`` mapping from its
+  ``source_code_info.location[]`` in a single pass.
+* :func:`leading_comment` — single-path leaf lookup over that mapping,
+  returning the stripped ``leading_comments`` or ``None`` for every shape
+  of missing data. It builds the index per call, so it is for callers
+  resolving *one* path.
+* :func:`run_comment_index` — the same index, built at most once per file
+  per ``engine.run()``. **Rules must use this one**: a rule fires once per
+  element, and rebuilding (or rescanning) the file's whole SourceCodeInfo
+  on each firing is quadratic in file size — measured at 11 ms / 42 ms /
+  168 ms / 677 ms for 100 / 200 / 400 / 800 deprecated fields before the
+  index was cached, and flat afterwards.
 
-The two helpers are split to keep concerns isolated:
-``descriptor_path`` is pure descriptor introspection (no source-info
-mapping involved); ``leading_comment`` is pure mapping lookup (no
-descriptor introspection). Each is independently unit-testable; their
-co-location keeps the U3 callers' import surface single-line:
+The helpers are split to keep concerns isolated: ``descriptor_path`` is
+pure descriptor introspection (no source-info mapping involved), while
+the index/lookup helpers are pure mapping work (no descriptor
+introspection). Each is independently unit-testable; their co-location
+keeps the R6 callers' import surface single-line:
 
     from protokit.schema.lint.rules.options._comments import (
-        descriptor_path, leading_comment,
+        descriptor_path, run_comment_index,
     )
-    path = descriptor_path(ctx.field)
-    comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, path)
+    comments = run_comment_index(
+        engine, ctx.source_info_descriptors, ctx.file.name
+    )
+    comment = comments.get(descriptor_path(ctx.field))
 
 **Cold-import contract.** This module sits under
 ``protokit.schema.lint.rules.options.*`` — already a lazy-load subtree
@@ -57,10 +68,13 @@ notes for the full encoding.
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from google.protobuf import descriptor as proto_descriptor
+
+from protokit.schema.lint._engine_run_state import per_run_state
 
 if TYPE_CHECKING:
     # TYPE_CHECKING-guarded to keep ``descriptor_pb2`` (and its ~8
@@ -68,6 +82,8 @@ if TYPE_CHECKING:
     # per K-3. Annotation is a string under ``from __future__ import
     # annotations`` so this import never resolves at runtime.
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
+
+    from protokit.schema.lint.engine import LintEngine
 
 
 # Wire-tag constants from descriptor.proto. Named for readability; the
@@ -199,6 +215,96 @@ def descriptor_path(descriptor: object) -> tuple[int, ...]:
     )
 
 
+#: Per-engine + per-run leading-comment indexes, keyed
+#: ``{file_name: {path: comment}}``. See
+#: :mod:`protokit.schema.lint._engine_run_state` for why the store is a
+#: ``WeakKeyDictionary`` and how the entry resets on a new ``engine.run()``.
+_RUN_COMMENT_INDEXES: weakref.WeakKeyDictionary[
+    LintEngine, tuple[int, dict[str, dict[tuple[int, ...], str | None]]]
+] = weakref.WeakKeyDictionary()
+
+
+def comment_index(
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None,
+    file_name: str,
+) -> dict[tuple[int, ...], str | None]:
+    """Build ``file_name``'s whole ``{path: leading comment}`` map in one pass.
+
+    Walks ``source_info_descriptors[file_name].source_code_info.location[]``
+    once and records, for each distinct ``Location.path``, the *first*
+    location's ``leading_comments`` stripped of leading and trailing
+    whitespace — or ``None`` when that strips to empty. First-wins mirrors
+    the single-path scan this replaced, so a duplicate path with a comment
+    does not override an earlier blank one.
+
+    **Values are UNSANITIZED**, exactly as :func:`leading_comment` returns
+    them; see that function for the sanitization contract callers owe.
+
+    Args:
+        source_info_descriptors: The mapping from
+            ``CompileResult.source_info_descriptors``, or ``None`` when the
+            caller did not opt into preserving ``source_code_info``.
+        file_name: The proto file name as it appears on the matching
+            ``FileDescriptor.name`` (e.g., ``"demo.proto"``), matched
+            literally with no normalization.
+
+    Returns:
+        The path-to-comment mapping, empty when ``source_info_descriptors``
+        is ``None``, ``file_name`` is absent, or the file carries no
+        source info. A present path may map to ``None``.
+    """
+    if source_info_descriptors is None:
+        return {}
+    fd_proto = source_info_descriptors.get(file_name)
+    if fd_proto is None:
+        return {}
+    index: dict[tuple[int, ...], str | None] = {}
+    for loc in fd_proto.source_code_info.location:
+        key = tuple(loc.path)
+        if key not in index:  # first location wins, as the old scan did
+            text = loc.leading_comments.strip()
+            index[key] = text if text else None
+    return index
+
+
+def run_comment_index(
+    engine: LintEngine,
+    source_info_descriptors: Mapping[str, FileDescriptorProto] | None,
+    file_name: str,
+) -> dict[tuple[int, ...], str | None]:
+    """:func:`comment_index` for ``file_name``, built once per ``engine.run()``.
+
+    A rule callable fires once per element, so resolving comments through
+    :func:`leading_comment` — or any other per-invocation walk of the file's
+    ``SourceCodeInfo`` — is quadratic in file size. This builds the index on
+    the first element of a file and reuses it for the rest of that run.
+
+    The cache is scoped per engine and reset on each ``engine.run()`` (see
+    :func:`protokit.schema.lint._engine_run_state.per_run_state`), so a
+    recompiled file in a second run is re-indexed rather than served stale.
+
+    Args:
+        engine: The active engine, from
+            :func:`protokit.schema.lint._engine_run_state.engine_for_ctx`.
+        source_info_descriptors: As :func:`comment_index`.
+        file_name: As :func:`comment_index`.
+
+    Returns:
+        The same mapping :func:`comment_index` would return. Treat it as
+        read-only: it is shared by every rule invocation in the run.
+    """
+    by_file = per_run_state(
+        _RUN_COMMENT_INDEXES,
+        engine,
+        dict[str, "dict[tuple[int, ...], str | None]"],
+    )
+    index = by_file.get(file_name)
+    if index is None:
+        index = comment_index(source_info_descriptors, file_name)
+        by_file[file_name] = index
+    return index
+
+
 def leading_comment(
     source_info_descriptors: Mapping[str, FileDescriptorProto] | None,
     file_name: str,
@@ -206,11 +312,15 @@ def leading_comment(
 ) -> str | None:
     """Look up the leading comment for the given descriptor ``path``.
 
-    Walks ``source_info_descriptors[file_name].source_code_info.location[]``
-    for the first ``Location`` whose ``path`` matches ``path`` exactly
-    (literal-tuple equality, no fuzzy or prefix matching), then returns
-    ``Location.leading_comments`` stripped of leading and trailing
-    whitespace, or ``None`` when the stripped result is empty.
+    A single-path convenience over :func:`comment_index`: returns the first
+    matching ``Location``'s ``leading_comments`` stripped of leading and
+    trailing whitespace, or ``None`` when the stripped result is empty.
+    Matching is literal-tuple equality — no fuzzy or prefix matching.
+
+    **Rules should not call this.** It builds the file's index per call, so
+    a rule that fires once per element makes the walk quadratic in file
+    size. Use :func:`run_comment_index` instead; this stays for callers
+    resolving a single path, and as the documented leaf for rule authors.
 
     **Return value is UNSANITIZED.** Control characters (U+0000-U+001F),
     line separators (U+2028, U+2029), and other adversarial code points
@@ -254,14 +364,4 @@ def leading_comment(
         * the matched ``Location.leading_comments`` is empty or
           whitespace-only after ``.strip()``
     """
-    if source_info_descriptors is None:
-        return None
-    fd_proto = source_info_descriptors.get(file_name)
-    if fd_proto is None:
-        return None
-    target = tuple(path)
-    for loc in fd_proto.source_code_info.location:
-        if tuple(loc.path) == target:
-            text = loc.leading_comments.strip()
-            return text if text else None
-    return None
+    return comment_index(source_info_descriptors, file_name).get(tuple(path))

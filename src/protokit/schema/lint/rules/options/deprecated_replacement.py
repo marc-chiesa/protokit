@@ -56,7 +56,7 @@ presence ratchet can assert on the substring.
 **Descriptor-set-mode caveat.** When a descriptor set is loaded without
 ``protoc --include_source_info``, the captured ``FileDescriptorProto``
 references will have empty ``source_code_info.location[]`` arrays. The
-:func:`leading_comment` helper returns ``None`` for every lookup,
+per-file comment index is then empty, so every lookup returns ``None``,
 :func:`_check_replacement_comment` returns ``False`` for ``None`` input,
 and the rules emit findings for every deprecated element in the schema.
 This over-reporting is documented in the 0.3.0 CHANGELOG entry; the
@@ -75,7 +75,7 @@ References:
   brainstorm and plan.
 - Shared comment helpers:
   ``protokit.schema.lint.rules.options._comments``
-  (``descriptor_path`` + ``leading_comment``)
+  (``descriptor_path`` + ``run_comment_index``)
 - Shared sanitizer:
   ``protokit.schema.lint._cli_utils._safe_for_stderr``
 """
@@ -87,11 +87,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr
+from protokit.schema.lint._engine_run_state import engine_for_ctx
 from protokit.schema.lint.decorator import lint_rule
 from protokit.schema.lint.model import ElementKind, LintSeverity
 from protokit.schema.lint.rules.options._comments import (
     descriptor_path,
-    leading_comment,
+    run_comment_index,
 )
 
 if TYPE_CHECKING:
@@ -232,8 +233,8 @@ def check_deprecated_field_must_have_replacement_comment(
     """Fire on every ``[deprecated = true]`` field lacking a replacement comment.
 
     Reads the field's ``FieldOptions.deprecated`` bit; when set, looks up
-    the field's leading comment via the U2-shipped
-    :func:`leading_comment` helper and runs it through the shared
+    the field's leading comment in the per-run
+    :func:`run_comment_index` map and runs it through the shared
     :func:`_check_replacement_comment` regex matcher. Fires an error
     when no recognized replacement phrasing is found (D6f promotion;
     pre-D6f severity was ``warning``).
@@ -243,8 +244,12 @@ def check_deprecated_field_must_have_replacement_comment(
     """
     if not ctx.field.GetOptions().deprecated:
         return
-    path = descriptor_path(ctx.field)
-    comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, path)
+    comments = run_comment_index(
+        engine_for_ctx(ctx, "options/deprecated-field-must-have-replacement-comment"),
+        ctx.source_info_descriptors,
+        ctx.file.name,
+    )
+    comment = comments.get(descriptor_path(ctx.field))
     if _check_replacement_comment(comment):
         return
     ctx.emit(
@@ -282,8 +287,12 @@ def check_deprecated_enum_value_must_have_replacement_comment(
     """
     if not ctx.value.GetOptions().deprecated:
         return
-    path = descriptor_path(ctx.value)
-    comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, path)
+    comments = run_comment_index(
+        engine_for_ctx(ctx, "options/deprecated-enum-value-must-have-replacement-comment"),
+        ctx.source_info_descriptors,
+        ctx.file.name,
+    )
+    comment = comments.get(descriptor_path(ctx.value))
     if _check_replacement_comment(comment):
         return
     ctx.emit(
@@ -321,8 +330,12 @@ def check_deprecated_method_must_have_replacement_comment(
     """
     if not ctx.method.GetOptions().deprecated:
         return
-    path = descriptor_path(ctx.method)
-    comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, path)
+    comments = run_comment_index(
+        engine_for_ctx(ctx, "options/deprecated-method-must-have-replacement-comment"),
+        ctx.source_info_descriptors,
+        ctx.file.name,
+    )
+    comment = comments.get(descriptor_path(ctx.method))
     if _check_replacement_comment(comment):
         return
     ctx.emit(
@@ -360,8 +373,12 @@ def check_deprecated_message_must_have_replacement_comment(
     """
     if not ctx.message.GetOptions().deprecated:
         return
-    path = descriptor_path(ctx.message)
-    comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, path)
+    comments = run_comment_index(
+        engine_for_ctx(ctx, "options/deprecated-message-must-have-replacement-comment"),
+        ctx.source_info_descriptors,
+        ctx.file.name,
+    )
+    comment = comments.get(descriptor_path(ctx.message))
     if _check_replacement_comment(comment):
         return
     ctx.emit(
@@ -399,8 +416,12 @@ def check_deprecated_enum_must_have_replacement_comment(
     """
     if not ctx.enum.GetOptions().deprecated:
         return
-    path = descriptor_path(ctx.enum)
-    comment = leading_comment(ctx.source_info_descriptors, ctx.file.name, path)
+    comments = run_comment_index(
+        engine_for_ctx(ctx, "options/deprecated-enum-must-have-replacement-comment"),
+        ctx.source_info_descriptors,
+        ctx.file.name,
+    )
+    comment = comments.get(descriptor_path(ctx.enum))
     if _check_replacement_comment(comment):
         return
     ctx.emit(

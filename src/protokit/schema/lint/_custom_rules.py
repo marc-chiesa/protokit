@@ -103,6 +103,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 from protokit.schema.lint._cli_utils import _safe_for_stderr
+from protokit.schema.lint._engine_run_state import per_run_state
 from protokit.schema.lint._extension_access import (
     get_pool_bound_options_class,
     resolve_enum_value_for_comparison,
@@ -124,42 +125,22 @@ if TYPE_CHECKING:
 _SYNTHETIC_MODULE_NAME: str = "protokit_lint_synthetic_custom_annotations"
 
 
-# Per-engine + per-run dedup map for unresolved-extension warnings.
-# Mirrors the pattern in
-# ``protokit.schema.lint.rules.options.field_behavior`` — keyed by
-# engine via ``WeakKeyDictionary`` so dedup state is collected when
-# the engine is GC'd. Value is ``(id(engine._runtime_warnings),
-# dedup_set)``: the id changes on every ``engine.run()`` entry (the
-# engine assigns a fresh list at ``engine.py``'s run path), so a
-# mismatched id signals a NEW run and the dedup set is reset
-# automatically. This closes the cross-run dedup leak that the
-# original closure-captured-set pattern carried (see the matching
-# per-engine-per-run-state learning under ``docs/solutions/``):
-# without the per-run reset, a second ``engine.run()`` on the same
-# engine would silently emit zero warnings even though the
-# unresolved-extension condition still holds. The CLI is unaffected
-# today (one ``engine.run()`` per process), but long-lived runtimes
-# (MCP / IDE integrations) that recycle engines across sessions would
-# hit the leak without this discipline (tracked in TODOS.md backlog).
+# Per-engine + per-run dedup map for unresolved-extension warnings, read
+# through :func:`~protokit.schema.lint._engine_run_state.per_run_state`
+# (which owns the isolation and reset mechanics). Without the per-run
+# reset the closure-captured-set pattern this replaced would let a second
+# ``engine.run()`` on the same engine emit zero warnings while the
+# unresolved-extension condition still holds. The CLI is unaffected today
+# (one ``engine.run()`` per process), but long-lived runtimes (MCP / IDE
+# integrations) that recycle engines across sessions would hit the leak.
 _UNRESOLVED_SEEN: weakref.WeakKeyDictionary[LintEngine, tuple[int, set[tuple[str, str]]]] = (
     weakref.WeakKeyDictionary()
 )
 
 
 def _dedup_seen_for_run(engine: LintEngine) -> set[tuple[str, str]]:
-    """Return the dedup set scoped to the engine's current ``run()``.
-
-    Resets the set whenever ``id(engine._runtime_warnings)`` changes
-    (i.e., a fresh ``run()`` started). Same id-tracking discipline as
-    ``options.field_behavior._emit_unresolved_extension``.
-    """
-    current_id = id(engine._runtime_warnings)
-    state = _UNRESOLVED_SEEN.get(engine)
-    if state is None or state[0] != current_id:
-        seen: set[tuple[str, str]] = set()
-        _UNRESOLVED_SEEN[engine] = (current_id, seen)
-        return seen
-    return state[1]
+    """Return the dedup set scoped to the engine's current ``run()``."""
+    return per_run_state(_UNRESOLVED_SEEN, engine, set)
 
 
 #: Per-ElementKind metadata for the synthetic closure body.

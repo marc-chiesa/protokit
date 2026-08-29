@@ -37,7 +37,7 @@ from protokit.schema.lint.model import (
     LintReport,
     LintSeverity,
 )
-from protokit.schema.lint.rules.options import deprecated_replacement
+from protokit.schema.lint.rules.options import _comments, deprecated_replacement
 from protokit.schema.lint.rules.options.deprecated_replacement import (
     _REPLACEMENT_PATTERNS,
     RULES,
@@ -987,3 +987,100 @@ class TestPerRuleSeveritiesDemotion:
         report = engine.run(result, profile=profile)
         assert len(report.findings) == 1
         assert report.findings[0].severity is LintSeverity.INFO
+
+
+# ---------------------------------------------------------------------------
+# Comment-index scaling guard + per-run reset
+# ---------------------------------------------------------------------------
+
+
+def _many_deprecated_fields(count: int) -> str:
+    """A proto whose ``count`` deprecated fields all lack a replacement comment."""
+    lines = ['syntax = "proto3";', "package demo;", "", "message Big {"]
+    for i in range(count):
+        lines.append("  // just a comment")
+        lines.append(f"  string f{i} = {i + 1} [deprecated = true];")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+_FIELD_RULE = "options/deprecated-field-must-have-replacement-comment"
+
+
+class TestCommentIndexScaling:
+    """R6 resolves comments through a per-file index built once per run.
+
+    Before the index, every R6 firing rescanned the file's whole
+    ``SourceCodeInfo``, so lint cost grew with the *square* of file size —
+    measured at 11 / 42 / 168 / 677 ms for 100 / 200 / 400 / 800 deprecated
+    fields. The guard below fails if that per-element rescan returns:
+    building the index more than once per (run, file) is exactly the
+    regression, whatever form it takes.
+    """
+
+    def test_index_is_built_once_per_file_not_once_per_element(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        field_count = 40
+        result = _compile_with_source_info(
+            tmp_path, {"demo.proto": _many_deprecated_fields(field_count)},
+        )
+        builds: list[str] = []
+        real_index = _comments.comment_index
+
+        def _counting_index(descriptors: Any, file_name: str) -> Any:
+            builds.append(file_name)
+            return real_index(descriptors, file_name)
+
+        monkeypatch.setattr(_comments, "comment_index", _counting_index)
+
+        engine = LintEngine()
+        engine.load_rule_pack(deprecated_replacement)
+        profile = LintProfile(
+            name="_test_scaling",
+            rule_ids=frozenset({_FIELD_RULE}),
+            min_severity=LintSeverity.INFO,
+        )
+        report = engine.run(result, profile=profile)
+
+        assert len(report.findings) == field_count  # every field fired
+        assert builds == ["demo.proto"]  # ...off ONE index build
+
+    def test_second_run_on_the_same_engine_reindexes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The index must not survive into a second ``engine.run()``.
+
+        Two runs compile *different* sources under the same file name: run
+        two's fields carry a replacement comment, so a cached run-one index
+        would wrongly report findings. A single-run test cannot see this —
+        it is the failure mode the per-run reset exists for.
+        """
+        result_sad = _compile_with_source_info(
+            tmp_path / "sad", {"demo.proto": _FIELD_PROTO_SAD},
+        )
+        result_happy = _compile_with_source_info(
+            tmp_path / "happy", {"demo.proto": _FIELD_PROTO_HAPPY},
+        )
+        builds: list[str] = []
+        real_index = _comments.comment_index
+
+        def _counting_index(descriptors: Any, file_name: str) -> Any:
+            builds.append(file_name)
+            return real_index(descriptors, file_name)
+
+        monkeypatch.setattr(_comments, "comment_index", _counting_index)
+
+        engine = LintEngine()
+        engine.load_rule_pack(deprecated_replacement)
+        profile = LintProfile(
+            name="_test_reset",
+            rule_ids=frozenset({_FIELD_RULE}),
+            min_severity=LintSeverity.INFO,
+        )
+        first = engine.run(result_sad, profile=profile)
+        second = engine.run(result_happy, profile=profile)
+
+        assert len(first.findings) == 1
+        assert second.findings == ()  # re-indexed, not served run one's map
+        assert builds == ["demo.proto", "demo.proto"]  # once per run
