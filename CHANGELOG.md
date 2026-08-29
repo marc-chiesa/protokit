@@ -159,6 +159,16 @@ All notable changes to `protokit` are documented here. Format loosely follows
   both tiers: no built-in pack declares the `essentials` profile it aliases to.
 
 ### Fixed
+- **`equals_proto` now fails the assertion when the value under test is not a
+  protobuf message, instead of raising `AttributeError`.** The matcher handed
+  the value straight to the differ, which reached for `item.DESCRIPTOR`, so
+  `assert_that("nope", equals_proto(msg))` surfaced a stack trace rather than
+  the mismatch the assertion was written to report. A hamcrest matcher is
+  handed whatever the caller passed and owes a verdict on it: a non-message
+  cannot match a message, so it is now a plain mismatch whose description reads
+  `was not a protobuf message: <'nope'>`. A message of a *different* type was
+  never affected — the differ already reported that as an ordinary mismatch.
+
 - **`lint`'s R6 deprecated-replacement rules no longer scale quadratically with
   file size.** Each of the five rules resolved its element's leading comment by
   walking the file's *entire* `SourceCodeInfo` for one matching `Location`, and a

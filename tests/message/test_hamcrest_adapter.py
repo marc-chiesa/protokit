@@ -521,3 +521,35 @@ class TestPredicateExceptionsPropagate:
 
         with pytest.raises(BoomError, match="author bug"):
             assert_that(actual, equals_proto(expected).ignoring(boom))
+
+
+# ---------------------------------------------------------------------------
+# Non-message actual — a readable assertion failure, not an AttributeError
+# ---------------------------------------------------------------------------
+
+
+class TestNonMessageActual:
+    """``assert_that`` on a non-proto value fails the assertion, readably.
+
+    A hamcrest matcher is handed whatever the caller passed and must decide
+    ``matches``/``describe_mismatch`` for it. Reaching straight into the
+    differ crashed on ``item.DESCRIPTOR`` with a bare ``AttributeError``, so
+    the type confusion surfaced as a stack trace instead of the mismatch the
+    assertion was written to report. (A *different* message type already
+    reported a normal mismatch; only a non-message crashed.)
+    """
+
+    def test_non_message_actual_fails_the_assertion(self) -> None:
+        expected = _user_builder().get_message_class("test.User")(name="a")
+        with pytest.raises(AssertionError) as exc_info:
+            assert_that("not a proto", equals_proto(expected))
+        assert "not a protobuf message" in str(exc_info.value)
+        assert "not a proto" in str(exc_info.value)
+
+    @pytest.mark.parametrize("item", [None, 42, {"name": "a"}, b"\x08\x05"])
+    def test_assorted_non_messages_do_not_raise_attribute_error(
+        self, item: object
+    ) -> None:
+        expected = _user_builder().get_message_class("test.User")(name="a")
+        matcher = equals_proto(expected)
+        assert matcher.matches(item) is False
