@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from google.protobuf import descriptor_pb2
 
+from protokit.forensics import _wire
 from protokit.forensics._wire import (
     _MAX_GROUP_DEPTH,
     WIRETYPE_VARINT,
@@ -12,6 +13,7 @@ from protokit.forensics._wire import (
     WireObservation,
     walk_top_level,
 )
+from protokit.forensics.cli import _DEFAULT_MAX_MESSAGE_BYTES
 from tests.forensics.fixtures import cls_for
 from tests.forensics.wire_ground_truth import assert_walker_recovers, typed_fdp
 
@@ -164,3 +166,55 @@ def test_malformed_inputs_raise_walk_error(data: bytes, reason: str) -> None:
 
 def test_empty_buffer_has_no_observations() -> None:
     assert walk_top_level(b"") == []
+
+
+# ---------------------------------------------------------------------------
+# Cost ceilings — the walk's memory bound, not its logic
+# ---------------------------------------------------------------------------
+
+
+class TestObservationCeiling:
+    """``_MAX_OBSERVATIONS`` must be an enforced bound, not a decorative constant.
+
+    Two tests, because the two ways this protection dies need different proofs
+    and neither may allocate anything large:
+
+    * delete the guard   -> the behavioural test catches it
+    * neuter the constant -> the bound test catches it
+
+    A single test written relative to the constant (``_MAX_OBSERVATIONS + 1``
+    inputs, the shape the group-depth tests above can afford) would catch
+    neither safely: at the real default it needs ten million tags, and against a
+    neutered constant it would try to build 10**30 of them and die by
+    MemoryError inside the harness rather than by assertion.
+    """
+
+    def test_guard_fires_once_the_ceiling_is_exceeded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Behavioural half: patch the ceiling low, prove the walk refuses."""
+        monkeypatch.setattr(_wire, "_MAX_OBSERVATIONS", 3)
+        data = b"\x08\x01" * 4  # 4 top-level varint fields, ceiling is 3
+        with pytest.raises(WalkError) as excinfo:
+            walk_top_level(data)
+        assert "top-level fields" in str(excinfo.value)
+
+    def test_at_the_ceiling_is_still_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bound is exclusive: exactly at the ceiling still walks."""
+        monkeypatch.setattr(_wire, "_MAX_OBSERVATIONS", 3)
+        assert len(walk_top_level(b"\x08\x01" * 3)) == 3
+
+    def test_default_ceiling_actually_binds(self) -> None:
+        """Bound half: the default must be tighter than the byte cap alone.
+
+        The ceiling exists because ``--max-message-bytes`` does not bound
+        memory: a one-byte tag becomes a ~35-byte observation, so a maximal
+        message of nothing but tags amplifies. The ceiling is only doing work
+        if it is reached *before* the byte cap is — expressed against the byte
+        cap rather than as a magic number, so ordinary tuning is free and
+        neutering is not.
+        """
+        max_tags_within_the_byte_cap = _DEFAULT_MAX_MESSAGE_BYTES  # 1-byte tags
+        assert 0 < _wire._MAX_OBSERVATIONS < max_tags_within_the_byte_cap
