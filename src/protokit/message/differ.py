@@ -1240,10 +1240,29 @@ class MessageDifferencer:
             and left_fd.type == TYPE_MESSAGE
             and right_fd.type == TYPE_MESSAGE
         ):
+            left_name = left_fd.message_type.full_name
+            right_name = right_fd.message_type.full_name
+            if is_map_field(left_fd) and is_map_field(right_fd):
+                # For a map field those names are the synthetic MapEntry, which
+                # is identical on both sides whatever the entry declares — so
+                # comparing them is a no-op and the declared check would buy
+                # nothing for maps. Compare the entry's VALUE message types
+                # instead, or map drift is caught only once a key is populated
+                # and the check becomes data-dependent, which is exactly what
+                # the declared check exists to avoid.
+                left_value = left_fd.message_type.fields_by_name["value"]
+                right_value = right_fd.message_type.fields_by_name["value"]
+                if (
+                    left_value.type != TYPE_MESSAGE
+                    or right_value.type != TYPE_MESSAGE
+                ):
+                    # A message<->scalar value change is not type-NAME drift;
+                    # _compare_map records it as a TYPE_CHANGED difference.
+                    return
+                left_name = left_value.message_type.full_name
+                right_name = right_value.message_type.full_name
             self._check_message_type_names(
-                left_fd.message_type.full_name,
-                right_fd.message_type.full_name,
-                path, warnings, reported_type_names,
+                left_name, right_name, path, warnings, reported_type_names,
             )
 
     def _check_message_type_names(

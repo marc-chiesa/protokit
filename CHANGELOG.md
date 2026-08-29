@@ -17,7 +17,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 > **Upgrade note.** This release is dominated by an internal code audit that
 > found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
-> and `Fixed` sections below enumerate them. Fourteen change observable behaviour,
+> and `Fixed` sections below enumerate them. Fifteen change observable behaviour,
 > and a passing pipeline can go red on upgrade **without any schema or code
 > change on your side** — in every case because protokit previously returned a
 > wrong answer quietly:
@@ -38,6 +38,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `to_parquet(fidelity=…)` with an unknown value | raises `ValueError` instead of silently behaving like `warn` and writing the file |
 > | `treat_as_map` re-registered with a different key | raises the documented `ValueError` instead of silently keying on one key while checking the other |
 > | a formatter or rule pack calling `sys.exit(0)` | the CLI exits 2 with a pack/formatter error instead of exiting 0 with no output |
+> | a map whose key or value type changed | records a `TYPE_CHANGED` difference, so `diff` exits 1 where an *empty* such map previously compared equal and exited 0 (a populated one crashed) |
 >
 > Field hooks also now fire for one-sided subtrees, and `strict_schema` now
 > validates the root message type — both mean opt-in callers see diagnostics or
@@ -307,6 +308,17 @@ All notable changes to `protokit` are documented here. Format loosely follows
   entirely different data compared **equal** — `proto_match` passed,
   `diff --quiet` exited 0, and the human CLI printed "Messages are equal."
   while suppressing the warning.
+- **`strict_schema=True` no longer misses declared type drift inside an empty
+  map.** The declared-type check reads the field's `message_type.full_name`,
+  which for a map field is the *synthetic MapEntry* — identical on both sides
+  whatever the entry declares — so the check was a no-op for maps and
+  `map<string, OldValue>` vs `map<string, NewValue>` was reported only by the
+  per-entry check, i.e. only once a key was populated. That made schema
+  validation depend on runtime data, which is precisely what the declared check
+  exists to avoid ("drift is still caught when the sub-message is unset"). Map
+  fields now compare the entry's declared *value* message types. The existing
+  dedupe keeps a populated map reporting once, not twice.
+
 - **`strict_schema=True` now validates the ROOT message type.** The check lived
   inside `_check_schema_evolution`, only reached from the per-field loop with a
   left/right field-descriptor pair; the root work item carries no field

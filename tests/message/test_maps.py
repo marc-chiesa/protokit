@@ -343,6 +343,89 @@ def _make_map_key_type_change_pools() -> tuple[type, type]:
     )
 
 
+def _make_map_value_msg_rename_pools() -> tuple[type, type]:
+    """``map<string, OldValue>`` vs ``map<string, NewValue>`` in isolated pools."""
+
+    def build(fname: str, value_msg: str) -> type:
+        pool = descriptor_pool.DescriptorPool()
+        f = descriptor_pb2.FileDescriptorProto(
+            name=fname, package="t", syntax="proto3",
+        )
+        inner = f.message_type.add()
+        inner.name = value_msg
+        q = inner.field.add()
+        q.name, q.number, q.type = "q", 1, T.TYPE_STRING
+        q.label = T.LABEL_OPTIONAL
+        m = f.message_type.add()
+        m.name = "M"
+        entry = m.nested_type.add()
+        entry.name = "LabelsEntry"
+        entry.options.CopyFrom(descriptor_pb2.MessageOptions(map_entry=True))
+        k = entry.field.add()
+        k.name, k.number, k.type = "key", 1, T.TYPE_STRING
+        k.label = T.LABEL_OPTIONAL
+        v = entry.field.add()
+        v.name, v.number, v.type = "value", 2, T.TYPE_MESSAGE
+        v.type_name = f".t.{value_msg}"
+        v.label = T.LABEL_OPTIONAL
+        mf = m.field.add()
+        mf.name, mf.number, mf.type = "labels", 1, T.TYPE_MESSAGE
+        mf.type_name = ".t.M.LabelsEntry"
+        mf.label = T.LABEL_REPEATED
+        pool.Add(f)
+        return message_factory.GetMessageClass(pool.FindMessageTypeByName("t.M"))
+
+    return build("mv_old.proto", "OldValue"), build("mv_new.proto", "NewValue")
+
+
+class TestStrictSchemaMapValueTypeName:
+    """``strict_schema`` must not depend on whether the map has entries.
+
+    The declared-type check reads ``left_fd.message_type.full_name``, which for
+    a map field is the *synthetic MapEntry* — identical on both sides whatever
+    the value type is. So the check was a no-op for maps and the drift was
+    caught only by the per-work-item check, which reaches a value message type
+    only for populated entries. That contradicts the invariant the declared
+    check exists for ("drift is still caught when the sub-message is unset").
+    """
+
+    @staticmethod
+    def _differ() -> MessageDifferencer:
+        d = MessageDifferencer()
+        d.strict_schema = True
+        return d
+
+    def test_empty_maps_still_report_value_type_drift(self) -> None:
+        Left, Right = _make_map_value_msg_rename_pools()
+        result = self._differ().compare(Left(), Right())
+        assert result.warnings, "empty map hid declared value-type drift"
+        assert "t.OldValue" in str(result.warnings[0])
+        assert "t.NewValue" in str(result.warnings[0])
+
+    def test_populated_maps_report_it_exactly_once(self) -> None:
+        """The declared and per-entry checks must dedupe, not double-report."""
+        Left, Right = _make_map_value_msg_rename_pools()
+        left = Left()
+        left.labels["a"].q = "x"
+        right = Right()
+        right.labels["a"].q = "x"
+        result = self._differ().compare(left, right)
+        drift = [w for w in result.warnings if "type name" in str(w).lower()]
+        assert len(drift) == 1, [str(w) for w in drift]
+
+    def test_one_sided_population_reports_drift(self) -> None:
+        Left, Right = _make_map_value_msg_rename_pools()
+        left = Left()
+        left.labels["only_left"].q = "x"
+        result = self._differ().compare(left, Right())
+        assert result.warnings
+
+    def test_no_warning_when_strict_schema_is_off(self) -> None:
+        Left, Right = _make_map_value_msg_rename_pools()
+        result = MessageDifferencer().compare(Left(), Right())
+        assert not [w for w in result.warnings if "type name" in str(w).lower()]
+
+
 class TestMapKeyTypeChange:
     """A map whose KEY type changed across pools — the value axis's twin.
 
