@@ -38,8 +38,8 @@ class ChangeType(Enum):
             different field numbers. ``left_field_number`` and
             ``right_field_number`` are populated.
         CARDINALITY_CHANGED: Same field name on both sides but the
-            label flipped (e.g. singular -> repeated). ``left_label``
-            and ``right_label`` are populated.
+            label flipped (e.g. ``LABEL_OPTIONAL`` -> ``LABEL_REPEATED``).
+            ``left_label`` and ``right_label`` are populated.
     """
 
     ADDED = "ADDED"
@@ -492,10 +492,13 @@ class Difference:
             ``FIELD_NUMBER_CHANGED``.
         left_type: Old-side type name, set for ``TYPE_CHANGED``.
         right_type: New-side type name, set for ``TYPE_CHANGED``.
-        left_label: Old-side cardinality label (``"singular"`` /
-            ``"repeated"`` / ``"map"``), set for
-            ``CARDINALITY_CHANGED``.
-        right_label: New-side cardinality label, set for
+        left_label: Old-side cardinality label, set for
+            ``CARDINALITY_CHANGED``. One of the descriptor's own
+            ``"LABEL_OPTIONAL"`` / ``"LABEL_REPEATED"`` /
+            ``"LABEL_REQUIRED"`` (see ``protokit._descriptors.label_name``)
+            — a map field reports ``"LABEL_REPEATED"``, which is what it
+            is on the wire.
+        right_label: New-side cardinality label, same values, set for
             ``CARDINALITY_CHANGED``.
     """
 
