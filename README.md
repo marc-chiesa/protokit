@@ -118,6 +118,9 @@ Quiet mode for CI (exit code only):
 ```bash
 protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp.User --quiet
 echo $?  # 0 = equal, 1 = different, 2 = error
+# An error-level diagnostic (a hook or plugin raised) is 2 in EVERY format,
+# even when no differences were found: the comparison is not trustworthy,
+# so there is no verdict to report.
 ```
 
 ### pytest Integration
@@ -194,7 +197,7 @@ assert not result.is_complete  # truncated subtrees exist
 | `--left-type NAME` | Left message type (cross-schema mode) |
 | `--right-type NAME` | Right message type (cross-schema mode) |
 | `--proto FILE` | .proto file (requires `protoc` on PATH) |
-| `--proto-path DIR` | Import path for protoc. Repeatable. |
+| `--proto-path DIR` | Import path for protoc. Repeatable. Only valid with `--proto`; passing it in any other flag group is a usage error (exit 2) rather than being silently ignored. |
 | `--text-format` | Parse input as protobuf text format |
 | `--json` | Parse input as JSON-encoded protobuf |
 | `--format NAME` | Output format (default: `human`). Built-in for diff: `human`, `json`, `junit`. See [Output Formatters](#output-formatters). |
@@ -205,7 +208,7 @@ assert not result.is_complete  # truncated subtrees exist
 | `--ignore FIELD` | Ignore field. Repeatable. |
 | `--treat-as-map FIELD KEY` | Treat repeated field as map with key |
 | `--float-mode exact\|approximate` | Float comparison mode |
-| `--max-depth N` | Maximum comparison depth |
+| `--max-depth N` | Maximum comparison depth. Must be non-negative; a negative value is a usage error (exit 2). |
 | `--strict-schema` | Warn on message type name changes |
 
 ## Schema Compatibility
@@ -1557,10 +1560,16 @@ protokit storage scan big.bin --desc s.desc --type myapp.Event --on-error warn
 (compiled, with `--proto-path`/`-I` import dirs), plus `--type` (the
 fully-qualified message name; `--message-type` is an alias).
 
+`-I`/`--proto-path` applies to `--proto` compilation only. A descriptor set
+passed with `--desc` carries its imports already resolved, so combining the two
+is a usage error (exit 2) rather than an import path that is accepted and
+silently dropped.
+
 **`--where`** is deliberately minimal — `path == scalar` / `path != scalar`
 (enums by name or number) and `has:path` for field presence. Anything richer
 (`and`/`or`, `<`/`>`, functions) is rejected with a pointer back to the Python
-`predicate=` API. Traversal through an unset intermediate message reads
+`predicate=` API. An empty `--where ''` is an error too, not "no filter" — you
+asked to filter, so silently returning every record would be the wrong answer. Traversal through an unset intermediate message reads
 defaults, so `header.code == 0` matches a record with no `header`. A literal for
 a 32-bit `float` field is narrowed to single precision so it comes from the same
 value set as the field (`score == 0.1` matches the stored 0.10000000149011612);
