@@ -2044,14 +2044,28 @@ class MessageDifferencer:
         left_value_fd = left_fd.message_type.fields_by_name["value"]
         right_value_fd = right_fd.message_type.fields_by_name["value"]
 
-        # Value-type change -> no value comparison. The outer dispatch's
-        # ``_types_compatible`` gate only sees the map field itself, which is
-        # TYPE_MESSAGE (the synthetic MapEntry) on both sides no matter what
-        # the entry's value type is; a message->scalar change therefore slips
-        # through and would push a raw scalar onto the message work stack.
-        # Same disposition as the map<->repeated cardinality change: diagnose
-        # and skip the whole field.
+        # Value-type change -> record the change, then skip value comparison.
+        # The outer dispatch's ``_types_compatible`` gate only sees the map
+        # field itself, which is TYPE_MESSAGE (the synthetic MapEntry) on both
+        # sides no matter what the entry's value type is; a message->scalar
+        # change therefore slips through and would push a raw scalar onto the
+        # message work stack.
+        #
+        # Same disposition as the map<->repeated cardinality change: a
+        # Difference for the schema change, and no value comparison. That
+        # sibling gets its Difference from ``_check_schema_evolution``, which
+        # runs before the skip — but that check is blind to the map's VALUE
+        # type (both sides are the same synthetic MapEntry), so this branch has
+        # to record it. Diagnosing alone would be worse than the crash it
+        # replaced: ``has_changes()`` ignores diagnostics, so the comparison
+        # would report EQUAL for two maps holding entirely different data.
         if not _types_compatible(left_value_fd.type, right_value_fd.type):
+            diffs.append(Difference(
+                path=path,
+                change_type=ChangeType.TYPE_CHANGED,
+                left_type=type_name(left_value_fd.type),
+                right_type=type_name(right_value_fd.type),
+            ))
             warnings.append(Diagnostic(
                 path=str(path),
                 message=f"map value type changed from "

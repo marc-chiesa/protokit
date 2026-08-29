@@ -17,7 +17,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 > **Upgrade note.** This release is dominated by an internal code audit that
 > found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
-> and `Fixed` sections below enumerate them. Eight change observable behaviour,
+> and `Fixed` sections below enumerate them. Fourteen change observable behaviour,
 > and a passing pipeline can go red on upgrade **without any schema or code
 > change on your side** — in every case because protokit previously returned a
 > wrong answer quietly:
@@ -32,6 +32,12 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `storage --where ''` | exits 2 (`empty expression`) instead of silently scanning every record |
 > | `storage -I` with `--desc` | exits 2 instead of accepting an import path it could never apply |
 > | `proto_matcher(expected, partial=…)` | raises `MatcherError` instead of returning a default-policy matcher |
+> | `diff --format junit` | an error-level diagnostic now sets `errors="1"` and adds an `<error>` testcase, so a broken-but-equal comparison fails the job |
+> | `diff --max-depth -1` | exits 2 instead of accepting a negative depth and comparing anyway |
+> | `diff --proto-path` outside `--proto` | exits 2 instead of accepting an import path it could never apply |
+> | `to_parquet(fidelity=…)` with an unknown value | raises `ValueError` instead of silently behaving like `warn` and writing the file |
+> | `treat_as_map` re-registered with a different key | raises the documented `ValueError` instead of silently keying on one key while checking the other |
+> | a formatter or rule pack calling `sys.exit(0)` | the CLI reports its real verdict instead of exiting 0 with no output |
 >
 > Field hooks also now fire for one-sided subtrees, and `strict_schema` now
 > validates the root message type — both mean opt-in callers see diagnostics or
@@ -174,6 +180,26 @@ All notable changes to `protokit` are documented here. Format loosely follows
   both tiers: no built-in pack declares the `essentials` profile it aliases to.
 
 ### Fixed
+- **`protokit diff --format junit` now surfaces error-level diagnostics, on
+  their own testcase.** `diff_junit` hard-coded `errors=0` and piped only
+  `result.warnings` into `<system-out>`, so `result.errors` reached no part of
+  the output: a plugin crash or hook exception during a comparison that found no
+  differences rendered as `tests=1 failures=0 errors=0` and a passing
+  testcase — a green CI job on a comparison the engine itself calls
+  untrustworthy, which is exactly what `Diagnostic`'s contract says must fail
+  closed.
+
+  The diagnostic is reported as an `<error>` on a **separate** `diagnostic`
+  testcase, not alongside the `<failure>` on the verdict testcase. The JUnit
+  schema models `<testcase>`'s content as a choice of *at most one* of
+  `skipped | error | failure`, so emitting both children produced a document
+  strict consumers reject — and several CI systems report an unparseable report
+  as "no test results found", reintroducing the same blank-green outcome through
+  another door. Separate testcases also keep `tests` counting cases, so
+  `tests - failures - errors` never goes negative for aggregators that derive a
+  pass count that way. This matches `compat`, `bisect`, and `lint`, which
+  already give each error diagnostic its own testcase.
+
 - **`equals_proto` now fails the assertion when the value under test is not a
   protobuf message, instead of raising `AttributeError`.** The matcher handed
   the value straight to the differ, which reached for `item.DESCRIPTOR`, so
@@ -262,8 +288,20 @@ All notable changes to `protokit` are documented here. Format loosely follows
   MapEntry) on both sides regardless of the entry's value type, so the change
   slipped through and a raw `str` was pushed onto the message work stack,
   raising `AttributeError: 'str' object has no attribute 'DESCRIPTOR'`. The
-  resolved value descriptors are now gated too, emitting a Diagnostic and
-  skipping the field — mirroring the existing map↔repeated precedent.
+  resolved value descriptors are now gated too: the comparison records a
+  `TYPE_CHANGED` difference for the map's value type and skips comparing the
+  values.
+
+  Recording the difference is what makes this mirror the map↔repeated
+  precedent rather than only appearing to. That sibling gets its difference
+  from `_check_schema_evolution`, which runs *before* the skip; only the value
+  comparison is skipped. `_check_schema_evolution` cannot see a map's value
+  type — both sides are the same synthetic MapEntry message — so this branch
+  has to record it itself. Diagnosing alone would have been worse than the
+  crash it replaced: `has_changes()` ignores diagnostics, so two maps holding
+  entirely different data compared **equal** — `proto_match` passed,
+  `diff --quiet` exited 0, and the human CLI printed "Messages are equal."
+  while suppressing the warning.
 - **`strict_schema=True` now validates the ROOT message type.** The check lived
   inside `_check_schema_evolution`, only reached from the per-field loop with a
   left/right field-descriptor pair; the root work item carries no field

@@ -306,6 +306,86 @@ def _make_map_value_type_change_pools() -> tuple[type, type]:
 class TestMapValueTypeChange:
     """A map whose VALUE type changed message <-> scalar across pools."""
 
+    def test_value_type_change_is_a_difference_not_equality(self) -> None:
+        """Skipping the value comparison must not report the messages EQUAL.
+
+        The crash fix diagnosed the incompatible value type and returned
+        without recording a difference. ``has_changes()`` ignores diagnostics,
+        so a ``map<string, V>`` -> ``map<string, string>`` change holding
+        completely different data compared as equal: ``proto_match`` passed,
+        ``diff --quiet`` exited 0, and the human CLI printed "Messages are
+        equal." while suppressing the warning.
+
+        The sibling case this branch says it mirrors — map <-> repeated —
+        does not behave that way: ``_check_schema_evolution`` runs first and
+        records ``CARDINALITY_CHANGED``, and only the *value* comparison is
+        skipped. The map value type is invisible to that check (both sides are
+        the synthetic MapEntry message), so this branch must report it itself.
+        """
+        Left, Right = _make_map_value_type_change_pools()
+        left = Left()
+        left.labels["a"].x = 5
+        right = Right(labels={"a": "COMPLETELY DIFFERENT"})
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert result.has_changes(), "map value type change reported as equality"
+        type_changes = [
+            d for d in result.differences
+            if d.change_type is ChangeType.TYPE_CHANGED
+        ]
+        assert len(type_changes) == 1
+        assert type_changes[0].left_type == "TYPE_MESSAGE"
+        assert type_changes[0].right_type == "TYPE_STRING"
+
+    def test_cardinality_sibling_does_report_a_difference(self) -> None:
+        """Pins the disposition this branch is modelled on.
+
+        If map <-> repeated ever stops recording a difference, the reasoning
+        behind the value-type branch above is void and both need revisiting.
+        """
+        left_pool, right_pool = descriptor_pool.DescriptorPool(), descriptor_pool.DescriptorPool()
+
+        def build(pool: descriptor_pool.DescriptorPool, as_map: bool) -> type:
+            fp = descriptor_pb2.FileDescriptorProto(
+                name="c.proto", package="c", syntax="proto3",
+            )
+            m = fp.message_type.add()
+            m.name = "M"
+            if as_map:
+                entry = m.nested_type.add()
+                entry.name = "TagsEntry"
+                entry.options.map_entry = True
+                k = entry.field.add()
+                k.name, k.number, k.type, k.label = (
+                    "key", 1, k.TYPE_STRING, k.LABEL_OPTIONAL,
+                )
+                v = entry.field.add()
+                v.name, v.number, v.type, v.label = (
+                    "value", 2, v.TYPE_STRING, v.LABEL_OPTIONAL,
+                )
+                f = m.field.add()
+                f.name, f.number, f.type, f.label = (
+                    "tags", 1, f.TYPE_MESSAGE, f.LABEL_REPEATED,
+                )
+                f.type_name = ".c.M.TagsEntry"
+            else:
+                f = m.field.add()
+                f.name, f.number, f.type, f.label = (
+                    "tags", 1, f.TYPE_STRING, f.LABEL_REPEATED,
+                )
+            pool.Add(fp)
+            return message_factory.GetMessageClass(pool.FindMessageTypeByName("c.M"))
+
+        LeftCls = build(left_pool, as_map=True)
+        RightCls = build(right_pool, as_map=False)
+        left = LeftCls()
+        left.tags["a"] = "x"
+        right = RightCls(tags=["x"])
+
+        result = MessageDifferencer().compare(left, right)
+        assert result.has_changes(), "map <-> repeated must record a difference"
+
     def test_shared_key_diagnoses_instead_of_crashing(self) -> None:
         """Both sides holding the key must not push a raw scalar as work."""
         Left, Right = _make_map_value_type_change_pools()
@@ -319,7 +399,11 @@ class TestMapValueTypeChange:
         msg = str(result.warnings[0])
         assert "map value" in msg.lower()
         assert "not compared" in msg.lower()
-        assert result.differences == ()
+        # The values are not compared, but the schema change itself IS a
+        # difference — skipping the comparison must not report equality.
+        assert [d.change_type for d in result.differences] == [
+            ChangeType.TYPE_CHANGED,
+        ]
 
     def test_left_only_key_diagnoses_instead_of_crashing(self) -> None:
         """The left-only key branch reads left_value_fd.type independently."""
@@ -332,7 +416,9 @@ class TestMapValueTypeChange:
 
         assert result.warnings
         assert "map value" in str(result.warnings[0]).lower()
-        assert result.differences == ()
+        assert [d.change_type for d in result.differences] == [
+            ChangeType.TYPE_CHANGED,
+        ]
 
     def test_right_only_key_diagnoses_instead_of_crashing(self) -> None:
         """The right-only key branch reads right_value_fd.type independently."""
@@ -344,4 +430,6 @@ class TestMapValueTypeChange:
 
         assert result.warnings
         assert "map value" in str(result.warnings[0]).lower()
-        assert result.differences == ()
+        assert [d.change_type for d in result.differences] == [
+            ChangeType.TYPE_CHANGED,
+        ]
