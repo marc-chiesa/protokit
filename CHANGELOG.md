@@ -16,10 +16,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
 ## Unreleased
 
 > **Upgrade note.** This release is dominated by an internal code audit that
-> found and fixed 20 defects. Eight of them change observable behaviour, and a
-> passing pipeline can go red on upgrade **without any schema or code change on
-> your side** — in every case because protokit previously returned a wrong
-> answer quietly:
+> found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
+> and `Fixed` sections below enumerate them. Eight change observable behaviour,
+> and a passing pipeline can go red on upgrade **without any schema or code
+> change on your side** — in every case because protokit previously returned a
+> wrong answer quietly:
 >
 > | Change | What starts happening |
 > |---|---|
