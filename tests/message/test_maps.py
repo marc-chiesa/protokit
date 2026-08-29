@@ -303,6 +303,130 @@ def _make_map_value_type_change_pools() -> tuple[type, type]:
     return left_cls, right_cls
 
 
+def _make_map_key_type_change_pools() -> tuple[type, type]:
+    """Two isolated pools where ``t.M.labels`` changed its KEY type.
+
+    Left declares ``map<string, string>``; right declares
+    ``map<int32, string>``. Like the value-type case, both outer map fields
+    are TYPE_MESSAGE (the synthetic MapEntry), so the change is invisible
+    until the entry's ``key`` field is resolved.
+    """
+
+    def build(name: str, key_type: int) -> descriptor_pool.DescriptorPool:
+        pool = descriptor_pool.DescriptorPool()
+        f = descriptor_pb2.FileDescriptorProto(
+            name=name, package="t", syntax="proto3",
+        )
+        m = f.message_type.add()
+        m.name = "M"
+        entry = m.nested_type.add()
+        entry.name = "LabelsEntry"
+        entry.options.CopyFrom(descriptor_pb2.MessageOptions(map_entry=True))
+        k = entry.field.add()
+        k.name, k.number, k.type = "key", 1, key_type
+        k.label = T.LABEL_OPTIONAL
+        v = entry.field.add()
+        v.name, v.number, v.type = "value", 2, T.TYPE_STRING
+        v.label = T.LABEL_OPTIONAL
+        mf = m.field.add()
+        mf.name, mf.number, mf.type = "labels", 1, T.TYPE_MESSAGE
+        mf.type_name = ".t.M.LabelsEntry"
+        mf.label = T.LABEL_REPEATED
+        pool.Add(f)
+        return pool
+
+    left_pool = build("map_key_string.proto", T.TYPE_STRING)
+    right_pool = build("map_key_int32.proto", T.TYPE_INT32)
+    return (
+        message_factory.GetMessageClass(left_pool.FindMessageTypeByName("t.M")),
+        message_factory.GetMessageClass(right_pool.FindMessageTypeByName("t.M")),
+    )
+
+
+class TestMapKeyTypeChange:
+    """A map whose KEY type changed across pools — the value axis's twin.
+
+    ``_check_schema_evolution`` is as blind to the key type as it is to the
+    value type: both sides are the same synthetic MapEntry message. Gating
+    only the value descriptors left the key axis with BOTH failure modes the
+    value axis had — silent equality when the maps are empty, and a raw crash
+    when they are populated, because ``key not in left_map`` compares a
+    ``str`` key against an int-keyed map.
+    """
+
+    def test_empty_maps_are_not_reported_equal(self) -> None:
+        Left, Right = _make_map_key_type_change_pools()
+        result = MessageDifferencer().compare(Left(), Right())
+        assert result.has_changes(), "map key type change reported as equality"
+        assert [d.change_type for d in result.differences] == [
+            ChangeType.TYPE_CHANGED,
+        ]
+        assert "map key type" in str(result.warnings[0]).lower()
+
+    def test_populated_maps_do_not_crash(self) -> None:
+        Left, Right = _make_map_key_type_change_pools()
+        left = Left()
+        left.labels["a"] = "x"
+        right = Right()
+        right.labels[1] = "x"
+
+        result = MessageDifferencer().compare(left, right)  # must not raise
+
+        assert result.has_changes()
+        assert ChangeType.TYPE_CHANGED in [d.change_type for d in result.differences]
+
+    def test_one_sided_population_does_not_crash(self) -> None:
+        Left, Right = _make_map_key_type_change_pools()
+        left = Left()
+        left.labels["only_left"] = "x"
+
+        result = MessageDifferencer().compare(left, Right())
+
+        assert result.has_changes()
+        assert ChangeType.TYPE_CHANGED in [d.change_type for d in result.differences]
+
+    def test_key_and_value_changes_report_both(self) -> None:
+        """Both axes incompatible -> one TYPE_CHANGED per axis, no crash."""
+        left_pool = descriptor_pool.DescriptorPool()
+        right_pool = descriptor_pool.DescriptorPool()
+
+        def build(pool, name, key_type, value_type):
+            f = descriptor_pb2.FileDescriptorProto(
+                name=name, package="t", syntax="proto3",
+            )
+            m = f.message_type.add()
+            m.name = "M"
+            entry = m.nested_type.add()
+            entry.name = "LabelsEntry"
+            entry.options.CopyFrom(descriptor_pb2.MessageOptions(map_entry=True))
+            k = entry.field.add()
+            k.name, k.number, k.type = "key", 1, key_type
+            k.label = T.LABEL_OPTIONAL
+            v = entry.field.add()
+            v.name, v.number, v.type = "value", 2, value_type
+            v.label = T.LABEL_OPTIONAL
+            mf = m.field.add()
+            mf.name, mf.number, mf.type = "labels", 1, T.TYPE_MESSAGE
+            mf.type_name = ".t.M.LabelsEntry"
+            mf.label = T.LABEL_REPEATED
+            pool.Add(f)
+            return message_factory.GetMessageClass(
+                pool.FindMessageTypeByName("t.M"),
+            )
+
+        Left = build(left_pool, "both_a.proto", T.TYPE_STRING, T.TYPE_STRING)
+        Right = build(right_pool, "both_b.proto", T.TYPE_INT32, T.TYPE_BOOL)
+
+        result = MessageDifferencer().compare(Left(), Right())
+        assert [d.change_type for d in result.differences] == [
+            ChangeType.TYPE_CHANGED,
+            ChangeType.TYPE_CHANGED,
+        ]
+        joined = " ".join(str(w).lower() for w in result.warnings)
+        assert "map key type" in joined
+        assert "map value type" in joined
+
+
 class TestMapValueTypeChange:
     """A map whose VALUE type changed message <-> scalar across pools."""
 

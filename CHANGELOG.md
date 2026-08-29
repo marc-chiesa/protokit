@@ -37,7 +37,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `diff --proto-path` outside `--proto` | exits 2 instead of accepting an import path it could never apply |
 > | `to_parquet(fidelity=…)` with an unknown value | raises `ValueError` instead of silently behaving like `warn` and writing the file |
 > | `treat_as_map` re-registered with a different key | raises the documented `ValueError` instead of silently keying on one key while checking the other |
-> | a formatter or rule pack calling `sys.exit(0)` | the CLI reports its real verdict instead of exiting 0 with no output |
+> | a formatter or rule pack calling `sys.exit(0)` | the CLI exits 2 with a pack/formatter error instead of exiting 0 with no output |
 >
 > Field hooks also now fire for one-sided subtrees, and `strict_schema` now
 > validates the root message type — both mean opt-in callers see diagnostics or
@@ -282,8 +282,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
   same way. `_git_show`'s deliberate bare `raise` is preserved — the failure is
   now caught and routed at the CLI boundary, so an unknown git error stays
   loudly unknown rather than being mistaken for a missing import.
-- **`MessageDifferencer.compare()` no longer crashes on a map whose value type
-  changed message→scalar across pools.** The outer `_types_compatible` gate only
+- **`MessageDifferencer.compare()` no longer crashes on a map whose key or
+  value type changed across pools, and no longer reports such a map as equal.** The outer `_types_compatible` gate only
   inspects the map field itself, which is `TYPE_MESSAGE` (the synthetic
   MapEntry) on both sides regardless of the entry's value type, so the change
   slipped through and a raw `str` was pushed onto the message work stack,
@@ -292,12 +292,17 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `TYPE_CHANGED` difference for the map's value type and skips comparing the
   values.
 
-  Recording the difference is what makes this mirror the map↔repeated
+  The map's **key** type is gated the same way and for the same reasons. A
+  `map<string, V>` -> `map<int32, V>` change crashed with
+  `TypeError: bad argument type` on the `key not in left_map` membership test
+  when either map was populated, and compared **equal** when both were empty.
+
+  Recording a difference is what makes this mirror the map↔repeated
   precedent rather than only appearing to. That sibling gets its difference
   from `_check_schema_evolution`, which runs *before* the skip; only the value
-  comparison is skipped. `_check_schema_evolution` cannot see a map's value
-  type — both sides are the same synthetic MapEntry message — so this branch
-  has to record it itself. Diagnosing alone would have been worse than the
+  comparison is skipped. `_check_schema_evolution` is as blind to a map's key
+  and value types as the outer gate is — both sides are the same synthetic
+  MapEntry message — so this branch has to record them itself. Diagnosing alone would have been worse than the
   crash it replaced: `has_changes()` ignores diagnostics, so two maps holding
   entirely different data compared **equal** — `proto_match` passed,
   `diff --quiet` exited 0, and the human CLI printed "Messages are equal."

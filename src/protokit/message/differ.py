@@ -2040,39 +2040,56 @@ class MessageDifferencer:
         left_map = getattr(left_msg, left_fd.name)
         right_map = getattr(right_msg, right_fd.name)
 
-        all_keys = left_map.keys() | right_map.keys()
-        left_value_fd = left_fd.message_type.fields_by_name["value"]
-        right_value_fd = right_fd.message_type.fields_by_name["value"]
+        entry_fds = left_fd.message_type.fields_by_name
+        right_entry_fds = right_fd.message_type.fields_by_name
 
-        # Value-type change -> record the change, then skip value comparison.
+        # Entry-type change -> record the change, then skip the comparison.
         # The outer dispatch's ``_types_compatible`` gate only sees the map
         # field itself, which is TYPE_MESSAGE (the synthetic MapEntry) on both
-        # sides no matter what the entry's value type is; a message->scalar
-        # change therefore slips through and would push a raw scalar onto the
-        # message work stack.
+        # sides no matter what the entry's key or value types are, so a change
+        # to EITHER slips through. Both axes must be gated here:
+        #
+        #   value: a message->scalar change would push a raw scalar onto the
+        #     message work stack (AttributeError: no DESCRIPTOR).
+        #   key: a string->int32 change makes ``key not in left_map`` compare a
+        #     str against an int-keyed map (TypeError: bad argument type).
         #
         # Same disposition as the map<->repeated cardinality change: a
         # Difference for the schema change, and no value comparison. That
         # sibling gets its Difference from ``_check_schema_evolution``, which
-        # runs before the skip — but that check is blind to the map's VALUE
-        # type (both sides are the same synthetic MapEntry), so this branch has
-        # to record it. Diagnosing alone would be worse than the crash it
-        # replaced: ``has_changes()`` ignores diagnostics, so the comparison
-        # would report EQUAL for two maps holding entirely different data.
-        if not _types_compatible(left_value_fd.type, right_value_fd.type):
+        # runs before the skip — but that check is as blind to a map's key and
+        # value types as the outer gate is, so this branch has to record them.
+        # Diagnosing alone would be worse than the crash it replaced:
+        # ``has_changes()`` ignores diagnostics, so the comparison would report
+        # EQUAL for two maps with incompatible schemas — silently on empty
+        # maps, which no per-key comparison can rescue.
+        incompatible = False
+        for axis in ("key", "value"):
+            left_axis_fd = entry_fds[axis]
+            right_axis_fd = right_entry_fds[axis]
+            if _types_compatible(left_axis_fd.type, right_axis_fd.type):
+                continue
+            incompatible = True
             diffs.append(Difference(
                 path=path,
                 change_type=ChangeType.TYPE_CHANGED,
-                left_type=type_name(left_value_fd.type),
-                right_type=type_name(right_value_fd.type),
+                left_type=type_name(left_axis_fd.type),
+                right_type=type_name(right_axis_fd.type),
             ))
             warnings.append(Diagnostic(
                 path=str(path),
-                message=f"map value type changed from "
-                        f"{type_name(left_value_fd.type)} to "
-                        f"{type_name(right_value_fd.type)}; values not compared",
+                message=f"map {axis} type changed from "
+                        f"{type_name(left_axis_fd.type)} to "
+                        f"{type_name(right_axis_fd.type)}; values not compared",
             ))
+        if incompatible:
             return
+
+        # Safe only after the key gate above: a mismatched key type makes the
+        # membership tests in this loop raise.
+        all_keys = left_map.keys() | right_map.keys()
+        left_value_fd = entry_fds["value"]
+        right_value_fd = right_entry_fds["value"]
 
         for key in sorted(all_keys, key=lambda k: (type(k).__name__, k)):
             key_str = format_key(key)
