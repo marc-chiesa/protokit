@@ -62,6 +62,7 @@ from protokit.schema.lint.model import (
 from protokit.schema.lint.rules.options import field_behavior
 from protokit.schema.lint.rules.options.field_behavior import (
     _CONTRADICTORY_PAIRS,
+    _PARAM_CAP,
     RULE_ID,
     RULES,
     check_field_behavior_consistent,
@@ -912,3 +913,57 @@ class TestExceptionTupleCoverage:
             "bytes) do not crash engine.run() on corrupted bytes. "
             "See ce:review REL-1 / SEC-002 (D6d U2)."
         )
+
+
+class TestParamHygiene:
+    """This pack's ``_PARAM_CAP`` bounds the runtime-warning message.
+
+    A mutation audit raised the constant to ``10**30`` and the whole suite
+    stayed green, so nothing pinned the cap that keeps an attacker-controlled
+    file path from inflating a warning without bound. The unresolved-extension
+    path is where a caller-supplied string reaches the message, so that is
+    where the test drives it.
+    """
+
+    def test_long_file_path_is_truncated_in_the_warning(
+        self, tmp_path: Path,
+    ) -> None:
+        # Nested components, each under the filesystem's 255-byte per-name
+        # limit, so it is the composed path that must be bounded.
+        long_dir = "/".join("d" * 200 for _ in range(3))
+        user_proto = (
+            'syntax = "proto3";\n\n'
+            "package user;\n\n"
+            "message M {\n"
+            "    string a = 1;\n"
+            "}\n"
+        )
+        report = _run(
+            tmp_path,
+            {f"{long_dir}/msg.proto": user_proto},
+            include_field_behavior=False,
+        )
+
+        warnings = [
+            w for w in report.runtime_warnings
+            if w.category == "extension_unresolved"
+        ]
+        assert len(warnings) == 1
+        message = warnings[0].message
+        # The path alone exceeds the cap, so an un-truncated interpolation
+        # would carry all 602 characters of it.
+        assert len(long_dir) > _PARAM_CAP
+        assert long_dir not in message, "full path reached the warning"
+        assert long_dir[:_PARAM_CAP] in message, "capped prefix is still shown"
+
+    # NOTE: there is deliberately no sanitizer test at this site. The rule's
+    # `_safe_for_stderr(file_name)` call is redundant here and cannot be
+    # pinned: the only place the value is rendered is
+    # `f"...{safe_file!r}..."`, and `repr()` already escapes every control
+    # character, so removing the sanitizer changes nothing observable. R8/R8b
+    # in `rules/package.py` are a different case and ARE pinned — their params
+    # go into a `params={}` dict verbatim, never through `!r`, so there the
+    # sanitizer is the only thing standing between a hostile directory name
+    # and a forged NDJSON record. Writing a test here anyway would pass with
+    # the sanitizer deleted, which is the exact failure this whole branch
+    # exists to remove.
