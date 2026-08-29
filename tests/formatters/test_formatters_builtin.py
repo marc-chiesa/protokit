@@ -16,8 +16,13 @@ output then comes from the existing CLI integration tests in
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
+import pytest
+import xmlschema
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.formatters import (
@@ -26,7 +31,7 @@ from protokit.formatters import (
     get_formatter,
 )
 from protokit.message import MessageDifferencer
-from protokit.message.model import Diagnostic
+from protokit.message.model import Diagnostic, DiffResult
 from protokit.schema.model import (
     BisectReport,
     CommitDiagnostic,
@@ -100,6 +105,142 @@ class TestBuiltinRegistration:
 # ---------------------------------------------------------------------------
 # DIFF — formatter output matches legacy CLI rendering
 # ---------------------------------------------------------------------------
+
+
+class TestDiffJunitErrorDiagnostics:
+    """An error-level diagnostic must not render as a clean pass.
+
+    ``Diagnostic``'s own contract says an ``"error"`` means the tool
+    itself broke and "CI callers should treat any ``error`` as a
+    fail-closed condition **even if the filtered findings list is
+    empty**". ``diff_junit`` hard-coded ``errors=0`` and piped only
+    ``result.warnings`` into ``<system-out>``, so ``result.errors``
+    reached no output at all: a plugin crash or hook exception during a
+    comparison that found no differences produced
+    ``tests=1 failures=0 errors=0`` and a green CI job.
+    """
+
+    @staticmethod
+    def _equal_result_with_error() -> DiffResult:
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        result = MessageDifferencer().compare(cls(name="A"), cls(name="A"))
+        assert not result.has_changes()
+        return dataclasses.replace(
+            result,
+            diagnostics=(
+                Diagnostic(level="error", path=None, message="plugin exploded"),
+            ),
+        )
+
+    def test_error_diagnostic_is_counted_and_rendered(self) -> None:
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(self._equal_result_with_error(), FormatterContext(subcommand="diff"))
+        root = ET.fromstring(out)
+        assert root.get("errors") == "1", "error diagnostic not counted in the suite"
+        assert "plugin exploded" in out, "error diagnostic text absent from the output"
+
+    def test_warning_only_result_still_reports_zero_errors(self) -> None:
+        """The existing warning path must keep its current shape."""
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        base = MessageDifferencer().compare(cls(name="A"), cls(name="A"))
+        result = dataclasses.replace(
+            base,
+            diagnostics=(Diagnostic(level="warning", path=None, message="heads up"),),
+        )
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(result, FormatterContext(subcommand="diff"))
+        root = ET.fromstring(out)
+        assert root.get("errors") == "0"
+        assert "heads up" in out
+
+
+class TestDiffJunitSchemaValidity:
+    """The JUnit document must satisfy the vendored Apache Ant xsd.
+
+    ``<testcase>``'s content model is ``<xs:choice minOccurs="0">`` over
+    ``skipped | error | failure`` — at most ONE of them. Putting the error
+    diagnostic on the same testcase as the failure emitted two children, so
+    the differing-messages-plus-error case produced a document strict JUnit
+    consumers reject. Several CI systems report an unparseable report as "no
+    test results found" — the same blank/green outcome the error-diagnostic
+    fix set out to eliminate, reintroduced through a different door.
+
+    Every sibling formatter already avoids this by giving each error
+    diagnostic its own testcase (``_builtin_compat``, ``_builtin_bisect``,
+    ``_builtin_lint``).
+    """
+
+    @staticmethod
+    def _validator() -> xmlschema.XMLSchema:
+        return xmlschema.XMLSchema(
+            str(Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd")
+        )
+
+    @staticmethod
+    def _result(*, differing: bool, error: bool) -> DiffResult:
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        right = cls(name="B") if differing else cls(name="A")
+        base = MessageDifferencer().compare(cls(name="A"), right)
+        assert base.has_changes() is differing
+        if not error:
+            return base
+        return dataclasses.replace(
+            base,
+            diagnostics=(
+                Diagnostic(level="error", path=None, message="plugin exploded"),
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        ("differing", "error"),
+        [(False, False), (True, False), (False, True), (True, True)],
+    )
+    def test_every_failure_error_combination_is_schema_valid(
+        self, differing: bool, error: bool
+    ) -> None:
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(
+            self._result(differing=differing, error=error),
+            FormatterContext(subcommand="diff"),
+        )
+        ET.fromstring(out)  # well-formed
+        self._validator().validate(out)  # ...and schema-valid
+
+    def test_failure_and_error_land_on_separate_testcases(self) -> None:
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(
+            self._result(differing=True, error=True),
+            FormatterContext(subcommand="diff"),
+        )
+        root = ET.fromstring(out)
+        cases = root.findall("testcase")
+        assert len(cases) == 2, "failure and error must not share one testcase"
+        assert sum(len(c.findall("failure")) for c in cases) == 1
+        assert sum(len(c.findall("error")) for c in cases) == 1
+        assert all(
+            len(c.findall("failure")) + len(c.findall("error")) <= 1 for c in cases
+        )
+
+    def test_suite_counts_do_not_double_count_one_testcase(self) -> None:
+        """``tests`` must cover every case, so ``tests - failures - errors >= 0``.
+
+        Aggregators that derive a pass count that way (GitLab, some Jenkins
+        renderers) got -1 when one testcase carried both.
+        """
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(
+            self._result(differing=True, error=True),
+            FormatterContext(subcommand="diff"),
+        )
+        root = ET.fromstring(out)
+        tests = int(root.get("tests") or 0)
+        failures = int(root.get("failures") or 0)
+        errors = int(root.get("errors") or 0)
+        assert failures == 1 and errors == 1
+        assert tests - failures - errors >= 0, f"{tests=} {failures=} {errors=}"
 
 
 class TestDiffFormatters:

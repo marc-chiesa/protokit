@@ -19,6 +19,7 @@ wire-compatibility groups.
 
 from __future__ import annotations
 
+import bisect
 import contextvars
 from typing import Callable, Iterable
 
@@ -893,26 +894,147 @@ def enum_number_reused(
     return findings
 
 
+def enum_value_number_changed(
+    old_enum: proto_descriptor.EnumDescriptor | None,
+    new_enum: proto_descriptor.EnumDescriptor | None,
+    path: FieldPath,
+) -> list[Finding]:
+    """Detect an enum value that kept its name but changed its number.
+
+    Severity WIRE, direction BOTH. Enum values travel on the wire as
+    their number, so a renumber breaks both readers at once: old bytes
+    carrying the previous number decode to no name under the new
+    schema, and new producers emit a number the old schema cannot
+    name. Neither name-matched sibling fires (the name survives on
+    both sides), and ``enum_number_reused`` is number-keyed so it
+    stays silent whenever the old number is absent from the new
+    schema — this rule closes that gap.
+
+    Values are grouped name -> number *set* rather than name -> single
+    number so aliasing stays quiet: under ``allow_alias`` several
+    names share one number, and comparing per surviving name means an
+    alias fires only when its own number moved, never because a
+    sibling name appeared at or vanished from the same number. Names
+    present on only one side belong to ``enum_value_removed`` /
+    ``enum_value_added``.
+
+    Args:
+        old_enum: Old-side ``EnumDescriptor`` (must be present).
+        new_enum: New-side ``EnumDescriptor`` (must be present).
+        path: Dotted ``FieldPath`` to the field that uses this enum.
+
+    Returns:
+        One finding per surviving name whose number changed, in
+        old-side declaration order. Empty list when every surviving
+        name kept its number or when either side is missing.
+    """
+    if old_enum is None or new_enum is None:
+        return []
+    old_values_by_name: dict[str, list[proto_descriptor.EnumValueDescriptor]] = {}
+    for v in old_enum.values:
+        old_values_by_name.setdefault(v.name, []).append(v)
+    new_values_by_name: dict[str, list[proto_descriptor.EnumValueDescriptor]] = {}
+    for v in new_enum.values:
+        new_values_by_name.setdefault(v.name, []).append(v)
+
+    findings: list[Finding] = []
+    for name, old_vs in old_values_by_name.items():
+        new_vs = new_values_by_name.get(name)
+        if new_vs is None:
+            continue
+        old_numbers = sorted({v.number for v in old_vs})
+        new_numbers = sorted({v.number for v in new_vs})
+        if old_numbers == new_numbers:
+            continue
+        findings.append(Finding(
+            path=path,
+            rule_id="enum_value_number_changed",
+            severity=Severity.WIRE,
+            direction=Direction.BOTH,
+            message=(
+                f"enum value '{name}' number changed from "
+                f"{', '.join(str(n) for n in old_numbers)} to "
+                f"{', '.join(str(n) for n in new_numbers)}"
+            ),
+            old_descriptor=old_vs[0],
+            new_descriptor=new_vs[0],
+        ))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Message-level rules
 # ---------------------------------------------------------------------------
 
 
-def _reserved_numbers(desc: proto_descriptor.Descriptor) -> set[int]:
-    """Expand reserved ranges of the message into a set of integers."""
+def _reserved(
+    desc: proto_descriptor.Descriptor,
+) -> tuple[tuple[tuple[int, int], ...], set[str]]:
+    """The message's reserved field-number ranges and reserved names.
+
+    Ranges are returned as half-open ``(start, end)`` pairs and are
+    **deliberately not materialized** into a set of integers: a valid
+    ``reserved N to max;`` emits ``end = 536_870_912``, so
+    ``set(range(...))`` would allocate ~5e8 ints (~32 GB measured by
+    extrapolation) and OOM the process. Membership is the only use --
+    see :func:`_is_reserved`. The sibling walker in
+    ``protokit.forensics._drift`` keeps the same shape for the same
+    reason.
+
+    Both halves come back together because reading either one requires
+    a ``CopyToProto`` roundtrip on the upb backend (the live
+    ``Descriptor`` doesn't expose reserved data), and that roundtrip is
+    the expensive part -- doing it once per message pair instead of
+    twice halves the serialization cost of this rule.
+    """
     dp = descriptor_pb2.DescriptorProto()
     desc.CopyToProto(dp)
-    numbers: set[int] = set()
-    for rng in dp.reserved_range:
-        numbers.update(range(rng.start, rng.end))
-    return numbers
+    ranges = _normalize_ranges((rng.start, rng.end) for rng in dp.reserved_range)
+    return ranges, set(dp.reserved_name)
 
 
-def _reserved_names(desc: proto_descriptor.Descriptor) -> set[str]:
-    """Return the set of reserved field names on the message."""
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
-    return set(dp.reserved_name)
+def _normalize_ranges(
+    raw: Iterable[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Sort and merge half-open ranges into a disjoint, ascending tuple.
+
+    Normalizing once per message pair is what lets :func:`_is_reserved`
+    binary-search instead of scanning. A linear scan is O(fields x
+    ranges), which a schema declaring thousands of small reserved ranges
+    turns into a CPU denial of service: 10_000 ranges against 10_000
+    fields measured **2.4 s** scanning versus 0.003 s for the old
+    set-membership form. Merging first also collapses the overlapping
+    and adjacent ranges real schemas accumulate as field blocks are
+    retired piecemeal.
+
+    Empty (``start == end``) and inverted (``start > end``) ranges are
+    dropped: both are vacuous under half-open semantics, and the
+    previous ``set(range(start, end))`` form dropped them too, so this
+    preserves behavior exactly.
+    """
+    ordered = sorted((s, e) for s, e in raw if s < e)
+    merged: list[tuple[int, int]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            # Overlapping or exactly adjacent -- extend the open range.
+            prev_start, prev_end = merged[-1]
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return tuple(merged)
+
+
+def _is_reserved(number: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    """Whether ``number`` falls in any half-open reserved range.
+
+    ``ranges`` must come from :func:`_normalize_ranges` -- sorted,
+    disjoint, ascending -- so the containing range can be found by
+    binary search in O(log R) rather than scanned in O(R).
+    """
+    # Rightmost range whose start is <= number; the only one that can
+    # contain it, because the ranges are disjoint and ascending.
+    idx = bisect.bisect_right(ranges, number, key=lambda r: r[0]) - 1
+    return idx >= 0 and number < ranges[idx][1]
 
 
 def reserved_field_reused(
@@ -949,13 +1071,12 @@ def reserved_field_reused(
     """
     if old_desc is None or new_desc is None:
         return []
-    old_res_numbers = _reserved_numbers(old_desc)
-    old_res_names = _reserved_names(old_desc)
+    old_res_ranges, old_res_names = _reserved(old_desc)
     findings: list[Finding] = []
     for fd in new_desc.fields:
         if fd.is_extension:
             continue
-        if fd.number in old_res_numbers:
+        if _is_reserved(fd.number, old_res_ranges):
             findings.append(Finding(
                 path=path.child(fd.name),
                 rule_id="reserved_field_reused",
@@ -1030,10 +1151,22 @@ FIELD_RULES: tuple[tuple[str, FieldRuleFn], ...] = (
     ("presence_changed", presence_changed),
 )
 
+# Registry order is emit order: ``SchemaChecker`` iterates each list in
+# registration order and ``CompatibilityReport.findings`` preserves it,
+# so tuple position is load-bearing wherever two rules co-fire (see
+# docs/solutions/logic-errors/rules-tuple-insertion-order-load-bearing-engine-dispatch-2026-05-19.md
+# for the same property on the lint side).
 ENUM_RULES: tuple[tuple[str, EnumRuleFn], ...] = (
     ("enum_value_removed", enum_value_removed),
     ("enum_value_added", enum_value_added),
     ("enum_number_reused", enum_number_reused),
+    # Appended LAST deliberately: a number swap co-fires this with
+    # enum_number_reused, and appending is the only position that
+    # cannot reorder the three pre-existing rules relative to each
+    # other. It also reads top-down as membership -> number reuse ->
+    # renumber, narrowing from "which names changed" to "which name
+    # moved".
+    ("enum_value_number_changed", enum_value_number_changed),
 )
 
 MESSAGE_RULES: tuple[tuple[str, MessageRuleFn], ...] = (

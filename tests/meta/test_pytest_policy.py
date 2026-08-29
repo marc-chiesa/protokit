@@ -481,6 +481,47 @@ class TestProtoMatcherFixture:
         with pytest.raises(MatcherError):
             factory(actual, expected, presence="EQUAL")  # type: ignore[arg-type]
 
+    def test_fluent_form_rejects_single_call_policy_kwargs(self) -> None:
+        """A policy kwarg in the fluent form is an error, not a silent no-op.
+
+        ``proto_matcher(expected, partial=True)`` looks like it configures the
+        matcher, but the policy kwargs are single-call-only: the fluent form
+        returned a DEFAULT-policy matcher and dropped them, so a test written
+        that way silently asserted something stricter than its author intended.
+        """
+        b = _make_builder()
+        expected = b.build("test.Msg", name="Alice")
+        factory = ProtoMatcherFactory()
+        with pytest.raises(MatcherError) as exc:
+            factory(expected, partial=True)
+        message = str(exc.value)
+        assert "partial" in message
+        assert ".partially()" in message  # names the fluent equivalent
+
+    def test_fluent_form_names_every_dropped_kwarg(self) -> None:
+        b = _make_builder()
+        expected = b.build("test.Msg", name="Alice")
+        factory = ProtoMatcherFactory()
+        with pytest.raises(MatcherError) as exc:
+            factory(
+                expected,
+                partial=True,
+                ignore="value",
+                presence=MessageFieldComparison.EQUAL,
+                margin=1e-5,
+            )
+        message = str(exc.value)
+        for name in ("partial", "ignore", "presence", "margin"):
+            assert name in message
+
+    def test_fluent_form_still_accepts_explicit_defaults(self) -> None:
+        """Passing a kwarg at its default value is a no-op, not an error."""
+        b = _make_builder()
+        expected = b.build("test.Msg", name="Alice")
+        factory = ProtoMatcherFactory()
+        matcher = factory(expected, partial=False, ignore=None, approx=None)
+        assert isinstance(matcher, ProtoMatcher)
+
     def test_fluent_diff_message_shape(self) -> None:
         """On mismatch the fluent matcher's AssertionError carries the rich
         per-field diff (same formatter as the == hook)."""

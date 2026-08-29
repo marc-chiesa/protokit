@@ -22,6 +22,7 @@ this layer owns it.
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 import click
@@ -145,8 +146,28 @@ def _read_message(path: Path, max_message_bytes: int) -> bytes:
     except OSError as exc:
         raise ForensicsError(f"cannot read message {path}: {exc}") from exc
     if len(data) > max_message_bytes:
-        raise MessageTooLargeError(path, path.stat().st_size, max_message_bytes)
+        size, exact = _reportable_size(path, len(data))
+        raise MessageTooLargeError(path, size, max_message_bytes, size_is_exact=exact)
     return data
+
+
+def _reportable_size(path: Path, read_length: int) -> tuple[int, bool]:
+    """The size to report for an over-cap input, and whether it is exact.
+
+    ``stat().st_size`` is meaningful only for a regular file. It is 0 for a
+    FIFO, ``/dev/stdin``, or a process substitution — exactly the inputs the cap
+    matters most for — so reporting it there claims the input is 0 bytes while
+    refusing it for being too large. For anything but a regular file (or a
+    regular file that shrank under us, or one that will not ``stat()`` at all),
+    fall back to the bounded read's length, which is a true lower bound.
+    """
+    try:
+        info = path.stat()
+    except OSError:
+        return read_length, False
+    if stat.S_ISREG(info.st_mode) and info.st_size >= read_length:
+        return info.st_size, True
+    return read_length, False
 
 
 def _fmt_opt(value: float | None, spec: str, dash: str) -> str:

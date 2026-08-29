@@ -23,6 +23,67 @@ from tests.storage.proto_fixtures import (
 )
 
 
+class _NonBlockingStream(io.RawIOBase):
+    """A raw stream that returns ``None`` when no data is ready.
+
+    This is the documented contract of ``RawIOBase.read`` on a
+    non-blocking source (pipe, socket, ``/dev/stdin`` under
+    ``O_NONBLOCK``) — distinct from ``b""``, which means EOF. Modelled
+    directly rather than driven through a real ``os.pipe`` so the test
+    does not depend on scheduler timing to hit the boundary.
+    """
+
+    def __init__(self, data: bytes, stall_after: int) -> None:
+        self._data = data
+        self._pos = 0
+        self._stall_after = stall_after
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes | None:  # type: ignore[override]
+        if self._pos >= self._stall_after:
+            return None  # no data ready — NOT end of stream
+        n = len(self._data) if size < 0 else size
+        chunk = self._data[self._pos : self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+
+class TestNonBlockingStreamIsRejected:
+    """A ``None`` read must not be mistaken for a clean end of stream.
+
+    ``_read_varint`` / ``_read_exact`` tested the read result with
+    ``if not chunk:``, and ``not None`` is ``True`` — so a non-blocking
+    stream with no data *ready* took the same branch as a genuine EOF.
+    The generator then completed normally: every remaining frame was
+    silently dropped, ``.errors`` was empty, and the CLI exited 0. A
+    caller has no way to tell that partial result from a correct one.
+    """
+
+    def test_stall_at_frame_boundary_raises_instead_of_truncating(self) -> None:
+        payloads = [b"\x08\x01", b"\x08\x02"]
+        data = delimited(*payloads)
+        # Stall exactly at the second frame's length prefix.
+        boundary = len(delimited(payloads[0]))
+        stream = _NonBlockingStream(data, stall_after=boundary)
+        with pytest.raises(FrameError, match="non-blocking"):
+            list(length_delimited(stream, stream_id="s"))
+
+    def test_stall_mid_body_raises_instead_of_truncating(self) -> None:
+        data = delimited(b"\x08\x01\x08\x02\x08\x03")
+        stream = _NonBlockingStream(data, stall_after=len(data) - 3)
+        with pytest.raises(FrameError, match="non-blocking"):
+            list(length_delimited(stream, stream_id="s"))
+
+    def test_blocking_stream_is_unaffected(self) -> None:
+        """The ordinary buffered path must keep its clean-EOF behaviour."""
+        payloads = [b"\x08\x01", b"\x08\x02"]
+        stream = io.BytesIO(delimited(*payloads))
+        records = list(length_delimited(stream, stream_id="s"))
+        assert [bytes(r[1]) for r in records] == payloads
+
+
 class TestLengthDelimitedFraming:
     def test_round_trips_records_in_order(self) -> None:
         payloads = [b"\x08\x01", b"\x08\x02", b"\x08\x03"]

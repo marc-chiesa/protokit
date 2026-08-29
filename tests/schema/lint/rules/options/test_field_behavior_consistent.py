@@ -50,6 +50,7 @@ from typing import Any
 import pytest
 
 from protokit.schema.compile import compile_protos_to_result
+from protokit.schema.lint._engine_run_state import engine_for_ctx
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import (
     ElementKind,
@@ -63,7 +64,6 @@ from protokit.schema.lint.rules.options.field_behavior import (
     _CONTRADICTORY_PAIRS,
     RULE_ID,
     RULES,
-    _engine_for_ctx,
     check_field_behavior_consistent,
 )
 
@@ -847,7 +847,7 @@ class TestLintRuleErrorRouting:
         self,
     ) -> None:
         """When ctx._emit_fn is not a bound method (e.g., a plain
-        lambda from a test helper), _engine_for_ctx raises
+        lambda from a test helper), engine_for_ctx raises
         LintRuleError — which is in the engine's catch tuple, so
         downstream walks continue.
         """
@@ -864,7 +864,7 @@ class TestLintRuleErrorRouting:
 
         stub = _StubCtx(_emit_fn=lambda f: None)
         with pytest.raises(LintRuleError) as exc_info:
-            _engine_for_ctx(stub)  # type: ignore[arg-type]
+            engine_for_ctx(stub, RULE_ID)
         assert "options/field-behavior-consistent" in str(exc_info.value)
 
 

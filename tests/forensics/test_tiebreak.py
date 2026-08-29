@@ -81,6 +81,29 @@ def test_symmetric_tie_remains_multiple_clean() -> None:
     assert report.verdict == "multiple_clean_matches"
 
 
+def test_tiebreak_prefers_the_smaller_residual_when_compat_and_coverage_tie() -> None:
+    """Compat and coverage tie but the fractions differ — that is not a tie.
+
+    Each candidate declares the blob plus one of the two trailing scalars, so both
+    score the same wire compatibility (one modeled field, one unknown) and the same
+    declared-field coverage. Only the residual separates them, so input order must
+    not decide: the candidate leaving 2 unmodeled bytes must outrank the one leaving 3
+    whichever way the ``--schema`` flags are ordered.
+    """
+    producer = typed_fdp({"blob": (_BYTES, 1), "a": (_I32, 2), "b": (_I32, 3)})
+    data = _bulky_message(producer, "blob", a=1, b=300)
+    worse = candidate("worse", typed_fdp({"blob": (_BYTES, 1), "a": (_I32, 2)}))
+    better = candidate("better", typed_fdp({"blob": (_BYTES, 1), "b": (_I32, 3)}))
+
+    forward = match(data, [worse, better], max_residual_bytes=3)
+    reversed_ = match(data, [better, worse], max_residual_bytes=3)
+
+    assert [f.label for f in forward.ranked] == ["better", "worse"]
+    assert [f.label for f in reversed_.ranked] == ["better", "worse"]
+    assert forward.ranked[0].unmodeled_bytes == 2  # the rank-1 row is the tighter fit
+    assert forward.verdict == "clean_winner"
+
+
 def test_tiebreak_is_deterministic_under_input_reordering() -> None:
     producer = typed_fdp({"blob": (_BYTES, 1), "a": (_I32, 2), "b": (_I32, 3)})
     data = _bulky_message(producer, "blob", a=1, b=1)

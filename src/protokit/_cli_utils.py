@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import importlib
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -27,8 +28,8 @@ from protokit import _pools
 from protokit.formatters import (
     Formatter,
     FormatterContext,
-    FormatterError,
     FormatterKind,
+    ReservedFormatterNameError,
     get_formatter,
     list_formatters,
     load_formatter_pack,
@@ -68,15 +69,24 @@ def _protoc_timeout_seconds() -> float:
     """Return the configured protoc subprocess timeout in seconds.
 
     Reads ``PROTOKIT_PROTOC_TIMEOUT`` from the environment; falls back
-    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset or unparseable.
+    to :data:`_PROTOC_TIMEOUT_SECONDS_DEFAULT` if unset, unparseable,
+    or not a usable duration. The override is meant to raise or lower
+    the ceiling, never to remove it: ``float`` happily accepts ``0``,
+    ``-1``, ``nan`` and ``inf``, and passing those to
+    ``subprocess.run`` would respectively kill every compile
+    instantly or restore the indefinite hang the ceiling exists to
+    prevent.
     """
     raw = os.environ.get("PROTOKIT_PROTOC_TIMEOUT")
     if raw is None:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
     try:
-        return float(raw)
+        parsed = float(raw)
     except ValueError:
         return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    if not math.isfinite(parsed) or parsed <= 0:
+        return _PROTOC_TIMEOUT_SECONDS_DEFAULT
+    return parsed
 
 
 # Sentinel file used to validate a candidate WKT include directory.
@@ -623,7 +633,15 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     pattern-matching agents can branch without parsing the
     embedded exception text — collisions with reserved built-in
     names are conceptually different from "the pack failed to
-    load" and benefit from their own surface.
+    load" and benefit from their own surface. The branch keys on
+    :class:`~protokit.formatters.ReservedFormatterNameError`, not
+    on the base ``FormatterError``, which a plain duplicate
+    registration also raises.
+
+    Repeated names are deduped so ``--formatter-module p
+    --formatter-module p`` stays a no-op rather than tripping the
+    registry's duplicate guard, matching the lint side's
+    ``--rule-pack`` early-return on an already-loaded module.
 
     **Three-arm guard chain on import.** Both ``except SystemExit``
     and ``except KeyboardInterrupt`` are placed BEFORE the broad
@@ -644,6 +662,25 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     ``keyboardinterrupt-baseexception-bypass-rule-pack-load``
     learning's per-surface framework.
 
+    **Same three-arm chain on the pack-load phase.** The import
+    guard above wraps ``importlib.import_module`` only —
+    :func:`~protokit.formatters.load_formatter_pack` is a separate
+    statement, and it evaluates ``module.FORMATTERS`` (iterating it)
+    AFTER import returns. A pack can therefore defer arbitrary code
+    past the import guard by making ``FORMATTERS`` an object whose
+    ``__iter__`` runs the payload: ``sys.exit(0)`` there produced a
+    false-green exit 0, exactly the bypass the import arm closes,
+    one level deferred. The load phase executes user-supplied Python
+    at the same trust boundary, so it gets the same chain. The final
+    arm is the broad ``except Exception`` rather than the original
+    ``(AttributeError, TypeError)``: those two cover only the shapes
+    :func:`load_formatter_pack` raises deliberately, so anything
+    else raised during deferred evaluation — a plain ``RuntimeError``
+    from ``__iter__``, or the registry's own empty-``FORMATTERS``
+    ``UserWarning`` promoted to an error under ``PYTHONWARNINGS=
+    error`` — escaped as a raw traceback instead of the documented
+    exit-2 + ``Error:`` one-liner.
+
     **Output-contract divergences from the lint sibling** (legacy
     compat behavior, intentionally retained):
 
@@ -661,7 +698,11 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
     interpolated bare). Mirrors the lint side's ``_safe_module_name``
     pattern via Python's built-in repr escaping.
     """
-    for name in module_names:
+    # ``dict.fromkeys`` dedupes while preserving first-seen order:
+    # ``--formatter-module`` is repeatable, and naming the same pack
+    # twice would otherwise hit the registry's duplicate guard and
+    # hard-fail the CLI on what the user meant as a no-op.
+    for name in dict.fromkeys(module_names):
         try:
             module = importlib.import_module(name)
         except SystemExit as exc:
@@ -678,12 +719,30 @@ def load_formatter_packs(module_names: tuple[str, ...]) -> None:
             error_exit(f"failed to import formatter pack {name!r}: {exc}")
         try:
             load_formatter_pack(module)
-        except FormatterError as exc:
+        except SystemExit as exc:
+            error_exit(
+                f"failed to load formatter pack {name!r}: "
+                f"called sys.exit({exc.code!r}) at pack-load time"
+            )
+        except KeyboardInterrupt:
+            error_exit(
+                f"failed to load formatter pack {name!r}: "
+                f"raised KeyboardInterrupt at pack-load time"
+            )
+        # Narrower than FormatterError on purpose: only the built-in-shadow
+        # branch raises this, so a plain duplicate registration no longer
+        # gets mislabelled as a reserved-name conflict. Must precede the
+        # catch-all below, being a FormatterError subclass.
+        except ReservedFormatterNameError as exc:
             error_exit(
                 f"formatter pack {name!r} conflicts with a reserved "
                 f"built-in name: {exc}"
             )
-        except (AttributeError, TypeError) as exc:
+        # Deliberately broad: a pack can defer arbitrary work into
+        # ``FORMATTERS.__iter__``, so anything it raises here must become a
+        # clean exit 2 rather than a traceback. Subsumes FormatterError /
+        # AttributeError / TypeError.
+        except Exception as exc:
             error_exit(f"failed to load formatter pack {name!r}: {exc}")
 
 
@@ -732,6 +791,86 @@ def reject_quiet_plus_structured(
             f"--quiet is incompatible with structured output format "
             f"'{output_format}'. Drop --quiet, or pick --format human."
         )
+
+
+#: Translation table that maps every ASCII control character
+#: (``0x00``–``0x1f`` plus ``0x7f`` DEL) to a single space. Used by
+#: :func:`_safe_for_stderr` so attacker-controlled strings flowing into
+#: per-line ``click.echo`` output can never:
+#:
+#: - Forge a fake error line via embedded ``\n`` / ``\r`` (the original
+#:   ``module-name-newline-injection-stderr-forge-2026-05-07.md`` concern).
+#: - Truncate the stderr line via embedded ``\x00`` (NUL terminates
+#:   strings in syslog / many log-ingestion pipelines).
+#: - Smuggle ANSI escape sequences via embedded ``\x1b`` (terminal
+#:   color/cursor injection that can obscure the stable error prefix
+#:   CI scripts grep for).
+#:
+#: Built once at module-load time (cheap; lazy import via ``str.translate``).
+#:
+#: Lives here, in the shared CLI-utils module, rather than in the lint
+#: subpackage where it was introduced: BOTH prefix families (compat's
+#: ``Error:`` and lint's ``error[lint-CODE]:``) need it, and
+#: ``protokit.schema.lint._cli_utils`` already imports upward from this
+#: module, so the reverse import would be circular. The lint module
+#: re-exports both names for source compatibility.
+_CONTROL_CHAR_TABLE: dict[int, int] = {
+    codepoint: ord(" ") for codepoint in range(0x20)
+}
+_CONTROL_CHAR_TABLE[0x7F] = ord(" ")
+# Unicode line-terminator codepoints beyond ASCII. The terminal does
+# not treat these as line breaks, but log aggregators (Datadog,
+# Splunk, CloudWatch Logs) split records on them per Unicode's
+# line-terminator rules — a crafted message containing one of these
+# can inject a fake aggregator record beginning with a forged
+# stable prefix even though the on-disk stderr output looks like a
+# single line. The widening matches the spirit of the original
+# ``module-name-newline-injection-stderr-forge-2026-05-07`` defense
+# applied to Unicode-defined breaks.
+_CONTROL_CHAR_TABLE[0x85] = ord(" ")  # U+0085 NEXT LINE (NEL)
+_CONTROL_CHAR_TABLE[0x2028] = ord(" ")  # U+2028 LINE SEPARATOR
+_CONTROL_CHAR_TABLE[0x2029] = ord(" ")  # U+2029 PARAGRAPH SEPARATOR
+
+
+def _safe_for_stderr(value: object) -> str:
+    """Collapse all line-break / control characters in a stringified value to spaces.
+
+    Defense-in-depth against attacker-controlled strings flowing into
+    single-line ``click.echo(..., err=True)`` output. Paths, exception
+    messages, module names, and any other stringified field that may
+    include user-controlled bytes is passed through this helper before
+    being interpolated into stderr error messages.
+
+    Sanitization scope (extended beyond the original
+    ``module-name-newline-injection-stderr-forge-2026-05-07.md`` rule):
+
+    - Newlines (``\\n``, ``\\r``) — prevent forged error-line injection.
+    - Null bytes (``\\x00``) — prevent stderr-line truncation in syslog
+      and log-ingestion pipelines that treat NUL as string terminator.
+    - ANSI escape sequences (``\\x1b...``) — prevent terminal color/cursor
+      injection that can obscure stable error prefixes for CI grep.
+    - Other ASCII control characters (``\\t``, ``\\b``, etc.) — same
+      defense-in-depth reasoning.
+    - Unicode line terminators (``U+0085`` NEL, ``U+2028`` LSEP,
+      ``U+2029`` PSEP) — terminals do not break on these but Unicode-
+      aware log aggregators do, so a message containing one of these
+      can inject a fake aggregator record beginning with a forged
+      stable-prefix line.
+
+    Deliberately kept SEPARATE from :func:`_scrub_exc_message`, which
+    redacts ``OSError`` filenames. The two are independent layers with
+    different inputs: this one takes any stringified value, that one
+    takes an exception. Emission sites that surface an exception need
+    BOTH, composed as ``_safe_for_stderr(_scrub_exc_message(exc))`` —
+    folding the translate into the scrubber would make one of the two
+    calls at the composed sites silently redundant and would leave
+    non-exception slots (paths, module names, rule ids) uncovered.
+
+    Single source of truth for stderr-safe stringification across the
+    package; ``protokit.schema.lint._cli_utils._safe_module_name`` is a
+    thin wrapper that extracts ``module.__name__`` first.
+    """
+    return str(value).translate(_CONTROL_CHAR_TABLE)
 
 
 def _scrub_exc_message(exc: BaseException) -> str:
@@ -811,9 +950,14 @@ def run_formatter_safely(
         )
         raise SystemExit(2) from None  # backstop: error_exit_fn contract is NoReturn
     except Exception as exc:
+        # Two independent layers, both required: ``_scrub_exc_message``
+        # redacts OSError filenames, ``_safe_for_stderr`` collapses the
+        # control characters that would otherwise let the message forge
+        # its own ``Error:``-prefixed stderr line (or split a log
+        # aggregator record via U+2028).
         error_exit_fn(
             f"formatter '{name}' raised {type(exc).__name__}: "
-            f"{_scrub_exc_message(exc)}"
+            f"{_safe_for_stderr(_scrub_exc_message(exc))}"
         )
         raise SystemExit(2) from None  # backstop: error_exit_fn contract is NoReturn
     leaked = buffer.getvalue()

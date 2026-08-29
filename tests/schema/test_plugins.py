@@ -218,6 +218,55 @@ class TestMessagePlugin:
         assert old_d is not None
         assert new_d is not None
 
+    def test_message_plugin_never_sees_a_one_sided_visit(self) -> None:
+        """Both descriptors are always present — the walk is pair-driven.
+
+        Characterization, and the reason ``MessageRuleContext``'s docstring no
+        longer promises one-sided visits. The traversal only ever pushes
+        ``(old_message_type, new_message_type)`` pairs, so a message type
+        reachable from just one side is never visited at all: it is reported by
+        the built-in field rules as an added/removed *field*, not handed to a
+        message plugin with ``None`` on a side. Delivering one-sided visits
+        would take a traversal redesign, deliberately not done here.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        # Old: M { Inner inner = 1; }  New: M { Inner inner = 1; Extra e = 2; }
+        for pool in (old, new):
+            build_message(pool, "t.Inner", fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_STRING},
+            ])
+        build_message(new, "t.Extra", fields=[
+            {"name": "b", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(old, "t.M", fields=[
+            {"name": "inner", "number": 1, "type": T.TYPE_MESSAGE,
+             "type_name": ".t.Inner"},
+        ])
+        build_message(new, "t.M", fields=[
+            {"name": "inner", "number": 1, "type": T.TYPE_MESSAGE,
+             "type_name": ".t.Inner"},
+            {"name": "extra", "number": 2, "type": T.TYPE_MESSAGE,
+             "type_name": ".t.Extra"},
+        ])
+
+        seen: list[tuple[str | None, str | None]] = []
+
+        def plugin(ctx: MessageRuleContext) -> None:
+            seen.append((
+                None if ctx.old_descriptor is None else ctx.old_descriptor.full_name,
+                None if ctx.new_descriptor is None else ctx.new_descriptor.full_name,
+            ))
+
+        checker = SchemaChecker()
+        checker.register_message_rule("see", plugin)
+        checker.check(old, "t.M", new, "t.M")
+
+        assert seen  # the plugin did run
+        assert all(o is not None and n is not None for o, n in seen)
+        # t.Extra exists only on the new side, so it is never visited at all.
+        assert all("t.Extra" not in (o, n) for o, n in seen)
+
     def test_message_plugin_emit(self) -> None:
         old, new = _identical_pair()
 

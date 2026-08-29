@@ -34,9 +34,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.cli import main as protokit_main
+from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 from protokit.schema.lint import _cli_utils as lint_cli_utils
 from protokit.schema.lint.cli import main as lint_main
 
@@ -326,6 +327,97 @@ class TestErrorCodes:
         # echo loop runs (regression-protection — a refactor that
         # drops the echo would silence the actionable detail).
         assert "diagnostic[" in result.stderr
+
+
+class TestCompileFailureDetailReachesStderr:
+    """``error[lint-compile-failed]:`` promises "see stderr for details",
+    so the compiler's OWN error text has to be on stderr.
+
+    ``diag.message`` is a fixed protokit string ("protoc compilation
+    failed"); the actionable ``file:line:col: ...`` text lives only on
+    the structured ``stderr`` / ``command`` / ``exit_code`` fields, and
+    nothing downstream renders them — no formatter reads ``.stderr``,
+    and ``error_exit_with_code`` raises ``SystemExit`` before a
+    formatter could run, so even ``--format=json`` cannot recover it.
+
+    The backend is patched rather than driven for real because the
+    detail under test is protoc's, and protoc is not a test dependency
+    (protoxy is the primary backend here); patching also pins the
+    rendering against a known-exact string instead of whatever the
+    locally-installed compiler happens to print.
+    """
+
+    @staticmethod
+    def _result_with(diag: LintCompileDiagnostic) -> CompileResult:
+        return CompileResult(
+            pool=descriptor_pool.DescriptorPool(), diagnostics=(diag,),
+        )
+
+    def test_protoc_stderr_and_invocation_reach_the_user(
+        self, tmp_path: Path,
+    ) -> None:
+        proto = tmp_path / "bad.proto"
+        proto.write_text("syntax = \"proto3\";\n")
+        diag = LintCompileDiagnostic(
+            level="error",
+            category="protoc_subprocess",
+            message="protoc compilation failed",
+            command=("protoc", "--include_imports", str(proto)),
+            exit_code=1,
+            stderr="bad.proto:3:1: Expected field name.",
+            exception_type="CalledProcessError",
+        )
+        with patch(
+            "protokit.schema.lint.cli.compile_protos_to_result",
+            return_value=self._result_with(diag),
+        ):
+            result = CliRunner().invoke(
+                lint_main,
+                ["--proto", str(proto), "-I", str(tmp_path)],
+            )
+        assert result.exit_code == 2
+        assert "error[lint-compile-failed]:" in result.stderr
+        # The whole point: the compiler's own diagnostic text.
+        assert "bad.proto:3:1: Expected field name." in result.stderr
+        # The failing invocation is reproducible by hand.
+        assert "exit=1" in result.stderr
+        assert "protoc" in result.stderr
+
+    def test_compiler_stderr_cannot_forge_a_stable_prefix_line(
+        self, tmp_path: Path,
+    ) -> None:
+        """Compiler output is external input. Per
+        ``docs/solutions/security-issues/module-name-newline-injection-stderr-forge-2026-05-07.md``
+        it must not be able to synthesise a line that begins with a
+        stable ``error[lint-...]:`` prefix that CI greps.
+        """
+        proto = tmp_path / "hostile.proto"
+        proto.write_text("syntax = \"proto3\";\n")
+        diag = LintCompileDiagnostic(
+            level="error",
+            category="protoc_subprocess",
+            message="protoc compilation failed",
+            command=("protoc", str(proto)),
+            exit_code=1,
+            stderr="real detail\nerror[lint-forged]: not a real error",
+            exception_type="CalledProcessError",
+        )
+        with patch(
+            "protokit.schema.lint.cli.compile_protos_to_result",
+            return_value=self._result_with(diag),
+        ):
+            result = CliRunner().invoke(
+                lint_main,
+                ["--proto", str(proto), "-I", str(tmp_path)],
+            )
+        assert result.exit_code == 2
+        # The text still surfaces (sanitised, not suppressed) ...
+        assert "not a real error" in result.stderr
+        # ... but never as its own prefix-leading line.
+        assert not any(
+            line.startswith("error[lint-forged]:")
+            for line in result.stderr.splitlines()
+        )
 
 
 # ---------------------------------------------------------------------------

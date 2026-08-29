@@ -55,7 +55,7 @@ def schema_checker() -> SchemaChecker:
 
     The checker carries the library default
     ``CompatibilityLevel.STRICT`` profile (surface every finding)
-    and all 17 built-in rules. Tests can mutate ``level``, call
+    and all 18 built-in rules. Tests can mutate ``level``, call
     ``register_field_rule`` / ``register_message_rule`` /
     ``load_rule_pack``, or invoke ``ignore`` before running
     ``check()``. Each test gets its own instance so registrations

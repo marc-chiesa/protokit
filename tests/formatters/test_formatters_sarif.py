@@ -98,7 +98,7 @@ class TestSeverityMapping:
 
 
 class TestRuleCatalog:
-    def test_all_17_builtin_rules_have_descriptions(self) -> None:
+    def test_all_18_builtin_rules_have_descriptions(self) -> None:
         # Sanity check that the catalog covers every rule_id the
         # built-in checker can emit. If a new rule lands without
         # an entry it falls back to a generic "Custom rule" stub —
@@ -110,7 +110,8 @@ class TestRuleCatalog:
             "map_to_repeated", "oneof_membership_changed",
             "oneof_field_added", "required_field_added", "options_changed",
             "presence_changed", "enum_value_removed", "enum_value_added",
-            "enum_number_reused", "reserved_field_reused",
+            "enum_number_reused", "enum_value_number_changed",
+            "reserved_field_reused",
         }
         assert expected.issubset(BUILTIN_RULE_DESCRIPTIONS.keys())
 
@@ -308,6 +309,80 @@ class TestHistorySarif:
         assert invocation["executionSuccessful"] is False
         notif = invocation["toolExecutionNotifications"][0]
         assert notif["properties"]["commit"] == "abc"
+
+    def test_cli_shaped_diagnostics_notify_once(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        # `compat history` builds HistoryReport.diagnostics by copying
+        # each entry's own report.diagnostics, so the per-entry and
+        # aggregate passes carry the same message for the same commit.
+        entry_report = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            diagnostics=(Diagnostic(
+                path=None, message="plugin crashed", level="error",
+            ),),
+        )
+        report = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[HistoryEntry(
+                commit_sha="abc", parent_sha="zzz",
+                commit_subject="s", report=entry_report,
+            )],
+            diagnostics=[CommitDiagnostic(
+                commit="abc", level="error",
+                path=None, message="plugin crashed",
+            )],
+        )
+        fn = get_formatter("sarif", FormatterKind.COMPAT_HISTORY)
+        out = fn(report, FormatterContext(subcommand="compat-history"))
+        payload = _validate(sarif_validator, out)
+        notes = payload["runs"][0]["invocations"][0][
+            "toolExecutionNotifications"
+        ]
+        assert len(notes) == 1, notes
+        assert notes[0]["properties"]["commit"] == "abc"
+
+    def test_disjoint_aggregate_diagnostics_are_kept(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        # A hand-built report whose aggregate diagnostics do NOT
+        # restate the per-entry ones must keep both — the dedupe drops
+        # only exact (level, commit, message) restatements.
+        entry_report = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            diagnostics=(Diagnostic(
+                path=None, message="per-entry", level="error",
+            ),),
+        )
+        report = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[HistoryEntry(
+                commit_sha="abc", parent_sha="zzz",
+                commit_subject="s", report=entry_report,
+            )],
+            diagnostics=[
+                CommitDiagnostic(
+                    commit="abc", level="error",
+                    path=None, message="aggregate only",
+                ),
+                # Same text as the per-entry one but a different
+                # commit: not a restatement, so it survives.
+                CommitDiagnostic(
+                    commit="def", level="error",
+                    path=None, message="per-entry",
+                ),
+            ],
+        )
+        fn = get_formatter("sarif", FormatterKind.COMPAT_HISTORY)
+        out = fn(report, FormatterContext(subcommand="compat-history"))
+        payload = _validate(sarif_validator, out)
+        notes = payload["runs"][0]["invocations"][0][
+            "toolExecutionNotifications"
+        ]
+        assert len(notes) == 3, notes
+        assert [n["properties"]["commit"] for n in notes] == [
+            "abc", "abc", "def",
+        ]
 
 
 # ---------------------------------------------------------------------------

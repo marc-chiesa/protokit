@@ -38,6 +38,7 @@ from protokit._pools import (
 )
 from protokit.formatters import FormatterContext, FormatterKind
 from protokit.message.differ import MessageDifferencer
+from protokit.message.model import DiffResult
 
 
 def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> type:
@@ -75,6 +76,23 @@ def _safe_load_pool(path: Path) -> descriptor_pool.DescriptorPool:
         _error(f"cannot read descriptor set ({path}): {exc}")
     except Exception as exc:  # protobuf DecodeError + typed pool errors
         _error(f"failed to load descriptor set ({path}): {exc}")
+
+
+def _read_input(path: str) -> bytes:
+    """Read a message input file, translating I/O failures to a clean exit-code-2.
+
+    ``click.Path(exists=True, dir_okay=False)`` rejects the common bad paths
+    up front, but that check is a TOCTOU snapshot — the file can be deleted or
+    chmod'ed between the check and this read. Without this arm the resulting
+    ``OSError`` escapes Click's standalone mode as a traceback with exit 1,
+    the code the exit contract reserves for "messages differ" (module
+    docstring), so a CI gate would record an unreadable input as a real diff.
+    Mirrors :func:`_safe_load_pool` for the descriptor-set half.
+    """
+    try:
+        return Path(path).read_bytes()
+    except OSError as exc:
+        _error(f"cannot read {path}: {exc}")
 
 
 def _parse_message(
@@ -162,6 +180,12 @@ def _validate_flag_groups(
             "or (--proto + --message-type)."
         )
 
+    # --proto-path only feeds protoc, which only group C runs. Reject it
+    # elsewhere rather than discard it: a user who passed an import path
+    # would otherwise get a clean diff and assume it was honoured.
+    if proto_path and not group_c:
+        _error("--proto-path only applies with --proto.")
+
     if desc is not None:
         if message_type is None:
             _error("--desc requires --message-type.")
@@ -198,9 +222,33 @@ def _validate_flag_groups(
 # ---------------------------------------------------------------------------
 
 
+def _diff_exit_code(result: DiffResult) -> int:
+    """The documented ladder: 0 equal, 1 different, 2 the run is untrustworthy.
+
+    An error-level diagnostic means the comparison itself broke — a hook raised,
+    a plugin crashed — so the run has no verdict to report, whichever way the
+    differences came out. ``Diagnostic``'s contract states that CI must treat it
+    as fail-closed "even if the filtered findings list is empty", and before
+    this only the JUnit formatter's ``errors=`` attribute honoured it: the
+    process exited 0 on an equal-but-broken comparison under every format.
+
+    Error outranks "different" because 2 is the error rung, not a louder 1;
+    ``compat`` already exits 2 on diagnostics before reporting its verdict.
+    Warnings deliberately do not move the code — diff's warning channel is
+    routine (a skipped map comparison emits one), unlike compat's.
+
+    NOTE: the diff CLI registers no hooks, so ``result.errors`` is unreachable
+    through it today; this closes the contract for Python API callers and wires
+    the CLI correctly for when a hook surface lands.
+    """
+    if result.errors:
+        return 2
+    return 1 if result.has_changes() else 0
+
+
 @click.command()
-@click.argument("left_file", type=click.Path(exists=True))
-@click.argument("right_file", type=click.Path(exists=True))
+@click.argument("left_file", type=click.Path(exists=True, dir_okay=False))
+@click.argument("right_file", type=click.Path(exists=True, dir_okay=False))
 # Group A: same-schema
 @click.option("--desc", type=click.Path(exists=True), help="Descriptor set file (same-schema mode).")
 @click.option("--message-type", help="Fully-qualified message type name.")
@@ -240,7 +288,11 @@ def _validate_flag_groups(
 @click.option("--ignore", multiple=True, help="Ignore field (bare name or dotted path). Repeatable.")
 @click.option("--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY", help="Treat repeated field as map with KEY.")
 @click.option("--float-mode", type=click.Choice(["exact", "approximate"]), default="exact", help="Float comparison mode.")
-@click.option("--max-depth", type=int, help="Max comparison depth.")
+# IntRange(min=0) matches every other numeric option in the CLI surface, and
+# here it also protects the exit-code contract: a negative depth truncates the
+# ROOT work item (depth 0), so two differing messages would compare as equal
+# and exit 0. A nonsense depth is a usage error (exit 2), not equality.
+@click.option("--max-depth", type=click.IntRange(min=0), help="Max comparison depth.")
 @click.option("--strict-schema", is_flag=True, help="Warn on message type name changes.")
 def main(
     left_file: str,
@@ -296,8 +348,8 @@ def main(
         right_cls = left_cls
 
     # Read and parse input files
-    left_data = Path(left_file).read_bytes()
-    right_data = Path(right_file).read_bytes()
+    left_data = _read_input(left_file)
+    right_data = _read_input(right_file)
 
     left_msg = _parse_message(
         left_cls, left_data, left_file,
@@ -338,15 +390,18 @@ def main(
 
     # Output
     if quiet:
-        sys.exit(1 if result.has_changes() else 0)
+        sys.exit(_diff_exit_code(result))
 
     # Equal-and-not-verbose case is a CLI concern: we want the
     # legacy "Messages are equal." stub that doesn't echo
     # diagnostics. The formatters always render diagnostics
     # when present, so short-circuit before invoking them.
+    # An error-level diagnostic is never eligible: "Messages are equal." would
+    # be asserting a verdict the engine just said it cannot vouch for.
     if (
         output_format.lower() == "human"
         and not result.has_changes()
+        and not result.errors
         and not verbose
     ):
         click.echo(click.style("Messages are equal.", fg="green"))
@@ -361,4 +416,4 @@ def main(
     )
     click.echo(run_formatter_safely(fn, result, ctx, name=output_format))
 
-    sys.exit(1 if result.has_changes() else 0)
+    sys.exit(_diff_exit_code(result))

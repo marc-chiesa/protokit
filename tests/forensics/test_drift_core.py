@@ -114,3 +114,18 @@ def test_declared_extension_not_flagged_undeclared() -> None:
 
     report = drift(message.SerializeToString(), _src(file_proto))
     assert all(d.kind != "undeclared" for d in report.divergences)
+
+
+def test_incompatible_occurrence_not_masked_by_a_compatible_one() -> None:
+    """A wrong wire type on ONE occurrence is reported, even if another fits.
+
+    Field 1 is declared ``int32`` (varint). Hand-built bytes carry it twice: once
+    as a varint (compatible) and once as length-delimited (incompatible). A
+    per-field ``any()`` compatibility test would let the good occurrence mask the
+    bad one and report a clean message.
+    """
+    as_int = fdp({"x": 1})
+    data = b"\x08\x05" + b"\x0a\x03abc"  # field 1 varint 5, then field 1 len-delimited
+    report = drift(data, _src(as_int))
+    assert "wire_type_mismatch" in _kinds(report)
+    assert [d.field_number for d in report.divergences] == [1]

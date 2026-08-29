@@ -122,7 +122,10 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
 
     Returns:
         A multi-line string. Empty equal results return the
-        single line ``"Messages are equal."``; otherwise a
+        single line ``"Messages are equal."`` — or, when the result
+        carries an error diagnostic, a line saying the comparison is
+        not trustworthy, since there is no equality to assert;
+        otherwise a
         header, body of diff lines, and trailing diagnostic /
         truncation blocks.
     """
@@ -130,7 +133,17 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
     lines: list[str] = []
 
     if not result.has_changes():
-        lines.append(click.style("Messages are equal.", fg="green"))
+        if result.errors:
+            # Never claim equality the engine cannot vouch for. An error means
+            # the comparison itself broke, so "no differences" is the absence
+            # of a finding, not a verdict — and a green success line above a
+            # red error is the most misleading thing this formatter could say.
+            lines.append(click.style(
+                "No differences found, but the comparison is not trustworthy:",
+                fg="red", bold=True,
+            ))
+        else:
+            lines.append(click.style("Messages are equal.", fg="green"))
         if result.diagnostics:
             for d in result.diagnostics:
                 lines.append(_format_diagnostic_line(d))
@@ -338,12 +351,22 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
     has_changes = result.has_changes()
     n = len(result)
     failures = 1 if has_changes else 0
+    # An error-level diagnostic means the tool itself broke (plugin crash,
+    # hook exception), and Diagnostic's contract is that CI must treat it as
+    # fail-closed EVEN WHEN no differences were found. Counting it here is
+    # what stops an equal-but-broken comparison rendering as a green job.
+    errors = 1 if result.errors else 0
+    # One testcase for the comparison verdict, plus one for the integrity
+    # diagnostics when present. ``tests`` counts CASES, not conditions, so
+    # ``tests - failures - errors`` never goes negative for an aggregator
+    # deriving a pass count that way (GitLab, some Jenkins renderers).
+    tests = 1 + errors
 
     suite = junit.make_testsuite(
         name="protokit-diff",
-        tests=1,
+        tests=tests,
         failures=failures,
-        errors=0,
+        errors=errors,
     )
     case = junit.make_testcase(
         classname="diff", name="messages-equal",
@@ -358,6 +381,26 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
             body=body,
         )
     junit.add_testcase(suite, case)
+    if result.errors:
+        # A failure is "the messages differ" (a real verdict); an error is
+        # "the comparison itself is untrustworthy". They can co-occur, but
+        # they must NOT share a testcase: the JUnit schema models
+        # <testcase>'s content as a choice of AT MOST ONE of
+        # skipped|error|failure, so emitting both produces a document strict
+        # consumers reject — and a rejected report reads as "no test results"
+        # in several CI systems, which is the very green-on-broken outcome
+        # counting the diagnostic exists to prevent. Own testcase, matching
+        # _builtin_compat / _builtin_bisect / _builtin_lint.
+        error_case = junit.make_testcase(
+            classname="diagnostic", name="comparison-integrity",
+        )
+        junit.append_error(
+            error_case,
+            message=f"{len(result.errors)} error-level diagnostic(s)",
+            type_="diagnostic",
+            body="\n".join(str(d) for d in result.errors),
+        )
+        junit.add_testcase(suite, error_case)
     if result.warnings:
         junit.append_system_out(
             suite, "\n".join(str(d) for d in result.warnings),

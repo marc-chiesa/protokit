@@ -565,6 +565,231 @@ class TestRepeatedAndMapIntegration:
 
 
 # ---------------------------------------------------------------------------
+# One-sided subtrees / one-sided fields
+# ---------------------------------------------------------------------------
+
+
+def _one_sided_subtree_pair() -> tuple[object, object]:
+    """An empty ``t.Outer`` and one whose whole subtree is populated.
+
+    ``t.Leaf`` exercises the singular-scalar and repeated-scalar leaves;
+    ``t.Bag`` exercises the map-value leaf. All three are emitted by
+    ``_emit_all_fields`` when the parent subtree exists on one side only.
+    """
+    builder = ProtoBuilder()
+    builder.message(
+        "t.Leaf",
+        {"name": (T.TYPE_STRING, 1), "tags": (T.TYPE_STRING, 2)},
+        repeated_fields={"tags"},
+    )
+    builder.map_message(
+        "t.Bag", fields={},
+        map_fields={"scores": (T.TYPE_STRING, T.TYPE_INT32, 1)},
+    )
+    builder.message("t.Outer", {
+        "leaf": (T.TYPE_MESSAGE, 1, ".t.Leaf"),
+        "bag": (T.TYPE_MESSAGE, 2, ".t.Bag"),
+    })
+    Leaf = builder.get_message_class("t.Leaf")
+    Bag = builder.get_message_class("t.Bag")
+    Outer = builder.get_message_class("t.Outer")
+    return Outer(), Outer(
+        leaf=Leaf(name="a", tags=["x"]), bag=Bag(scores={"k": 1}),
+    )
+
+
+class TestOneSidedSubtreeHooks:
+    """Leaves under a subtree that exists on one side only.
+
+    Hook coverage must not depend on whether the parent message happened
+    to exist on the other side: the same leaf added under an existing
+    parent already fires VALIDATE + REPORT.
+    """
+
+    def test_added_subtree_fires_validate_and_report(self) -> None:
+        empty, full = _one_sided_subtree_pair()
+
+        seen: list[tuple[str, str, object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            seen.append(
+                ("VALIDATE", str(ctx.path), ctx.left_value, ctx.right_value),
+            )
+
+        def rhook(ctx: FieldHookContext) -> None:
+            seen.append(
+                ("REPORT", str(ctx.path), ctx.left_value, ctx.right_value),
+            )
+            ctx.annotate("one-sided")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.register_report_hook(rhook)
+        result = differ.compare(empty, full)
+
+        assert ("VALIDATE", "leaf.name", None, "a") in seen
+        assert ("REPORT", "leaf.name", None, "a") in seen
+        assert ("VALIDATE", "leaf.tags[0]", None, "x") in seen
+        assert ("REPORT", "leaf.tags[0]", None, "x") in seen
+        assert ("VALIDATE", 'bag.scores["k"]', None, 1) in seen
+        assert ("REPORT", 'bag.scores["k"]', None, 1) in seen
+
+        assert result.differences
+        for d in result:
+            assert d.change_type == ChangeType.ADDED
+            assert d.annotations == ("one-sided",)
+
+    def test_removed_subtree_fires_with_sides_swapped(self) -> None:
+        empty, full = _one_sided_subtree_pair()
+
+        seen: list[tuple[str, object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            seen.append((str(ctx.path), ctx.left_value, ctx.right_value))
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.compare(full, empty)
+
+        assert ("leaf.name", "a", None) in seen
+        assert ("leaf.tags[0]", "x", None) in seen
+        assert ('bag.scores["k"]', 1, None) in seen
+
+    def test_added_subtree_context_has_absent_side_none(self) -> None:
+        """The absent side contributes no descriptor and no message."""
+        empty, full = _one_sided_subtree_pair()
+
+        ctxs: list[FieldHookContext] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            if str(ctx.path) == "leaf.name":
+                ctxs.append(ctx)
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.compare(empty, full)
+
+        assert len(ctxs) == 1
+        ctx = ctxs[0]
+        assert ctx.left_fd is None
+        assert ctx.left_msg is None
+        assert ctx.right_fd is not None
+        assert ctx.right_fd.name == "name"
+        assert ctx.right_msg is not None
+        assert ctx.right_msg.DESCRIPTOR.full_name == "t.Leaf"
+
+    def test_compare_stage_skipped_on_added_subtree(self) -> None:
+        """A presence change is structural, so COMPARE must not fire."""
+        empty, full = _one_sided_subtree_pair()
+
+        compare_paths: list[str] = []
+
+        def chook(ctx: FieldHookContext) -> None:
+            compare_paths.append(str(ctx.path))
+
+        differ = MessageDifferencer()
+        differ.register_compare_hook(chook)
+        differ.compare(empty, full)
+
+        assert compare_paths == []
+
+    def test_raising_hook_on_added_subtree_becomes_diagnostic(self) -> None:
+        """A raising hook must not break a previously-working comparison."""
+        empty, full = _one_sided_subtree_pair()
+
+        def vhook(ctx: FieldHookContext) -> None:
+            raise RuntimeError("boom")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        result = differ.compare(empty, full)
+
+        assert len(result.differences) == 3
+        assert any("raised RuntimeError" in e.message for e in result.errors)
+
+    def test_one_sided_field_fires_hooks(self) -> None:
+        """A field present only in the right schema (``_emit_one_sided``)."""
+        b1 = ProtoBuilder()
+        b1.message("t.M", {"x": (T.TYPE_INT32, 1)})
+        b2 = ProtoBuilder()
+        b2.message(
+            "t.M",
+            {
+                "x": (T.TYPE_INT32, 1),
+                "y": (T.TYPE_STRING, 2),
+                "tags": (T.TYPE_STRING, 3),
+            },
+            repeated_fields={"tags"},
+        )
+
+        seen: list[tuple[str, str, object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            seen.append(
+                ("VALIDATE", str(ctx.path), ctx.left_value, ctx.right_value),
+            )
+
+        def rhook(ctx: FieldHookContext) -> None:
+            seen.append(
+                ("REPORT", str(ctx.path), ctx.left_value, ctx.right_value),
+            )
+            ctx.annotate("schema-only")
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.register_report_hook(rhook)
+        result = differ.compare(
+            b1.build("t.M", x=1),
+            b2.build("t.M", x=1, y="hello", tags=["t0"]),
+        )
+
+        assert ("VALIDATE", "y", None, "hello") in seen
+        assert ("REPORT", "y", None, "hello") in seen
+        assert ("VALIDATE", "tags[0]", None, "t0") in seen
+        assert ("REPORT", "tags[0]", None, "t0") in seen
+
+        added = [d for d in result if d.change_type == ChangeType.ADDED]
+        assert len(added) == 2
+        for d in added:
+            assert d.annotations == ("schema-only",)
+
+    def test_one_sided_map_field_fires_hooks(self) -> None:
+        """A map field present only in the right schema."""
+        b1 = ProtoBuilder()
+        b1.map_message("t.N", fields={"x": (T.TYPE_INT32, 1)}, map_fields={})
+        b2 = ProtoBuilder()
+        b2.map_message(
+            "t.N", fields={"x": (T.TYPE_INT32, 1)},
+            map_fields={"scores": (T.TYPE_STRING, T.TYPE_INT32, 2)},
+        )
+        N1 = b1.get_message_class("t.N")
+        N2 = b2.get_message_class("t.N")
+
+        seen: list[tuple[str, object, object]] = []
+
+        def vhook(ctx: FieldHookContext) -> None:
+            seen.append((str(ctx.path), ctx.left_value, ctx.right_value))
+
+        differ = MessageDifferencer()
+        differ.register_validate_hook(vhook)
+        differ.compare(N1(x=1), N2(x=1, scores={"k": 7}))
+
+        assert ('scores["k"]', None, 7) in seen
+
+    def test_zero_hooks_leaves_one_sided_output_unchanged(self) -> None:
+        """The no-hooks fast path must emit exactly what it did before."""
+        empty, full = _one_sided_subtree_pair()
+
+        result = diff_messages(empty, full)
+
+        assert sorted(str(d.path) for d in result) == [
+            'bag.scores["k"]', "leaf.name", "leaf.tags[0]",
+        ]
+        for d in result:
+            assert d.annotations == ()
+
+
+# ---------------------------------------------------------------------------
 # Message-level VALIDATE
 # ---------------------------------------------------------------------------
 

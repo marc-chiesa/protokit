@@ -394,10 +394,11 @@ class LintEngine:
         self._current_profile: LintProfile | None = None
         # Per-run snapshot of the active ``CompileResult.source_info_descriptors``.
         # Read by the 5 ElementKind context builders so comment-aware
-        # rules can call ``leading_comment`` on the ctx-provided
-        # mapping without parameter-threading through every dispatch
-        # helper. Set immediately after the reentrancy guard in
-        # :meth:`run` and cleared in the ``finally`` block. The
+        # rules can resolve comments from the ctx-provided mapping
+        # (``run_comment_index`` / ``leading_comment``) without
+        # parameter-threading through every dispatch helper. Set
+        # immediately after the reentrancy guard in :meth:`run` and
+        # cleared in the ``finally`` block. The
         # set-after-guard ordering is load-bearing: it lets the
         # existing ``_current_profile`` guard catch reentrant
         # ``run()`` calls before this field can be corrupted.

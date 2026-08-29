@@ -135,6 +135,33 @@ class TestFlagValidation:
         assert result.exit_code == 2
         assert "Conflicting" in result.output
 
+    def test_proto_path_without_proto(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """--proto-path is a group-C flag; silently discarding it in
+        group A would let a user believe their import path took effect.
+        """
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--proto-path", str(tmp_path),
+        ])
+        assert result.exit_code == 2
+        assert "--proto-path" in result.output
+
+    def test_proto_path_with_no_descriptor_source(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path
+    ) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--proto-path", str(tmp_path),
+        ])
+        assert result.exit_code == 2
+        assert "--proto-path" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Same-schema mode (Group A)
@@ -193,6 +220,62 @@ class TestSameSchemaMode:
             "--message-type", "dup.M",
         ])
         assert result.exit_code == 2  # clean exit-2, not an uncaught traceback
+
+
+# ---------------------------------------------------------------------------
+# Input-file I/O errors
+# ---------------------------------------------------------------------------
+
+
+class TestInputFileErrors:
+    """Unreadable message inputs must exit 2, never 1 ("messages differ")."""
+
+    @pytest.mark.parametrize("position", [0, 1])
+    def test_directory_argument_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path], tmp_path: Path, position: int,
+    ) -> None:
+        # ``exists=True`` alone lets a directory through, and the unguarded
+        # read then raised IsADirectoryError as a traceback under Click's
+        # standalone mode — which exits 1, the code reserved for "different".
+        # A CI gate keying on the exit code would record an unreadable input
+        # as a real diff.
+        adir = tmp_path / "adir"
+        adir.mkdir()
+        args = [str(simple_setup["left"]), str(simple_setup["right_same"])]
+        args[position] = str(adir)
+        result = runner.invoke(main, [
+            *args,
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+
+    def test_read_failure_after_click_check_exits_2(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Click's up-front existence/readability check is a TOCTOU snapshot:
+        # the file can be deleted or chmod'ed between the check and the read.
+        # The read itself must therefore route to exit 2 as well.
+        real_read_bytes = Path.read_bytes
+        target = simple_setup["left"]
+
+        def fail_for_left(self: Path) -> bytes:
+            if self == target:
+                raise PermissionError(13, "Permission denied")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_for_left)
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+        ])
+        assert result.exit_code == 2
+        assert "cannot read" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +422,41 @@ class TestDiffOptions:
         assert len(data["differences"]) == 1
         assert data["differences"][0]["path"] == "name"
 
+    def test_negative_max_depth_exits_2_not_false_equal(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        # A negative depth truncates the ROOT work item (depth 0), so every
+        # difference vanishes and the CLI used to report two differing messages
+        # as "equal" with exit 0 — the exit-code contract (0=equal, 1=different,
+        # 2=error) inverted by a typo'd or templated flag value. Nonsense input
+        # is an error, not equality.
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--max-depth", "-1",
+        ])
+        assert result.exit_code == 2
+        assert "equal" not in result.output.lower()
+
+    def test_max_depth_zero_still_accepted(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        # Guards the negative-value rejection from over-correcting: 0 is a
+        # meaningful depth (root fields compared, nested subtrees truncated).
+        result = runner.invoke(main, [
+            str(simple_setup["left"]),
+            str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]),
+            "--message-type", "test.Msg",
+            "--max-depth", "0",
+            "--format", "json",
+        ])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert {d["path"] for d in data["differences"]} == {"name", "value"}
+
     def test_ignore_field(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
         result = runner.invoke(main, [
             str(simple_setup["left"]),
@@ -420,3 +538,109 @@ class TestCrossSchemaMode:
         data = json.loads(result.output)
         fn_changes = [d for d in data["differences"] if d["change_type"] == "FIELD_NUMBER_CHANGED"]
         assert len(fn_changes) == 1
+
+
+class TestErrorDiagnosticExitCode:
+    """An error-level diagnostic is exit 2 in every format, not a verdict.
+
+    ``Diagnostic``'s contract is that an ``"error"`` means the tool itself
+    broke and "CI callers should treat any error as a fail-closed condition
+    even if the filtered findings list is empty". Only the JUnit formatter
+    honoured that, via its ``errors=`` attribute; the process still exited
+    ``1 if has_changes() else 0``, so an equal-but-broken comparison exited 0
+    under every format and the human path even printed "Messages are equal."
+
+    Exit 2 (not 1) matches the documented ladder — ``0 = equal, 1 =
+    different, 2 = error`` — and ``compat``, which already exits 2 on
+    diagnostics before reporting its verdict. Warnings are untouched: diff's
+    warning channel is routine (a skipped map comparison emits one).
+
+    The diff CLI exposes no hook surface today, so ``result.errors`` is
+    reachable only through the Python API; these tests inject at the differ
+    seam. The CLI is wired correctly for when a hook surface lands.
+    """
+
+    @staticmethod
+    def _patch_compare(
+        monkeypatch: pytest.MonkeyPatch, *, level: str, differing: bool
+    ) -> None:
+        import dataclasses
+
+        from protokit.message.differ import MessageDifferencer
+        from protokit.message.model import Diagnostic
+
+        real = MessageDifferencer.compare
+
+        def fake(self, left, right, *a, **kw):  # noqa: ANN001, ANN202
+            result = real(self, left, right, *a, **kw)
+            return dataclasses.replace(
+                result,
+                diagnostics=(
+                    Diagnostic(level=level, path=None, message="hook exploded"),
+                ),
+            )
+
+        monkeypatch.setattr(MessageDifferencer, "compare", fake)
+
+    def _run(
+        self, runner: CliRunner, setup: dict[str, Path], right: str, *extra: str
+    ):  # noqa: ANN202
+        return runner.invoke(main, [
+            str(setup["left"]), str(setup[right]),
+            "--desc", str(setup["desc"]),
+            "--message-type", "test.Msg",
+            *extra,
+        ])
+
+    @pytest.mark.parametrize(
+        "extra", [(), ("--quiet",), ("--format", "json"), ("--format", "junit")],
+    )
+    def test_equal_messages_with_an_error_exit_2(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        extra: tuple[str, ...],
+    ) -> None:
+        self._patch_compare(monkeypatch, level="error", differing=False)
+        result = self._run(runner, simple_setup, "right_same", *extra)
+        assert result.exit_code == 2, result.output
+
+    def test_equal_and_broken_does_not_claim_messages_are_equal(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The human short-circuit must not swallow the diagnostic."""
+        self._patch_compare(monkeypatch, level="error", differing=False)
+        result = self._run(runner, simple_setup, "right_same")
+        assert result.exit_code == 2
+        assert "Messages are equal." not in result.output
+        assert "hook exploded" in result.output
+
+    def test_error_outranks_differing(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An untrustworthy comparison is not a 'they differ' verdict."""
+        self._patch_compare(monkeypatch, level="error", differing=True)
+        result = self._run(runner, simple_setup, "right_diff")
+        assert result.exit_code == 2
+
+    @pytest.mark.parametrize(
+        ("right", "expected"), [("right_same", 0), ("right_diff", 1)],
+    )
+    def test_warning_level_leaves_the_verdict_alone(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        right: str,
+        expected: int,
+    ) -> None:
+        self._patch_compare(monkeypatch, level="warning", differing=False)
+        result = self._run(runner, simple_setup, right, "--quiet")
+        assert result.exit_code == expected

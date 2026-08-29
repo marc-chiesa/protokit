@@ -2,18 +2,24 @@
 
 Given a single serialized proto message that carries no co-located schema,
 identify which candidate ``.proto`` schema version most plausibly produced it
-(``match``), one message at a time. Read-only: it ranks hypotheses with evidence
-and never asserts that a candidate *is* the schema.
+(``match``), or reconcile it field by field against one chosen candidate
+(``drift``) — one message at a time. Read-only: it ranks hypotheses with
+evidence and never asserts that a candidate *is* the schema.
 
-Public surface:
+Public surface (this list is ``__all__``; keep the two in step):
 
 - :func:`match` — rank candidate schemas against one message; returns a
   :class:`MatchReport`.
 - :class:`Candidate` / :class:`CandidateFit` / :class:`MatchReport` — the input
   and result types. ``Verdict`` is the ``clean_winner`` / ``multiple_clean_matches``
-  / ``no_clean_match`` literal.
+  / ``no_clean_match`` literal, and ``ParseTier`` the per-candidate parse outcome.
+- :func:`drift` — reconcile one message against one chosen candidate schema;
+  returns a :class:`DriftReport` of :class:`FieldDivergence` entries (an
+  undeclared tag, a wire-type mismatch, a reserved tag in use, or a proto2
+  ``required`` field absent).
 - :class:`ForensicsError` / :class:`MessageTooLargeError` / :class:`CandidateSpecError`
-  — the typed exception family (all subclass ``protokit.storage.StorageError``).
+  / :class:`WalkError` — the typed exception family (all subclass
+  ``protokit.storage.StorageError``).
 """
 
 from __future__ import annotations

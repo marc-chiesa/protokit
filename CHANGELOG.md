@@ -15,6 +15,37 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+> **Upgrade note.** This release is dominated by an internal code audit that
+> found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
+> and `Fixed` sections below enumerate them. Sixteen change observable behaviour,
+> and a passing pipeline can go red on upgrade **without any schema or code
+> change on your side** — in every case because protokit previously returned a
+> wrong answer quietly:
+>
+> | Change | What starts happening |
+> |---|---|
+> | `enum_value_number_changed` (new rule) | `compat` now fails on an enum renumbered under an unchanged name — previously reported COMPATIBLE at every profile |
+> | Columnar fidelity oracle | extensions on *nested* types are now reported; `--fidelity error` may raise at bind where 0.14.0 wrote the file |
+> | Cycle-truncated cache | recursive schemas surface breaks that were silently dropped, so `compat` may report more findings |
+> | `get_option_value` | returns `None` for an unset extension instead of its type default |
+> | `lint --profile basic` | resolves the alias and lints, instead of always exiting 2 |
+> | `storage --where ''` | exits 2 (`empty expression`) instead of silently scanning every record |
+> | `storage -I` with `--desc` | exits 2 instead of accepting an import path it could never apply |
+> | `proto_matcher(expected, partial=…)` | raises `MatcherError` instead of returning a default-policy matcher |
+> | `diff --format junit` | an error-level diagnostic now sets `errors="1"` and adds an `<error>` testcase, so a broken-but-equal comparison fails the job |
+> | `diff` with an error-level diagnostic | exits **2** in every format (not 0/1), and the human output stops saying "Messages are equal." |
+> | `diff --max-depth -1` | exits 2 instead of accepting a negative depth and comparing anyway |
+> | `diff --proto-path` outside `--proto` | exits 2 instead of accepting an import path it could never apply |
+> | `to_parquet(fidelity=…)` with an unknown value | raises `ValueError` instead of silently behaving like `warn` and writing the file |
+> | `treat_as_map` re-registered with a different key | raises the documented `ValueError` instead of silently keying on one key while checking the other |
+> | a formatter or rule pack calling `sys.exit(0)` | the CLI exits 2 with a pack/formatter error instead of exiting 0 with no output |
+> | a map whose key or value type changed | records a `TYPE_CHANGED` difference, so `diff` exits 1 where an *empty* such map previously compared equal and exited 0 (a populated one crashed) |
+>
+> Field hooks also now fire for one-sided subtrees, and `strict_schema` now
+> validates the root message type — both mean opt-in callers see diagnostics or
+> hook invocations they did not before. None of these are new restrictions; each
+> is a true positive that was always missing.
+
 ### Added
 - **`protokit forensics match` — schema-less single-message schema identification
   (Phase 2, increment 1).** A new read-only `forensics` command namespace. Given
@@ -37,17 +68,485 @@ All notable changes to `protokit` are documented here. Format loosely follows
   groups without recursing, and capping work to the top level. `forensics drift`
   reconciles those observations against one chosen candidate schema and reports
   per-field divergences: an undeclared tag, a wire-type mismatch on a declared
-  field (a packable repeated scalar accepts both packed and unpacked), a reserved
-  tag in use, or a proto2 declared `required` field absent. A populated declared
+  field, a reserved tag in use, or a proto2 declared `required` field absent.
+  Wire-type fit is judged over *every* occurrence of a tag, so a correct
+  occurrence cannot mask a wrong one on a repeated or repeated-on-the-wire
+  field; a packable repeated scalar still accepts both packed and unpacked. A populated declared
   proto2 extension counts as declared. The same reconciliation powers a `match`
   tie-break that re-orders a near-tied top group by per-field wire compatibility.
   New public API `protokit.forensics.drift` with `DriftReport` / `FieldDivergence`.
+- **New built-in compat rule `enum_value_number_changed` (WIRE / BOTH),
+  bringing the built-in set to 18.** An enum value that keeps its name but is
+  assigned a new number fell through every existing enum rule — the two
+  name-matched rules see the name on both sides, and `enum_number_reused` is
+  number-keyed so it needs the number present on both sides. `E {A = 1}` →
+  `E {A = 2}` was therefore reported fully compatible while being a
+  bidirectional wire break: old bytes carrying `1` name nothing under the new
+  schema, and new producers emit `2` the old schema cannot name. The rule
+  compares each surviving name against its set of numbers, so `allow_alias`
+  enums only fire when a name's own number genuinely moved.
+
+### Changed — BREAKING
+- **Enum renumbers now fail `protokit compat` at every profile.** Schema pairs
+  that renumber an enum value under an unchanged name previously reported
+  `COMPATIBLE` with zero findings; they now emit an `enum_value_number_changed`
+  WIRE / BOTH finding, so `compat` exits non-zero even under the narrowest
+  `WIRE` profile. This is a true-positive that was always missing — but CI
+  pipelines pinned to the old behaviour will start failing. Suppress per path
+  with `SchemaChecker.ignore(...)` if a renumber is deliberate.
+- **`protokit.options.get_option_value` now honors extension presence.** An
+  extension that is *registered* in the pool but never *set* on the descriptor
+  used to come back as its type default — `0`, `""`, `b""`, an empty
+  sub-message, or a proto2 `default_value` — so the documented usage
+  `if get_option_value(fd, "pkg.limit") is not None:` fired on every
+  unannotated field in a schema. Tier 1 now gates on `HasExtension` (on
+  emptiness for repeated extensions, where `HasExtension` is unsupported) and
+  returns `None` for an absent option, as the docstring's strict-presence
+  promise always claimed. **Breaking for the previously documented proto3
+  carve-out:** the docstring said proto3 scalar extensions return the type
+  default because proto3 doesn't track unset-vs-default. That carve-out was
+  wrong — extension fields carry explicit presence whatever the syntax of the
+  file declaring them — and proto3 extensions now read as `None` when unset
+  like every other kind. Callers that relied on the default-return must read
+  `descriptor.GetOptions().Extensions[ext]` directly.
+
+
+### Security
+- **Path traversal in the git-ref `.proto` extractor (`protokit compat`).**
+  *Found by an internal code audit, not a user report. No exploitation is known
+  and no affected user has been identified — protokit is pre-1.0 with no known
+  production deployment of the `compat ci` flow. Documented here rather than as
+  a published advisory for that reason. The flaw was present in all released
+  versions through 0.14.0 that expose
+  `protokit compat check | ci | history | bisect`.*
+
+  When protokit extracted a `.proto` import tree from a git ref, it composed the
+  on-disk write path as `dest / import_path` without validating `import_path`.
+  Because `pathlib` **discards** the left operand when the right is absolute
+  (`Path("/tmp/x") / "/etc/passwd"` is `Path("/etc/passwd")`), a `.proto`
+  containing `import weak "/abs/path";` — or a `..` traversal — escaped the
+  temporary extraction directory and **overwrote an arbitrary file the invoking
+  user could write**, with either a fixed synthetic stub or content taken from
+  the ref. Only the package identifier written *into* the stub was sanitised;
+  the write *location* was not.
+
+  *Impact:* file destruction/overwrite within the invoking user's own
+  permissions, not code execution or privilege escalation — the compiler is
+  never pointed at the escaped path, and the written content is either a fixed
+  stub or the ref's own bytes. *Reachable via:* the documented
+  `protokit compat ci` fork-PR flow, where the compared ref is untrusted by
+  design; a purely local `compat check` against your own refs was never at
+  risk. *Fixed by:* a single containment helper
+  (`protokit.schema.git._safe_dest_path`) that both write sites must go through;
+  it rejects absolute paths, `..` segments, and anything resolving outside the
+  extraction directory. A repo-tracked proto import can never legitimately be
+  any of those, so no valid schema is rejected.
+
+### Fixed — BREAKING
+- **The `proto_matcher` fixture's fluent form now rejects single-call policy
+  keywords instead of dropping them.** `proto_matcher(expected, partial=True)`
+  reads as configuring the matcher, but the policy keywords are single-call-only:
+  the fluent branch returned a **default-policy** matcher and discarded them. A
+  test written that way silently asserted something stricter than its author
+  intended, and passed only while the messages happened to be fully equal.
+  Passing any of `partial` / `as_set` / `ignore` / `presence` / `approx` /
+  `margin` / `fraction` to the one-message form now raises `MatcherError`
+  naming each offender and its fluent equivalent (`.partially()`,
+  `.ignoring(...)`, …). Passing a keyword at its default value is still a no-op.
+  **This can turn a passing test into an error** — that test was not applying
+  the policy it named.
+
+- **`protokit storage` now rejects two flag forms it used to accept and ignore.**
+  Both silently discarded what the user asked for:
+  - An **empty `--where ''`** was truthiness-tested, so it read as "no filter"
+    and every record was returned. It now reaches the expression compiler like
+    any other value and fails with `empty expression` (exit 2) — the contract
+    `--fields ''` already had.
+  - **`-I` / `--proto-path` alongside `--desc`** was parsed and dropped, because
+    a descriptor set carries its imports already resolved and nothing on that
+    branch reads an import path. It is now a usage error (exit 2) naming the
+    `--proto` branch it belongs to, like the other flag-group violations.
+
+  **Both change an exit code**: a script passing either form previously exited 0
+  and now exits 2. Neither could ever have done what it looked like it did.
+
+- **`protokit lint --profile basic` now resolves the buf-compatibility alias
+  instead of exiting 2.** The `basic` → `recommended` and `minimal` →
+  `essentials` aliases were applied only to `[tool.protokit.lint] profile`; the
+  `--profile` flag bypassed the coercion boundary, so the same name that linted
+  fine from `pyproject.toml` failed on the command line with
+  `error[lint-unknown-profile]`. Both tiers now normalize (strip + lowercase)
+  and resolve aliases in one place. **This changes an exit code**: a script that
+  passes `--profile basic` previously always exited 2 and now lints for real
+  (exit 0 or 1, per findings). `--profile minimal` still fails, unchanged and on
+  both tiers: no built-in pack declares the `essentials` profile it aliases to.
+
+### Fixed
+- **`protokit diff` exits 2 when the comparison itself is untrustworthy.**
+  `Diagnostic`'s contract is that an `error` means the tool broke and "CI
+  callers should treat any `error` as a fail-closed condition **even if** the
+  filtered findings list is empty". Only the JUnit formatter honoured it, via
+  its `errors=` attribute; the process still exited `1 if has_changes() else 0`,
+  so an equal-but-broken comparison exited **0** under every format — including
+  the JUnit one whose own report said `errors="1"` — and `--format human`
+  printed "Messages are equal." on top.
+
+  An error now yields exit 2 regardless of format and regardless of how the
+  differences came out, matching the documented `0 = equal, 1 = different,
+  2 = error` ladder and `compat`, which already exits 2 on diagnostics before
+  reporting a verdict. Error outranks "different": 2 is the error rung, not a
+  louder 1. **Warnings are unchanged** — diff's warning channel is routine (a
+  skipped map comparison emits one), unlike compat's. The human formatter no
+  longer claims equality it cannot vouch for, reporting "No differences found,
+  but the comparison is not trustworthy:" above the error instead.
+
+  Reachability, stated plainly: the diff CLI registers no hooks, so
+  `result.errors` is only populated through the Python API today. This closes
+  the contract for those callers and wires the CLI correctly ahead of a hook
+  surface; it is not currently reachable by a `protokit diff` invocation.
+
+- **`protokit diff --format junit` now surfaces error-level diagnostics, on
+  their own testcase.** `diff_junit` hard-coded `errors=0` and piped only
+  `result.warnings` into `<system-out>`, so `result.errors` reached no part of
+  the output: a plugin crash or hook exception during a comparison that found no
+  differences rendered as `tests=1 failures=0 errors=0` and a passing
+  testcase — a green CI job on a comparison the engine itself calls
+  untrustworthy, which is exactly what `Diagnostic`'s contract says must fail
+  closed.
+
+  The diagnostic is reported as an `<error>` on a **separate** `diagnostic`
+  testcase, not alongside the `<failure>` on the verdict testcase. The JUnit
+  schema models `<testcase>`'s content as a choice of *at most one* of
+  `skipped | error | failure`, so emitting both children produced a document
+  strict consumers reject — and several CI systems report an unparseable report
+  as "no test results found", reintroducing the same blank-green outcome through
+  another door. Separate testcases also keep `tests` counting cases, so
+  `tests - failures - errors` never goes negative for aggregators that derive a
+  pass count that way. This matches `compat`, `bisect`, and `lint`, which
+  already give each error diagnostic its own testcase.
+
+- **`equals_proto` now fails the assertion when the value under test is not a
+  protobuf message, instead of raising `AttributeError`.** The matcher handed
+  the value straight to the differ, which reached for `item.DESCRIPTOR`, so
+  `assert_that("nope", equals_proto(msg))` surfaced a stack trace rather than
+  the mismatch the assertion was written to report. A hamcrest matcher is
+  handed whatever the caller passed and owes a verdict on it: a non-message
+  cannot match a message, so it is now a plain mismatch whose description reads
+  `was not a protobuf message: <'nope'>`. A message of a *different* type was
+  never affected — the differ already reported that as an ordinary mismatch.
+
+- **`lint`'s R6 deprecated-replacement rules no longer scale quadratically with
+  file size.** Each of the five rules resolved its element's leading comment by
+  walking the file's *entire* `SourceCodeInfo` for one matching `Location`, and a
+  rule fires once per element — so the cost of linting one file grew with the
+  square of its size. A message with 100 / 200 / 400 / 800 deprecated fields cost
+  **11 / 42 / 168 / 677 ms**, the exact 4x-per-doubling signature. The
+  `{path: leading comment}` map is now built in a single pass and cached per file
+  for the duration of an `engine.run()`, which is all the rules ever needed:
+  the same walk now costs **1.0 / 1.7 / 3.2 / 6.4 ms** — linear, and 106x faster
+  at 800 fields. Findings are unchanged; the index preserves the old scan's
+  first-`Location`-wins tie-break. This was the second measured quadratic found
+  by the audit (the JUnit one is also fixed in this release).
+
+  The cache is keyed per engine and reset on each `engine.run()`, so a long-lived
+  runtime that recycles an engine across sessions re-indexes rather than serving
+  a stale map. That per-engine/per-run mechanism now lives in one shared helper
+  (`protokit.schema.lint._engine_run_state`) rather than being open-coded a third
+  time; the two existing dedup call sites were migrated onto it.
+
+- **`reserved N to max;` no longer OOM-kills every `compat` subcommand.**
+  The `reserved_field_reused` rule expanded each reserved range into a `set` of
+  integers. The standard proto idiom `reserved 1000 to max;` round-trips as
+  `end = 536_870_912`, so a single such declaration allocated ~536.8M ints —
+  **~32 GB measured by extrapolation (588 MB at 10M), ~107 s** — and the rule is
+  a default that runs on every visited message pair, so any schema using that
+  idiom killed the process instead of returning a report. Reserved ranges are
+  now normalized once per message pair — sorted, merged, vacuous ranges dropped
+  — and membership is a binary search, which is all the rule ever needed:
+  `to max` now completes in **1.9 KB and 0.018 ms**. The sibling walker in
+  `protokit.forensics._drift` already used the pair shape; the fix brings
+  `protokit.schema.rules` in line with it.
+
+  Normalizing rather than scanning also avoids trading the memory exhaustion
+  for a CPU one: a linear `any(start <= n < end ...)` membership test is
+  O(fields x ranges), measured at **2.4 s** for a schema declaring 10,000 small
+  reserved ranges against 10,000 fields — ~800x slower than the set form it
+  replaced. Binary search over merged ranges returns that to **0.008 s**.
+  Verified behavior-preserving against the original implementation by
+  differential test: 311 range configurations x 72 probes, zero divergence.
+
+- **The columnar structural fidelity oracle now inspects the whole reachable
+  message graph, not just the bound root type.** 0.14.0 enumerated declared
+  proto2 extensions on the bound descriptor only, so an extension declared on a
+  reachable *nested* type — the common real shape, where GTFS-RT / NYCT extend
+  the nested `TripDescriptor` rather than the `FeedMessage` root — was reported
+  clean even though `ptars` dropped it from the Parquet. A conversion that
+  previously returned `dropped_extensions=()` may now report those extensions,
+  and under `--fidelity error` may raise `FidelityError` at bind where 0.14.0
+  wrote the file. The Arrow-side match stays deliberately non-recursive (the
+  produced-column check applies to root extensions only), extensions on types
+  the root cannot reach are still not reported, and the precedence ladder
+  (recursion → structural → decode fault → per-record) is unchanged.
+- **A cycle-truncated subtree is no longer cached and replayed elsewhere
+  (`compat` on recursive schemas).** The per-type-pair cache stored
+  `findings[start_idx:]` unconditionally, including for a pair whose subtree the
+  in-progress cycle guard had cut short. Given `Root{m:M, n:N}`, `N{m:M, tag}`,
+  `M{n:N, leaf}` with `N.tag` changing `string`→`bytes`, the walk enters `N`
+  first, cuts the cycle at `M.n`, caches `M`'s amputated result, and replays it
+  at `Root.m` — so only `n.tag` was reported and `m.n.tag` vanished. Anyone
+  running `--ignore n` saw a clean schema while a wire break survived. Truncated
+  pairs are no longer cached; untruncated pairs still are, so acyclic schemas
+  pay nothing.
+- **An unclassified `git show` failure now exits 2, not 1.** `compat`'s
+  documented contract is `0`=compatible / `1`=incompatible / `2`=error, but an
+  unclassified git failure escaped as a traceback and Click exited 1 — so a
+  pipeline gating on exit codes recorded a compatibility **break that never
+  happened**. Reproducer: `compat ci --base <ref> --proto-file ../outside.proto`,
+  where git reports "is outside repository", matching none of the classifier
+  substrings. Corrupt object DBs, an unreadable `.git`, and gitlinks landed the
+  same way. `_git_show`'s deliberate bare `raise` is preserved — the failure is
+  now caught and routed at the CLI boundary, so an unknown git error stays
+  loudly unknown rather than being mistaken for a missing import.
+- **`MessageDifferencer.compare()` no longer crashes on a map whose key or
+  value type changed across pools, and no longer reports such a map as equal.** The outer `_types_compatible` gate only
+  inspects the map field itself, which is `TYPE_MESSAGE` (the synthetic
+  MapEntry) on both sides regardless of the entry's value type, so the change
+  slipped through and a raw `str` was pushed onto the message work stack,
+  raising `AttributeError: 'str' object has no attribute 'DESCRIPTOR'`. The
+  resolved value descriptors are now gated too: the comparison records a
+  `TYPE_CHANGED` difference for the map's value type and skips comparing the
+  values.
+
+  The map's **key** type is gated the same way and for the same reasons. A
+  `map<string, V>` -> `map<int32, V>` change crashed with
+  `TypeError: bad argument type` on the `key not in left_map` membership test
+  when either map was populated, and compared **equal** when both were empty.
+
+  Recording a difference is what makes this mirror the map↔repeated
+  precedent rather than only appearing to. That sibling gets its difference
+  from `_check_schema_evolution`, which runs *before* the skip; only the value
+  comparison is skipped. `_check_schema_evolution` is as blind to a map's key
+  and value types as the outer gate is — both sides are the same synthetic
+  MapEntry message — so this branch has to record them itself. Diagnosing alone would have been worse than the
+  crash it replaced: `has_changes()` ignores diagnostics, so two maps holding
+  entirely different data compared **equal** — `proto_match` passed,
+  `diff --quiet` exited 0, and the human CLI printed "Messages are equal."
+  while suppressing the warning.
+- **`strict_schema=True` no longer misses declared type drift inside an empty
+  map.** The declared-type check reads the field's `message_type.full_name`,
+  which for a map field is the *synthetic MapEntry* — identical on both sides
+  whatever the entry declares — so the check was a no-op for maps and
+  `map<string, OldValue>` vs `map<string, NewValue>` was reported only by the
+  per-entry check, i.e. only once a key was populated. That made schema
+  validation depend on runtime data, which is precisely what the declared check
+  exists to avoid ("drift is still caught when the sub-message is unset"). Map
+  fields now compare the entry's declared *value* message types. The existing
+  dedupe keeps a populated map reporting once, not twice.
+
+- **`strict_schema=True` now validates the ROOT message type.** The check lived
+  inside `_check_schema_evolution`, only reached from the per-field loop with a
+  left/right field-descriptor pair; the root work item carries no field
+  descriptor, so the root pair was never validated. `diff_messages(Left(x=1),
+  Right(x=1), strict_schema=True)` on two identically shaped types in isolated
+  pools returned zero differences **and** zero diagnostics — exactly the case
+  the option exists to catch. Nested drift still warns exactly once at the same
+  path as before; `strict_schema` defaults to `False`, so only opt-in callers
+  are affected.
+- **Field hooks now fire for leaves emitted from a one-sided subtree.** Six
+  `_make_leaf_diff` call sites appended their `Difference` straight to the
+  accumulator, bypassing hook dispatch, so a VALIDATE or REPORT hook silently
+  did not run for an added or removed subtree — while the identical leaf added
+  under an already-present parent got both. Hook coverage depended on whether
+  the parent happened to exist on the other side. A hook that raises is turned
+  into a Diagnostic on these paths exactly as it already was elsewhere.
+- **JUnit output no longer emits XML-invalid code points.** `xml_safe_text`
+  stripped only the ASCII controls, but XML 1.0's `Char` production also
+  excludes lone surrogates (U+D800–U+DFFF) and the noncharacters U+FFFE /
+  U+FFFF. ElementTree serializes all of them happily, so protokit wrote a JUnit
+  file every XML consumer rejects while still exiting 0/1 as if the run were
+  fine — the CI job reports a parse error instead of the result. The reachable
+  vector is the rendered `FieldPath` (a `map<string,X>` key lands in the
+  `<failure>` body raw), not field values, which `repr()` already escapes.
+- **A formatter or rule pack can no longer flip a red CI gate green.**
+  `load_formatter_packs` wrapped only `importlib.import_module` in its
+  SystemExit / KeyboardInterrupt / Exception chain, but `load_formatter_pack`
+  iterates `module.FORMATTERS` *after* import returns — so a pack could defer
+  its payload into `__iter__` and reach a guard catching only `FormatterError`
+  and `(AttributeError, TypeError)`. A `sys.exit(0)` there terminated the CLI
+  with **exit 0 and no output**. Both blocks now share the same three-arm chain.
+- **A plugin exception can no longer forge a protokit verdict line on stderr.**
+  Exception messages were interpolated raw into single-line output, so a
+  formatter raising `ValueError("boom\nError: schema is compatible")` emitted
+  two physical lines, the second carrying the stable `Error:` prefix CI scripts
+  grep for. Same forge existed against the `error[lint-CODE]:` family via a rule
+  pack whose module body raises. Control characters are now neutralized at the
+  interpolation site; `_scrub_exc_message`'s separate OSError filename redaction
+  is unchanged (the two-layer composition is deliberate).
+- **`protokit diff` routes unreadable inputs to exit 2 instead of "different".**
+  A directory argument passed Click's `exists=True` check (`dir_okay` defaults
+  True) and the resulting `IsADirectoryError` escaped as a traceback with exit
+  1 — the code reserved for "messages differ". Both halves of the guard are
+  needed: `dir_okay=False` for the common case, and an `OSError` catch for the
+  delete/chmod race Click cannot see.
+- **`protokit diff --max-depth -1` no longer reports differing messages as
+  equal.** `--max-depth` was the lone numeric CLI option typed as a bare `int`.
+  A negative value truncates the root work item (depth 0), so every difference
+  disappeared and two genuinely different messages printed "Messages are equal."
+  and exited 0. Now an `IntRange(min=0)` usage error, matching storage,
+  forensics, and lint.
+- **`storage scan --where` compares a literal against a 32-bit `float` field in
+  float32.** The literal was coerced to a double for both `float` and `double`
+  fields; a `float` field stores `0.1` as `0.10000000149011612`, so
+  `--where 'score == 0.1'` matched **zero records on a file where every record
+  matched** (and `count --quiet` exited 1, indistinguishable from a correct
+  empty result). The literal is now narrowed through `struct` exactly as an
+  assignment to the field would be; the double branch keeps full precision.
+- **`forensics match` keeps the modeled fraction in the tie-break key.** The
+  near-tied top group was sorted by `(-compat, -coverage, index)`, discarding
+  the modeled-byte fraction — so two candidates leaving *different* residuals
+  were treated as tied and the input index decided, letting a candidate leaving
+  3 unmodeled bytes outrank one leaving 2. That produced a table whose rank-1
+  row is the worse fit, a "clean match" verdict on it, and **an answer that
+  flipped when the `--schema` flags were reordered**, contradicting the module's
+  own determinism contract.
+- **`forensics drift` bounds group nesting depth in the wire walker.** The group
+  stack grew without limit, and the `_MAX_OBSERVATIONS` amplification guard sits
+  inside `if not group_stack:` so it provably could not fire once a group was
+  open. 64 MiB of repeated start-group tags — the *default* `--max-message-bytes`,
+  no flag needed — drove ~1456 MB RSS and ~8.8 s before the typed error; raising
+  the cap scaled without bound (512 MiB → ~11 GB), which in a constrained
+  container is an OOM kill rather than a clean exit 2. Depth is now capped at
+  100, protobuf's own recursion limit, so no legitimate message is rejected.
+- **`--proto` compile failures now show the compiler's own error text.** The
+  `error[lint-compile-failed]:` path promised "see stderr for details" while
+  emitting only protokit's own summary line ("protoc compilation failed"); the
+  `file:line:col: ...` text the compiler actually produced, plus the failing
+  command and its exit code, were carried on the diagnostic and never rendered
+  by any code path — not even under `--format=json`, which exits before
+  formatter dispatch. They are now echoed as indented continuation lines,
+  sanitized through the shared stderr helper so compiler output cannot forge a
+  stable `error[lint-...]:` prefix line.
+- **`treat_as_map` now raises on a conflicting re-registration, as documented.**
+  Configuring the same selector twice with different keys silently overwrote the
+  dict store while the parallel path list appended — and lookup reads the path
+  list first, so the engine kept keying on the *first* key while every conflict
+  check (including `ignore_fields`' key-field guard) read the *second*. Ignoring
+  the key field actually in use was therefore accepted. The documented
+  `ValueError` for "the same field is already configured with a different key"
+  now fires; an identical repeat stays a no-op.
+- **Partial matching no longer leaks a vacuous ADDED for an empty `treat_as_map`
+  element.** Under `set_partial()`, an actual-only keyed element was suppressed
+  when populated (its one-sided subtree hits the partial gate) but reported as
+  ADDED when it had no populated fields — so an extra *empty* element failed the
+  match while an extra *real* one passed. The actual-only branch now suppresses
+  under partial like `map<k,v>` and index-paired repeated fields already do;
+  `treat_as_set`'s strict KTD-8 carve-out is unaffected.
+- **`treat_as_map` key validation now also fires inside a one-sided subtree.**
+  When a whole sub-message was added or removed, the leaf emitter derived key
+  brackets itself instead of going through the shared extractor: duplicate keys
+  silently collapsed two elements onto one identical path, and an element
+  missing its key was demoted to an index bracket. `compare()` documents
+  `DuplicateKeyError` / `MissingKeyError` unconditionally, so a **schema+data
+  pair that previously produced diffs may now raise** — but only where the same
+  data raises already when the other side happens to carry the subtree.
+- **`--formatter-module` no longer mislabels duplicate formatter names as
+  built-in shadowing, and repeating the same pack is a no-op.** A pack whose
+  formatter name collides with one another pack already registered reported
+  `formatter pack 'X' conflicts with a reserved built-in name: ... already
+  registered`; it now reports `failed to load formatter pack 'X': ...`, leaving
+  the reserved-name prefix to genuine built-in collisions. Repeated
+  `--formatter-module P --formatter-module P` (the flag is repeatable) used to
+  hard-fail with exit 2 on the pack's own second registration and now dedupes,
+  matching `lint --rule-pack`. New public
+  `protokit.formatters.ReservedFormatterNameError` (a `FormatterError`
+  subclass) makes the two cases type-distinguishable; `except FormatterError`
+  still catches both.
+- **`PROTOKIT_PROTOC_TIMEOUT` can no longer disable the protoc timeout
+  ceiling.** Only a finite, positive value is honoured; `0`, a negative
+  number, `nan` and `inf` now fall back to the 60s default instead of killing
+  every compile instantly (`<= 0`) or restoring the indefinite hang the
+  ceiling exists to prevent (`nan`/`inf`).
+- **`treat_as_map` re-registration with a different key now raises.** The
+  selector was stored twice — a dict (last-wins) and an append-only path list
+  (first-wins at lookup) — so re-registering desynced them: the engine keyed on
+  the *old* key while every conflict check read the *new* one, which let
+  `ignore_fields` ignore the key field actually in use. The documented
+  `ValueError` now fires; an identical repeat stays a silent no-op.
+- **Partial mode no longer leaks an ADDED for an actual-only `treat_as_map` key
+  whose element is empty.** A *populated* extra element was suppressed (its
+  one-sided work item hit the partial gate) while an *empty* one emitted a
+  vacuous `ADDED` — so an extra empty element failed the match and an extra real
+  one passed. Now consistent with `_compare_map` / `_compare_repeated`;
+  `treat_as_set`'s force-emit carve-out is untouched.
+- **One-sided `treat_as_map` subtrees now validate keys.** An ADDED/REMOVED
+  subtree derived its brackets inline instead of through the shared validator,
+  so duplicate keys silently collapsed two elements onto one identical path and
+  an element with an unset proto2 key was demoted to an index bracket.
+  `DuplicateKeyError` / `MissingKeyError` now fire as they do on the two-sided
+  path; valid data produces byte-identical paths.
+- **`protokit lint` `[severities]` overrides reach every kind-mangled custom
+  rule.** A key naming a bare `custom/<suffix>` whose spec declares multiple
+  `element_kinds` applied to only the *first* one, so a severity override
+  silently governed part of the rule family — while the `"off"` sentinel already
+  applied to all of them.
+- **An invalid `min_severity` now names the out-of-set value** instead of
+  reporting the Python type (`got 'str'`), which the `isinstance` guard directly
+  above already proved. Matches the two sibling severity coercers.
+- **`forensics` rejects field numbers past protobuf's legal maximum.** The wire
+  walker emitted any tag as an observation, so `536_870_912` and `2**35` walked
+  clean and an impossible field number could reach a `drift` or `match` verdict —
+  input protobuf's own parser rejects outright.
+- **An unrecognised `fidelity=` value is now an error, not a silent `warn`.**
+  `to_parquet(..., fidelity="strict")` behaved like `warn` — writing the file
+  when the caller plainly meant `error`. It now raises `ValueError` naming the
+  valid set.
+- **A deep `.proto` import chain no longer exhausts the stack.**
+  `_transitive_file_descriptors` recursed per file, so a 1200-deep valid chain
+  raised `RecursionError` instead of converting. Now an iterative post-order DFS;
+  emitted order is unchanged.
+- **JUnit assembly is no longer quadratic.** `add_testcase` scanned children
+  *forward* for the seeded `<system-out>` on every insert, rescanning every prior
+  testcase: 20,000 findings took **4.49 s**. The scan now runs backwards (the
+  element is always second-to-last), making each insert O(1). Output is
+  byte-identical.
+- **History SARIF no longer notifies each CLI diagnostic twice.** The per-entry
+  and aggregate passes both fed `toolExecutionNotifications`, and for a
+  CLI-built report the two sources fully overlap, so every diagnostic appeared
+  twice. Deduped on `(level, commit, message)` *with multiplicity*, so a
+  hand-built report carrying genuinely distinct aggregates keeps them.
+- **`get_option_value` resolves the owning pool per descriptor kind.** The
+  default-pool hop assumed `desc.file`, which `FileDescriptor` and
+  `EnumValueDescriptor` do not expose under the **upb** backend — the default —
+  so both raised `AttributeError` while the module docstring listed them as
+  supported. Resolution now tries `.file`, then `.pool`, then `.type.file.pool`.
+  (Pure-Python protobuf was unaffected, which is why it went unnoticed.)
+- **`protokit diff --proto-path` outside the `--proto` flag group is now a usage
+  error** instead of being silently accepted and ignored.
+- **`compat --range` endpoint resolution goes through the shared git helper**
+  rather than an inline `subprocess` call, so it inherits the locale forcing and
+  error classification every other git call already had. New public
+  `protokit.schema.git.resolve_ref_sha`.
+- **Documentation corrections (no behaviour change):** the SARIF docstrings no
+  longer claim warnings land in `toolConfigurationNotifications` (they join
+  errors in `toolExecutionNotifications`, tagged `level: "warning"`); the lint
+  epilog no longer advertises a `--no-builtin-rules --enable-rule` workflow that
+  always exits 2 (`--enable-rule` does not *load* rules — a pack is required);
+  the wire walker's varint comments no longer claim coverage of an unreachable
+  guard arm; and `register_field_rule` / `register_message_rule` now state the
+  **path-independence contract** — the engine visits each `(old, new)` type pair
+  once and *replays* those findings at every other referencing path with the
+  prefix rewritten, so plugin logic and message text must not depend on the path
+  they were first computed at.
 
 ### Changed
 - **Internal: the unmodeled-byte fidelity measurement moved to a shared seam**
   (`protokit.storage._fidelity_probe.unmodeled_byte_delta`) so both the columnar
   sink and `forensics match` import one named function. Behavior-preserving —
   `protokit.storage._columnar._unmodeled_byte_delta` still resolves it.
+- **Internal: `reserved_field_reused` now reads reserved ranges and names in one
+  `CopyToProto` roundtrip** instead of two, halving the descriptor serialization
+  cost of the rule on every message pair.
+
 
 ## 0.14.0 — 2026-06-24
 

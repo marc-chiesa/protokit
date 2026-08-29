@@ -121,14 +121,29 @@ def _wire_type_ok(field: FieldDescriptor, observed: int) -> bool:
     return observed == expected
 
 
+def _incompatible_wire_types(field: FieldDescriptor, observed: set[int]) -> list[int]:
+    """The observed wire types ``field`` cannot carry, sorted.
+
+    Compatibility is judged over *every* occurrence, not any one of them: a field
+    number that appears several times on the wire is a clean fit only when each
+    occurrence fits, so a correct occurrence cannot mask a wrong one. A packable
+    repeated field is unaffected by that strictness — :func:`_wire_type_ok`
+    accepts both the packed and unpacked form for such a field, so a legitimate
+    mix passes every occurrence.
+    """
+    return sorted(wt for wt in observed if not _wire_type_ok(field, wt))
+
+
 def _classify(
     observations: list[WireObservation], descriptor: Descriptor
 ) -> list[FieldDivergence]:
     """Classify each distinct observed field against ``descriptor`` + required-missing.
 
     One divergence per distinct field number (an unpacked repeated field is one
-    field, not one per element); a declared field is a wire-type mismatch only when
-    *no* observed wire type for it is compatible (so packed + unpacked both fit).
+    field, not one per element); a declared field is a wire-type mismatch when
+    *any* observed wire type for it is incompatible, so a correct occurrence
+    cannot mask a wrong one (a packed/unpacked mix still fits — see
+    :func:`_incompatible_wire_types`).
     """
     regular, extensions = _declared_numbers(descriptor)
     reserved = _reserved_ranges(descriptor)
@@ -155,13 +170,15 @@ def _classify(
                 )
             )
             continue
-        if not any(_wire_type_ok(field, wt) for wt in wire_types):
+        bad = _incompatible_wire_types(field, wire_types)
+        if bad:
             expected = _WIRE_TYPE_BY_FIELD_TYPE.get(field.type)
             divergences.append(
                 FieldDivergence(
                     number,
                     "wire_type_mismatch",
-                    f"field {number}: observed wire type(s) {sorted(wire_types)}, "
+                    f"field {number}: incompatible wire type(s) {bad} "
+                    f"(observed {sorted(wire_types)}), "
                     f"schema declares wire type {expected}",
                 )
             )
@@ -193,8 +210,9 @@ def compatibility_score(
     """Net per-field compatibility: declared-and-wire-type-agreeing minus the rest.
 
     Scored per distinct field number (not per wire occurrence) so a single
-    high-cardinality repeated field cannot dominate the tie-break. Higher is a
-    tighter wire-level fit.
+    high-cardinality repeated field cannot dominate the tie-break. A field counts
+    as fitting only when *every* occurrence's wire type fits, matching what
+    :func:`drift` reports. Higher is a tighter wire-level fit.
     """
     regular, extensions = _declared_numbers(descriptor)
     reserved = _reserved_ranges(descriptor)
@@ -204,10 +222,8 @@ def compatibility_score(
             score -= 1
             continue
         field = regular.get(number) or extensions.get(number)
-        if field is None:
+        if field is None or _incompatible_wire_types(field, wire_types):
             score -= 1
-        elif any(_wire_type_ok(field, wt) for wt in wire_types):
-            score += 1
         else:
-            score -= 1
+            score += 1
     return score

@@ -665,7 +665,7 @@ def _coerce_min_severity(value: Any) -> LintSeverity:
         "pyproject-config-invalid",
         (
             f"[tool.protokit.lint] min_severity must be one of "
-            f"{valid}; got {type(value).__name__!r}."
+            f"{valid}; got a severity name outside the closed set."
         ),
     )
 
@@ -1070,6 +1070,46 @@ def _expand_custom_prefix(
                 continue
         result.add(rid)
     return frozenset(result)
+
+
+def _expand_custom_prefix_severities(
+    severities: Mapping[str, LintSeverity],
+    specs: tuple[CustomAnnotationRuleSpec, ...],
+) -> Mapping[str, LintSeverity]:
+    """Apply KD-2 bare-prefix expansion to ``[severities]`` keys.
+
+    The ``"off"`` sentinel already expands (it is routed through
+    ``_expand_custom_prefix`` as part of ``off_severity_rule_ids``), so
+    without this the two polarities of the same table would disagree:
+    ``"custom/X" = "off"`` disables every kind of a multi-kind X while
+    ``"custom/X" = "warning"`` retunes only the first kind. The engine
+    looks severities up by the exact (possibly kind-mangled) rule_id,
+    so the bare key can never match ``custom/X__<kind>``.
+
+    An explicitly stated per-kind key wins over the family-wide
+    expansion of the bare key — the more specific entry is what the
+    user typed for that kind. This holds regardless of table order,
+    hence the membership test against the original key set rather than
+    a two-pass insertion order.
+
+    Args:
+        severities: Coerced non-``"off"`` rule_id → severity overrides.
+        specs: Resolved ``CustomAnnotationRuleSpec`` entries; an empty
+            tuple makes the expansion a no-op.
+
+    Returns:
+        A new mapping with bare-prefix keys expanded.
+    """
+    if not severities:
+        return severities
+    explicit_keys = frozenset(severities)
+    expanded: dict[str, LintSeverity] = {}
+    for rule_id, severity in severities.items():
+        for expanded_id in _expand_custom_prefix(frozenset({rule_id}), specs):
+            if expanded_id != rule_id and expanded_id in explicit_keys:
+                continue
+            expanded[expanded_id] = severity
+    return expanded
 
 
 def _compute_r8b_contradiction_warnings(
@@ -1711,6 +1751,10 @@ class ResolvedLintConfig:
     #: ``[tool.protokit.lint.severities]``. Empty dict when no
     #: overrides are configured. CLI side-channel for this knob is
     #: deferred to a future release; currently pyproject-only.
+    #: Custom-prefix expansion (KD-2) has already been applied to the
+    #: keys, so a bare ``custom/<suffix>`` override is present under
+    #: every kind-mangled rule_id of the matching spec and callers must
+    #: not expand again.
     #: ``__post_init__`` wraps the input in ``MappingProxyType(dict(...))``
     #: per the ``frozen-dataclass-mutable-fields-need-post-init-snapshot``
     #: learning so a caller passing a mutable dict cannot leak mutations
@@ -2081,9 +2125,22 @@ class ResolvedLintConfig:
                 # is omitted intentionally.
 
         # profile: CLI replaces pyproject; default ("default",).
+        #
+        # The CLI tier goes through `_coerce_profile` for the same
+        # reason the pyproject tier does: it is the ONE place where
+        # normalization (strip + lowercase) and `_PROFILE_ALIASES`
+        # resolution happen, so `--profile basic` and
+        # `profile = "basic"` cannot diverge. A bare `tuple(...)` here
+        # (the pre-fix shape) left `--profile basic` exiting 2 with
+        # `lint-unknown-profile` while the identical alias in
+        # pyproject resolved to `recommended`. `list(...)` because
+        # the documented CLI-override shape is `tuple[str, ...]` and
+        # `_coerce_profile` accepts scalar-str or list, not tuple.
         cli_profile = cli_overrides.get("profile")
         if cli_profile is not None:
-            resolved_profile: tuple[str, ...] = tuple(cli_profile)
+            resolved_profile: tuple[str, ...] = _coerce_profile(
+                list(cli_profile),
+            )
         elif "profile" in validated:
             resolved_profile = validated["profile"]
         else:
@@ -2281,9 +2338,13 @@ class ResolvedLintConfig:
         # Custom prefix expansion: apply to every R9b set that may
         # contain bare ``custom/<suffix>`` entries. The off-severity
         # set is also subject to expansion because [severities] keys
-        # can name custom rules too.
+        # can name custom rules too — and so is the non-"off" severity
+        # map, so both polarities of that one table behave alike.
         expanded_off = _expand_custom_prefix(
             off_severity_rule_ids, resolved_custom_annotation_rules,
+        )
+        expanded_severities = _expand_custom_prefix_severities(
+            resolved_severities, resolved_custom_annotation_rules,
         )
         expanded_pyp_disabled = _expand_custom_prefix(
             pyproject_disabled_rules, resolved_custom_annotation_rules,
@@ -2307,7 +2368,7 @@ class ResolvedLintConfig:
             cli_disabled=expanded_cli_disabled,
             pyproject_enabled=expanded_pyp_enabled,
             cli_enabled=expanded_cli_enabled,
-            non_off_severity_overrides=frozenset(resolved_severities.keys()),
+            non_off_severity_overrides=frozenset(expanded_severities.keys()),
         )
         # Unified disabled_rules: merge ALL disable sources per the
         # sentinel propagation contract. cli.py subtracts this single
@@ -2331,7 +2392,7 @@ class ResolvedLintConfig:
             min_severity_source=min_sev_source,
             pyproject_min_severity=pyproject_min_sev,
             exclude_source=exclude_source,
-            severities=resolved_severities,
+            severities=expanded_severities,
             no_builtin_rules=resolved_no_builtin,
             custom_annotation_rules=resolved_custom_annotation_rules,
             disabled_rules=unified_disabled_rules,

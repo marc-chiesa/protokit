@@ -278,6 +278,79 @@ class TestCycles:
         report = check_compatibility(old, "t.A", new, "t.A")
         assert report.is_compatible
 
+    def test_cycle_truncated_subtree_not_replayed_at_sibling_path(self) -> None:
+        """A pair whose subtree was cut short by the cycle guard must
+        not have that truncated result cached and replayed elsewhere.
+
+        ``Root.n`` is walked first, and inside it ``n.m`` hits the
+        ``N`` cycle cut — so ``M``'s subtree is missing everything
+        under ``M.n``. Caching that stunted result and replaying it
+        at ``Root.m`` would drop the equally-real break at
+        ``m.n.tag``: with ``--ignore n`` the schema would report
+        clean while a wire break survives.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        self._build_root_m_n_cycle(old, tag_type=T.TYPE_STRING)
+        self._build_root_m_n_cycle(new, tag_type=T.TYPE_BYTES)
+        report = check_compatibility(old, "t.Root", new, "t.Root")
+        paths = sorted({str(f.path) for f in report.findings})
+        assert paths == ["m.n.tag", "n.tag"]
+
+    def test_cycle_truncation_still_terminates_on_self_reference(self) -> None:
+        """The in-progress guard is the termination proof — skipping
+        the cache for truncated pairs must not weaken it.
+
+        ``Root`` reaches the mutually-recursive ``M``/``N`` pair from
+        two sides, so the truncated ``M`` is re-traversed rather than
+        replayed; the walk must still finish.
+        """
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        self._build_root_m_n_cycle(old, tag_type=T.TYPE_STRING)
+        self._build_root_m_n_cycle(new, tag_type=T.TYPE_STRING)
+        report = check_compatibility(old, "t.Root", new, "t.Root")
+        assert report.is_compatible
+
+    @staticmethod
+    def _build_root_m_n_cycle(
+        pool: descriptor_pool.DescriptorPool, *, tag_type: int,
+    ) -> None:
+        """Build ``Root{m:M, n:N}``, ``N{m:M, tag}``, ``M{n:N, leaf}``.
+
+        ``M`` and ``N`` are mutually recursive and both reachable from
+        ``Root``, so whichever of them the DFS enters second sees the
+        other already in progress — the shape that produces a
+        cycle-truncated subtree under a shared type.
+        """
+        from google.protobuf import descriptor_pb2
+        fp = descriptor_pb2.FileDescriptorProto(
+            name=f"root_mn_{id(pool):x}.proto", package="t", syntax="proto2",
+        )
+
+        def _field(msg, name, number, ftype, type_name=None):
+            f = msg.field.add()
+            f.name, f.number, f.type = name, number, ftype
+            f.label = T.LABEL_OPTIONAL
+            if type_name is not None:
+                f.type_name = type_name
+
+        root = fp.message_type.add()
+        root.name = "Root"
+        _field(root, "m", 1, T.TYPE_MESSAGE, "t.M")
+        _field(root, "n", 2, T.TYPE_MESSAGE, "t.N")
+
+        n = fp.message_type.add()
+        n.name = "N"
+        _field(n, "m", 1, T.TYPE_MESSAGE, "t.M")
+        _field(n, "tag", 2, tag_type)
+
+        m = fp.message_type.add()
+        m.name = "M"
+        _field(m, "n", 1, T.TYPE_MESSAGE, "t.N")
+        _field(m, "leaf", 2, T.TYPE_INT32)
+        pool.Add(fp)
+
 
 # ---------------------------------------------------------------------------
 # Enum recursion via fields
@@ -298,6 +371,52 @@ class TestEnumViaField:
         f = next(f for f in report.findings if f.rule_id == "enum_value_removed")
         assert f.path == FieldPath.parse("color")
         assert "BLUE" in f.message
+
+    def test_enum_value_renumbered_is_a_wire_break(self) -> None:
+        # A renumber under an unchanged name slips past every
+        # name-matched rule (removed/added) and past
+        # enum_number_reused (which needs the number on BOTH
+        # sides) — it must still surface as a WIRE break.
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.E", {"ZERO": 0, "A": 1, "B": 3})
+        build_enum(new, "t.E", {"ZERO": 0, "A": 2, "B": 3})
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.M", fields=[
+                {"name": "e", "number": 1, "type": T.TYPE_ENUM, "type_name": "t.E"},
+            ], file_name=f"renum_{label}.proto")
+        report = check_compatibility(
+            old, "t.M", new, "t.M", level=CompatibilityLevel.WIRE,
+        )
+        assert not report.is_compatible
+        f = next(
+            f for f in report.findings
+            if f.rule_id == "enum_value_number_changed"
+        )
+        assert f.severity is Severity.WIRE
+        assert f.direction is Direction.BOTH
+        assert f.path == FieldPath.parse("e")
+        assert "A" in f.message
+
+    def test_number_swap_emits_reuse_before_renumber(self) -> None:
+        # Pins the ENUM_RULES tuple position: registry order is emit
+        # order, and enum_value_number_changed is registered last so a
+        # swap reports the number-keyed view before the name-keyed one.
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_enum(old, "t.E", {"ZERO": 0, "A": 1, "B": 2})
+        build_enum(new, "t.E", {"ZERO": 0, "A": 2, "B": 1})
+        for p, label in ((old, "old"), (new, "new")):
+            build_message(p, "t.M", fields=[
+                {"name": "e", "number": 1, "type": T.TYPE_ENUM, "type_name": "t.E"},
+            ], file_name=f"swap_{label}.proto")
+        report = check_compatibility(
+            old, "t.M", new, "t.M", level=CompatibilityLevel.WIRE,
+        )
+        assert [f.rule_id for f in report.findings] == [
+            "enum_number_reused", "enum_number_reused",
+            "enum_value_number_changed", "enum_value_number_changed",
+        ]
 
     def test_enum_in_nested_message(self) -> None:
         old = descriptor_pool.DescriptorPool()

@@ -23,7 +23,18 @@ import click
 from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.message import DecodeError
 
-from protokit._cli_utils import _scrub_exc_message, run_formatter_safely
+# ``_safe_for_stderr`` uses the redundant-``as`` form: that is the
+# explicit re-export mypy strict's ``no_implicit_reexport`` requires, and
+# the ~20 lint-subpackage modules importing it from HERE (its original
+# home, before it moved down to ``protokit._cli_utils`` — see the note
+# where it used to live) keep working unchanged.
+from protokit._cli_utils import (
+    _safe_for_stderr as _safe_for_stderr,
+)
+from protokit._cli_utils import (
+    _scrub_exc_message,
+    run_formatter_safely,
+)
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 
 if TYPE_CHECKING:
@@ -136,9 +147,15 @@ def error_exit_with_code(code: str, message: str) -> NoReturn:
             prepends it). Must be in :data:`_LINT_ERROR_CODES`.
         message: Human-readable explanation. Already-scrubbed by
             the caller — this helper does NOT call
-            ``_scrub_exc_message`` on the message itself, since
-            many callers compose multi-segment messages where
-            only specific exception substrings need scrubbing.
+            ``_scrub_exc_message`` (nor ``_safe_for_stderr``) on
+            the message itself, since many callers compose
+            multi-segment messages where only specific exception
+            substrings need scrubbing. Callers interpolating an
+            exception apply BOTH layers, as
+            ``_safe_for_stderr(_scrub_exc_message(exc))``: the
+            inner one redacts ``OSError`` filenames, the outer one
+            stops the message forging its own ``error[lint-CODE]:``
+            line.
 
     Raises:
         AssertionError: If ``code`` is not in the closed set.
@@ -191,68 +208,15 @@ _MISSING_IMPORT_MARKERS: tuple[str, ...] = (
     "couldn't resolve name",
 )
 
-#: Translation table that maps every ASCII control character
-#: (``0x00``–``0x1f`` plus ``0x7f`` DEL) to a single space. Used by
-#: :func:`_safe_for_stderr` so attacker-controlled strings flowing into
-#: per-line ``click.echo`` output can never:
-#:
-#: - Forge a fake error line via embedded ``\n`` / ``\r`` (the original
-#:   ``module-name-newline-injection-stderr-forge-2026-05-07.md`` concern).
-#: - Truncate the stderr line via embedded ``\x00`` (NUL terminates
-#:   strings in syslog / many log-ingestion pipelines).
-#: - Smuggle ANSI escape sequences via embedded ``\x1b`` (terminal
-#:   color/cursor injection that can obscure the ``error[lint-`` prefix
-#:   CI scripts grep for).
-#:
-#: Built once at module-load time (cheap; lazy import via ``str.translate``).
-_CONTROL_CHAR_TABLE: dict[int, int] = {
-    codepoint: ord(" ") for codepoint in range(0x20)
-}
-_CONTROL_CHAR_TABLE[0x7F] = ord(" ")
-# Unicode line-terminator codepoints beyond ASCII. The terminal does
-# not treat these as line breaks, but log aggregators (Datadog,
-# Splunk, CloudWatch Logs) split records on them per Unicode's
-# line-terminator rules — a crafted message containing one of these
-# can inject a fake aggregator record beginning with a forged
-# ``error[lint-CODE]:`` prefix even though the on-disk stderr output
-# looks like a single line. The widening matches the spirit of the
-# original ``module-name-newline-injection-stderr-forge-2026-05-07``
-# defense applied to Unicode-defined breaks.
-_CONTROL_CHAR_TABLE[0x85] = ord(" ")  # U+0085 NEXT LINE (NEL)
-_CONTROL_CHAR_TABLE[0x2028] = ord(" ")  # U+2028 LINE SEPARATOR
-_CONTROL_CHAR_TABLE[0x2029] = ord(" ")  # U+2029 PARAGRAPH SEPARATOR
-
-
-def _safe_for_stderr(value: object) -> str:
-    """Collapse all line-break / control characters in a stringified value to spaces.
-
-    Defense-in-depth against attacker-controlled strings flowing into
-    single-line ``click.echo(..., err=True)`` output. Paths, exception
-    messages, module names, and any other stringified field that may
-    include user-controlled bytes is passed through this helper before
-    being interpolated into stderr error messages.
-
-    Sanitization scope (extended beyond the original
-    ``module-name-newline-injection-stderr-forge-2026-05-07.md`` rule):
-
-    - Newlines (``\\n``, ``\\r``) — prevent forged error-line injection.
-    - Null bytes (``\\x00``) — prevent stderr-line truncation in syslog
-      and log-ingestion pipelines that treat NUL as string terminator.
-    - ANSI escape sequences (``\\x1b...``) — prevent terminal color/cursor
-      injection that can obscure stable error prefixes for CI grep.
-    - Other ASCII control characters (``\\t``, ``\\b``, etc.) — same
-      defense-in-depth reasoning.
-    - Unicode line terminators (``U+0085`` NEL, ``U+2028`` LSEP,
-      ``U+2029`` PSEP) — terminals do not break on these but Unicode-
-      aware log aggregators do, so a message containing one of these
-      can inject a fake aggregator record beginning with a forged
-      stable-prefix line.
-
-    Single source of truth for stderr-safe stringification across the
-    lint subpackage; :func:`_safe_module_name` is a thin wrapper that
-    extracts ``module.__name__`` first.
-    """
-    return str(value).translate(_CONTROL_CHAR_TABLE)
+# ``_CONTROL_CHAR_TABLE`` / ``_safe_for_stderr`` used to be defined
+# here. They moved down to ``protokit._cli_utils`` once the compat side
+# needed them too (a formatter exception message can forge an ``Error:``
+# line exactly the way a pack name could forge an ``error[lint-`` one);
+# this module already imports upward from there, so keeping them here
+# would have made the compat-side import circular. ``_safe_for_stderr``
+# is re-exported by the import above so the ~20 existing
+# ``from protokit.schema.lint._cli_utils import _safe_for_stderr`` sites
+# across the lint subpackage keep working unchanged.
 
 
 def _safe_module_name(module: ModuleType) -> str:
@@ -363,8 +327,9 @@ def _load_descriptor_sets_to_result(
     # .source_code_info field for downstream R6 comment-aware rules.
     # When the input descriptor set was built without
     # ``protoc --include_source_info``, each fd's source_code_info.location
-    # array will be empty — leading_comment() returns None for every
-    # lookup, R6 rules emit findings for every deprecated element (the
+    # array will be empty — the comment index is empty, so every
+    # lookup returns None and R6 rules emit findings for every
+    # deprecated element (the
     # documented descriptor-set-mode caveat). Mirrors the
     # capture-around-Add pattern at src/protokit/_cli_utils.py:264-267
     # (_populate_pool_with_capture).
@@ -379,7 +344,7 @@ def _load_descriptor_sets_to_result(
         except (OSError, DecodeError) as exc:
             error_exit_with_code(
                 "bad-input",
-                f"{input_path}: {_scrub_exc_message(exc)}",
+                f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
             )
 
         for fd in fds.file:
@@ -426,7 +391,7 @@ def _load_descriptor_sets_to_result(
                         "missing-imports",
                         (
                             f"{input_path}: "
-                            f"{_scrub_exc_message(exc)}. "
+                            f"{_safe_for_stderr(_scrub_exc_message(exc))}. "
                             "Rebuild the descriptor set with "
                             "'protoc --include_imports' or include "
                             "WKT descriptor files."
@@ -442,7 +407,7 @@ def _load_descriptor_sets_to_result(
                 # this path.
                 error_exit_with_code(
                     "pool-conflict",
-                    f"{input_path}: {_scrub_exc_message(exc)}",
+                    f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
                 )
             root_files.append(fd.name)
             pool_names.append(fd.name)
@@ -540,7 +505,7 @@ def _load_user_rule_pack(
         error_exit_with_code(
             "rule-pack-load",
             f"kind=import: failed to import pack {module_name!r}: "
-            f"{type(exc).__name__}: {_scrub_exc_message(exc)}",
+            f"{type(exc).__name__}: {_safe_for_stderr(_scrub_exc_message(exc))}",
         )
 
     try:
@@ -548,19 +513,19 @@ def _load_user_rule_pack(
     except DuplicateRuleError as exc:
         error_exit_with_code(
             "rule-collision",
-            f"pack {module_name!r}: {_scrub_exc_message(exc)}",
+            f"pack {module_name!r}: {_safe_for_stderr(_scrub_exc_message(exc))}",
         )
     except AttributeError as exc:
         error_exit_with_code(
             "rule-pack-load",
             f"kind=shape: pack {module_name!r} has no RULES attribute "
-            f"(engine reported: {_scrub_exc_message(exc)})",
+            f"(engine reported: {_safe_for_stderr(_scrub_exc_message(exc))})",
         )
     except TypeError as exc:
         error_exit_with_code(
             "rule-pack-load",
             f"kind=shape: pack {module_name!r} has wrong RULES wire "
-            f"format: {_scrub_exc_message(exc)}. lint expects "
+            f"format: {_safe_for_stderr(_scrub_exc_message(exc))}. lint expects "
             f"RULES = (decorated_fn, ...); compat's "
             f"RULES = ((rule_id, fn), ...) is incompatible. See "
             f"docs/solutions/best-practices/audit-wire-format-"

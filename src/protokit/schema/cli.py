@@ -21,10 +21,14 @@ Exit codes (uniform across subcommands):
 
 from __future__ import annotations
 
+import functools
 import importlib
+import subprocess
 import sys
 import warnings
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, NoReturn
 
 import click
 from google.protobuf import descriptor_pool
@@ -50,6 +54,7 @@ from protokit.schema.git import (
     extract_pool_from_ref,
     merge_base,
     resolve_default_base,
+    resolve_ref_sha,
     verify_ref,
 )
 from protokit.schema.model import (
@@ -268,6 +273,52 @@ def _load_pools_local(
     )
 
 
+def _git_failure_exit(exc: subprocess.CalledProcessError) -> NoReturn:
+    """Route an unclassified git subprocess failure to exit 2.
+
+    ``protokit.schema.git._git_show`` maps only the handful of git
+    stderr strings it can recognise onto typed errors and re-raises
+    everything else bare — deliberately, because labelling the
+    unknown (corrupt object DB, permission denied on ``.git``, a
+    gitlink, a path outside the repository) as "file missing" would
+    fabricate a weak-import stub and hand the checker a truncated
+    dependency graph. Keeping the raise honest means the CLI is the
+    layer that owes the user an exit code, and this CLI's contract
+    is 0=compatible / 1=incompatible / 2=error. An escaping
+    traceback exits 1, which a pipeline reads as a compatibility
+    BREAK that never happened — so anything that isn't a real
+    verdict has to land here instead.
+    """
+    stderr = exc.stderr
+    if isinstance(stderr, (bytes, bytearray)):
+        stderr = stderr.decode("utf-8", errors="replace")
+    detail = (stderr or "").strip() or f"exited with status {exc.returncode}"
+    cmd = exc.cmd
+    if not isinstance(cmd, str):
+        cmd = " ".join(str(part) for part in cmd)
+    error_exit(f"git command failed ({cmd}): {detail}")
+
+
+def _git_error_boundary(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator: convert an escaping git failure into exit 2.
+
+    Applied to every git-aware subcommand as a last-resort guard.
+    The specific call sites already catch what they can name; this
+    catches whatever a future git version (or a future call site)
+    fails with, so no unclassified subprocess error can ever reach
+    Click and masquerade as the "incompatible" exit code.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except subprocess.CalledProcessError as exc:
+            _git_failure_exit(exc)
+
+    return wrapper
+
+
 def _verify_proto_file_at_ref(
     proto_file: str,
     ref: str,
@@ -301,6 +352,13 @@ def _verify_proto_file_at_ref(
             # ref itself is bogus — let the main pipeline produce
             # that error; we're here to validate the path.
             return
+        except subprocess.CalledProcessError as exc:
+            # git failed for a reason ``_git_show`` deliberately
+            # leaves unclassified (e.g. "is outside repository" for
+            # a --proto-file that escapes the work tree). That's a
+            # tooling error, not a compatibility verdict: exit 2
+            # rather than letting the traceback exit 1.
+            _git_failure_exit(exc)
     error_exit(
         f"--proto-file {proto_file!r} not found at ref {ref!r} "
         f"under any of the configured --proto-root paths "
@@ -420,7 +478,8 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
 
     Raises:
         SystemExit: via ``error_exit`` if ``range_spec`` lacks
-            ``..`` or either side fails to resolve.
+            ``..``, either side fails to resolve, or git is not
+            on PATH.
     """
     # Support both two-dot and three-dot forms; we only need the
     # endpoints, and ``A...B`` is just a different walk semantics.
@@ -439,20 +498,14 @@ def _resolve_range_endpoints(range_spec: str) -> tuple[str, str]:
         )
     old_name, new_name = parts
     try:
-        import subprocess
-        old_sha = subprocess.run(
-            ["git", "rev-parse", old_name],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-        new_sha = subprocess.run(
-            ["git", "rev-parse", new_name],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
+        old_sha = resolve_ref_sha(old_name)
+        new_sha = resolve_ref_sha(new_name)
+    except GitRefNotFoundError as exc:
         error_exit(
-            f"could not resolve range endpoints {range_spec!r}: {stderr}"
+            f"could not resolve range endpoints {range_spec!r}: {exc}"
         )
+    except RuntimeError as exc:  # git missing from PATH
+        error_exit(str(exc))
     return old_sha, new_sha
 
 
@@ -770,6 +823,7 @@ def main() -> None:
     default=False,
     help="Suppress output; return exit code only.",
 )
+@_git_error_boundary
 def check(
     old_input: Path | None,
     new_input: Path | None,
@@ -1009,6 +1063,7 @@ def check(
     help="Suppress stdout; return exit code only. Diagnostics "
          "still stream to stderr.",
 )
+@_git_error_boundary
 def history(
     range_spec: str,
     proto_file: str,
@@ -1337,6 +1392,7 @@ def history(
     help="Suppress stdout; return exit code only. Diagnostics "
          "still stream to stderr.",
 )
+@_git_error_boundary
 def bisect(
     old_ref: str,
     new_ref: str,
@@ -1661,6 +1717,7 @@ def bisect(
     help="Suppress stdout; return exit code only. Diagnostics "
          "still stream to stderr.",
 )
+@_git_error_boundary
 def ci(
     base_ref: str | None,
     proto_file: str,

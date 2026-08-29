@@ -632,6 +632,44 @@ def test_transitive_file_descriptors_deduped_and_ordered():
     assert names.index("google/protobuf/timestamp.proto") < names.index("ev.proto")
 
 
+def _import_chain_fds(depth: int):
+    """A linear import chain ``c0.proto <- c1.proto <- ... <- c{depth-1}.proto``.
+
+    Each file imports its predecessor, so the *file* graph is ``depth`` deep while
+    the message graph stays flat — the recursion guard proves the message graph
+    acyclic but says nothing about import depth.
+    """
+    fds = descriptor_pb2.FileDescriptorSet()
+    for i in range(depth):
+        f = fds.file.add()
+        f.name, f.package, f.syntax = f"c{i}.proto", "chain", "proto3"
+        if i:
+            f.dependency.append(f"c{i - 1}.proto")
+        m = f.message_type.add()
+        m.name = f"M{i}"
+        fld = m.field.add()
+        fld.name, fld.number, fld.type, fld.label = "id", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    return fds
+
+
+def test_transitive_file_descriptors_survives_deep_import_chain():
+    from protokit.storage._columnar import _transitive_file_descriptors
+
+    # Deeper than the interpreter's recursion limit: a recursive file walk raises
+    # RecursionError on a perfectly valid (acyclic) descriptor set, and `--desc`
+    # reads an attacker-supplyable descriptor file.
+    depth = 1200
+    reg = StreamRegistry()
+    reg.register_stream(
+        "s", FileDescriptorSetSchema(_import_chain_fds(depth), f"chain.M{depth - 1}")
+    )
+    desc = reg.get("s").message_class.DESCRIPTOR
+    names = [f.name for f in _transitive_file_descriptors(desc)]
+    assert len(names) == depth
+    assert names[0] == "c0.proto"  # deepest dependency first
+    assert names[-1] == f"c{depth - 1}.proto"
+
+
 # --- fidelity signal (U3 wiring + report, U4 strict mode) ---------------------
 #
 # Setup: register the stream with a REDUCED descriptor (M { int32 id }) but feed
@@ -1111,6 +1149,30 @@ def test_wrapper_ignore_measured_false():
     assert stream.report.dropped_extensions == ()
 
 
+# --- fidelity policy validation ------------------------------------------------
+
+
+def test_invalid_fidelity_rejected_by_to_parquet(tmp_path):
+    # An unrecognised policy read as `warn` would silently DOWNGRADE a caller who
+    # meant `error` (a typo, a case slip) into writing the file anyway.
+    reg = _fid_registry()
+    out = tmp_path / "bad.parquet"
+    for bad in ("erorr", "ERROR", "strict", ""):
+        with pytest.raises(ValueError) as excinfo:
+            to_parquet([("s", _unmodeled_bytes(1, 99))], reg, out, stream_id="s", fidelity=bad)
+        assert "fidelity must be one of" in str(excinfo.value)
+        assert repr(bad) in str(excinfo.value)  # names the rejected value
+        assert not out.exists()  # rejected before any file is created
+
+
+def test_invalid_fidelity_rejected_at_call_not_at_iteration():
+    # to_arrow_batches defers *bind* to the first next(); an argument misuse is
+    # not bind — it fails at the call site, like the engine's on_error check.
+    reg = _fid_registry()
+    with pytest.raises(ValueError, match="fidelity must be one of"):
+        to_arrow_batches([("s", _modeled_bytes(1))], reg, stream_id="s", fidelity="ERROR")
+
+
 # --- U6: end-to-end ptars consistency, complementarity, group correction ------
 
 
@@ -1203,3 +1265,71 @@ def test_group_populated_raises_raw_ptars_error(tmp_path):  # AE5 (corrected)
     with pytest.raises(ValueError, match="unsupported wire type"):
         to_parquet([("s", m.SerializeToString())], reg, out, stream_id="s")
     assert not out.exists()  # partial discarded by the sink's BaseException unlink
+
+
+# --- U7: the oracle covers the whole reachable graph, not just the bound root -
+#
+# The GTFS-RT / NYCT shape: the extension extends a NESTED type (TripDescriptor),
+# never the bound root (FeedMessage). ptars columnizes the nested type too and
+# drops its extension exactly like a root one, so a root-only oracle reports
+# clean for the very workload the oracle exists to protect.
+
+
+def _nested_ext_fds():
+    fds = descriptor_pb2.FileDescriptorSet()
+    f = fds.file.add()
+    f.name, f.package, f.syntax = "no.proto", "no", "proto2"
+    inner = f.message_type.add()
+    inner.name = "Inner"
+    k = inner.field.add()
+    k.name, k.number, k.type, k.label = "k", 1, F.TYPE_INT32, F.LABEL_OPTIONAL
+    inner.extension_range.add(start=100, end=201)
+    outer = f.message_type.add()
+    outer.name = "Outer"
+    nf = outer.field.add()
+    nf.name, nf.number, nf.type, nf.label = "inner", 1, F.TYPE_MESSAGE, F.LABEL_OPTIONAL
+    nf.type_name = ".no.Inner"
+    ext = f.extension.add()
+    ext.name, ext.number, ext.type = "ext_val", 100, F.TYPE_INT32
+    ext.label, ext.extendee = F.LABEL_OPTIONAL, ".no.Inner"
+    return fds
+
+
+def _nested_ext_registry():
+    reg = StreamRegistry()
+    reg.register_stream("s", FileDescriptorSetSchema(_nested_ext_fds(), "no.Outer"))
+    return reg
+
+
+def _nested_ext_wire(reg):
+    cls = reg.get("s").message_class
+    inner_ext = cls.DESCRIPTOR.file.pool.FindExtensionByName("no.ext_val")
+    m = cls()
+    m.inner.k = 5
+    m.inner.Extensions[inner_ext] = 42
+    return m.SerializeToString()
+
+
+def test_structural_nested_declared_extension_reported(tmp_path):
+    # The bound root (Outer) declares no extension; the reachable Inner does.
+    # ptars writes the nested struct with `k` only, so the extension value is gone
+    # from the Parquet while the per-record probe sees a clean (declared) record.
+    reg = _nested_ext_registry()
+    out = tmp_path / "nested_ext.parquet"
+    report = to_parquet([("s", _nested_ext_wire(reg))], reg, out, stream_id="s")
+    assert report.measured is True
+    assert report.dropped_extensions == ("no.ext_val",)
+    assert report.unmodeled_records == 0  # per-record probe is blind to it
+    table = pq.read_table(out)
+    inner_type = table.schema.field("inner").type
+    assert [inner_type.field(i).name for i in range(inner_type.num_fields)] == ["k"]
+    assert table.column("inner").to_pylist() == [{"k": 5}]  # the 42 is nowhere
+
+
+def test_structural_nested_extension_fails_fast_under_error(tmp_path):
+    reg = _nested_ext_registry()
+    out = tmp_path / "nested_ext_err.parquet"
+    with pytest.raises(FidelityError) as excinfo:
+        to_parquet([("s", _nested_ext_wire(reg))], reg, out, stream_id="s", fidelity="error")
+    assert excinfo.value.dropped_extensions == ("no.ext_val",)
+    assert not out.exists()

@@ -18,6 +18,7 @@ Public surface:
 
 - :func:`extract_pool_from_ref` — high-level extractor.
 - :func:`is_shallow_repository` — predicate for CI guard rails.
+- :func:`resolve_ref_sha` — pin a moving ref name to a SHA.
 - :exc:`GitRefNotFoundError`, :exc:`ProtoImportError`,
   :exc:`ShallowRepoError` — typed errors callers can branch on.
 """
@@ -89,12 +90,18 @@ class GitRefNotFoundError(ValueError):
 
 
 class ProtoImportError(ValueError):
-    """Raised when a required ``.proto`` import cannot be located.
+    """Raised when a ``.proto`` import cannot be located or is unsafe.
 
-    Standard and ``import public`` failures raise; ``import weak``
-    failures are skipped silently to match protobuf's own
-    semantics (weak imports tolerate missing dependencies at
-    compile time).
+    Standard and ``import public`` failures raise. A **missing**
+    ``import weak`` is tolerated silently, matching protobuf's own
+    semantics (weak imports tolerate absent dependencies at compile
+    time) -- a synthetic stub is written instead.
+
+    An **unsafe** import path raises regardless of import kind,
+    including ``weak``: a path that is absolute, contains ``..``, or
+    otherwise resolves outside the extraction directory is refused by
+    :func:`_safe_dest_path` rather than tolerated. Absence is a normal
+    condition to work around; an escape attempt is not.
     """
 
 
@@ -174,6 +181,33 @@ def verify_ref(ref: str, *, cwd: Path | None = None) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def resolve_ref_sha(ref: str, *, cwd: Path | None = None) -> str:
+    """Resolve ``ref`` to the SHA it names right now.
+
+    Callers that record what they examined want a fixed SHA, not
+    the moving name the user typed — ``HEAD~20`` means something
+    different an hour later.
+
+    Args:
+        ref: Any git revision expression.
+        cwd: Working directory for the git invocation.
+
+    Returns:
+        The full resolved SHA, without trailing newline.
+
+    Raises:
+        GitRefNotFoundError: ``ref`` does not resolve.
+    """
+    try:
+        out = _run_git(["rev-parse", ref], cwd=cwd, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise GitRefNotFoundError(
+            f"could not resolve {ref!r}: {stderr}"
+        ) from exc
+    return str(out).strip()
 
 
 def commit_subject(ref: str, *, cwd: Path | None = None) -> str:
@@ -648,6 +682,43 @@ def _is_well_known(import_path: str) -> bool:
     return any(import_path.startswith(p) for p in _WELL_KNOWN_PREFIXES)
 
 
+def _safe_dest_path(dest: Path, import_path: str) -> Path:
+    """Resolve ``dest/import_path``, refusing anything that escapes ``dest``.
+
+    **Security boundary.** ``import_path`` is attacker-controlled: it
+    comes from a ``.proto`` at an arbitrary git ref, which on the
+    documented ``protokit compat ci`` fork-PR path is untrusted. Both
+    write sites in :func:`_extract_proto_tree` compose ``dest /
+    import_path``, and ``pathlib`` silently *discards* ``dest`` when the
+    right-hand side is absolute (``Path("/tmp/x") / "/etc/passwd"`` is
+    ``Path("/etc/passwd")``), so an unguarded join escapes the
+    ``TemporaryDirectory`` and clobbers a real file. ``..`` segments
+    escape the same way.
+
+    A repo-tracked proto path can never legitimately be absolute or
+    contain ``..``, so this rejects nothing a valid schema would emit.
+
+    Raises:
+        ProtoImportError: if the import path is absolute, contains a
+            ``..`` segment, or otherwise resolves outside ``dest``.
+    """
+    candidate = Path(import_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ProtoImportError(
+            f"refusing import path {import_path!r}: absolute paths and "
+            f"'..' segments cannot appear in a repo-tracked .proto import"
+        )
+    resolved = (dest / candidate).resolve()
+    # `dest` may itself be a symlink (macOS /tmp -> /private/tmp), so
+    # compare resolved-to-resolved rather than against the raw `dest`.
+    if not resolved.is_relative_to(dest.resolve()):
+        raise ProtoImportError(
+            f"refusing import path {import_path!r}: resolves outside the "
+            f"extraction directory"
+        )
+    return resolved
+
+
 def _write_weak_stub(dest: Path, import_path: str) -> None:
     """Write an empty proto3 stub at ``dest/<import_path>``.
 
@@ -667,7 +738,9 @@ def _write_weak_stub(dest: Path, import_path: str) -> None:
     # Identifiers can't start with a digit. Prefix if necessary.
     if safe_id and safe_id[0].isdigit():
         safe_id = "_" + safe_id
-    stub_path = dest / import_path
+    # `safe_id` sanitises the package name written INTO the stub; the
+    # write LOCATION needs its own guard -- see `_safe_dest_path`.
+    stub_path = _safe_dest_path(dest, import_path)
     stub_path.parent.mkdir(parents=True, exist_ok=True)
     stub_path.write_text(
         'syntax = "proto3";\n'
@@ -712,9 +785,17 @@ def _extract_proto_tree(
     ``root_files`` list) for the caller to feed to ``compile_proto``.
 
     Well-known imports (``google/protobuf/...``) are skipped on
-    the assumption that the compiler bundles them. ``import weak``
-    failures are skipped silently. Standard / ``import public``
-    failures raise :exc:`ProtoImportError`.
+    the assumption that the compiler bundles them. A **missing**
+    ``import weak`` is skipped silently (a stub is written instead).
+    Standard / ``import public`` failures raise
+    :exc:`ProtoImportError`.
+
+    Every write path is derived through :func:`_safe_dest_path`, so an
+    **unsafe** import path raises :exc:`ProtoImportError` for any import
+    kind including ``weak``. ``import_path`` originates in a ``.proto``
+    at a caller-supplied ref, which is untrusted on the ``compat ci``
+    fork-PR flow; containment is not negotiable for a weak import
+    merely because absence would be.
     """
     visited: set[str] = set()
     root_paths: list[Path] = []
@@ -747,7 +828,7 @@ def _extract_proto_tree(
             )
         _, content = resolved
 
-        out_path = dest / import_path
+        out_path = _safe_dest_path(dest, import_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(content)
 
@@ -811,8 +892,10 @@ def extract_pool_from_ref(
     Raises:
         GitRefNotFoundError: ``ref`` cannot be resolved.
         ProtoImportError: A required import (standard or
-            ``import public``) is missing at ``ref``. Weak
-            imports never raise — they're skipped silently.
+            ``import public``) is missing at ``ref``, or ANY import
+            (including ``weak``) has an unsafe path — absolute,
+            containing ``..``, or resolving outside the extraction
+            directory. A merely *missing* weak import does not raise.
         ShallowRepoError: ``ref`` isn't reachable in the local
             shallow history. Re-raised by callers; this function
             doesn't yet auto-deepen.

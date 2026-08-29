@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 from google.protobuf import descriptor_pb2
 
-from protokit.forensics._wire import WalkError, WireObservation, walk_top_level
+from protokit.forensics._wire import (
+    _MAX_GROUP_DEPTH,
+    WIRETYPE_VARINT,
+    WalkError,
+    WireObservation,
+    walk_top_level,
+)
 from tests.forensics.fixtures import cls_for
 from tests.forensics.wire_ground_truth import assert_walker_recovers, typed_fdp
 
@@ -56,6 +62,39 @@ def test_nested_groups_record_outer_once() -> None:
     assert walk_top_level(data) == [WireObservation(1, 3), WireObservation(4, 0)]
 
 
+def test_group_nesting_at_the_depth_limit_is_accepted() -> None:
+    """Nesting exactly at the cap still walks — the cap is protobuf's own limit."""
+    # _MAX_GROUP_DEPTH nested start-groups (field 1), all closed, then field 2 = 7.
+    data = b"\x0b" * _MAX_GROUP_DEPTH + b"\x0c" * _MAX_GROUP_DEPTH + b"\x10\x07"
+    assert walk_top_level(data) == [WireObservation(1, 3), WireObservation(2, 0)]
+
+
+def test_group_nesting_beyond_the_depth_limit_rejected() -> None:
+    """One level past the cap is refused, even though the groups are all balanced.
+
+    Without the bound the walk succeeds and the group stack grows with the input,
+    so an attacker's tags — not the byte cap — set the memory ceiling.
+    """
+    depth = _MAX_GROUP_DEPTH + 1
+    data = b"\x0b" * depth + b"\x0c" * depth
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(data)
+    assert "group nesting depth" in str(excinfo.value)
+
+
+def test_deep_start_group_run_fails_on_depth_not_after_the_whole_buffer() -> None:
+    """A start-group flood is refused at the cap, not after the buffer is consumed.
+
+    This is the amplification path the observation ceiling cannot see: every tag
+    pushes onto the group stack while ``observations`` stays empty, so the walk
+    must stop on depth rather than run the input out and report an unterminated
+    group.
+    """
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(b"\x0b" * 100_000)
+    assert "group nesting depth" in str(excinfo.value)
+
+
 def test_mismatched_end_group_rejected() -> None:
     """A start-group closed by a different field number is malformed -> WalkError."""
     data = b"\x0b" b"\x14"  # start-group field 1, end-group field 2
@@ -71,13 +110,44 @@ def test_undeclared_field_number_observed() -> None:
     assert walk_top_level(data) == [WireObservation(99, 0)]
 
 
+def _tag(field_number: int, wire_type: int) -> bytes:
+    """Encode a raw ``(field_number, wire_type)`` tag as a varint — no schema needed."""
+    value = (field_number << 3) | wire_type
+    out = bytearray()
+    while value > 0x7F:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def test_largest_legal_field_number_observed() -> None:
+    """2**29 - 1 is protobuf's largest legal field number — the walker must accept it."""
+    data = _tag(536_870_911, WIRETYPE_VARINT) + b"\x01"
+    assert walk_top_level(data) == [WireObservation(536_870_911, 0)]
+
+
+@pytest.mark.parametrize("field_number", [536_870_912, 2**35])
+def test_field_number_above_the_legal_maximum_rejected(field_number: int) -> None:
+    """A field number past 2**29 - 1 cannot come from any encoder; protobuf itself
+    rejects these bytes (``DecodeError``), so reporting them as a real observation
+    would put an impossible field number into a drift/match verdict."""
+    data = _tag(field_number, WIRETYPE_VARINT) + b"\x01"
+    with pytest.raises(WalkError) as excinfo:
+        walk_top_level(data)
+    assert "field number" in str(excinfo.value)
+
+
 @pytest.mark.parametrize(
     "data, reason",
     [
         (b"\x80", "truncated varint"),  # continuation bit set, no next byte
         (b"\xff" * 10, "varint exceeds 64 bits"),  # 10th byte's low bits > 1
         (b"\xff" * 9 + b"\x81", "varint exceeds 64 bits"),  # 10th byte continuation set
-        (b"\x80" * 11, "varint exceeds 64 bits"),  # > 10 bytes (consumed > max branch)
+        # A long all-continuation run still stops *at* the 10th byte — the reader
+        # never consumes an 11th, so this exits through the same `consumed == max`
+        # arm as the case above, not a separate `>` branch.
+        (b"\x80" * 11, "varint exceeds 64 bits"),
         (b"\x0a\x05ab", "length-delimited prefix exceeds"),  # declares 5, has 2
         (b"\x09\x00", "truncated fixed64"),  # wire type 1 needs 8 bytes
         (b"\x0d\x00", "truncated fixed32"),  # wire type 5 needs 4 bytes

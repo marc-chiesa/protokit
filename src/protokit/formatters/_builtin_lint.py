@@ -403,10 +403,15 @@ def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
       prefer a direct boolean over string-prefix-matching the
       ``violation_kind``.
 
-      ``params`` values are sanitized via ``_safe_for_stderr`` and
-      capped at 500 chars per value before serialization. Non-JSON-
+      ``params`` values are serialized **as the rule built them** —
+      this formatter neither sanitizes nor truncates. Sanitization is
+      the rule's job at finding-construction time, and the built-in
+      rules do it (``_safe_for_stderr`` then a 500-char
+      ``_PARAM_CAP``); a user-pack rule that skips it puts whatever
+      it stored into this document. Consumers rendering these values
+      into a terminal should treat them as untrusted. Non-JSON-
       serializable param values (rare; ``str`` and ``bool`` cover
-      the current rule set) degrade to ``repr`` via
+      the current built-in rule set) degrade to ``repr`` via
       ``json.dumps(default=str)`` rather than failing the document.
     """
     del _ctx

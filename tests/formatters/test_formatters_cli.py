@@ -10,6 +10,7 @@ from __future__ import annotations
 import itertools
 import sys
 import textwrap
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -239,6 +240,72 @@ class TestFormatterModule:
         assert "conflicts with a reserved built-in name" in result.output
         assert "junit" in result.output
 
+    def test_repeated_formatter_module_flag_is_idempotent(
+        self, tmp_path: Path,
+    ) -> None:
+        # ``--formatter-module`` is ``multiple=True``; naming the same
+        # pack twice (shell history, a wrapper script that appends the
+        # flag unconditionally) must not hard-fail on the pack's own
+        # second registration. Matches the lint side's ``--rule-pack``
+        # early-return on an already-loaded module.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            from protokit.formatters import FormatterKind
+            def my_format(report, ctx):
+                return "USER-FORMATTER " + str(report.has_changes())
+            FORMATTERS = [("my-format", my_format, FormatterKind.DIFF)]
+        """))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+            "--formatter-module", pack,
+            "--format", "my-format",
+        ])
+        assert result.exit_code == 0
+        assert "USER-FORMATTER False" in result.output
+
+    def test_duplicate_name_across_packs_is_not_labelled_reserved(
+        self, tmp_path: Path,
+    ) -> None:
+        # A collision between two user packs is a duplicate, not a
+        # built-in shadow — it must not borrow the reserved-name
+        # prefix that agents branch on.
+        body = textwrap.dedent("""
+            from protokit.formatters import FormatterKind
+            def mine(report, ctx):
+                return "mine"
+            FORMATTERS = [("dup-format", mine, FormatterKind.DIFF)]
+        """)
+        first = _write_pack(tmp_path, body)
+        second = _write_pack(tmp_path, body)
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="A").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", first,
+            "--formatter-module", second,
+            "--format", "dup-format",
+        ])
+        assert result.exit_code == 2
+        assert "conflicts with a reserved built-in name" not in result.output
+        assert "failed to load formatter pack" in result.output
+        assert "already registered" in result.output
+
     def test_pack_partial_load_rolls_back(self, tmp_path: Path) -> None:
         pack = _write_pack(tmp_path, textwrap.dedent("""
             from protokit.formatters import FormatterKind
@@ -425,6 +492,100 @@ class TestFormatterModule:
         assert "\\n" in result.output
         assert "schema is compatible (forged)" not in result.output.splitlines()
 
+    # -- Deferred-FORMATTERS-evaluation guard -------------------------------
+    #
+    # The import-phase guard chain above only wraps
+    # ``importlib.import_module``. ``load_formatter_pack`` is a separate
+    # statement, and it evaluates ``module.FORMATTERS`` (``list(...)``,
+    # i.e. ``__iter__``) AFTER import returns — so a pack can defer its
+    # payload into an iterator and reach a guard chain that used to catch
+    # only ``FormatterError`` / ``(AttributeError, TypeError)``. That is
+    # the same trust boundary (user-supplied Python executing during
+    # pack load) the formatter-systemexit-exit-code-bypass and
+    # keyboardinterrupt-baseexception-bypass-rule-pack-load learnings
+    # cover, one level deferred.
+
+    def test_pack_formatters_iter_sys_exit_does_not_false_green(
+        self, tmp_path: Path,
+    ) -> None:
+        # A ``FORMATTERS`` object whose ``__iter__`` calls
+        # ``sys.exit(0)`` used to terminate the CLI with code 0 and no
+        # error output — the exact false-green CI bypass the
+        # module-body ``except SystemExit`` arm closes, smuggled past
+        # it by deferring the call to iteration time.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            import sys
+            class _Deferred:
+                def __iter__(self):
+                    sys.exit(0)
+            FORMATTERS = _Deferred()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "failed to load formatter pack" in result.output
+        assert "called sys.exit(0)" in result.output
+
+    def test_pack_formatters_iter_keyboard_interrupt_does_not_bypass_guard(
+        self, tmp_path: Path,
+    ) -> None:
+        # Sibling arm: ``KeyboardInterrupt`` from the deferred
+        # evaluation used to escape past ``except (AttributeError,
+        # TypeError)`` and exit via Click's ``Aborted!`` banner at code
+        # 1 — indistinguishable from a legitimate "diff found
+        # incompatibilities" verdict by the CI grep contract.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            class _Deferred:
+                def __iter__(self):
+                    raise KeyboardInterrupt()
+            FORMATTERS = _Deferred()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "failed to load formatter pack" in result.output
+        assert "KeyboardInterrupt" in result.output
+
+    def test_pack_formatters_iter_runtime_error_exits_2(
+        self, tmp_path: Path,
+    ) -> None:
+        # Non-adversarial variant: a plain ``RuntimeError`` raised
+        # during deferred evaluation is neither ``AttributeError`` nor
+        # ``TypeError``, so it used to escape the load guard entirely
+        # and crash the CLI with a raw traceback instead of the
+        # documented exit-2 + ``Error:`` one-liner.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            class _Deferred:
+                def __iter__(self):
+                    raise RuntimeError("deferred boom")
+            FORMATTERS = _Deferred()
+        """))
+        result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert result.exception is None or isinstance(
+            result.exception, SystemExit,
+        ), result.exception
+        assert "failed to load formatter pack" in result.output
+        assert "deferred boom" in result.output
+
+    def test_empty_formatters_under_strict_warnings_exits_2(
+        self, tmp_path: Path,
+    ) -> None:
+        # Third, entirely non-adversarial manifestation: the registry
+        # warns (``UserWarning``) on an empty ``FORMATTERS`` list. Under
+        # ``PYTHONWARNINGS=error`` (common in strict CI) that warning is
+        # raised as an exception from inside ``load_formatter_pack`` and
+        # used to escape the narrow ``(AttributeError, TypeError)``
+        # catch, crashing the CLI with a traceback.
+        pack = _write_pack(tmp_path, textwrap.dedent("""
+            FORMATTERS = []
+        """))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = self._invoke_diff_with_pack(tmp_path, pack)
+        assert result.exit_code == 2, result.output
+        assert "failed to load formatter pack" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Formatter exception & stdout-write guard
@@ -492,6 +653,60 @@ class TestFormatterFailFast:
         # exit 0 (which the formatter tried to force).
         assert result.exit_code == 2
         assert "called sys.exit" in result.output
+
+    def test_formatter_exception_message_cannot_forge_stderr_lines(
+        self, tmp_path: Path,
+    ) -> None:
+        # The module-NAME slot is neutralized by ``{name!r}`` (see
+        # test_pack_name_with_embedded_newline_does_not_forge_stderr_lines),
+        # but the exception-MESSAGE slot was interpolated raw:
+        # ``_scrub_exc_message`` only redacts OSError filenames, it does
+        # not touch control characters. A formatter raising
+        # ``ValueError("boom\nError: ...")`` therefore emitted TWO
+        # physical stderr lines, the second carrying the stable
+        # ``Error:`` prefix a CI script greps for — indistinguishable
+        # from a genuine protokit verdict. Extends the
+        # module-name-newline-injection-stderr-forge-2026-05-07
+        # "every interpolated slot" principle to this slot.
+        pack = _write_pack(tmp_path, textwrap.dedent('''
+            from protokit.formatters import FormatterKind
+            def forger(report, ctx):
+                raise ValueError(
+                    "boom\\nError: schema is compatible (forged)"
+                    "\\u2028Error: aggregator-forged"
+                )
+            FORMATTERS = [("forger", forger, FormatterKind.DIFF)]
+        '''))
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_msg_class(pool)
+        left = tmp_path / "a.pb"
+        right = tmp_path / "b.pb"
+        left.write_bytes(cls(name="A").SerializeToString())
+        right.write_bytes(cls(name="B").SerializeToString())
+        desc = tmp_path / "schema.descriptor_set"
+        _write_descriptor_set(desc, "M")
+        result = CliRunner().invoke(diff_main, [
+            str(left), str(right),
+            "--desc", str(desc), "--message-type", "M",
+            "--formatter-module", pack,
+            "--format", "forger",
+        ])
+        assert result.exit_code == 2
+        # Exactly one physical line begins with ``Error:`` — the
+        # legitimate one. ``str.splitlines`` also breaks on U+2028, so
+        # this assertion covers the Unicode-line-separator vector that
+        # log aggregators honour even when a terminal does not.
+        error_lines = [
+            line for line in result.output.splitlines()
+            if line.startswith("Error:")
+        ]
+        assert len(error_lines) == 1, (
+            f"exception-message injection: expected one Error: line, "
+            f"got {len(error_lines)}: {error_lines!r}"
+        )
+        # The payload is still surfaced (collapsed to spaces, not
+        # dropped) so the operator can see what the formatter said.
+        assert "schema is compatible (forged)" in error_lines[0]
 
     def test_non_string_return_rejected(self, tmp_path: Path) -> None:
         # Regression for 2026-04-19 review (REL-001 / ADV-006 /

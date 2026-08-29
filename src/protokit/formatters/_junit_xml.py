@@ -4,10 +4,10 @@ Built on ``xml.etree.ElementTree`` to keep escaping and
 encoding correct for non-ASCII text and surrogate pairs without
 hand-rolling. Adds two protokit-specific concerns:
 
-1. **Control-character scrubbing.** XML 1.0 forbids most ASCII
-   control characters (``\\x00``-``\\x08``, ``\\x0b``, ``\\x0c``,
-   ``\\x0e``-``\\x1f``) from text and attribute values. ElementTree
-   will happily accept them and produce parser-rejected output;
+1. **Ill-formed code-point scrubbing.** XML 1.0's ``Char``
+   production excludes far more than the ASCII controls — see
+   :data:`_XML_ILL_FORMED` for the full set. ElementTree will
+   happily accept any of them and produce parser-rejected output;
    :func:`xml_safe_text` strips them before they reach the tree.
 
 2. **Apache Ant JUnit conformance.** The vendored
@@ -26,11 +26,28 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 
-# Control characters that are not legal in XML 1.0 text or
-# attribute values. The valid set is: tab (\x09), newline (\x0a),
-# carriage return (\x0d), and the printable range (\x20..).
-_XML_FORBIDDEN_CONTROLS = re.compile(
-    r"[\x00-\x08\x0b\x0c\x0e-\x1f]"
+# Code points outside XML 1.0's Char production, which is:
+#   #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+# Anything else makes the document non-well-formed, so these are
+# dropped rather than escaped — there is no escape that rescues
+# them (a numeric reference to a non-Char is equally invalid, which
+# is exactly how a lone surrogate fails: ElementTree emits
+# "&#55296;" and the parser rejects the reference).
+#
+# Three disjoint groups, all reachable from real data:
+#   - ASCII controls: hostile input, terminal escapes in messages.
+#   - Lone surrogates: filenames that failed to decode cleanly
+#     (surrogateescape) on filesystems that permit them.
+#   - U+FFFE / U+FFFF: valid UTF-8 and legal protobuf string
+#     content, so a map key or field value carries them straight in.
+#
+# Deliberately NOT scrubbed: the plane noncharacters (U+1FFFE,
+# U+2FFFE, ...) and the C1 range (\x7f-\x9f). Both are *discouraged*
+# by the spec but are inside Char, i.e. well-formed. This helper's
+# contract is well-formedness, not the discouraged set — widening it
+# would silently drop legitimate user data for no parser benefit.
+_XML_ILL_FORMED = re.compile(
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
 )
 
 # Deterministic timestamp / hostname so snapshot tests don't
@@ -41,15 +58,22 @@ DETERMINISTIC_HOSTNAME = "localhost"
 
 
 def xml_safe_text(text: str) -> str:
-    """Strip XML 1.0-forbidden control characters from a string.
+    """Strip code points outside XML 1.0's ``Char`` production.
+
+    Every caller-supplied string reaching the tree — attribute or
+    text, in this module or in a caller that sets an attribute
+    directly — must pass through here, because ElementTree has no
+    check of its own and the failure is silent until a consumer
+    tries to parse the file.
 
     Accepts the empty string. Preserves all other content
     including newlines, tabs, and arbitrary Unicode (ElementTree
-    handles encoding).
+    handles encoding) — see :data:`_XML_ILL_FORMED` for what is
+    deliberately left alone.
     """
     if not text:
         return ""
-    return _XML_FORBIDDEN_CONTROLS.sub("", text)
+    return _XML_ILL_FORMED.sub("", text)
 
 
 def make_testsuite(
@@ -99,9 +123,14 @@ def make_testsuite(
     suite.set("tests", str(tests))
     suite.set("failures", str(failures))
     suite.set("errors", str(errors))
-    suite.set("timestamp", timestamp)
-    suite.set("hostname", hostname)
-    suite.set("time", time)
+    # Scrubbed like every other slot: these default to constants
+    # today, but they are caller-settable parameters, and the
+    # eventual "real values for live CI runs" flag would feed them
+    # a machine hostname — a filesystem-adjacent string that can
+    # carry surrogates.
+    suite.set("timestamp", xml_safe_text(timestamp))
+    suite.set("hostname", xml_safe_text(hostname))
+    suite.set("time", xml_safe_text(time))
     # Required-by-xsd scaffold. Callers can replace properties
     # via append_properties (which finds and overwrites) and
     # write text into system-out via append_system_out.
@@ -121,10 +150,16 @@ def add_testcase(suite: ET.Element, case: ET.Element) -> None:
     suite with empty properties + system-out + system-err
     placeholders, so testcases must be inserted BEFORE the
     first system-out child to satisfy the schema.
+
+    The scan runs BACKWARDS: system-out/system-err are always the
+    last two children (nothing is ever appended after them), so the
+    target is one step from the tail. A forward scan would rescan
+    every already-inserted testcase, making suite construction
+    quadratic — 20k cases took ~4.5s.
     """
     sys_out_index = None
-    for i, child in enumerate(suite):
-        if child.tag == "system-out":
+    for i in range(len(suite) - 1, -1, -1):
+        if suite[i].tag == "system-out":
             sys_out_index = i
             break
     if sys_out_index is None:
@@ -156,7 +191,7 @@ def make_testcase(
     case = ET.Element("testcase")
     case.set("classname", xml_safe_text(classname))
     case.set("name", xml_safe_text(name))
-    case.set("time", time)
+    case.set("time", xml_safe_text(time))
     return case
 
 

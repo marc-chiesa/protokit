@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
@@ -128,7 +129,12 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
             proto_file=ctx.proto_file,
         )
         suite = _build_compat_testsuite(entry.report, entry_ctx)
-        suite.set("name", f"{type_prefix}-commit-{entry.commit_sha[:12]}")
+        # Overwrites the name make_testsuite already scrubbed, so it
+        # has to re-scrub: type_prefix embeds the user-supplied
+        # ``--type`` verbatim.
+        suite.set("name", junit.xml_safe_text(
+            f"{type_prefix}-commit-{entry.commit_sha[:12]}",
+        ))
         suite.set("package", junit.xml_safe_text(entry.commit_subject or ""))
         suite.set("id", str(index))
         root.append(suite)
@@ -144,7 +150,7 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     warning diagnostics flow into invocation notifications with
     the same commit fingerprint. The aggregated
     ``HistoryReport.diagnostics`` are also surfaced under their
-    commit key.
+    commit key, minus any that merely restate a per-entry one.
     """
     from protokit.formatters._builtin_compat import _protokit_version
 
@@ -167,8 +173,22 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
         warning_messages.extend(per_warns)
 
     # Aggregate-level diagnostics keep their own commit
-    # attribution from the CommitDiagnostic itself.
+    # attribution from the CommitDiagnostic itself. `compat history`
+    # builds them by copying each entry's report.diagnostics, so for
+    # CLI-produced reports they restate what the per-entry pass just
+    # emitted — notifying twice. Skip each restatement, matched on
+    # (level, commit, message) with multiplicity so a hand-built
+    # report carrying genuinely extra aggregate diagnostics (or a
+    # deliberate repeat) keeps every one of them.
+    per_entry = Counter(
+        [("error", *e) for e in error_messages]
+        + [("warning", *w) for w in warning_messages],
+    )
     for d in report.diagnostics:
+        level = "error" if d.level == "error" else "warning"
+        if per_entry[(level, d.commit, d.message)]:
+            per_entry[(level, d.commit, d.message)] -= 1
+            continue
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))
 

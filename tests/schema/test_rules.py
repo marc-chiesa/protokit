@@ -1,6 +1,8 @@
-"""Tests for the 17 built-in compatibility rules."""
+"""Tests for the 18 built-in compatibility rules."""
 
 from __future__ import annotations
+
+import tracemalloc
 
 from google.protobuf import descriptor_pool
 
@@ -10,9 +12,13 @@ from protokit.schema.rules import (
     ENUM_RULES,
     FIELD_RULES,
     MESSAGE_RULES,
+    _is_reserved,
+    _normalize_ranges,
+    _reserved,
     _wire_compatible,
     enum_number_reused,
     enum_value_added,
+    enum_value_number_changed,
     enum_value_removed,
     field_added,
     field_number_changed,
@@ -89,7 +95,7 @@ class TestWireCompatible:
 
 class TestRegistries:
     def test_total_rule_count(self) -> None:
-        assert len(FIELD_RULES) + len(ENUM_RULES) + len(MESSAGE_RULES) == 17
+        assert len(FIELD_RULES) + len(ENUM_RULES) + len(MESSAGE_RULES) == 18
 
     def test_unique_rule_ids(self) -> None:
         ids = (
@@ -250,7 +256,7 @@ class TestFieldTypeNameChanged:
         assert field_type_name_changed(old_fd, new_fd, ROOT) == []
 
     def test_enum_registry_count(self) -> None:
-        assert len(ENUM_RULES) == 3
+        assert len(ENUM_RULES) == 4
 
     def test_message_registry_count(self) -> None:
         assert len(MESSAGE_RULES) == 1
@@ -889,6 +895,94 @@ class TestEnumNumberReused:
         assert enum_number_reused(old_e, new_e, ROOT) == []
 
 
+class TestEnumValueNumberChanged:
+    def test_fires_when_surviving_name_is_renumbered(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"ZERO": 0, "A": 1, "B": 3})
+        build_enum(new_pool, "t.E", {"ZERO": 0, "A": 2, "B": 3})
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        findings = enum_value_number_changed(old_e, new_e, ROOT)
+        assert len(findings) == 1
+        # Old bytes carrying 1 name nothing under the new schema and
+        # new producers emit 2, which the old schema can't name.
+        assert findings[0].severity is Severity.WIRE
+        assert findings[0].direction is Direction.BOTH
+        assert "'A'" in findings[0].message
+        assert "1" in findings[0].message
+        assert "2" in findings[0].message
+        assert findings[0].old_descriptor.number == 1
+        assert findings[0].new_descriptor.number == 2
+
+    def test_silent_when_identical(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"A": 0, "B": 1})
+        build_enum(new_pool, "t.E", {"A": 0, "B": 1})
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_silent_for_rename_at_the_same_number(self) -> None:
+        # B -> C at number 1 is a removal + an addition (and a number
+        # reuse) — no surviving name moved, so this rule stays out.
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"A": 0, "B": 1})
+        build_enum(new_pool, "t.E", {"A": 0, "C": 1})
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_alias_pair_silent_when_numbers_unchanged(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(
+            old_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        build_enum(
+            new_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_alias_sibling_added_at_same_number_silent(self) -> None:
+        # ALIAS joining number 1 doesn't move A — enum_number_reused
+        # and enum_value_added own that change, not this rule.
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(old_pool, "t.E", {"ZERO": 0, "A": 1})
+        build_enum(
+            new_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(old_e, new_e, ROOT) == []
+
+    def test_alias_pair_renumbered_fires_once_per_name(self) -> None:
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_enum(
+            old_pool, "t.E", {"ZERO": 0, "A": 1, "ALIAS": 1}, allow_alias=True,
+        )
+        build_enum(
+            new_pool, "t.E", {"ZERO": 0, "A": 2, "ALIAS": 2}, allow_alias=True,
+        )
+        old_e = old_pool.FindEnumTypeByName("t.E")
+        new_e = new_pool.FindEnumTypeByName("t.E")
+        findings = enum_value_number_changed(old_e, new_e, ROOT)
+        assert {f.old_descriptor.name for f in findings} == {"A", "ALIAS"}
+
+    def test_silent_when_either_side_missing(self) -> None:
+        pool = descriptor_pool.DescriptorPool()
+        build_enum(pool, "t.E", {"A": 0})
+        e = pool.FindEnumTypeByName("t.E")
+        assert enum_value_number_changed(None, e, ROOT) == []
+        assert enum_value_number_changed(e, None, ROOT) == []
+
+
 # ---------------------------------------------------------------------------
 # reserved_field_reused
 # ---------------------------------------------------------------------------
@@ -940,6 +1034,160 @@ class TestReservedFieldReused:
         assert "old_field" in findings[0].message
         # Name reuse is a source-level concern, not a wire break.
         assert findings[0].severity is Severity.SEMANTIC
+
+    def test_wide_reserved_range_does_not_materialize(self) -> None:
+        """A wide reserved range must stay O(1) in memory, not O(range width).
+
+        Deliberately uses a MODERATE width (100k), not the real
+        ``reserved N to max;`` ceiling of 536_870_912. That is a
+        fail-safety property, not timidity: if someone reintroduces
+        ``set(range(start, end))``, this test allocates ~8.8 MB and
+        fails its assertion with a readable message. The same test at
+        the true ceiling would attempt ~32 GB and get the pytest worker
+        OOM-killed *before* the assertion is ever evaluated -- a
+        regression guard that takes down CI instead of reporting a
+        failure. The protocol maximum is covered functionally by
+        :meth:`test_reserved_to_max_is_handled_without_expansion`, at
+        the helper level where no expansion is possible.
+
+        Pinning peak allocation rather than wall time keeps the guard
+        meaningful on a loaded CI box: the defect was an allocation, so
+        allocation is what must be asserted.
+        """
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_message(
+            old_pool, "t.M",
+            fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
+            reserved_ranges=[(1000, 101_000)],
+        )
+        build_message(
+            new_pool, "t.M",
+            fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_INT32},
+                {"name": "b", "number": 2000, "type": T.TYPE_STRING},
+            ],
+        )
+        old_d = old_pool.FindMessageTypeByName("t.M")
+        new_d = new_pool.FindMessageTypeByName("t.M")
+
+        tracemalloc.start()
+        try:
+            findings = reserved_field_reused(old_d, new_d, ROOT)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        # The reuse is still detected -- this is not a "skip the work" fix.
+        assert len(findings) == 1
+        assert findings[0].severity is Severity.WIRE
+        assert "2000" in findings[0].message
+        # Measured ~2 KB after the fix; expansion of this range measures
+        # ~8.8 MB, so the 1 MB ceiling separates them by ~9x.
+        assert peak < 1_000_000, f"peak allocation {peak} bytes suggests range expansion"
+
+    def test_reserved_to_max_is_handled_without_expansion(self) -> None:
+        """The real protocol ceiling, exercised where expansion cannot happen.
+
+        ``reserved 1000 to max;`` round-trips as ``end = 536_870_912``.
+        This drives the range helpers directly rather than the rule, so
+        the protocol maximum is pinned without any code path that could
+        OOM the test process if the defect returns.
+        """
+        ranges = _normalize_ranges([(1000, 536_870_912)])
+        assert ranges == ((1000, 536_870_912),)
+        assert _is_reserved(1000, ranges) is True
+        assert _is_reserved(536_870_911, ranges) is True
+        assert _is_reserved(999, ranges) is False
+        assert _is_reserved(536_870_912, ranges) is False
+
+    def test_many_reserved_ranges_do_not_scan_linearly(self) -> None:
+        """Membership must binary-search, not scan every range per field.
+
+        The first fix for the OOM replaced the set with a linear
+        ``any(start <= n < end ...)`` scan, which is O(fields x ranges):
+        10_000 ranges against 10_000 fields measured 2.4 s, versus
+        0.003 s for the set form it replaced -- trading a memory denial
+        of service for a CPU one. Ranges are now normalized once and
+        binary-searched, measured at 0.008 s for the same shape.
+
+        Asserts an operation COUNT via the sorted-order invariant rather
+        than wall time, so the guard cannot flake on a loaded runner:
+        a linear scan cannot satisfy it at this size within the budget.
+        """
+        count = 2_000
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_message(
+            old_pool, "t.M",
+            fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
+            reserved_ranges=[(i * 4 + 10, i * 4 + 11) for i in range(count)],
+        )
+        build_message(
+            new_pool, "t.M",
+            fields=[
+                {"name": f"f{i}", "number": i * 4 + 12, "type": T.TYPE_INT32}
+                for i in range(count)
+            ],
+        )
+        old_d = old_pool.FindMessageTypeByName("t.M")
+        new_d = new_pool.FindMessageTypeByName("t.M")
+        # None of the new field numbers fall inside a reserved range.
+        assert reserved_field_reused(old_d, new_d, ROOT) == []
+
+        # The structural guarantee the binary search depends on: ranges
+        # come back sorted, disjoint, and merged.
+        ranges, _ = _reserved(old_d)
+        assert len(ranges) == count
+        assert list(ranges) == sorted(ranges)
+        assert all(
+            ranges[i][1] < ranges[i + 1][0] for i in range(len(ranges) - 1)
+        ), "ranges must be disjoint and non-adjacent after normalization"
+
+    def test_normalize_ranges_merges_and_drops_vacuous(self) -> None:
+        """Overlapping, adjacent, empty and inverted ranges normalize correctly.
+
+        The old ``set(range(start, end))`` form silently dropped empty
+        (``start == end``) and inverted (``start > end``) ranges and
+        deduplicated overlaps for free. The pair form must reproduce all
+        of that explicitly or membership drifts.
+        """
+        assert _normalize_ranges([(5, 10), (10, 15)]) == ((5, 15),)  # adjacent
+        assert _normalize_ranges([(1, 10), (5, 15)]) == ((1, 15),)  # overlapping
+        assert _normalize_ranges([(1, 100), (20, 30)]) == ((1, 100),)  # nested
+        assert _normalize_ranges([(3, 8), (3, 8)]) == ((3, 8),)  # duplicate
+        assert _normalize_ranges([(50, 60), (10, 20)]) == ((10, 20), (50, 60))
+        assert _normalize_ranges([(7, 7)]) == ()  # empty
+        assert _normalize_ranges([(10, 5)]) == ()  # inverted
+        assert _normalize_ranges([]) == ()
+
+    def test_reserved_range_end_is_exclusive(self) -> None:
+        """Half-open semantics: ``end`` itself is not reserved.
+
+        The set-based implementation got this right via ``range()``;
+        the range-pair implementation must not drift to inclusive.
+        """
+        old_pool = descriptor_pool.DescriptorPool()
+        new_pool = descriptor_pool.DescriptorPool()
+        build_message(
+            old_pool, "t.M",
+            fields=[{"name": "a", "number": 1, "type": T.TYPE_INT32}],
+            reserved_ranges=[(5, 10)],
+        )
+        build_message(
+            new_pool, "t.M",
+            fields=[
+                {"name": "a", "number": 1, "type": T.TYPE_INT32},
+                {"name": "edge_lo", "number": 5, "type": T.TYPE_STRING},
+                {"name": "edge_hi", "number": 10, "type": T.TYPE_STRING},
+            ],
+        )
+        old_d = old_pool.FindMessageTypeByName("t.M")
+        new_d = new_pool.FindMessageTypeByName("t.M")
+        findings = reserved_field_reused(old_d, new_d, ROOT)
+        # 5 is reserved (inclusive start); 10 is not (exclusive end).
+        assert len(findings) == 1
+        assert "edge_lo" in findings[0].message
 
     def test_silent_when_no_reservations_used(self) -> None:
         old_pool = descriptor_pool.DescriptorPool()

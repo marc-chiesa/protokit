@@ -143,7 +143,7 @@ def _common_options(command: Callable[..., None]) -> Callable[..., None]:
             "proto_paths",
             multiple=True,
             metavar="DIR",
-            help="Import path for .proto compilation (-I). Repeatable.",
+            help="Import path for --proto compilation (-I). Repeatable; rejected with --desc.",
         ),
         click.option(
             "--type",
@@ -408,6 +408,14 @@ def _prepare(
         error_exit("a schema source is required: --desc or --proto")
     if len(chosen) > 1:
         error_exit(f"--desc and --proto are mutually exclusive (got {', '.join(chosen)})")
+    if desc is not None and proto_paths:
+        # A descriptor set carries its imports already resolved, so nothing on
+        # this branch can consume an import path. Accepting -I silently would
+        # tell the user their import path applied when it never could.
+        error_exit(
+            "-I/--proto-path applies to --proto compilation only; --desc "
+            "carries its imports already resolved (drop -I, or use --proto)"
+        )
     if not type_name:
         error_exit("--type (the fully-qualified message name) is required")
 
@@ -422,7 +430,11 @@ def _prepare(
     assert resolved is not None
 
     predicate: Callable[[Message], bool] | None = None
-    if where_expr:
+    if where_expr is not None:
+        # `is not None` (not truthiness): an empty/whitespace --where '' must
+        # reach compile_where so it raises "empty expression" (exit 2) rather
+        # than reading as "no filter" and dumping every record. Same contract
+        # as --fields below.
         try:
             predicate = compile_where(where_expr, resolved.message_class.DESCRIPTOR)
         except WhereError as exc:

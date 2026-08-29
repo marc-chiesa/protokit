@@ -129,6 +129,19 @@ class FormatterError(Exception):
     """
 
 
+class ReservedFormatterNameError(FormatterError):
+    """A pack tried to register under a reserved built-in name.
+
+    Split out from the plain duplicate-registration failure
+    because the CLI surfaces the two with different prefixes
+    (``conflicts with a reserved built-in name`` vs. the generic
+    ``failed to load formatter pack``) and text-matching the
+    embedded message to tell them apart is exactly what those
+    prefixes exist to avoid. Subclasses ``FormatterError`` so
+    existing ``except FormatterError`` callers keep working.
+    """
+
+
 def register_formatter(
     name: str,
     fn: Formatter,
@@ -167,12 +180,13 @@ def register_formatter(
             names — those always raise.
 
     Raises:
-        FormatterError: Built-in shadowing, or non-replace
-            re-registration of an existing name.
+        ReservedFormatterNameError: Built-in shadowing.
+        FormatterError: Non-replace re-registration of an
+            existing name.
     """
     key = (kind, name.lower())
     if key in _BUILTIN_NAMES:
-        raise FormatterError(
+        raise ReservedFormatterNameError(
             f"cannot override built-in formatter ({kind.value}, {name.lower()!r}); "
             "built-in names are reserved"
         )
@@ -272,7 +286,12 @@ def load_formatter_pack(module: Any) -> None:
         module: Imported Python module (typically returned by
             ``importlib.import_module``).
     """
-    formatters_attr = module.FORMATTERS  # AttributeError propagates
+    # Materialize once. ``FORMATTERS`` is documented as an
+    # *iterable*, so a one-shot generator is in-contract — probing
+    # emptiness on the raw attribute would drain it and leave the
+    # staging loop below with nothing to iterate, registering zero
+    # formatters with no warning and no error.
+    entries = list(module.FORMATTERS)  # AttributeError propagates
     # An empty FORMATTERS list registers nothing. Most common
     # cause is a typo (the intended list was bound to a
     # differently-named attribute). Warn loudly so the
@@ -283,7 +302,7 @@ def load_formatter_pack(module: Any) -> None:
     # imports) can silence via
     # ``warnings.filterwarnings("ignore", ...)`` on their
     # side.
-    if not list(formatters_attr):
+    if not entries:
         warnings.warn(
             f"formatter pack {module.__name__!r} exposes an "
             "empty FORMATTERS list; no formatters registered",
@@ -292,7 +311,7 @@ def load_formatter_pack(module: Any) -> None:
         )
         return
     staged: list[tuple[str, Formatter, FormatterKind]] = []
-    for entry in formatters_attr:
+    for entry in entries:
         if not (isinstance(entry, tuple) and len(entry) == 3):
             raise TypeError(
                 f"formatter pack {module.__name__!r}: "

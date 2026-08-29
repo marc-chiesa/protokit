@@ -116,3 +116,23 @@ class TestScanHumanAllDefaultBackCompat:
         # second newline -> the header line is followed by a blank line, matching
         # PR1.5 (which always emitted "# stream=...\n{rstripped-empty-body}").
         assert result.output == "# stream=data.bin record=0\n\n"
+
+
+def test_empty_where_is_exit_2(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """``--where ''`` must fail, not silently scan everything.
+
+    Truthiness-testing the expression made an empty filter mean "no filter", so
+    a user who asked to filter got every record back and no indication why.
+    Mirrors the ``--fields ''`` contract, which already errors.
+    """
+    desc, cls = desc_and_cls
+    data = data_file_factory(
+        [cls(x=7).SerializeToString(), cls(x=8).SerializeToString()]
+    )
+    result = _run(runner, cmd("scan", data, desc, "--where", ""))
+    assert result.exit_code == 2
+    assert "empty expression" in result.stderr

@@ -10,7 +10,7 @@ past 10 bytes / 64 bits, and a length-delimited prefix is bounds-checked against
 the remaining buffer *before* any slice. The walk is top-level only — it does not
 recurse into wire-type-2 submessages (also the deep-nesting DoS mitigation) — and
 a group field (legacy wire types 3/4) is *flagged* at the top level and its body
-skipped iteratively (no recursion), never deep-parsed.
+skipped iteratively (no recursion) and depth-bounded, never deep-parsed.
 """
 
 from __future__ import annotations
@@ -34,6 +34,19 @@ _VARINT_FINAL_BYTE_MAX = 0x01
 #: single message never has this many top-level fields; exceeding it raises a typed
 #: WalkError (exit 2) rather than letting a MemoryError escape as a bare traceback.
 _MAX_OBSERVATIONS = 10_000_000
+#: Safety ceiling on open group nesting. The observation ceiling above cannot see
+#: this: inside an open group nothing is recorded, so a run of start-group tags
+#: grows only the group stack — 64 MiB of them (the default --max-message-bytes)
+#: costs ~1.4 GB of heap before the unterminated-group error, and a raised byte cap
+#: scales it linearly. 100 is protobuf's own default recursion limit, so no message
+#: any conformant encoder produced is rejected by this bound.
+_MAX_GROUP_DEPTH = 100
+
+#: Largest legal protobuf field number (2**29 - 1). A tag varint can encode far
+#: more, but no encoder can produce it and protobuf's own parser rejects it, so a
+#: bigger number is malformed input — not a field. Reporting it would put an
+#: impossible field number into a drift/match verdict.
+_MAX_FIELD_NUMBER = 536_870_911
 
 
 class WalkError(ForensicsError):
@@ -70,7 +83,10 @@ def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
         ):
             # The 10th byte must be the last (continuation bit clear) and carry only
             # bit 63; otherwise the varint overflows 64 bits — a malformed encoding,
-            # not a truncated stream.
+            # not a truncated stream. The `consumed >` half is unreachable today (a
+            # 10th byte either raises here or returns below, so an 11th is never
+            # read) and is kept only as a belt should the loop's exits ever change —
+            # do not write a test claiming to cover it.
             raise WalkError("varint exceeds 64 bits (malformed)")
         result |= (byte & 0x7F) << shift
         if not byte & 0x80:
@@ -109,7 +125,8 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
     Group fields are recorded once at the top level (wire type 3) and their body
     is skipped iteratively to the matching end-group; nested fields inside a group
     are not recorded. Raises :class:`WalkError` on any truncation, an unknown wire
-    type, field number 0, or an unbalanced group.
+    type, a field number outside 1..``_MAX_FIELD_NUMBER``, an unbalanced
+    group, or nesting past ``_MAX_GROUP_DEPTH``.
     """
     observations: list[WireObservation] = []
     pos = 0
@@ -121,6 +138,10 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
         wire_type = tag & 0x07
         if field_number == 0:
             raise WalkError("field number 0 is invalid")
+        if field_number > _MAX_FIELD_NUMBER:
+            raise WalkError(
+                f"field number {field_number} exceeds the maximum {_MAX_FIELD_NUMBER}"
+            )
         if wire_type == WIRETYPE_EGROUP:
             if not group_stack:
                 raise WalkError("unexpected end-group at the top level")
@@ -138,6 +159,8 @@ def walk_top_level(data: bytes) -> list[WireObservation]:
                 )
         if wire_type == WIRETYPE_SGROUP:
             group_stack.append(field_number)
+            if len(group_stack) > _MAX_GROUP_DEPTH:
+                raise WalkError(f"group nesting depth exceeds {_MAX_GROUP_DEPTH}")
             continue
         pos = _skip_scalar_payload(data, pos, wire_type)
     if group_stack:

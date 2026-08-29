@@ -19,6 +19,7 @@ from protokit.schema.git import (
     GitRefNotFoundError,
     ProtoImportError,
     _parse_imports,
+    _safe_dest_path,
     _write_weak_stub,
     extract_pool_from_ref,
     is_shallow_repository,
@@ -77,6 +78,63 @@ class TestImportParser:
         imports = _parse_imports(src)
         assert ("", "real.proto") in imports
         assert ("", "skip.proto") not in imports
+
+
+class TestExtractionPathContainment:
+    """The extraction directory is a security boundary.
+
+    ``import_path`` reaches these writers straight from a ``.proto`` at
+    an arbitrary git ref -- untrusted on the documented ``compat ci``
+    fork-PR path. ``pathlib`` discards the left operand when the right
+    is absolute, so an unguarded ``dest / import_path`` escapes the
+    TemporaryDirectory and clobbers a real file.
+    """
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "/etc/passwd",
+            "/tmp/protokit_traversal_probe.txt",
+            "a/../../../../etc/OUTSIDE",
+            "../escape.proto",
+            "nested/../../../escape.proto",
+        ],
+    )
+    def test_hostile_import_path_is_refused(self, hostile: str) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            with pytest.raises(ProtoImportError, match="refusing import path"):
+                _safe_dest_path(dest, hostile)
+            with pytest.raises(ProtoImportError, match="refusing import path"):
+                _write_weak_stub(dest, hostile)
+
+    def test_weak_stub_does_not_overwrite_a_file_outside_dest(self) -> None:
+        """End-to-end containment: the victim file must survive untouched."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as outer:
+            victim = Path(outer) / "VICTIM.txt"
+            victim.write_text("SECRET")
+            with (
+                tempfile.TemporaryDirectory() as d,
+                pytest.raises(ProtoImportError),
+            ):
+                _write_weak_stub(Path(d), str(victim))
+            assert victim.read_text() == "SECRET"
+
+    @pytest.mark.parametrize(
+        "benign",
+        ["plain.proto", "acme/dep.proto", "a/b/c/deep.proto", "google/api/x.proto"],
+    )
+    def test_legitimate_repo_relative_paths_still_resolve(self, benign: str) -> None:
+        """The guard must reject nothing a repo-tracked import can emit."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            resolved = _safe_dest_path(dest, benign)
+            assert resolved.is_relative_to(dest.resolve())
+            _write_weak_stub(dest, benign)
+            assert (dest / benign).exists()
 
 
 class TestWeakStubSanitisation:

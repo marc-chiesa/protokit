@@ -22,8 +22,9 @@ Public surface:
   exposing a ``FORMATTERS = [(name, fn, kind), ...]`` list.
 - :func:`clear_user_formatters` — test/dev helper that wipes
   non-built-in entries.
-- :class:`FormatterError` — raised for built-in shadowing and
-  duplicate registrations.
+- :class:`FormatterError` — raised for duplicate registrations,
+  and base class for :class:`ReservedFormatterNameError`, the
+  narrower error raised for built-in shadowing.
 
 Built-in names (``human``, ``json``, ``junit``, ``sarif``) are
 RESERVED — third-party packs cannot shadow them, by design.
@@ -36,6 +37,7 @@ from protokit.formatters._registry import (
     FormatterContext,
     FormatterError,
     FormatterKind,
+    ReservedFormatterNameError,
     clear_user_formatters,
     get_formatter,
     list_formatters,
@@ -77,6 +79,7 @@ __all__ = [
     "FormatterContext",
     "FormatterError",
     "FormatterKind",
+    "ReservedFormatterNameError",
     "clear_user_formatters",
     "get_formatter",
     "list_formatters",

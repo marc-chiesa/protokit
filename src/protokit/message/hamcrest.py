@@ -43,7 +43,12 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+# Imported at runtime, not under TYPE_CHECKING, because ``_matches``
+# isinstance-checks the value under test. Only ``hamcrest`` is lazy here (F1);
+# ``protokit.message`` already imports protobuf eagerly, so this costs nothing.
+from google.protobuf.message import Message
 
 from protokit.message.matchers import (
     MatcherError,
@@ -53,10 +58,6 @@ from protokit.message.matchers import (
     _PolicyChain,
 )
 from protokit.message.pytest_plugin import render_diff_lines
-
-if TYPE_CHECKING:  # pragma: no cover — typing-only import
-    from google.protobuf.message import Message
-
 
 __all__ = [
     "HamcrestExtraNotInstalledError",
@@ -157,7 +158,15 @@ def _proto_matcher_class() -> type:
             its ``right`` (KTD-5), so partial/presence/set directionality reads
             correctly. Predicate exceptions in ``ignore`` / ``as_set`` selectors
             propagate unchanged — author bugs, not match failures (SWI-3).
+
+            A hamcrest matcher is handed whatever the caller passed and owes a
+            verdict on it, so a value that is not a protobuf message is a plain
+            ``False`` — it must not reach the differ, which reads
+            ``item.DESCRIPTOR``. A message of a *different* type is not this
+            case: the differ reports that as an ordinary mismatch.
             """
+            if not isinstance(item, Message):
+                return False
             differ = _build_differ(self._policy)
             result = differ.compare(self._expected, item)
             return not result.has_changes()
@@ -176,9 +185,15 @@ def _proto_matcher_class() -> type:
             Re-runs the comparison to obtain the ``DiffResult`` and renders it
             with the SAME :func:`render_diff_lines` the agnostic matcher and the
             pytest ``==`` hook use, so the diff text is identical across surfaces
-            (KTD-4, SWI-1). On the (defensive) equal case, falls back to
-            hamcrest's default ``was ...`` description.
+            (KTD-4, SWI-1). A non-message value gets a plain "was not a protobuf
+            message" line — there is no diff to render. On the (defensive) equal
+            case, falls back to hamcrest's default ``was ...`` description.
             """
+            if not isinstance(item, Message):
+                description.append_text(
+                    "was not a protobuf message: "
+                ).append_description_of(item)
+                return
             differ = _build_differ(self._policy)
             result = differ.compare(self._expected, item)
             if not result.has_changes():

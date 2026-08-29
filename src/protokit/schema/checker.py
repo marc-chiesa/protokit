@@ -26,8 +26,15 @@ once and caches its findings with paths made relative to the
 entry; later visits replay the cache with the new path prefix.
 Cycle detection uses an in-progress set (DFS-path tracking), so a
 self-referential type like ``TreeNode.children`` still terminates
-in O(n). Pass ``dedupe_by_type=True`` to restore the original
-single-emission-per-type behavior.
+in O(n) — the cut lies inside ``TreeNode``'s own subtree, so its
+cached result stays valid everywhere. A pair cut short by a cycle
+in one of its *ancestors* is a different story: that result is
+short a branch only because of where it was reached from, so it
+is left out of the cache and re-walked at the next path. Mutually
+recursive types therefore cost more than one traversal, which is
+the price of not replaying a truncated subtree somewhere the
+truncation doesn't apply. Pass ``dedupe_by_type=True`` to restore
+the original single-emission-per-type behavior.
 
 Map fields: the synthetic ``map_entry`` message is not descended into
 directly. Instead, the checker dispatches field rules (and enum
@@ -116,7 +123,7 @@ class SchemaChecker:
                 ``CompatibilityLevel.STRICT`` which surfaces every
                 finding. Can be reassigned later via the ``level``
                 attribute.
-            include_builtin: When True (default), the 17 built-in
+            include_builtin: When True (default), the 18 built-in
                 rules from ``protokit.schema.rules`` are pre-registered.
                 Pass False to start with an empty rule set — useful
                 when you want only custom rules to fire.
@@ -161,6 +168,22 @@ class SchemaChecker:
         ``CompatibilityReport.warnings`` so comparison continues and
         the CLI can fail loudly.
 
+        Plugin contract — plugins must be path-independent. The
+        engine processes each ``(old, new)`` message type pair once,
+        not once per path at which the pair appears: a shared type is
+        descended into at whichever path the traversal reaches first,
+        plugins are dispatched only during that single visit, and the
+        findings they emit are then replayed at every other
+        referencing path with the path prefix rewritten (see this
+        module's docstring on sharing). Two consequences bind the
+        plugin author: the ``ctx`` a plugin receives carries only one
+        of the paths its finding will be reported under, and the
+        finding's ``message`` is reproduced verbatim under all of
+        them. A plugin that branches on ``ctx.path``, or interpolates
+        it into the message text, emits a finding reported at
+        ``a.shared`` whose wording talks about ``b.shared``. Derive
+        both the decision and the wording from the descriptors.
+
         Args:
             rule_id: Identifier stored on every emitted ``Finding``.
                 Should be unique within the checker for clean
@@ -181,9 +204,12 @@ class SchemaChecker:
     def register_message_rule(self, rule_id: str, plugin_fn: MessagePlugin) -> None:
         """Register an emit-style message-level plugin.
 
-        Fires once per message visited during traversal, before
-        descent into the message's fields. Same exception-safety
-        guarantee as ``register_field_rule``.
+        Fires once per ``(old, new)`` message type pair, before
+        descent into that pair's fields — not once per path the pair
+        appears at. Same exception-safety guarantee and the same
+        path-independence contract as ``register_field_rule``; see
+        there for what replaying findings across paths demands of the
+        plugin.
 
         Args:
             rule_id: Identifier stored on every emitted ``Finding``.
@@ -409,10 +435,23 @@ class SchemaChecker:
         ``("post", key, entry_path, start_idx)`` as a sentinel that
         fires when the pair's subtree is fully processed so we can
         snapshot and cache the emitted findings.
+
+        A pair whose subtree was cut short by the cycle guard against
+        an *ancestor* pair is not cached: its findings are only valid
+        under that ancestry, so replaying them elsewhere would drop
+        real breaks. Such pairs are re-traversed at the next path
+        instead (see ``truncated`` below).
         """
         findings: list[Finding] = []
         stack: list = [("visit", root_old, root_new, FieldPath(segments=()))]
         in_progress: set[tuple[str, str]] = set()
+        # The same pairs as ``in_progress``, in DFS-path order, so a
+        # cycle cut can name exactly the pairs it truncated.
+        active: list[tuple[str, str]] = []
+        # Pairs whose subtree is missing a branch the cycle guard cut
+        # against an ancestor. Empty for acyclic schemas, so normal
+        # caching is untouched.
+        truncated: set[tuple[str, str]] = set()
         dedupe_visited: set[tuple[str, str]] = set()
         # Per-pair cache: each entry is ``(rel_path, finding)`` where
         # ``rel_path`` is the path made relative to the entry's visit
@@ -432,6 +471,19 @@ class SchemaChecker:
             if tag == "post":
                 _, key, entry_path, start_idx = entry
                 in_progress.discard(key)
+                # The sentinel fires only after every descendant of
+                # this pair, so it is always the DFS path's tail.
+                active.pop()
+                if key in truncated:
+                    # An ancestor pair cut a branch out of this
+                    # subtree, so what we collected is complete only
+                    # under this ancestry. Caching it would replay the
+                    # stunted result at a path where the cut doesn't
+                    # apply and silently drop live breaks; fall back
+                    # to a full re-traversal there instead. The
+                    # in-progress guard still bounds the walk.
+                    truncated.discard(key)
+                    continue
                 # Snapshot everything emitted since we pushed this
                 # sentinel and store each finding with a path
                 # relative to this visit's entry so it can be
@@ -456,6 +508,16 @@ class SchemaChecker:
                 if key in in_progress:
                     # Cycle — already traversing this type pair
                     # deeper up the stack. Don't recurse.
+                    #
+                    # Every pair below the cut target on the DFS path
+                    # now has a hole in its subtree that exists only
+                    # because of this ancestry — mark them uncacheable.
+                    # The target itself (and anything above it) is
+                    # unaffected: the cut lies inside the target's own
+                    # subtree, so it would recur identically wherever
+                    # that subtree is walked from.
+                    cut = active.index(key)
+                    truncated.update(active[cut + 1:])
                     continue
                 if key in cache:
                     # Replay the type pair's findings at this path.
@@ -471,6 +533,7 @@ class SchemaChecker:
                             )
                     continue
                 in_progress.add(key)
+                active.append(key)
                 # Sentinel fires after this pair's subtree completes.
                 stack.append(("post", key, path, len(findings)))
 

@@ -10,6 +10,7 @@ from protokit.formatters import (
     FormatterContext,
     FormatterError,
     FormatterKind,
+    ReservedFormatterNameError,
     clear_user_formatters,
     get_formatter,
     list_formatters,
@@ -153,6 +154,21 @@ class TestBuiltinReservation:
                 kind=FormatterKind.COMPAT, replace=True,
             )
 
+    def test_shadowing_raises_the_reserved_name_subclass(self) -> None:
+        # The CLI branches on the exception type to pick its error
+        # prefix, so shadowing must be type-distinguishable from a
+        # plain duplicate rather than only text-distinguishable.
+        with pytest.raises(ReservedFormatterNameError):
+            register_formatter(
+                "human", _identity_formatter, kind=FormatterKind.DIFF,
+            )
+
+    def test_duplicate_is_not_the_reserved_name_subclass(self) -> None:
+        register_formatter("foo", _identity_formatter, kind=FormatterKind.COMPAT)
+        with pytest.raises(FormatterError) as excinfo:
+            register_formatter("foo", _identity_formatter, kind=FormatterKind.COMPAT)
+        assert not isinstance(excinfo.value, ReservedFormatterNameError)
+
     def test_case_insensitive_shadowing_check(self) -> None:
         # The reservation lowercases names; uppercase still rejects.
         with pytest.raises(FormatterError, match="built-in"):
@@ -264,6 +280,19 @@ class TestLoadFormatterPack:
         mod.FORMATTERS = []
         with pytest.warns(UserWarning, match="empty FORMATTERS"):
             load_formatter_pack(mod)
+
+    def test_generator_formatters_still_register(self) -> None:
+        # The docstring contract is "an iterable of (name, fn, kind)
+        # 3-tuples", so a generator is in-contract. The emptiness
+        # probe used to drain the one-shot iterable, leaving the
+        # staging loop with nothing to iterate — the pack registered
+        # zero formatters with no warning and no exception.
+        mod = types.ModuleType("pack_generator")
+        mod.FORMATTERS = iter([
+            ("gen-fmt", _identity_formatter, FormatterKind.DIFF),
+        ])
+        load_formatter_pack(mod)
+        assert get_formatter("gen-fmt", FormatterKind.DIFF) is _identity_formatter
 
     def test_two_phase_rollback_on_partial_failure(self) -> None:
         # Pre-populate so the third entry collides and aborts mid-load.

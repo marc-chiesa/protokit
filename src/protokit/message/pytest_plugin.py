@@ -560,6 +560,9 @@ class ProtoMatcherFactory:
             expected: The *expected* reference for the single-call form;
                 ``None`` selects the fluent form.
             partial: Single-call only — enable partial / sub-shape matching.
+                Every ``Single-call only`` keyword below raises
+                :class:`~protokit.message.matchers.MatcherError` in the fluent
+                form rather than being dropped; chain the named equivalent.
             as_set: Single-call only — repeated-field set selector(s).
             ignore: Single-call only — field selector(s) to ignore.
             presence: Single-call only — presence comparison mode.
@@ -576,15 +579,47 @@ class ProtoMatcherFactory:
         Raises:
             AssertionError: (single-call form) if ``actual`` does not match
                 ``expected`` under the policy.
-            MatcherError: (single-call form) if the tolerance kwargs conflict.
+            MatcherError: (single-call form) if the tolerance kwargs conflict;
+                (fluent form) if any single-call-only policy keyword is passed.
         """
         # Lazy import breaks the matchers.py <-> pytest_plugin.py cycle.
-        from protokit.message.matchers import expect_proto, proto_match
+        from protokit.message.matchers import MatcherError, expect_proto, proto_match
 
         if expected is None:
-            # Fluent form: the single message is the expected reference. Policy
-            # kwargs do not apply here — they are chained on the returned
-            # matcher (.partially(), .ignoring(...), ...).
+            # Fluent form: the single message is the expected reference. The
+            # policy kwargs are single-call-only — they are chained on the
+            # returned matcher instead. Accepting and dropping them would hand
+            # back a DEFAULT-policy matcher while the caller believed their
+            # options applied, so a test written that way would silently assert
+            # something stricter than its author intended.
+            dropped = [
+                f"{name} (use {chained})"
+                for name, supplied, chained in (
+                    ("partial", partial is not False, ".partially()"),
+                    ("as_set", as_set is not None, ".as_set(...)"),
+                    ("ignore", ignore is not None, ".ignoring(...)"),
+                    (
+                        "presence",
+                        presence is not None,
+                        ".with_presence(...) / .strict_presence()",
+                    ),
+                    ("approx", approx is not None, ".approximately(...)"),
+                    ("margin", margin is not None, ".approximately(margin=...)"),
+                    (
+                        "fraction",
+                        fraction is not None,
+                        ".approximately(fraction=...)",
+                    ),
+                )
+                if supplied
+            ]
+            if dropped:
+                raise MatcherError(
+                    "policy keywords are single-call only; the fluent form "
+                    "chains them on the returned matcher. Pass the actual "
+                    "message as the second argument, or chain instead: "
+                    + ", ".join(dropped)
+                )
             return expect_proto(expected_or_actual)
 
         # Single-call form: (actual, expected, **policy).

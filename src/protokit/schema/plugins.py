@@ -87,9 +87,16 @@ class FieldRuleContext:
     Plugins call ``ctx.emit(...)`` to record findings; the engine
     handles path and rule_id wiring.
 
+    ``path`` is not a stable input to branch on: when the containing
+    message type is reachable by several paths, the plugin runs at
+    only one of them and its findings are replayed under the others.
+    See ``SchemaChecker.register_field_rule`` for the full contract.
+
     Attributes:
         path: Dotted ``FieldPath`` to the field being inspected. Any
-            finding emitted via ``self.emit(...)`` inherits this path.
+            finding emitted via ``self.emit(...)`` inherits this path
+            — and may be replayed under sibling paths, so treat it as
+            one representative location, not the only one.
         old_field: Field descriptor from the old schema, or ``None`` if
             the field was added in the new schema.
         new_field: Field descriptor from the new schema, or ``None`` if
@@ -154,17 +161,33 @@ class FieldRuleContext:
 class MessageRuleContext:
     """Argument passed to a message-level plugin.
 
-    Either side may be ``None`` for one-sided visits (added or removed
-    subtrees). The path points at the message itself, not a particular
-    field — emitted findings inherit that path.
+    **Both descriptors are always present.** The traversal is pair-driven:
+    it only descends into a field whose type is a message on *both* sides,
+    so a message type reachable from only one schema is never visited. Such
+    a type surfaces through the built-in field rules as an added or removed
+    *field*, not as a one-sided message visit. The ``| None`` in the
+    annotations is structural headroom for a future traversal that can
+    deliver one-sided visits; do not write a plugin that depends on being
+    called with a ``None`` side, because it never is.
+
+    The path points at the message itself, not a particular field —
+    emitted findings inherit that path.
+
+    ``path`` is not a stable input to branch on: the plugin runs once
+    per message type pair, at whichever path the traversal reached it
+    first, and its findings are replayed under every other path the
+    pair appears at. See ``SchemaChecker.register_field_rule`` for the
+    full contract.
 
     Attributes:
         path: Dotted ``FieldPath`` to the message being inspected.
-            For the top-level message this is the empty path.
-        old_descriptor: Message descriptor from the old schema, or
-            ``None`` if the message exists only in the new schema.
-        new_descriptor: Message descriptor from the new schema, or
-            ``None`` if the message exists only in the old schema.
+            For the top-level message this is the empty path. One
+            representative location, not necessarily the only one the
+            finding is reported at.
+        old_descriptor: Message descriptor from the old schema. Never
+            ``None`` today — see the note above.
+        new_descriptor: Message descriptor from the new schema. Never
+            ``None`` today — see the note above.
         old_pool: Descriptor pool the old schema was resolved from.
         new_pool: Descriptor pool the new schema was resolved from.
         _emit_fn: Engine-injected closure that records findings.
@@ -235,8 +258,12 @@ class MessagePlugin(Protocol):
     """Structural type for message-level plugins.
 
     A message plugin is any callable matching
-    ``(MessageRuleContext) -> None``. Fires once per visited message
-    (including the root) before the engine descends into fields.
+    ``(MessageRuleContext) -> None``. Fires once per ``(old, new)``
+    message type pair (including the root) before the engine descends
+    into fields, and must be path-independent — see
+    ``SchemaChecker.register_field_rule`` for the full contract. Only
+    pairs present on both sides are visited; see
+    :class:`MessageRuleContext` for why there are no one-sided visits.
     """
 
     def __call__(self, ctx: MessageRuleContext) -> None:

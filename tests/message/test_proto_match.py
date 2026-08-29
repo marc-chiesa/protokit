@@ -420,6 +420,24 @@ class TestMatchPolicyFrozen:
         assert policy.as_set == ("tags",)
         assert policy.approx_overlays == (("ratio", Approx(margin=1e-5)),)
 
+    def test_bare_string_selector_is_one_selector_not_per_character(self) -> None:
+        """A bare ``str`` is a single dotted path, not an iterable of chars.
+
+        ``__post_init__`` snapshots collection inputs with ``tuple(...)``,
+        and ``str`` is iterable — so a bare name silently exploded into
+        one selector per character. ``MatchPolicy(ignore="name")`` became
+        ``("n", "a", "m", "e")``: four selectors that match nothing, so the
+        field the caller asked to ignore was compared anyway and the
+        mistake was invisible (no error, just a stricter comparison than
+        requested). ``proto_match``'s own ``_as_tuple`` coercion always
+        handled this; the dataclass bypassed it.
+        """
+        assert MatchPolicy(ignore="name").ignore == ("name",)
+        assert MatchPolicy(as_set="items").as_set == ("items",)
+        assert MatchPolicy(ignore="outer.inner.leaf").ignore == ("outer.inner.leaf",)
+        # An iterable of names still snapshots element-wise.
+        assert MatchPolicy(ignore=["a", "b"]).ignore == ("a", "b")
+
     def test_contradictory_presence_raises_at_construction(self) -> None:
         with pytest.raises(MatcherError, match="presence must be a MessageFieldComparison"):
             MatchPolicy(presence="EQUAL")  # type: ignore[arg-type]

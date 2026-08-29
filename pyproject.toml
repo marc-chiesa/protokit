@@ -96,8 +96,9 @@ dev = [
     "types-jsonschema",
     "mypy>=1.8",
     "ruff>=0.5",
-    # The perf-smoke meta-test parses .github/workflows/ci.yml via
-    # yaml.safe_load to assert at-least-one-cell-ran. NEVER
+    # Meta-tests parse .github/workflows/ci.yml via yaml.safe_load —
+    # perf-smoke asserts at-least-one-cell-ran, and the static-analysis
+    # ratchet compares the mypy step's paths to _TYPE_CHECK_PATHS. NEVER
     # yaml.load() without explicit SafeLoader (security: prevents
     # arbitrary code execution via YAML object construction).
     "PyYAML>=6.0,<7",

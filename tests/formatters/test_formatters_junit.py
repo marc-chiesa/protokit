@@ -8,6 +8,7 @@ validation against the vendored Apache Ant JUnit schema.
 
 from __future__ import annotations
 
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -19,8 +20,10 @@ from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from protokit.formatters import (
     FormatterContext,
     FormatterKind,
+    _junit_xml as junit_xml,
     get_formatter,
 )
+from protokit.formatters import _junit_xml as junit
 from protokit.message import MessageDifferencer
 from protokit.message.model import Diagnostic
 from protokit.schema.model import (
@@ -78,6 +81,41 @@ def _build_msg_class(pool: descriptor_pool.DescriptorPool) -> type:
     fld.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
     pool.Add(fdp)
     return message_factory.GetMessageClass(pool.FindMessageTypeByName("Person"))
+
+
+def _build_map_msg_class(pool: descriptor_pool.DescriptorPool) -> type:
+    """Build a ``map<string, string> labels`` message.
+
+    Map keys are the one slot where arbitrary user string data
+    lands *raw* in a rendered FieldPath (``labels["…"]``), so this
+    is the vector that carries hostile code points into JUnit
+    output. Scalar field *values* are rendered with ``{!r}`` by
+    ``_difference_line`` and are therefore already escaped.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto()
+    fdp.name = "junit_map_test.proto"
+    fdp.syntax = "proto3"
+    msg = fdp.message_type.add()
+    msg.name = "Labelled"
+    entry = msg.nested_type.add()
+    entry.name = "LabelsEntry"
+    entry.options.map_entry = True
+    for name, number in (("key", 1), ("value", 2)):
+        fld = entry.field.add()
+        fld.name = name
+        fld.number = number
+        fld.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+        fld.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+    fld = msg.field.add()
+    fld.name = "labels"
+    fld.number = 1
+    fld.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
+    fld.label = descriptor_pb2.FieldDescriptorProto.LABEL_REPEATED
+    fld.type_name = ".Labelled.LabelsEntry"
+    pool.Add(fdp)
+    return message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("Labelled"),
+    )
 
 
 def _make_finding(
@@ -174,6 +212,39 @@ class TestDiffJunit:
         body = failure.text or ""
         assert "~ a:" in body
         assert "~ b:" in body
+
+    @pytest.mark.parametrize(
+        ("label", "bad_char"),
+        [("noncharacter-fffe", "￾"), ("noncharacter-ffff", "￿")],
+    )
+    def test_map_key_noncharacter_stays_well_formed(
+        self,
+        junit_validator: xmlschema.XMLSchema,
+        label: str,
+        bad_char: str,
+    ) -> None:
+        # A map key lands RAW inside the rendered FieldPath
+        # (``labels["k￿"]``), which becomes the <failure>
+        # body. U+FFFE / U+FFFF are valid UTF-8 and legal protobuf
+        # string content but are NOT XML 1.0 Chars, so before the
+        # sanitizer covered them ``protokit diff --format junit``
+        # emitted a document every XML consumer rejects.
+        del label
+        pool = descriptor_pool.DescriptorPool()
+        cls = _build_map_msg_class(pool)
+        key = f"k{bad_char}"
+        left, right = cls(), cls()
+        left.labels[key] = "a"
+        right.labels[key] = "b"
+        result = MessageDifferencer().compare(left, right)
+        fn = get_formatter("junit", FormatterKind.DIFF)
+        out = fn(result, FormatterContext(subcommand="diff"))
+        _validate(junit_validator, out)
+        body = ET.fromstring(out).find(".//failure").text or ""
+        assert bad_char not in body
+        # The surrounding path detail survives — only the
+        # ill-formed code point is dropped.
+        assert 'labels["k"]' in body
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +419,114 @@ class TestCompatJunit:
         assert "\x01" not in (failure.text or "")
         assert "bad" in (failure.text or "")
         assert "char" in (failure.text or "")
+
+
+# ---------------------------------------------------------------------------
+# XML 1.0 ill-formed code points (beyond the ASCII control range)
+# ---------------------------------------------------------------------------
+
+
+#: Code points outside XML 1.0's ``Char`` production. The spec's
+#: ``Char`` is ``#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
+#: [#x10000-#x10FFFF]``; everything below is excluded and makes a
+#: document non-well-formed, not merely "discouraged".
+_ILL_FORMED = [
+    pytest.param("\x01", id="ascii-control"),
+    pytest.param("\ud800", id="lone-high-surrogate"),
+    pytest.param("\udfff", id="lone-low-surrogate"),
+    pytest.param("￾", id="noncharacter-fffe"),
+    pytest.param("￿", id="noncharacter-ffff"),
+]
+
+
+class TestIllFormedCodePoints:
+    """Every caller-supplied slot must survive non-``Char`` input.
+
+    ASCII controls were already covered; surrogates and the BMP
+    noncharacters were not, and both reach output through real
+    data (map keys, undecodable filenames on Linux).
+    """
+
+    @pytest.mark.parametrize("bad", _ILL_FORMED)
+    def test_xml_safe_text_strips(self, bad: str) -> None:
+        assert junit_xml.xml_safe_text(f"a{bad}b") == "ab"
+
+    @pytest.mark.parametrize("bad", _ILL_FORMED)
+    def test_attribute_and_text_slots_stay_parseable(
+        self, junit_validator: xmlschema.XMLSchema, bad: str,
+    ) -> None:
+        suite = junit_xml.make_testsuite(
+            name=f"suite{bad}", tests=1, failures=1, errors=0,
+        )
+        case = junit_xml.make_testcase(
+            classname=f"cls{bad}", name=f"case{bad}",
+        )
+        junit_xml.append_failure(
+            case, message=f"msg{bad}", type_=f"type{bad}", body=f"body{bad}",
+        )
+        junit_xml.add_testcase(suite, case)
+        junit_xml.append_system_out(suite, f"out{bad}")
+        junit_xml.append_properties(suite, {f"k{bad}": f"v{bad}"})
+        out = junit_xml.serialize(suite)
+        _validate(junit_validator, out)
+        assert bad not in out
+
+    @pytest.mark.parametrize("bad", _ILL_FORMED)
+    def test_timing_and_host_slots_stay_parseable(
+        self, bad: str,
+    ) -> None:
+        # timestamp / hostname / time have deterministic defaults but
+        # are caller-settable, so they are caller-supplied slots like
+        # any other and must route through the sanitizer too. (Not
+        # xsd-validated here: the xsd constrains timestamp's lexical
+        # form, and this asserts only well-formedness.)
+        suite = junit_xml.make_testsuite(
+            name="s", tests=1, failures=0, errors=0,
+            timestamp=f"1970-01-01T00:00:00{bad}",
+            hostname=f"host{bad}",
+            time=f"0{bad}",
+        )
+        junit_xml.add_testcase(
+            suite, junit_xml.make_testcase(
+                classname="c", name="n", time=f"0{bad}",
+            ),
+        )
+        out = junit_xml.serialize(suite)
+        ET.fromstring(out)
+        assert bad not in out
+
+    @pytest.mark.parametrize("bad", _ILL_FORMED)
+    def test_history_suite_name_stays_parseable(
+        self, bad: str,
+    ) -> None:
+        # history_junit overwrites the suite ``name`` attribute
+        # AFTER make_testsuite sanitized it, embedding the
+        # user-supplied ``--type`` verbatim — a bypass of the
+        # single choke point.
+        report = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[HistoryEntry(
+                commit_sha="abc", parent_sha="x", commit_subject="s",
+                report=CompatibilityReport(level=CompatibilityLevel.STRICT),
+            )],
+        )
+        fn = get_formatter("junit", FormatterKind.COMPAT_HISTORY)
+        out = fn(report, FormatterContext(
+            subcommand="compat-history", target_type=f"acme.User{bad}",
+        ))
+        ET.fromstring(out)
+        assert bad not in out
+
+    def test_plane_noncharacters_are_preserved(self) -> None:
+        # U+1FFFE and friends are "discouraged" by the spec but ARE
+        # inside ``Char`` ([#x10000-#x10FFFF]), so they are
+        # well-formed. Dropping them would lose real user data for
+        # no correctness gain — the sanitizer's contract is
+        # well-formedness, not the discouraged-set.
+        text = "a\U0001fffeb"
+        assert junit_xml.xml_safe_text(text) == text
+        case = junit_xml.make_testcase(classname="c", name=text)
+        ET.fromstring(junit_xml.serialize(case))
 
 
 # ---------------------------------------------------------------------------
@@ -531,3 +710,65 @@ class TestBisectJunit:
         cases = suite.findall("testcase")
         assert len(cases) == 1
         assert cases[0].find("error") is not None
+
+
+# ---------------------------------------------------------------------------
+# add_testcase scaling guard
+# ---------------------------------------------------------------------------
+
+
+class TestAddTestcaseScaling:
+    """Suite construction must stay linear in the number of testcases.
+
+    ``add_testcase`` locates the seeded ``<system-out>`` placeholder so
+    each case lands before it. A FORWARD scan rescans every previously
+    inserted testcase, making a suite of n cases O(n^2) — 20k cases took
+    ~4.5s. Nothing is ever appended after ``<system-err>``, so the
+    placeholder is always at the tail and a backward scan finds it in
+    O(1).
+    """
+
+    @staticmethod
+    def _median_of_3_s(n: int) -> float:
+        """Build an n-case suite 3 times (plus warmup); return median secs."""
+        def build() -> None:
+            suite = junit.make_testsuite(
+                name="scale", tests=n, failures=0, errors=0,
+            )
+            for i in range(n):
+                junit.add_testcase(
+                    suite, junit.make_testcase(classname="c", name=f"t{i}"),
+                )
+
+        build()  # warmup
+        timings = []
+        for _ in range(3):
+            start = time.perf_counter()
+            build()
+            timings.append(time.perf_counter() - start)
+        timings.sort()
+        return timings[1]
+
+    @pytest.mark.slow
+    def test_suite_construction_scales_linearly(self) -> None:
+        small = self._median_of_3_s(2_000)
+        large = self._median_of_3_s(8_000)
+        # 4x the cases: linear ~4x, quadratic ~16x. 8x leaves generous
+        # headroom for timer noise while still failing a forward scan.
+        ratio = large / small if small else float("inf")
+        assert ratio < 8.0, (
+            f"add_testcase looks superlinear: 2000 cases {small * 1000:.1f}ms, "
+            f"8000 cases {large * 1000:.1f}ms (ratio {ratio:.1f}x)"
+        )
+
+    def test_cases_precede_system_out(self) -> None:
+        # Guards the ordering invariant the fast path relies on.
+        suite = junit.make_testsuite(name="s", tests=3, failures=0, errors=0)
+        for i in range(3):
+            junit.add_testcase(
+                suite, junit.make_testcase(classname="c", name=f"t{i}"),
+            )
+        assert [c.tag for c in suite] == [
+            "properties", "testcase", "testcase", "testcase",
+            "system-out", "system-err",
+        ]
