@@ -822,8 +822,8 @@ def _main_impl(
     if use_proto:
         # ``include_source_info=True`` enables the deprecated-replacement
         # rule family (and any future comment-aware rules) to read
-        # proto-source leading comments via the ``leading_comment``
-        # helper. Cost is ~10-30% descriptor-set size per cross-runtime
+        # proto-source leading comments via the ``_comments``
+        # helpers. Cost is ~10-30% descriptor-set size per cross-runtime
         # measurement; paid universally on every proto-mode lint
         # invocation. Non-lint consumers (``protokit compat``, codegen,
         # direct Python API) keep the zero-cost contract via the

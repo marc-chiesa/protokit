@@ -327,8 +327,9 @@ def _load_descriptor_sets_to_result(
     # .source_code_info field for downstream R6 comment-aware rules.
     # When the input descriptor set was built without
     # ``protoc --include_source_info``, each fd's source_code_info.location
-    # array will be empty — leading_comment() returns None for every
-    # lookup, R6 rules emit findings for every deprecated element (the
+    # array will be empty — the comment index is empty, so every
+    # lookup returns None and R6 rules emit findings for every
+    # deprecated element (the
     # documented descriptor-set-mode caveat). Mirrors the
     # capture-around-Add pattern at src/protokit/_cli_utils.py:264-267
     # (_populate_pool_with_capture).

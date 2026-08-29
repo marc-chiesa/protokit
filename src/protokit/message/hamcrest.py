@@ -159,12 +159,11 @@ def _proto_matcher_class() -> type:
             correctly. Predicate exceptions in ``ignore`` / ``as_set`` selectors
             propagate unchanged — author bugs, not match failures (SWI-3).
 
-            A value that is not a protobuf message cannot match one, so it is a
-            plain ``False``. A hamcrest matcher is handed whatever the caller
-            passed and owes a verdict on it; handing it to the differ instead
-            crashed on ``item.DESCRIPTOR``, turning the assertion the caller
-            wrote into a stack trace. (A message of a *different* type is not
-            this case — the differ reports it as an ordinary mismatch.)
+            A hamcrest matcher is handed whatever the caller passed and owes a
+            verdict on it, so a value that is not a protobuf message is a plain
+            ``False`` — it must not reach the differ, which reads
+            ``item.DESCRIPTOR``. A message of a *different* type is not this
+            case: the differ reports that as an ordinary mismatch.
             """
             if not isinstance(item, Message):
                 return False

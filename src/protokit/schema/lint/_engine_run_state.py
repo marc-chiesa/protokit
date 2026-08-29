@@ -32,6 +32,8 @@ import weakref
 from collections.abc import Callable
 from typing import TYPE_CHECKING, TypeVar
 
+from protokit.schema.lint.model import LintRuleError
+
 if TYPE_CHECKING:
     from protokit.schema.lint.engine import LintEngine
 
@@ -87,8 +89,6 @@ def engine_for_ctx(ctx: object, rule_id: str) -> LintEngine:
             engine's ``rule_exception`` channel, so one structurally broken
             rule records a runtime warning instead of crashing ``run()``.
     """
-    from protokit.schema.lint.model import LintRuleError
-
     engine = getattr(getattr(ctx, "_emit_fn", None), "__self__", None)
     if engine is None:
         raise LintRuleError(

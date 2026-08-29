@@ -126,10 +126,10 @@ def _incompatible_wire_types(field: FieldDescriptor, observed: set[int]) -> list
 
     Compatibility is judged over *every* occurrence, not any one of them: a field
     number that appears several times on the wire is a clean fit only when each
-    occurrence fits. A packable repeated field still accepts a packed/unpacked
-    mix, because :func:`_wire_type_ok` accepts both forms for such a field — so
-    checking every occurrence costs that case nothing, while a genuinely wrong
-    wire type on one occurrence no longer hides behind a correct one.
+    occurrence fits, so a correct occurrence cannot mask a wrong one. A packable
+    repeated field is unaffected by that strictness — :func:`_wire_type_ok`
+    accepts both the packed and unpacked form for such a field, so a legitimate
+    mix passes every occurrence.
     """
     return sorted(wt for wt in observed if not _wire_type_ok(field, wt))
 

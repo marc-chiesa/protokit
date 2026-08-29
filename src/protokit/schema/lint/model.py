@@ -1324,8 +1324,10 @@ class MethodLintContext(_LintContextEmitMixin):
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
             otherwise ``None``. Comment-aware lint rules (the
-            deprecated-replacement family) will read this through
-            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            deprecated-replacement family) read this through
+            :mod:`protokit.schema.lint.rules.options._comments` —
+            ``run_comment_index`` for a rule, which indexes the file once
+            per run, or ``leading_comment`` for a single-path lookup.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
             accepted false-positive tradeoff.
@@ -1369,8 +1371,10 @@ class EnumLintContext(_LintContextEmitMixin):
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
             otherwise ``None``. Comment-aware lint rules (the
-            deprecated-replacement family) will read this through
-            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            deprecated-replacement family) read this through
+            :mod:`protokit.schema.lint.rules.options._comments` —
+            ``run_comment_index`` for a rule, which indexes the file once
+            per run, or ``leading_comment`` for a single-path lookup.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
             accepted false-positive tradeoff.
@@ -1413,8 +1417,10 @@ class EnumValueLintContext(_LintContextEmitMixin):
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
             otherwise ``None``. Comment-aware lint rules (the
-            deprecated-replacement family) will read this through
-            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            deprecated-replacement family) read this through
+            :mod:`protokit.schema.lint.rules.options._comments` —
+            ``run_comment_index`` for a rule, which indexes the file once
+            per run, or ``leading_comment`` for a single-path lookup.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
             accepted false-positive tradeoff.
@@ -1458,8 +1464,10 @@ class MessageLintContext(_LintContextEmitMixin):
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
             otherwise ``None``. Comment-aware lint rules (the
-            deprecated-replacement family) will read this through
-            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            deprecated-replacement family) read this through
+            :mod:`protokit.schema.lint.rules.options._comments` —
+            ``run_comment_index`` for a rule, which indexes the file once
+            per run, or ``leading_comment`` for a single-path lookup.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
             accepted false-positive tradeoff.
@@ -1502,8 +1510,10 @@ class FieldLintContext(_LintContextEmitMixin):
             ``include_source_info=True`` to
             :func:`protokit.schema.compile.compile_protos_to_result`;
             otherwise ``None``. Comment-aware lint rules (the
-            deprecated-replacement family) will read this through
-            :func:`protokit.schema.lint.rules.options._comments.leading_comment`.
+            deprecated-replacement family) read this through
+            :mod:`protokit.schema.lint.rules.options._comments` —
+            ``run_comment_index`` for a rule, which indexes the file once
+            per run, or ``leading_comment`` for a single-path lookup.
             ``None`` is the legitimate "caller did not opt in" state;
             rules consuming this field treat it accordingly per the
             accepted false-positive tradeoff.
