@@ -56,8 +56,10 @@ All notable changes to `protokit` are documented here. Format loosely follows
   groups without recursing, and capping work to the top level. `forensics drift`
   reconciles those observations against one chosen candidate schema and reports
   per-field divergences: an undeclared tag, a wire-type mismatch on a declared
-  field (a packable repeated scalar accepts both packed and unpacked), a reserved
-  tag in use, or a proto2 declared `required` field absent. A populated declared
+  field, a reserved tag in use, or a proto2 declared `required` field absent.
+  Wire-type fit is judged over *every* occurrence of a tag, so a correct
+  occurrence cannot mask a wrong one on a repeated or repeated-on-the-wire
+  field; a packable repeated scalar still accepts both packed and unpacked. A populated declared
   proto2 extension counts as declared. The same reconciliation powers a `match`
   tie-break that re-orders a near-tied top group by per-field wire compatibility.
   New public API `protokit.forensics.drift` with `DriftReport` / `FieldDivergence`.
