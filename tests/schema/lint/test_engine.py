@@ -14,8 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from google.protobuf import descriptor_pb2, descriptor_pool
 
-from protokit.schema.compile import LintCompileDiagnostic, compile_protos_to_result
+from protokit.schema.compile import (
+    CompileResult,
+    LintCompileDiagnostic,
+    compile_protos_to_result,
+)
 from protokit.schema.lint.decorator import lint_rule
 from protokit.schema.lint.engine import _RULE_EXCEPTION_TUPLE, LintEngine
 from protokit.schema.lint.model import (
@@ -25,6 +30,7 @@ from protokit.schema.lint.model import (
     LintRuleError,
     LintSeverity,
 )
+from protokit.schema.lint.rules import BUILTIN_PACKS
 
 # ---------------------------------------------------------------------------
 # Test helpers — synthetic packs and compile fixtures.
@@ -1038,3 +1044,153 @@ class TestReloadContract:
         pack.RULES = (rule_v2,)
         engine.load_rule_pack(pack)
         assert engine._loaded_specs["reload/x"].severity is LintSeverity.ERROR
+
+
+# ---------------------------------------------------------------------------
+# Partial-pool tolerance — the defensive branches no test reached
+# ---------------------------------------------------------------------------
+
+
+class TestPartialPoolStateTolerance:
+    """A ``CompileResult`` naming a root file absent from the pool must not crash.
+
+    The engine's cross-file accumulators each look their root files up with
+    ``FindFileByName`` inside ``try/except KeyError: continue``. Every one of
+    those guards exists for a real state — a compile that failed partway leaves
+    ``root_files`` naming a file the pool never received — and a mutation audit
+    turned each ``continue`` into ``raise`` with the whole suite still green.
+    Nothing had ever handed the engine an inconsistent result.
+
+    Building the ``CompileResult`` directly is the only way to reach this:
+    ``compile_protos_to_result`` cannot be made to emit a root file it did not
+    put in the pool, which is precisely why the state went untested.
+    """
+
+    @staticmethod
+    def _ghost_result() -> CompileResult:
+        """A root file that is not in the pool — the compile-failure shape."""
+        return CompileResult(
+            pool=descriptor_pool.DescriptorPool(),
+            root_files=("ghost.proto",),
+            diagnostics=(),
+        )
+
+    @staticmethod
+    def _engine_with_all_builtins() -> LintEngine:
+        engine = LintEngine()
+        for pack in BUILTIN_PACKS:
+            engine.load_rule_pack(pack)
+        return engine
+
+    def test_missing_root_file_does_not_crash_the_run(self) -> None:
+        engine = self._engine_with_all_builtins()
+        rule_ids = frozenset(engine.loaded_rule_ids)
+
+        report = engine.run(
+            self._ghost_result(),
+            profile=LintProfile(
+                name="_test_partial_pool",
+                rule_ids=rule_ids,
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+
+        # The contract is tolerance, not silence: the file cannot be walked, so
+        # it yields nothing, and the run still returns a report.
+        assert report.findings == ()
+
+    def test_a_present_file_is_still_linted_alongside_a_ghost(self) -> None:
+        """Tolerance must skip the missing file only — not abandon the walk.
+
+        A guard that swallowed too much would also pass the test above, since
+        an empty report is what a fully-abandoned run produces too.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        fp = descriptor_pb2.FileDescriptorProto(
+            name="real.proto", package="", syntax="proto3",
+        )
+        msg = fp.message_type.add()
+        msg.name = "badName"  # violates naming/... to force a finding
+        fld = msg.field.add()
+        fld.name, fld.number = "BadField", 1
+        fld.type, fld.label = fld.TYPE_STRING, fld.LABEL_OPTIONAL
+        pool.Add(fp)
+
+        engine = self._engine_with_all_builtins()
+        report = engine.run(
+            CompileResult(
+                pool=pool,
+                root_files=("ghost.proto", "real.proto"),
+                diagnostics=(),
+            ),
+            profile=LintProfile(
+                name="_test_partial_pool_mixed",
+                rule_ids=frozenset(engine.loaded_rule_ids),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+
+        assert report.findings, "the present file must still be linted"
+        assert all(f.location.file == "real.proto" for f in report.findings)
+
+
+class TestPackageOptionsAccumulatorTolerance:
+    """The options accumulator survives an option name protobuf does not know.
+
+    Unlike the accumulators above, this one iterates ``pool_file_names`` rather
+    than ``root_files``, so a ghost root file never reaches it and its guard
+    stays untouched by the partial-pool fixture. Its real trigger is version
+    skew: ``_PACKAGE_SAME_OPTION_ATTR_NAMES`` is a hard-coded list of
+    ``FileOptions`` fields, and ``opts.HasField()`` raises ``ValueError`` for a
+    name the installed protobuf does not have. A newer name in that list — or
+    an older protobuf — must degrade to "no options data for this file", not
+    abort the whole lint run.
+
+    A mutation audit turned the guard's ``continue`` into ``raise`` and the
+    suite stayed green, because nothing had ever fed it an unknown option name.
+    """
+
+    def test_unknown_option_name_does_not_abort_the_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from protokit.schema.lint.rules import package_same
+
+        monkeypatch.setattr(
+            package_same,
+            "_PACKAGE_SAME_OPTION_ATTR_NAMES",
+            ("java_package", "an_option_this_protobuf_does_not_have"),
+        )
+
+        pool = descriptor_pool.DescriptorPool()
+        fp = descriptor_pb2.FileDescriptorProto(
+            name="opt.proto", package="t", syntax="proto3",
+        )
+        msg = fp.message_type.add()
+        msg.name = "M"
+        fld = msg.field.add()
+        fld.name, fld.number = "a", 1
+        fld.type, fld.label = fld.TYPE_STRING, fld.LABEL_OPTIONAL
+        pool.Add(fp)
+
+        engine = LintEngine()
+        for pack in BUILTIN_PACKS:
+            engine.load_rule_pack(pack)
+
+        report = engine.run(
+            CompileResult(
+                pool=pool,
+                root_files=("opt.proto",),
+                # This accumulator iterates the POOL, not root_files, so the
+                # pool listing is what has to be populated to reach it.
+                pool_file_names=("opt.proto",),
+                diagnostics=(),
+            ),
+            profile=LintProfile(
+                name="_test_option_skew",
+                rule_ids=frozenset(engine.loaded_rule_ids),
+                min_severity=LintSeverity.INFO,
+            ),
+        )
+
+        # The run completed rather than raising; that is the whole contract.
+        assert isinstance(report.findings, tuple)
