@@ -18,6 +18,7 @@ multi-file fixture.
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 from typing import Any
 
@@ -610,3 +611,53 @@ class TestImportsPackIntegration:
         assert len(report.findings) == 3
         fired_rule_ids = {f.rule_id for f in report.findings}
         assert fired_rule_ids == _ALL_IMPORTS_RULE_IDS
+
+
+class TestSelfDependencyIsNeverAnImport:
+    """A file listing itself as a dependency must not count as "used".
+
+    ``check_unused_imports`` collects the files of every referenced type, then
+    drops the file's own name defensively before comparing against the declared
+    dependency list. The descriptor pool refuses to build a file that depends on
+    itself ("Depends on file 's.proto', but it has not been loaded"), so the
+    branch is unreachable from any compiled fixture — which is how a mutation
+    audit deleted the ``discard`` with the whole suite green.
+
+    The consequence of losing it is a silent one: the file's own name stays in
+    the used set, so a malformed self-dependency is quietly counted as a
+    legitimate import and never reported. This test supplies the descriptor
+    shape the pool will not, and asserts the import is still flagged.
+    """
+
+    @staticmethod
+    def _stub_ctx(emitted: list[dict[str, Any]]) -> Any:
+        own = "self.proto"
+        own_file = types.SimpleNamespace(name=own)
+        # A field whose type lives in this same file -> _record adds `own`.
+        field = types.SimpleNamespace(
+            message_type=types.SimpleNamespace(file=own_file),
+            enum_type=None,
+        )
+        message = types.SimpleNamespace(fields=[field], nested_types=[])
+
+        class _File:
+            name = own
+
+            @staticmethod
+            def CopyToProto(fdp: Any) -> None:  # noqa: N802 - protobuf API name
+                fdp.name = own
+                fdp.dependency.append(own)  # the pathological self-dependency
+
+            message_types_by_name = {"M": message}
+            services_by_name: dict[str, Any] = {}
+
+        return types.SimpleNamespace(
+            file=_File(),
+            emit=lambda **kw: emitted.append(kw),
+        )
+
+    def test_self_dependency_is_reported_as_unused(self) -> None:
+        emitted: list[dict[str, Any]] = []
+        check_unused_imports(self._stub_ctx(emitted))
+        assert [e["violation_kind"] for e in emitted] == ["imports/unused"]
+        assert emitted[0]["params"]["imported"] == "self.proto"

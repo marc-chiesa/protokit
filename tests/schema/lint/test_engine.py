@@ -22,12 +22,17 @@ from protokit.schema.compile import (
     compile_protos_to_result,
 )
 from protokit.schema.lint.decorator import lint_rule
-from protokit.schema.lint.engine import _RULE_EXCEPTION_TUPLE, LintEngine
+from protokit.schema.lint.engine import (
+    _RULE_EXCEPTION_TUPLE,
+    LintEngine,
+    _walk_cycle_forward,
+)
 from protokit.schema.lint.model import (
     DuplicateRuleError,
     ElementKind,
     LintProfile,
     LintRuleError,
+    LintRuleSpec,
     LintSeverity,
 )
 from protokit.schema.lint.rules import BUILTIN_PACKS
@@ -1194,3 +1199,137 @@ class TestPackageOptionsAccumulatorTolerance:
 
         # The run completed rather than raising; that is the whole contract.
         assert isinstance(report.findings, tuple)
+
+
+class TestCycleWalkFallback:
+    """``_walk_cycle_forward`` returns a usable path even on a caller mismatch.
+
+    The fallback fires when the source package has no route back to itself
+    inside the claimed SCC — impossible if the Tarjan analysis and the caller
+    agree, which is why nothing exercised it. A mutation audit changed the
+    fallback from ``(source_pkg,)`` to ``()`` and the suite stayed green; an
+    empty tuple renders as an empty cycle path, so the finding a user sees
+    would name no packages at all.
+    """
+
+    def test_no_route_back_still_names_the_source(self) -> None:
+        """SCC membership claimed, but no edges exist to close a cycle."""
+        assert _walk_cycle_forward({}, {"acme.a"}, "acme.a") == ("acme.a",)
+
+    def test_dead_end_edge_still_names_the_source(self) -> None:
+        """Edges exist but lead nowhere back — the backtracking path."""
+        result = _walk_cycle_forward(
+            {"acme.a": {"acme.b"}, "acme.b": set()},
+            {"acme.a", "acme.b"},
+            "acme.a",
+        )
+        assert result == ("acme.a",)
+
+    def test_a_real_cycle_is_still_walked(self) -> None:
+        """Guards against a fallback that swallows the working path."""
+        result = _walk_cycle_forward(
+            {"acme.a": {"acme.b"}, "acme.b": {"acme.a"}},
+            {"acme.a", "acme.b"},
+            "acme.a",
+        )
+        assert result == ("acme.a", "acme.b", "acme.a")
+
+
+class TestPlaceholderSpecDispatch:
+    """``_invoke_rule`` returns quietly on a spec whose ``fn`` is ``None``.
+
+    ``LintRuleSpec.fn`` is documented as ``None``-able for placeholder specs in
+    tests, with production registration rejecting ``None``. That makes the
+    guard reachable only from a test — and no test called it, so a mutation
+    audit replaced the return with ``raise AssertionError`` and the suite stayed
+    green. Without the guard a placeholder spec reaching dispatch crashes the
+    engine instead of being skipped.
+    """
+
+    def test_none_fn_is_skipped_without_raising(self) -> None:
+        engine = LintEngine()
+        spec = LintRuleSpec(
+            rule_id="placeholder/none-fn",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FIELD,
+            message_template="unused",
+            fn=None,
+        )
+        # A context is never touched on this path, so a sentinel proves it:
+        # anything the guard failed to skip would raise on attribute access.
+        engine._invoke_rule(spec, object())
+
+    def test_a_real_fn_is_still_invoked(self) -> None:
+        """Guards against a fix that skips every spec."""
+        called: list[object] = []
+        spec = LintRuleSpec(
+            rule_id="placeholder/real-fn",
+            severity=LintSeverity.WARNING,
+            profiles=("default",),
+            element=ElementKind.FIELD,
+            message_template="unused",
+            fn=lambda ctx: called.append(ctx),
+        )
+        LintEngine()._invoke_rule(spec, "ctx-sentinel")
+        assert called == ["ctx-sentinel"]
+
+
+class TestMissingDependencyTolerance:
+    """The import graph skips a dependency the pool has lost.
+
+    A descriptor pool always contains its files' dependencies — it refuses to
+    add a file whose imports are not loaded — so this guard cannot be reached
+    by building a pool the ordinary way, which is why a mutation audit turned
+    its ``continue`` into ``raise`` with the suite green.
+
+    A partial pool is exactly what it guards, though, so the test builds a real
+    two-file pool and then wraps it to lose one: lookups behave normally except
+    for the dependency, which raises ``KeyError`` the way a pool assembled from
+    a truncated descriptor set would. Losing the guard turns that into a crash
+    with no LintReport at all, rather than one file's edges going unmapped.
+    """
+
+    def test_unresolvable_dependency_does_not_abort_the_accumulator(
+        self,
+    ) -> None:
+        pool = descriptor_pool.DescriptorPool()
+        dep = descriptor_pb2.FileDescriptorProto(
+            name="dep.proto", package="acme.dep", syntax="proto3",
+        )
+        dep_msg = dep.message_type.add()
+        dep_msg.name = "D"
+        pool.Add(dep)
+
+        root = descriptor_pb2.FileDescriptorProto(
+            name="root.proto", package="acme.root", syntax="proto3",
+        )
+        root.dependency.append("dep.proto")
+        root_msg = root.message_type.add()
+        root_msg.name = "R"
+        fld = root_msg.field.add()
+        fld.name, fld.number = "d", 1
+        fld.type, fld.label = fld.TYPE_MESSAGE, fld.LABEL_OPTIONAL
+        fld.type_name = ".acme.dep.D"
+        pool.Add(root)
+
+        class _PoolMissingTheDependency:
+            """Real pool, minus one file — the truncated-input shape."""
+
+            @staticmethod
+            def FindFileByName(name: str):  # noqa: N802, ANN205 - protobuf API
+                if name == "dep.proto":
+                    raise KeyError(name)
+                return pool.FindFileByName(name)
+
+        result = CompileResult(
+            pool=_PoolMissingTheDependency(),  # type: ignore[arg-type]
+            root_files=("root.proto",),
+            pool_file_names=("root.proto",),
+            diagnostics=(),
+        )
+
+        # The contract is that this returns rather than raising. The lost
+        # dependency simply contributes no package edge.
+        accumulator = LintEngine()._build_import_graph_accumulator(result)
+        assert accumulator is None or "root.proto" not in accumulator
