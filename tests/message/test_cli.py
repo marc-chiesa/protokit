@@ -538,3 +538,109 @@ class TestCrossSchemaMode:
         data = json.loads(result.output)
         fn_changes = [d for d in data["differences"] if d["change_type"] == "FIELD_NUMBER_CHANGED"]
         assert len(fn_changes) == 1
+
+
+class TestErrorDiagnosticExitCode:
+    """An error-level diagnostic is exit 2 in every format, not a verdict.
+
+    ``Diagnostic``'s contract is that an ``"error"`` means the tool itself
+    broke and "CI callers should treat any error as a fail-closed condition
+    even if the filtered findings list is empty". Only the JUnit formatter
+    honoured that, via its ``errors=`` attribute; the process still exited
+    ``1 if has_changes() else 0``, so an equal-but-broken comparison exited 0
+    under every format and the human path even printed "Messages are equal."
+
+    Exit 2 (not 1) matches the documented ladder — ``0 = equal, 1 =
+    different, 2 = error`` — and ``compat``, which already exits 2 on
+    diagnostics before reporting its verdict. Warnings are untouched: diff's
+    warning channel is routine (a skipped map comparison emits one).
+
+    The diff CLI exposes no hook surface today, so ``result.errors`` is
+    reachable only through the Python API; these tests inject at the differ
+    seam. The CLI is wired correctly for when a hook surface lands.
+    """
+
+    @staticmethod
+    def _patch_compare(
+        monkeypatch: pytest.MonkeyPatch, *, level: str, differing: bool
+    ) -> None:
+        import dataclasses
+
+        from protokit.message.differ import MessageDifferencer
+        from protokit.message.model import Diagnostic
+
+        real = MessageDifferencer.compare
+
+        def fake(self, left, right, *a, **kw):  # noqa: ANN001, ANN202
+            result = real(self, left, right, *a, **kw)
+            return dataclasses.replace(
+                result,
+                diagnostics=(
+                    Diagnostic(level=level, path=None, message="hook exploded"),
+                ),
+            )
+
+        monkeypatch.setattr(MessageDifferencer, "compare", fake)
+
+    def _run(
+        self, runner: CliRunner, setup: dict[str, Path], right: str, *extra: str
+    ):  # noqa: ANN202
+        return runner.invoke(main, [
+            str(setup["left"]), str(setup[right]),
+            "--desc", str(setup["desc"]),
+            "--message-type", "test.Msg",
+            *extra,
+        ])
+
+    @pytest.mark.parametrize(
+        "extra", [(), ("--quiet",), ("--format", "json"), ("--format", "junit")],
+    )
+    def test_equal_messages_with_an_error_exit_2(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        extra: tuple[str, ...],
+    ) -> None:
+        self._patch_compare(monkeypatch, level="error", differing=False)
+        result = self._run(runner, simple_setup, "right_same", *extra)
+        assert result.exit_code == 2, result.output
+
+    def test_equal_and_broken_does_not_claim_messages_are_equal(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The human short-circuit must not swallow the diagnostic."""
+        self._patch_compare(monkeypatch, level="error", differing=False)
+        result = self._run(runner, simple_setup, "right_same")
+        assert result.exit_code == 2
+        assert "Messages are equal." not in result.output
+        assert "hook exploded" in result.output
+
+    def test_error_outranks_differing(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An untrustworthy comparison is not a 'they differ' verdict."""
+        self._patch_compare(monkeypatch, level="error", differing=True)
+        result = self._run(runner, simple_setup, "right_diff")
+        assert result.exit_code == 2
+
+    @pytest.mark.parametrize(
+        ("right", "expected"), [("right_same", 0), ("right_diff", 1)],
+    )
+    def test_warning_level_leaves_the_verdict_alone(
+        self,
+        runner: CliRunner,
+        simple_setup: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        right: str,
+        expected: int,
+    ) -> None:
+        self._patch_compare(monkeypatch, level="warning", differing=False)
+        result = self._run(runner, simple_setup, right, "--quiet")
+        assert result.exit_code == expected

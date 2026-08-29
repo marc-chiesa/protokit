@@ -17,7 +17,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 > **Upgrade note.** This release is dominated by an internal code audit that
 > found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
-> and `Fixed` sections below enumerate them. Fifteen change observable behaviour,
+> and `Fixed` sections below enumerate them. Sixteen change observable behaviour,
 > and a passing pipeline can go red on upgrade **without any schema or code
 > change on your side** — in every case because protokit previously returned a
 > wrong answer quietly:
@@ -33,6 +33,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `storage -I` with `--desc` | exits 2 instead of accepting an import path it could never apply |
 > | `proto_matcher(expected, partial=…)` | raises `MatcherError` instead of returning a default-policy matcher |
 > | `diff --format junit` | an error-level diagnostic now sets `errors="1"` and adds an `<error>` testcase, so a broken-but-equal comparison fails the job |
+> | `diff` with an error-level diagnostic | exits **2** in every format (not 0/1), and the human output stops saying "Messages are equal." |
 > | `diff --max-depth -1` | exits 2 instead of accepting a negative depth and comparing anyway |
 > | `diff --proto-path` outside `--proto` | exits 2 instead of accepting an import path it could never apply |
 > | `to_parquet(fidelity=…)` with an unknown value | raises `ValueError` instead of silently behaving like `warn` and writing the file |
@@ -181,6 +182,29 @@ All notable changes to `protokit` are documented here. Format loosely follows
   both tiers: no built-in pack declares the `essentials` profile it aliases to.
 
 ### Fixed
+- **`protokit diff` exits 2 when the comparison itself is untrustworthy.**
+  `Diagnostic`'s contract is that an `error` means the tool broke and "CI
+  callers should treat any `error` as a fail-closed condition **even if** the
+  filtered findings list is empty". Only the JUnit formatter honoured it, via
+  its `errors=` attribute; the process still exited `1 if has_changes() else 0`,
+  so an equal-but-broken comparison exited **0** under every format — including
+  the JUnit one whose own report said `errors="1"` — and `--format human`
+  printed "Messages are equal." on top.
+
+  An error now yields exit 2 regardless of format and regardless of how the
+  differences came out, matching the documented `0 = equal, 1 = different,
+  2 = error` ladder and `compat`, which already exits 2 on diagnostics before
+  reporting a verdict. Error outranks "different": 2 is the error rung, not a
+  louder 1. **Warnings are unchanged** — diff's warning channel is routine (a
+  skipped map comparison emits one), unlike compat's. The human formatter no
+  longer claims equality it cannot vouch for, reporting "No differences found,
+  but the comparison is not trustworthy:" above the error instead.
+
+  Reachability, stated plainly: the diff CLI registers no hooks, so
+  `result.errors` is only populated through the Python API today. This closes
+  the contract for those callers and wires the CLI correctly ahead of a hook
+  surface; it is not currently reachable by a `protokit diff` invocation.
+
 - **`protokit diff --format junit` now surfaces error-level diagnostics, on
   their own testcase.** `diff_junit` hard-coded `errors=0` and piped only
   `result.warnings` into `<system-out>`, so `result.errors` reached no part of

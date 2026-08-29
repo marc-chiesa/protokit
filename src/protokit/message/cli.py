@@ -38,6 +38,7 @@ from protokit._pools import (
 )
 from protokit.formatters import FormatterContext, FormatterKind
 from protokit.message.differ import MessageDifferencer
+from protokit.message.model import DiffResult
 
 
 def _get_message_class(pool: descriptor_pool.DescriptorPool, type_name: str) -> type:
@@ -221,6 +222,30 @@ def _validate_flag_groups(
 # ---------------------------------------------------------------------------
 
 
+def _diff_exit_code(result: DiffResult) -> int:
+    """The documented ladder: 0 equal, 1 different, 2 the run is untrustworthy.
+
+    An error-level diagnostic means the comparison itself broke — a hook raised,
+    a plugin crashed — so the run has no verdict to report, whichever way the
+    differences came out. ``Diagnostic``'s contract states that CI must treat it
+    as fail-closed "even if the filtered findings list is empty", and before
+    this only the JUnit formatter's ``errors=`` attribute honoured it: the
+    process exited 0 on an equal-but-broken comparison under every format.
+
+    Error outranks "different" because 2 is the error rung, not a louder 1;
+    ``compat`` already exits 2 on diagnostics before reporting its verdict.
+    Warnings deliberately do not move the code — diff's warning channel is
+    routine (a skipped map comparison emits one), unlike compat's.
+
+    NOTE: the diff CLI registers no hooks, so ``result.errors`` is unreachable
+    through it today; this closes the contract for Python API callers and wires
+    the CLI correctly for when a hook surface lands.
+    """
+    if result.errors:
+        return 2
+    return 1 if result.has_changes() else 0
+
+
 @click.command()
 @click.argument("left_file", type=click.Path(exists=True, dir_okay=False))
 @click.argument("right_file", type=click.Path(exists=True, dir_okay=False))
@@ -365,15 +390,18 @@ def main(
 
     # Output
     if quiet:
-        sys.exit(1 if result.has_changes() else 0)
+        sys.exit(_diff_exit_code(result))
 
     # Equal-and-not-verbose case is a CLI concern: we want the
     # legacy "Messages are equal." stub that doesn't echo
     # diagnostics. The formatters always render diagnostics
     # when present, so short-circuit before invoking them.
+    # An error-level diagnostic is never eligible: "Messages are equal." would
+    # be asserting a verdict the engine just said it cannot vouch for.
     if (
         output_format.lower() == "human"
         and not result.has_changes()
+        and not result.errors
         and not verbose
     ):
         click.echo(click.style("Messages are equal.", fg="green"))
@@ -388,4 +416,4 @@ def main(
     )
     click.echo(run_formatter_safely(fn, result, ctx, name=output_format))
 
-    sys.exit(1 if result.has_changes() else 0)
+    sys.exit(_diff_exit_code(result))

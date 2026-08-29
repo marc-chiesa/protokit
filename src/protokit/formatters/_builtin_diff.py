@@ -122,7 +122,10 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
 
     Returns:
         A multi-line string. Empty equal results return the
-        single line ``"Messages are equal."``; otherwise a
+        single line ``"Messages are equal."`` — or, when the result
+        carries an error diagnostic, a line saying the comparison is
+        not trustworthy, since there is no equality to assert;
+        otherwise a
         header, body of diff lines, and trailing diagnostic /
         truncation blocks.
     """
@@ -130,7 +133,17 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
     lines: list[str] = []
 
     if not result.has_changes():
-        lines.append(click.style("Messages are equal.", fg="green"))
+        if result.errors:
+            # Never claim equality the engine cannot vouch for. An error means
+            # the comparison itself broke, so "no differences" is the absence
+            # of a finding, not a verdict — and a green success line above a
+            # red error is the most misleading thing this formatter could say.
+            lines.append(click.style(
+                "No differences found, but the comparison is not trustworthy:",
+                fg="red", bold=True,
+            ))
+        else:
+            lines.append(click.style("Messages are equal.", fg="green"))
         if result.diagnostics:
             for d in result.diagnostics:
                 lines.append(_format_diagnostic_line(d))
