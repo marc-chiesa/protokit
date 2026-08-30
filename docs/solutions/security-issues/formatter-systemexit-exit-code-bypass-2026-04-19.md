@@ -328,6 +328,14 @@ unilaterally. Enforce this structurally:
 4. Include a `SystemExit`-escape test alongside the standard
    `ValueError`/`RuntimeError` tests in the plugin test suite.
 
+> **Update (2026-08-30) — recurrence.** The pattern this section names recurred
+> three more times during the 0.15.1 correctness release (#51, #52), including
+> one direct violation of this document's own rule on a sibling CLI surface.
+> One of those was introduced by the fix for another. See
+> [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]] for the executable
+> detection procedure and the finding that prose documentation of this pattern —
+> including this document — has not prevented its recurrence.
+
 ## Related Issues
 
 - Original plan: `docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md`

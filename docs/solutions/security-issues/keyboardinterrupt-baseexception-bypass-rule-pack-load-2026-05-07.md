@@ -458,6 +458,14 @@ for the standalone learning.
   spatial-scope audit happened here)
 - ce:review run artifact: `.context/compound-engineering/ce-review/20260511-094847-1685ca47/`
 
+> **Update (2026-08-30) — recurrence.** The pattern this section names recurred
+> three more times during the 0.15.1 correctness release (#51, #52), including
+> one direct violation of this document's own rule on a sibling CLI surface.
+> One of those was introduced by the fix for another. See
+> [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]] for the executable
+> detection procedure and the finding that prose documentation of this pattern —
+> including this document — has not prevented its recurrence.
+
 ## Related Issues
 
 - Parent learning: `docs/solutions/security-issues/formatter-systemexit-exit-code-bypass-2026-04-19.md`.
