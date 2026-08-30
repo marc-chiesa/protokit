@@ -50,6 +50,7 @@ from protokit.schema.lint.model import (
 )
 from protokit.schema.lint.rules import package as package_pack
 from protokit.schema.lint.rules.package import (
+    _PARAM_CAP,
     check_directory_same_package,
     check_package_same_directory,
 )
@@ -905,3 +906,121 @@ class TestProfileMembership:
         profile = LintProfile.from_pack(package_pack, "essentials")
         assert "package/same-directory" not in profile.rule_ids
         assert "package/directory-same-package" not in profile.rule_ids
+
+
+# ---------------------------------------------------------------------------
+# Param hygiene — the cap and the sanitizer, which nothing pinned
+# ---------------------------------------------------------------------------
+
+
+class TestR8ParamHygiene:
+    """``_PARAM_CAP`` and ``_safe_for_stderr`` are load-bearing, not decoration.
+
+    A mutation audit removed both from R8/R8b and the whole suite stayed green:
+    raising the cap to ``10**30`` and replacing every ``_safe_for_stderr(...)``
+    with ``str(...)`` were each undetected. Both protections are reachable
+    through a directory name, which is attacker-controlled in any repo that
+    lints third-party protos.
+
+    The sanitizer's job here is specific: U+2028 / U+2029 are invisible to a
+    terminal but are record separators to Unicode-aware log aggregators, so an
+    unsanitized directory name can forge an extra NDJSON record.
+    """
+
+    def test_directory_param_is_truncated_to_the_cap(
+        self, tmp_path: Path,
+    ) -> None:
+        """A package split across many long directories cannot emit them all.
+
+        Each component stays under the filesystem's per-name limit; it is the
+        joined list that must be bounded, which is exactly the DoS surface the
+        cap exists for.
+        """
+        long_dirs = {
+            f"{'d' * 120}{i}/f{i}.proto": _PROTO_PKG_FOO for i in range(5)
+        }
+        report = _run_single(tmp_path, long_dirs, "package/same-directory")
+
+        assert report.findings
+        for finding in report.findings:
+            directories = finding.params["directories"]
+            assert len(directories) <= _PARAM_CAP, len(directories)
+        # The uncapped join would have been far longer — proving the cap acted
+        # rather than the input simply being short.
+        assert sum(len(d) for d in long_dirs) > _PARAM_CAP
+
+    def test_directory_param_is_sanitized(self, tmp_path: Path) -> None:
+        """U+2028 in a directory name must not survive into the finding."""
+        hostile = f"ev{chr(0x2028)}il"
+        report = _run_single(
+            tmp_path,
+            {
+                f"{hostile}/a.proto": _PROTO_PKG_FOO,
+                "plain/b.proto": _PROTO_PKG_FOO,
+            },
+            "package/same-directory",
+        )
+
+        assert report.findings
+        for finding in report.findings:
+            for key, value in finding.params.items():
+                assert chr(0x2028) not in value, key
+                assert chr(0x2029) not in value, key
+        # The hostile directory is still reported — sanitized, not dropped.
+        assert any(
+            "ev" in f.params["directories"] for f in report.findings
+        )
+
+
+class TestR8bParamHygiene:
+    """The same two protections on R8b's own emit sites.
+
+    R8b composes a *directory* param rather than a directory list, and the
+    audit mutated both rules independently — so proving R8 alone would leave
+    the sibling exactly as unpinned as it was.
+    """
+
+    def test_directory_param_is_sanitized(self, tmp_path: Path) -> None:
+        hostile = f"ev{chr(0x2028)}il"
+        report = _run_single(
+            tmp_path,
+            {
+                f"{hostile}/a.proto": _PROTO_PKG_FOO,
+                f"{hostile}/b.proto": _PROTO_PKG_BAR,
+            },
+            "package/directory-same-package",
+        )
+
+        assert report.findings
+        for finding in report.findings:
+            for key, value in finding.params.items():
+                if not isinstance(value, str):
+                    continue  # R8b also emits a bool discriminator
+                assert chr(0x2028) not in value, key
+                assert chr(0x2029) not in value, key
+
+    def test_directory_param_is_truncated_to_the_cap(
+        self, tmp_path: Path,
+    ) -> None:
+        # Nested components, each under the filesystem's 255-byte per-name
+        # limit, so it is the composed directory path that exceeds the cap.
+        long_dir = "/".join("d" * 200 for _ in range(3))
+        report = _run_single(
+            tmp_path,
+            {
+                f"{long_dir}/a.proto": _PROTO_PKG_FOO,
+                f"{long_dir}/b.proto": _PROTO_PKG_BAR,
+            },
+            "package/directory-same-package",
+        )
+
+        assert report.findings
+        for finding in report.findings:
+            for key, value in finding.params.items():
+                if not isinstance(value, str):
+                    continue  # R8b also emits a bool discriminator
+                assert len(value) <= _PARAM_CAP, (key, len(value))
+        # The uncapped directory path is far longer than the cap, so the
+        # assertion above is doing real work rather than passing on values
+        # that were short anyway.
+        assert len(long_dir) > _PARAM_CAP

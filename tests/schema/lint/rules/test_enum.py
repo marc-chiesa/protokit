@@ -19,6 +19,7 @@ full-pack integration test.
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 from typing import Any
 
@@ -358,3 +359,47 @@ class TestEnumPackIntegration:
         assert len(report.findings) == 2
         fired_rule_ids = {f.rule_id for f in report.findings}
         assert fired_rule_ids == _ALL_ENUM_RULE_IDS
+
+
+class TestEmptyEnumGuard:
+    """``check_first_value_zero`` returns on an enum with no values.
+
+    The protobuf descriptor pool refuses to build an enum with zero values
+    ("enums must contain at least one value"), so this branch is unreachable
+    from any compiled fixture — which is why a mutation audit could turn the
+    guard's ``return`` into an ``IndexError`` with the whole suite green. The
+    rule's own docstring names the case it guards: a *synthetic* descriptor.
+
+    So the test supplies exactly that — a stub context, the same shape the
+    engine builds, standing in for a descriptor the pool would not accept. It
+    pins the contract at the level the guard actually protects: the callable's,
+    not the compiler's.
+    """
+
+    class _StubEnum:
+        name = "Synthetic"
+        values: tuple[Any, ...] = ()
+
+    class _StubCtx:
+        enum = None  # replaced per-instance
+
+        def __init__(self) -> None:
+            self.enum = TestEmptyEnumGuard._StubEnum()
+            self.emitted: list[dict[str, Any]] = []
+
+        def emit(self, **kwargs: Any) -> None:
+            self.emitted.append(kwargs)
+
+    def test_valueless_enum_returns_without_emitting(self) -> None:
+        ctx = self._StubCtx()
+        check_first_value_zero(ctx)  # type: ignore[arg-type]
+        assert ctx.emitted == []
+
+    def test_a_populated_enum_still_evaluates(self) -> None:
+        """Guards against a fix that returns for every enum."""
+        ctx = self._StubCtx()
+        first = types.SimpleNamespace(number=7, name="SEVEN")
+        ctx.enum.values = (first,)
+        check_first_value_zero(ctx)  # type: ignore[arg-type]
+        assert len(ctx.emitted) == 1
+        assert ctx.emitted[0]["violation_kind"] == "enum/first-value-zero"

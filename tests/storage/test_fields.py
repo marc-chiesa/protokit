@@ -21,6 +21,7 @@ import pytest
 from protokit.storage._fields import (
     CompiledSelection,
     FieldSelectionError,
+    _walk_path,
     compile_fields,
 )
 from protokit.storage.schema_source import ProtoFileSchema
@@ -166,3 +167,27 @@ class TestErrorType:
             _sel("nope", event_cls)
         assert exc.value.spec == "nope"
         assert "no field 'nope'" in exc.value.reason
+
+
+class TestWalkPathInternalGuard:
+    """``_walk_path`` refuses an empty path on its own, not just via its caller.
+
+    ``compile_fields`` rejects an empty selection before it ever calls
+    ``_walk_path``, so every existing "empty field path" test is satisfied
+    upstream of this guard — a mutation audit replaced the raise with
+    ``return []`` and the whole suite stayed green. The guard exists for an
+    internal caller that bypasses the outer validator, and an empty field chain
+    would project *nothing* rather than failing loudly, so it is worth pinning
+    at the level it actually protects.
+    """
+
+    def test_empty_path_raises_rather_than_returning_no_fields(
+        self, event_cls: type
+    ) -> None:
+        with pytest.raises(FieldSelectionError, match="empty field path"):
+            _walk_path("", event_cls.DESCRIPTOR, spec="<internal>")
+
+    def test_a_real_path_still_resolves(self, event_cls: type) -> None:
+        """Guards against a fix that rejects everything."""
+        chain = _walk_path("n", event_cls.DESCRIPTOR, spec="<internal>")
+        assert [f.name for f in chain] == ["n"]

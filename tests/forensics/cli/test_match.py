@@ -9,7 +9,9 @@ import pytest
 from click.testing import CliRunner
 
 from protokit.cli import main
+from protokit.forensics import cli as forensics_cli
 from protokit.storage.schema_source import ProtoFileSchema
+from protokit.storage.sources.length_delimited import _DEFAULT_MAX_FRAME_SIZE
 from tests.forensics.fixtures import (
     fdp,
     msg_bytes,
@@ -259,3 +261,93 @@ def test_unparseable_under_all_exits_2(runner: CliRunner, tmp_path: Path) -> Non
 
     assert result.exit_code == 2
     assert "does not parse under any candidate schema" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# The 64 MiB default is a bound, not a decoration
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultMessageByteCap:
+    """``--max-message-bytes``'s default must actually bound an unflagged run.
+
+    The flag itself is covered above (`--max-message-bytes 1` exits 2). What
+    that proves is only that *a* cap is honoured when the caller names one; it
+    says nothing about the default, and nothing at all about the schema-loading
+    path, which has no flag and is governed by the constant alone.
+
+    Neither test builds a 64 MiB input: one patches the constant down, the
+    other asserts the constant's documented relationship. A test that fed the
+    real default a real oversized file would spend 64 MiB to learn nothing the
+    patched test does not already prove.
+    """
+
+    def test_default_mirrors_the_length_delimited_frame_ceiling(self) -> None:
+        """The constant's own comment claims this; nothing checked it.
+
+        Pinning the stated relationship rather than the literal `64 * 1024 *
+        1024` means retuning both together stays green and neutering either
+        one does not.
+        """
+        assert (
+            forensics_cli._DEFAULT_MAX_MESSAGE_BYTES
+            == _DEFAULT_MAX_FRAME_SIZE
+        )
+        assert forensics_cli._DEFAULT_MAX_MESSAGE_BYTES > 0
+
+    def test_oversized_descriptor_set_is_refused_on_the_unflagged_path(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--schema` loading reads the constant directly — no flag reaches it.
+
+        With the cap neutered this read is unbounded, so an attacker-supplied
+        `.desc` sets the memory ceiling rather than protokit doing so.
+        """
+        monkeypatch.setattr(forensics_cli, "_DEFAULT_MAX_MESSAGE_BYTES", 8)
+        write_desc(tmp_path / "v.desc", fdp({"x": 1}))
+        write_message(tmp_path / "msg.bin", fdp({"x": 1}), {"x": 5})
+
+        result = _invoke(
+            runner,
+            str(tmp_path / "msg.bin"),
+            "--schema", f"v={tmp_path / 'v.desc'}",
+            "--type", "a.A",
+        )
+
+        assert result.exit_code == 2
+        assert "exceeds" in result.stderr
+
+
+class TestDescriptorSetSuffixes:
+    """Every declared ``_FDS_SUFFIXES`` member must really take the FDS path.
+
+    The set is an enumerated space, and nothing pinned its membership: dropping
+    ``.binpb`` left every test green while a documented descriptor-set suffix
+    silently fell through to the ``.proto`` source branch — where it is handed
+    to a compiler as if it were text. Parametrising over the set itself means a
+    future member is covered the day it is added, and a removed one fails here.
+    """
+
+    @pytest.mark.parametrize("suffix", sorted(forensics_cli._FDS_SUFFIXES))
+    def test_each_declared_suffix_loads_as_a_descriptor_set(
+        self, runner: CliRunner, tmp_path: Path, suffix: str
+    ) -> None:
+        schema = fdp({"x": 1})
+        write_desc(tmp_path / f"v{suffix}", schema)
+        write_message(tmp_path / "msg.bin", schema, {"x": 5})
+
+        result = _invoke(
+            runner,
+            str(tmp_path / "msg.bin"),
+            "--schema", f"v={tmp_path / f'v{suffix}'}",
+            "--type", "a.A",
+        )
+
+        # Exit 0/1 are both real verdicts; the failure mode this guards against
+        # is exit 2 from trying to *compile* a binary descriptor set as source.
+        assert result.exit_code in (0, 1), result.stderr
+        assert "clean_winner" in result.stdout or result.exit_code == 0
+
+    def test_binpb_is_declared(self) -> None:
+        """Named explicitly: it is the member the audit proved was droppable."""
+        assert ".binpb" in forensics_cli._FDS_SUFFIXES
