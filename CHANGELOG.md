@@ -13,6 +13,101 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
+## Unreleased
+
+### Security
+- **Two CI gates reported success on runs where the analysis never
+  completed.** *Found by an internal whole-codebase audit (V31, V33), not a
+  user report. No exploitation is known. Recorded under `Security` rather than
+  `Fixed` because a gate that silently stops gating is a security-shaped
+  failure for a tool whose only job is gating, and because the project's
+  pin-to-minor guidance means the most exposed users are the least likely to
+  read a routine entry. Disproportionate for a published advisory: protokit is
+  pre-1.0 with no known production deployment. Present in all released
+  versions through 0.15.0.*
+
+  - **`protokit compat … --ignore=` (empty value) suppressed every finding and
+    still printed `COMPATIBLE` with exit 0.** `--ignore` parses its value as a
+    dotted `FieldPath` and filters by segment prefix; an empty string parses to
+    the root path `()`, which prefix-matches every finding in the report. A
+    pipeline whose `--ignore` argument came from an unset shell variable
+    therefore ran a compatibility check that could not fail.
+
+    `SchemaChecker.ignore("")` now raises `ValueError`. The rejection lives at
+    that single owner rather than at the CLI flag, because every entry path
+    reaches it: `--ignore=` on `check` / `ci` / `history` / `bisect` (now a
+    usage error, **exit 2**), `CompatibilityPolicy(ignore_paths=("",))`, and
+    direct API callers. An earlier revision of this fix guarded only the CLI
+    and left both Python paths silently suppressing every finding.
+
+  - **`protokit lint` exited 0 when a rule crashed, including under
+    `--max-warnings 0`.** The engine correctly catches a raising rule and
+    records a `rule_exception` runtime warning rather than aborting the run —
+    but the CLI computed its exit code purely from `report.findings`, and a
+    rule pack that crashes on every element produces *zero* findings. A CI job
+    gating on `protokit lint` saw a clean, empty report and passed. The same
+    held for `unloaded_rule`: a rule the resolved profile names but the engine
+    never loaded. Both now exit **2** with a new
+    `error[lint-analysis-incomplete]:` stderr code, **after** the report is
+    rendered, so the findings that were produced remain visible.
+
+  - **`protokit compat` stderr could be forged through `--ignore` and
+    `--compat-rule-pack`.** `FieldPath.parse` embeds the offending path
+    *unquoted* in its `ValueError` text, and the compat CLI interpolated that
+    exception raw, so a newline in a flag value rendered as a second stderr
+    line — one that could begin with the `error[lint-…]:` prefix CI scripts
+    grep on, forging a gate result. The same class was already fixed on the
+    `lint` side; the compat side now uses the same `_safe_for_stderr` sanitizer
+    at its rule-pack, `--ignore`, and diagnostic emission sites. Carriage
+    returns, NUL bytes, and ANSI escapes are collapsed too.
+
+### Known residual
+
+- **`protokit lint --exclude` matching every file still exits 0.** When
+  exclusion filters drop every file, the engine is short-circuited and an empty
+  report renders as a clean pass — structurally the same shape as the
+  `--ignore=` fail-open fixed above. It is deliberately *not* gated here:
+  excluding everything is an explicit user instruction, and a per-directory CI
+  matrix where some directories legitimately match nothing would start failing.
+  The `all_files_excluded` runtime warning is still emitted, and a test pins
+  the carve-out so changing it is a visible decision. Two further categories
+  (`extension_unresolved`, `custom_annotation_extension_unresolved`) likewise
+  mean a rule did not run and are not gated; `extension_unresolved` fires on
+  nearly every run whose inputs lack `google/api/field_behavior.proto`, so
+  gating it requires first making that rule fire only when the schema actually
+  *uses* the extension. All three are tracked for the release that introduces a
+  single run-trustworthiness predicate.
+
+### Changed — BREAKING
+- `protokit lint` gained the `analysis-incomplete` error code, extending the
+  documented `_LINT_ERROR_CODES` set from 15 to 16. The lint exit-code contract
+  in `README.md` now records that exit 2 also covers an incomplete analysis.
+- Runs that previously exited **0** (or **1**) with a `rule_exception` or
+  `unloaded_rule` runtime warning now exit **2**. This is the intended
+  break: those runs were reporting on an analysis that did not finish. There is
+  no opt-out flag. A switch that restored the silent fail-open would be a
+  supported way to keep shipping breaking changes, and it would outlive the
+  release that introduced it. To go green, fix or remove the failing rule
+  pack, or drop the unloaded rule id from the profile.
+- Runs that previously exited **0** with an empty `--ignore` value now exit
+  **2**. To restore the previous *intent*, omit the flag; to keep suppressing a
+  specific subtree, pass its dotted path.
+- *(API)* `SchemaChecker.ignore("")` now raises `ValueError` instead of silently
+  suppressing the entire report. `CompatibilityPolicy(ignore_paths=("",))` still
+  *constructs* successfully and raises on its first `.check()` call, since it
+  routes through `SchemaChecker.ignore` at check time; moving that check to
+  construction is deferred with the rest of the frozen-record normalization
+  work.
+
+  | Change | What starts happening |
+  |---|---|
+  | `compat check\|ci\|history\|bisect --ignore=` | exits 2 (usage error) instead of 0 with `COMPATIBLE` on a schema with breaking changes |
+  | `SchemaChecker.ignore("")` *(API)* | raises `ValueError` instead of suppressing every finding and reporting no breaks |
+  | `CompatibilityPolicy(ignore_paths=("",)).check(...)` *(API)* | raises `ValueError` on first use; construction still succeeds |
+  | `lint` with a rule pack whose rule raises | exits 2 (`error[lint-analysis-incomplete]:`) instead of 0, at every `--max-warnings` setting including `0` |
+  | `lint` with a profile naming an unloaded rule | exits 2 instead of 0 |
+  | `lint` with **both** findings and a crashed rule | exits 2 instead of 1 — exit 1 asserts the tool ran and found a problem, which is unavailable when part of the analysis did not run |
+
 ## 0.15.0 — 2026-08-30
 
 > **Upgrade note.** This release is dominated by an internal code audit that

@@ -130,7 +130,9 @@ class TestEngineEmittedCategoriesRetainStringRuleId:
                 str(descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # V33 (0.15.1): a crashed rule now exits 2; the JSON payload
+        # is rendered before the gate fires.
+        assert result.exit_code == 2, result.output
         parsed = json.loads(result.stdout)
         rule_exc = [
             w for w in parsed["runtime_warnings"]

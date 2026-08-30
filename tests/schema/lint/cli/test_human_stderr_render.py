@@ -485,7 +485,9 @@ class TestHumanHookIntegration:
                 str(bad_naming_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # V33 (0.15.1): exit 2 for an incomplete analysis. The stderr
+        # render this test pins happens before the gate.
+        assert result.exit_code == 2, result.output
         assert (
             "protokit lint: warning [rule_exception]:" in result.stderr
         ), result.stderr
@@ -545,7 +547,9 @@ class TestHumanHookIntegration:
             lint_main,
             ["--no-config", str(path)],
         )
-        assert result.exit_code == 0, result.output
+        # V33 (0.15.1): ``unloaded_rule`` means a rule the profile
+        # named never ran, so the analysis is incomplete — exit 2.
+        assert result.exit_code == 2, result.output
         assert (
             "protokit lint: warning [unloaded_rule]:" in result.stderr
         ), result.stderr

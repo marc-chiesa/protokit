@@ -423,7 +423,7 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | `--format NAME` | Output format (default: `human`). Built-in for compat: `human`, `json`, `junit`, `sarif`. See [Output Formatters](#output-formatters). |
 | `--formatter-module MODULE` | Python module exposing a `FORMATTERS = [(name, fn, kind), ...]` list (repeatable). See [Output Formatters](#output-formatters). |
 | `--compat-rule-pack MODULE` | Dotted module name exposing a `RULES` list. Repeatable. Renamed in 0.8.0 (D7); the old name `--rule-pack` is accepted as a deprecation alias and will be removed in protokit 1.0. |
-| `--ignore PATH` | Suppress findings at this dotted path prefix. Repeatable. |
+| `--ignore PATH` | Suppress findings at this dotted path prefix. Repeatable. An empty value is a usage error (exit 2): it would parse to the root path and suppress every finding — omit the flag instead. |
 | `--dedupe-by-type` | Emit findings for each shared nested type only once (original behavior). Default is path-complete: findings appear at every path where the type is referenced. |
 | `--quiet` | Suppress output; return exit code only. Mutually exclusive with any non-`human` `--format`. |
 
@@ -1200,8 +1200,8 @@ accumulation.
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with the deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
 | CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--disable-rule` (0.7.0+), `--enable-rule` (0.7.0+), `--version` | IN |
-| Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
-| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+) (full set in `_LINT_ERROR_CODES`) | IN |
+| Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error, or — 0.15.1+ — an incomplete analysis: a rule raised or a profile-named rule never loaded) | IN |
+| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+), `analysis-incomplete` (0.15.1+) (full set in `_LINT_ERROR_CODES`) | IN |
 | Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
 | Internal module | `protokit.schema.lint._cli_utils` | INTERNAL |

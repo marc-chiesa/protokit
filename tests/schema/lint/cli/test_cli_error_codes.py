@@ -55,19 +55,37 @@ _EXPECTED_D6F_CODES: tuple[str, ...] = (
     "cli-option-invalid",
 )
 
+#: 0.15.1 extends the constant with one new code:
+#: - `analysis-incomplete` (V33): a `rule_exception` or
+#:   `unloaded_rule` runtime warning means part of the analysis
+#:   never ran, so a clean report is not evidence of a clean schema.
+#:   Unlike every earlier code it fires AFTER the report renders.
+_EXPECTED_0_15_1_CODES: tuple[str, ...] = (
+    *_EXPECTED_D6F_CODES,
+    "analysis-incomplete",
+)
+
 
 class TestLintErrorCodesConstant:
     def test_constant_has_exactly_the_d5_set(self) -> None:
-        """Closed set check: no rogue codes, no missing codes (D6f inventory)."""
-        assert set(_LINT_ERROR_CODES) == set(_EXPECTED_D6F_CODES)
+        """Closed set check: no rogue codes, no missing codes (0.15.1 inventory)."""
+        assert set(_LINT_ERROR_CODES) == set(_EXPECTED_0_15_1_CODES)
 
-    def test_constant_size_is_thirteen(self) -> None:
-        """D6f R20a-extended: D3's 10 codes + D5's 3 + D6f's 2 = 15."""
-        assert len(_LINT_ERROR_CODES) == 15
+    def test_constant_size_is_sixteen(self) -> None:
+        """0.15.1 R20a-extended: D3's 10 + D5's 3 + D6f's 2 + V33's 1 = 16."""
+        assert len(_LINT_ERROR_CODES) == 16
 
     def test_constant_order_matches_r20a(self) -> None:
         """Plan locks the tuple order so docs and CI greps stay stable."""
-        assert _LINT_ERROR_CODES == _EXPECTED_D6F_CODES
+        assert _LINT_ERROR_CODES == _EXPECTED_0_15_1_CODES
+
+    def test_d6f_codes_still_present_and_ordered(self) -> None:
+        """0.15.1's addition is an append: no earlier code moves."""
+        assert _LINT_ERROR_CODES[: len(_EXPECTED_D6F_CODES)] == _EXPECTED_D6F_CODES
+
+    def test_analysis_incomplete_present(self) -> None:
+        """V33: the incomplete-analysis exit-2 code is wired."""
+        assert "analysis-incomplete" in _LINT_ERROR_CODES
 
     def test_d3_codes_still_present(self) -> None:
         """D3 codes must not be reordered or removed by D5's/D6f's additions."""
