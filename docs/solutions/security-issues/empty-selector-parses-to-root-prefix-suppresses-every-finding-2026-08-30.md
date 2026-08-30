@@ -256,3 +256,11 @@ When validation lives inside a loop over discovered work (commits, files,
 records), write one test where **the collection is empty**. Loop-body
 validation does not run zero times "harmlessly" — it does not run at all,
 and whatever it was guarding is unguarded.
+
+## Related
+
+This defect is one instance of a pattern this codebase has now documented nine
+times: a fix lands at one call site while structurally identical siblings stay
+broken. See [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]]
+for the detection procedure, and for why naming the pattern has repeatedly
+failed to prevent it.

@@ -208,3 +208,11 @@ python3 scripts/mutation_check.py src/protokit/schema/lint/cli.py \
 makes pytest exit non-zero with `no tests ran`, which a naive harness reads as
 "the test failed under mutation" and reports NON-VACUOUS. Confirm the output
 names actual failing tests before trusting the proof.
+
+## Related
+
+This defect is one instance of a pattern this codebase has now documented nine
+times: a fix lands at one call site while structurally identical siblings stay
+broken. See [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]]
+for the detection procedure, and for why naming the pattern has repeatedly
+failed to prevent it.
