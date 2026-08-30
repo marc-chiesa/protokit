@@ -13,14 +13,18 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## Unreleased
+## 0.15.0 — 2026-08-30
 
 > **Upgrade note.** This release is dominated by an internal code audit that
 > found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
-> and `Fixed` sections below enumerate them. Sixteen change observable behaviour,
-> and a passing pipeline can go red on upgrade **without any schema or code
-> change on your side** — in every case because protokit previously returned a
-> wrong answer quietly:
+> and `Fixed` sections below enumerate them. **Twenty** can turn a passing
+> pipeline red on upgrade **without any schema or code change on your side** —
+> in every case because protokit previously returned a wrong answer quietly.
+>
+> The table is scoped to that one question. A fix whose previous behaviour was
+> already a crash, a hang, or a non-zero exit is **not** listed, however
+> user-visible: there was no passing pipeline to break. Rows marked *(API)* are
+> unreachable from the CLI today and affect only direct Python callers.
 >
 > | Change | What starts happening |
 > |---|---|
@@ -28,23 +32,26 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | Columnar fidelity oracle | extensions on *nested* types are now reported; `--fidelity error` may raise at bind where 0.14.0 wrote the file |
 > | Cycle-truncated cache | recursive schemas surface breaks that were silently dropped, so `compat` may report more findings |
 > | `get_option_value` | returns `None` for an unset extension instead of its type default |
-> | `lint --profile basic` | resolves the alias and lints, instead of always exiting 2 |
 > | `storage --where ''` | exits 2 (`empty expression`) instead of silently scanning every record |
 > | `storage -I` with `--desc` | exits 2 instead of accepting an import path it could never apply |
 > | `proto_matcher(expected, partial=…)` | raises `MatcherError` instead of returning a default-policy matcher |
-> | `diff --format junit` | an error-level diagnostic now sets `errors="1"` and adds an `<error>` testcase, so a broken-but-equal comparison fails the job |
-> | `diff` with an error-level diagnostic | exits **2** in every format (not 0/1), and the human output stops saying "Messages are equal." |
 > | `diff --max-depth -1` | exits 2 instead of accepting a negative depth and comparing anyway |
 > | `diff --proto-path` outside `--proto` | exits 2 instead of accepting an import path it could never apply |
 > | `to_parquet(fidelity=…)` with an unknown value | raises `ValueError` instead of silently behaving like `warn` and writing the file |
 > | `treat_as_map` re-registered with a different key | raises the documented `ValueError` instead of silently keying on one key while checking the other |
 > | a formatter or rule pack calling `sys.exit(0)` | the CLI exits 2 with a pack/formatter error instead of exiting 0 with no output |
+> | `storage --where` on a `float` field | the literal is now narrowed to float32, so a predicate that matched every record can match none — `--where 'score != 0.1'` went from matching all to matching nothing (`count --quiet` 0 → 1) |
+> | `storage --where` with `nan` or an out-of-float32-range literal | exits 2 (`WhereError`); 0.14.0 accepted the predicate and scanned normally |
+> | `treat_as_map` on a one-sided subtree | `DuplicateKeyError` / `MissingKeyError` now fire where an added/removed subtree previously produced diffs, so `compare()` raises where it used to return |
+> | `lint` `[severities]` on a multi-kind `custom/…` rule | the override now reaches every kind-mangled sibling, so a *promotion* surfaces findings that were filtered out before and `lint` exits 1 |
+> | `strict_schema=True` | emits type-name diagnostics for two previously-clean cases: a differing root message type, and a value-type change inside an **empty** map |
+> | a source whose `read()` returns `None` *(API)* | `length_delimited` raises `FrameError`; 0.14.0 treated it as clean EOF and silently dropped the remaining frames |
+> | rendering a `DiffResult` that carries an error diagnostic *(API)* | JUnit output sets `errors="1"` and adds an `<error>` testcase, and the human renderer stops saying "Messages are equal." The matching CLI exit-2 wiring is prospective — `protokit diff` registers no hooks, so it cannot populate `result.errors` today |
 > | a map whose key or value type changed | records a `TYPE_CHANGED` difference, so `diff` exits 1 where an *empty* such map previously compared equal and exited 0 (a populated one crashed) |
 >
-> Field hooks also now fire for one-sided subtrees, and `strict_schema` now
-> validates the root message type — both mean opt-in callers see diagnostics or
-> hook invocations they did not before. None of these are new restrictions; each
-> is a true positive that was always missing.
+> Field hooks also now fire for one-sided subtrees, which means opt-in callers
+> see diagnostics or hook invocations they did not before. None of these are
+> new restrictions; each is a true positive that was always missing.
 
 ### Added
 - **`protokit forensics match` — schema-less single-message schema identification
@@ -394,6 +401,23 @@ All notable changes to `protokit` are documented here. Format loosely follows
   disappeared and two genuinely different messages printed "Messages are equal."
   and exited 0. Now an `IntRange(min=0)` usage error, matching storage,
   forensics, and lint.
+- **`length_delimited` rejects a non-blocking stream instead of truncating it
+  silently.** A `RawIOBase.read()` that returns `None` means "no data ready",
+  not "end of stream", but the frame reader tested it with `if not chunk:` —
+  and `None` is falsy — so a non-blocking source was read as a clean EOF. At a
+  frame boundary the iterator simply *ended*: the scan reported success and
+  every remaining frame was dropped, with no error and no short-read signal.
+  A `None` mid-scan now raises `FrameError`. **This turns a silently-wrong
+  success into a loud failure**, so a Python caller that consumed the shortened
+  iterator without noticing now sees an exception.
+
+- **`storage scan --where` rejects `nan` and out-of-range `float` literals.**
+  The literal was coerced with a bare `float()`, so `--where 'score == nan'`
+  compiled and matched nothing (nan never compares equal), and a literal past
+  the float32 range compiled against a `float` field it could never equal.
+  Both were indistinguishable from a correct empty result. They are now
+  `WhereError` (exit 2) naming the reason.
+
 - **`storage scan --where` compares a literal against a 32-bit `float` field in
   float32.** The literal was coerced to a double for both `float` and `double`
   fields; a `float` field stores `0.1` as `0.10000000149011612`, so
