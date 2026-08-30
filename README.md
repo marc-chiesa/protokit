@@ -1159,7 +1159,7 @@ delivery-named sections that describe the user-visible impact
 without a ceremonial prefix. The version bump itself is the
 authoritative signal; the CHANGELOG section is the communication
 contract. Consumers should pin to a specific minor version
-(e.g., `protokit~=0.5.0`) until 1.0 ships. The 1.0 release will
+(e.g., `protokit~=0.15.0`) until 1.0 ships. The 1.0 release will
 **define the stable public surface** and commit to semver
 compatibility for that surface.
 
