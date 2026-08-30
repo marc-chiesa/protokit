@@ -124,6 +124,16 @@ _LINT_ERROR_CODES: tuple[str, ...] = (
     # scripts can distinguish a bad CLI flag value from a bad
     # pyproject entry without parsing freeform text.
     "cli-option-invalid",
+    # V33 (0.15.1): the run finished but part of the analysis never
+    # executed — a rule raised (`rule_exception`) or a rule the
+    # resolved profile names was never loaded (`unloaded_rule`).
+    # Distinct from every code above, which all fire BEFORE any
+    # linting happens: this one fires AFTER the report is rendered,
+    # because the findings that were produced are still worth
+    # showing. What is not available is the claim that the absence
+    # of other findings means anything. Exit 2 ("the tool could not
+    # run") rather than 1 ("the tool ran and found a problem").
+    "analysis-incomplete",
 )
 
 

@@ -690,6 +690,103 @@ class TestErrors:
         assert result.exit_code == 2
         assert "--ignore" in result.output
 
+    def test_empty_ignore_value_exits_2(self, tmp_path: Path) -> None:
+        """V31: ``--ignore=`` must be a usage error, not a silent
+        suppress-everything switch.
+
+        ``FieldPath.parse("")`` yields the root path ``()``, and
+        ignore-filtering is segment-prefix matching, so the root
+        prefix-matches every finding. A CI gate invoked with an
+        empty ``--ignore`` value (a shell expanding an unset
+        variable is the realistic way to get here) therefore
+        reported COMPATIBLE with exit 0 on a schema with breaking
+        changes: the gate was open and said nothing.
+        """
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        # Without --ignore the dropped field is a break (exit 1).
+        baseline = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+        ])
+        assert baseline.exit_code == 1, baseline.output
+
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--ignore" in result.output
+        assert "COMPATIBLE" not in result.output
+
+    @pytest.mark.parametrize("subcommand_args", [
+        ["check", "OLD", "NEW", "--type", "t.M"],
+    ])
+    def test_empty_ignore_rejected_before_any_verdict(
+        self, tmp_path: Path, subcommand_args: list[str],
+    ) -> None:
+        """V31, adjacent-behavior gate: the rejection happens at the
+        flag boundary, so no verdict of any kind is printed.
+
+        A rejection that still rendered a report would leave a
+        ``COMPATIBLE`` line in a CI log next to the exit-2, which is
+        the same false reassurance in a different shape.
+        """
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        args = [
+            str(old_path) if a == "OLD" else str(new_path) if a == "NEW" else a
+            for a in subcommand_args
+        ] + ["--ignore", ""]
+        result = CliRunner().invoke(main, args)
+        assert result.exit_code == 2, result.output
+        assert "COMPATIBLE" not in result.output
+        assert "INCOMPATIBLE" not in result.output
+
+    def test_whitespace_only_ignore_value_exits_2(
+        self, tmp_path: Path,
+    ) -> None:
+        """V31: a whitespace-only ``--ignore`` value is the same
+        fail-open in a shape ``strip()``-free validation would miss.
+        """
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", "   ",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--ignore" in result.output
+
+    def test_nonempty_ignore_still_suppresses(self, tmp_path: Path) -> None:
+        """V31 adjacent-behavior gate: rejecting the empty value must
+        not disturb the ordinary suppression path a real ``--ignore``
+        argument takes.
+        """
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", "x",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "COMPATIBLE" in result.output
+
     def test_compat_compile_failure_exit_code_2(self, tmp_path: Path) -> None:
         """End-to-end: ``protokit compat check --proto`` on a syntactically
         broken .proto exits 2 and surfaces the per-backend
@@ -1188,6 +1285,58 @@ class TestPluginParity:
             "--ignore", "age",
         ])
         assert result_ignored.exit_code == 0
+
+
+class TestEmptyIgnoreRejectedEverySubcommand:
+    """V31 parity: ``--ignore=`` is a usage error on *every*
+    subcommand that accepts the flag, not just ``check``.
+
+    The audit's characteristic finding is a fix applied at one call
+    site while structurally identical siblings stay broken. All four
+    subcommands share ``_build_configured_checker``, so this class
+    is the assertion that the shared boundary is genuinely shared —
+    it fails if any subcommand ever grows its own checker
+    construction.
+    """
+
+    def test_history_rejects_empty_ignore(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--ignore" in result.output
+
+    def test_bisect_rejects_empty_ignore(self, git_repo: Path) -> None:
+        old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", old_sha, "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--ignore" in result.output
+        assert "no break found" not in result.output
+
+    def test_ci_rejects_empty_ignore(self, git_repo: Path) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1 on main")
+        _git("checkout", "-q", "-b", "feature", cwd=git_repo)
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2 on feature")
+        result = _invoke_in_repo(git_repo, [
+            "ci", "--base", "main",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "COMPATIBLE" not in result.output
 
 
 class TestBisectKeepGoing:

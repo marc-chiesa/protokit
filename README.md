@@ -1200,8 +1200,8 @@ accumulation.
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with the deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
 | CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--disable-rule` (0.7.0+), `--enable-rule` (0.7.0+), `--version` | IN |
-| Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error) | IN |
-| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+) (full set in `_LINT_ERROR_CODES`) | IN |
+| Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error, or — 0.15.1+ — an incomplete analysis: a rule raised or a profile-named rule never loaded) | IN |
+| Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+), `analysis-incomplete` (0.15.1+) (full set in `_LINT_ERROR_CODES`) | IN |
 | Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
 | Internal module | `protokit.schema.lint._cli_utils` | INTERNAL |

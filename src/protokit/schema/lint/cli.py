@@ -144,6 +144,20 @@ _LINT_HUMAN_SUMMARIZATION_THRESHOLD: int = 5
 #: readers here as the canonical source for the pinned buf version.
 _BUF_PARITY_PIN: str = "v1.70.0"
 
+#: ``LintRuntimeWarning`` categories that mean a rule did not run, and
+#: therefore that the report is a lower bound on an unknown total
+#: rather than a complete answer. Membership here drives the
+#: ``analysis-incomplete`` exit-2 gate (V33).
+#:
+#: Deliberately narrow. Other categories are advisories about
+#: *configuration* (``min_severity_relaxed``) or about a rule that ran
+#: with reduced input (``extension_unresolved``); widening the set is
+#: 0.16.0's ``_trust`` seam, not this patch.
+_INCOMPLETE_ANALYSIS_CATEGORIES: tuple[str, ...] = (
+    "rule_exception",
+    "unloaded_rule",
+)
+
 
 def _print_lint_version(
     ctx: click.Context, _param: click.Parameter, value: bool,
@@ -1445,6 +1459,33 @@ def _main_impl(
 
     if statistics and resolved.format == "human" and not quiet:
         _emit_statistics_footer(report)
+
+    # V33 (0.15.1): the analysis-completeness gate runs BEFORE the
+    # findings gates. Exit 1 asserts "the tool ran and found a
+    # problem"; that claim is unavailable when a rule raised or was
+    # never loaded, because the findings we do have are a lower bound
+    # on an unknown total. A crashing rule pack produces *zero*
+    # findings, so both the `has_error` gate and `--max-warnings 0`
+    # saw a clean run and exited 0 — a CI gate that silently stopped
+    # gating. The report has already been rendered above; only the
+    # verdict changes.
+    #
+    # Deliberately narrow, and deliberately throwaway: the 0.16.0
+    # `_trust` seam replaces this with one predicate consulted by
+    # every renderer and every exit path. Do not grow it here.
+    blocking = [
+        w for w in report.runtime_warnings
+        if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES
+    ]
+    if blocking:
+        categories = ", ".join(sorted({w.category for w in blocking}))
+        error_exit_with_code(
+            "analysis-incomplete",
+            f"{len(blocking)} of {len(report.runtime_warnings)} runtime "
+            f"warning(s) mean a rule did not run ({categories}); the "
+            "findings above are a lower bound, so a clean result would "
+            "not mean the schema is clean",
+        )
 
     has_error = any(
         finding.severity is LintSeverity.ERROR

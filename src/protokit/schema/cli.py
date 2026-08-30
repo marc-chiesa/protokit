@@ -570,6 +570,18 @@ def _build_configured_checker(
     checker = SchemaChecker(level=level, dedupe_by_type=dedupe_by_type)
     _load_rule_packs(checker, rule_packs)
     for path in ignore_paths:
+        # V31: an empty value parses to the root FieldPath ``()``,
+        # and ignore-filtering is segment-prefix matching, so the
+        # root prefix-matches *every* finding — ``--ignore=`` opened
+        # the whole gate and still printed COMPATIBLE with exit 0.
+        # Reject it at the flag boundary: suppressing everything is
+        # never what a user meant to ask for, and a gate that says
+        # nothing must not also say it passed.
+        if not path.strip():
+            error_exit(
+                f"invalid --ignore path {path!r}: empty path suppresses "
+                "every finding; omit the flag instead"
+            )
         try:
             checker.ignore(path)
         except ValueError as exc:

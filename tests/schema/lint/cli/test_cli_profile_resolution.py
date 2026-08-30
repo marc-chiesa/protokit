@@ -417,7 +417,11 @@ class TestRuntimeWarningEmission:
                 str(clean_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # V33 (0.15.1): a crashed rule means the analysis did not
+        # complete, so the run exits 2 rather than reporting a clean
+        # pass. The report is still rendered first — the warning is
+        # readable in stdout below.
+        assert result.exit_code == 2, result.output
         parsed = json.loads(result.stdout)
         warnings = parsed["runtime_warnings"]
         rule_exc = [
