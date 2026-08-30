@@ -31,9 +31,14 @@ All notable changes to `protokit` are documented here. Format loosely follows
     dotted `FieldPath` and filters by segment prefix; an empty string parses to
     the root path `()`, which prefix-matches every finding in the report. A
     pipeline whose `--ignore` argument came from an unset shell variable
-    therefore ran a compatibility check that could not fail. An empty or
-    whitespace-only `--ignore` value is now a usage error (**exit 2**) on
-    `check`, `ci`, `history`, and `bisect`.
+    therefore ran a compatibility check that could not fail.
+
+    `SchemaChecker.ignore("")` now raises `ValueError`. The rejection lives at
+    that single owner rather than at the CLI flag, because every entry path
+    reaches it: `--ignore=` on `check` / `ci` / `history` / `bisect` (now a
+    usage error, **exit 2**), `CompatibilityPolicy(ignore_paths=("",))`, and
+    direct API callers. An earlier revision of this fix guarded only the CLI
+    and left both Python paths silently suppressing every finding.
 
   - **`protokit lint` exited 0 when a rule crashed, including under
     `--max-warnings 0`.** The engine correctly catches a raising rule and
@@ -53,16 +58,20 @@ All notable changes to `protokit` are documented here. Format loosely follows
 - Runs that previously exited **0** (or **1**) with a `rule_exception` or
   `unloaded_rule` runtime warning now exit **2**. This is the intended
   break: those runs were reporting on an analysis that did not finish. There is
-  no opt-out flag — a switch that restores a silent fail-open is a supported
-  way to keep shipping breaks. To go green, fix or remove the failing rule
+  no opt-out flag. A switch that restored the silent fail-open would be a
+  supported way to keep shipping breaking changes, and it would outlive the
+  release that introduced it. To go green, fix or remove the failing rule
   pack, or drop the unloaded rule id from the profile.
 - Runs that previously exited **0** with an empty `--ignore` value now exit
   **2**. To restore the previous *intent*, omit the flag; to keep suppressing a
   specific subtree, pass its dotted path.
+- *(API)* `SchemaChecker.ignore("")` and `CompatibilityPolicy(ignore_paths=("",))`
+  now raise `ValueError` instead of silently suppressing the entire report.
 
   | Change | What starts happening |
   |---|---|
   | `compat check\|ci\|history\|bisect --ignore=` | exits 2 (usage error) instead of 0 with `COMPATIBLE` on a schema with breaking changes |
+  | `SchemaChecker.ignore("")` / `CompatibilityPolicy(ignore_paths=("",))` *(API)* | raises `ValueError` instead of suppressing every finding and reporting no breaks |
   | `lint` with a rule pack whose rule raises | exits 2 (`error[lint-analysis-incomplete]:`) instead of 0, at every `--max-warnings` setting including `0` |
   | `lint` with a profile naming an unloaded rule | exits 2 instead of 0 |
   | `lint` with **both** findings and a crashed rule | exits 2 instead of 1 — exit 1 asserts the tool ran and found a problem, which is unavailable when part of the analysis did not run |

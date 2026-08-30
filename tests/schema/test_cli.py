@@ -720,13 +720,15 @@ class TestErrors:
         ])
         assert result.exit_code == 2, result.output
         assert "--ignore" in result.output
+        # Assert the SPECIFIC diagnostic, not merely exit 2: a
+        # whitespace value also exits 2, via the ordinary FieldPath
+        # grammar error, so a bare exit-code assertion would pass
+        # even if the empty-path branch were deleted.
+        assert "empty path suppresses every finding" in result.output
         assert "COMPATIBLE" not in result.output
 
-    @pytest.mark.parametrize("subcommand_args", [
-        ["check", "OLD", "NEW", "--type", "t.M"],
-    ])
     def test_empty_ignore_rejected_before_any_verdict(
-        self, tmp_path: Path, subcommand_args: list[str],
+        self, tmp_path: Path,
     ) -> None:
         """V31, adjacent-behavior gate: the rejection happens at the
         flag boundary, so no verdict of any kind is printed.
@@ -734,6 +736,10 @@ class TestErrors:
         A rejection that still rendered a report would leave a
         ``COMPATIBLE`` line in a CI log next to the exit-2, which is
         the same false reassurance in a different shape.
+
+        The sibling subcommands carry this assertion in
+        ``TestEmptyIgnoreRejectedEverySubcommand`` below, where each
+        one's verdict vocabulary differs.
         """
         old, new = _simple_pair(
             [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
@@ -741,11 +747,10 @@ class TestErrors:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        args = [
-            str(old_path) if a == "OLD" else str(new_path) if a == "NEW" else a
-            for a in subcommand_args
-        ] + ["--ignore", ""]
-        result = CliRunner().invoke(main, args)
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", "",
+        ])
         assert result.exit_code == 2, result.output
         assert "COMPATIBLE" not in result.output
         assert "INCOMPATIBLE" not in result.output
@@ -768,6 +773,11 @@ class TestErrors:
         ])
         assert result.exit_code == 2, result.output
         assert "--ignore" in result.output
+        # Whitespace is outside the FieldPath grammar, so it is
+        # rejected by the pre-existing parse error rather than by the
+        # empty-path branch. Pinning which path it takes keeps this
+        # test honest about what it proves.
+        assert "empty path suppresses every finding" not in result.output
 
     def test_nonempty_ignore_still_suppresses(self, tmp_path: Path) -> None:
         """V31 adjacent-behavior gate: rejecting the empty value must

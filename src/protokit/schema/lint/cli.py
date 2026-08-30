@@ -149,10 +149,22 @@ _BUF_PARITY_PIN: str = "v1.70.0"
 #: rather than a complete answer. Membership here drives the
 #: ``analysis-incomplete`` exit-2 gate (V33).
 #:
-#: Deliberately narrow. Other categories are advisories about
-#: *configuration* (``min_severity_relaxed``) or about a rule that ran
-#: with reduced input (``extension_unresolved``); widening the set is
-#: 0.16.0's ``_trust`` seam, not this patch.
+#: Deliberately narrow, and KNOWN INCOMPLETE. Three further categories
+#: also mean a rule did not run, and this gate does not fire for them:
+#: ``extension_unresolved`` and ``custom_annotation_extension_unresolved``
+#: (``model.py`` says each "skips without firing findings"), and
+#: ``all_files_excluded`` (the engine is short-circuited entirely — the
+#: lint equivalent of V31). They are excluded here for blast radius, not
+#: because they are sound: ``extension_unresolved`` fires on essentially
+#: every run whose inputs lack ``google/api/field_behavior.proto``, so
+#: gating it would exit 2 almost everywhere, and the honest fix is to
+#: make that rule warn only when the schema actually *uses* the
+#: extension. That is a redesign, not a patch. **U7/U8 own all three**;
+#: the triage ledger records the reproductions. The remaining
+#: categories (``severities_unloaded_rule``, ``min_severity_relaxed``,
+#: ``contradictory_disable_config``, ``unknown_rule_id``) are genuinely
+#: advisory: they describe ineffective overrides or nonexistent ids,
+#: not a selected rule that failed to execute.
 _INCOMPLETE_ANALYSIS_CATEGORIES: tuple[str, ...] = (
     "rule_exception",
     "unloaded_rule",
@@ -1483,8 +1495,8 @@ def _main_impl(
             "analysis-incomplete",
             f"{len(blocking)} of {len(report.runtime_warnings)} runtime "
             f"warning(s) mean a rule did not run ({categories}); the "
-            "findings above are a lower bound, so a clean result would "
-            "not mean the schema is clean",
+            "findings this run produced are a lower bound, so a clean "
+            "result would not mean the schema is clean",
         )
 
     has_error = any(

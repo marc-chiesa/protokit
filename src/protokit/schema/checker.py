@@ -326,8 +326,24 @@ class SchemaChecker:
                 map-key syntax.
 
         Raises:
-            ValueError: If ``path`` cannot be parsed as a ``FieldPath``.
+            ValueError: If ``path`` cannot be parsed as a ``FieldPath``,
+                or if it is empty. An empty path parses to the root
+                ``FieldPath(())``, and because matching is
+                segment-prefix, the root prefix-matches *every*
+                finding — so ``ignore("")`` silently suppresses the
+                entire report and the checker reports COMPATIBLE for
+                any change at all (V31). Suppressing everything is
+                never what a caller means to ask for; omit the call.
+                Rejected here rather than at any one caller, because
+                this method is the single point every entry path
+                reaches: the CLI's ``--ignore`` flag,
+                :meth:`protokit.schema.profiles.CompatibilityPolicy.check`,
+                and direct API use.
         """
+        if not path:
+            raise ValueError(
+                "empty path suppresses every finding; omit the call instead"
+            )
         self._ignore_paths.append(FieldPath.parse(path))
 
     # ------------------------------------------------------------------

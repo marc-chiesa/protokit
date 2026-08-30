@@ -927,6 +927,78 @@ class TestEndToEndProfileBehavior:
 # ---------------------------------------------------------------------------
 
 
+class TestIgnoreRejectsEmptyPath:
+    """V31 at its single owner.
+
+    ``ignore("")`` parses to the root ``FieldPath(())``, and matching is
+    segment-prefix, so the root prefix-matches every finding: the whole
+    report is suppressed and the checker reports COMPATIBLE for any
+    change at all.
+
+    The first fix for this guarded only the CLI's ``--ignore`` flag,
+    which left ``CompatibilityPolicy`` and direct API callers still
+    silently suppressed — a fix at one call site with structurally
+    identical siblings left broken, which is the defect class this
+    release exists to close. These tests pin every entry path.
+    """
+
+    @staticmethod
+    def _pair() -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]:
+        old = descriptor_pool.DescriptorPool()
+        new = descriptor_pool.DescriptorPool()
+        build_message(old, "t.M", fields=[
+            {"name": "x", "number": 1, "type": T.TYPE_STRING},
+        ])
+        build_message(new, "t.M", fields=[])
+        return old, new
+
+    def test_baseline_reports_the_break(self) -> None:
+        """Without any ignore, the dropped field is a finding. This is
+        the control the suppression tests below are measured against.
+        """
+        old, new = self._pair()
+        report = SchemaChecker().check(old, "t.M", new, "t.M")
+        assert len(report.findings) >= 1
+
+    def test_ignore_empty_string_raises(self) -> None:
+        checker = SchemaChecker()
+        with pytest.raises(ValueError, match="empty path suppresses"):
+            checker.ignore("")
+
+    def test_ignore_empty_string_does_not_suppress(self) -> None:
+        """The report survives the rejected call — a raise that still
+        registered the root path would be worse than no fix at all.
+        """
+        old, new = self._pair()
+        checker = SchemaChecker()
+        with pytest.raises(ValueError):
+            checker.ignore("")
+        report = checker.check(old, "t.M", new, "t.M")
+        assert len(report.findings) >= 1
+
+    def test_policy_with_empty_ignore_path_raises(self) -> None:
+        """``CompatibilityPolicy`` routes through ``SchemaChecker.ignore``,
+        so the single-owner fix covers it. Before the fix this returned
+        zero findings on a breaking change.
+        """
+        from protokit.schema import CompatibilityPolicy
+
+        old, new = self._pair()
+        policy = CompatibilityPolicy(ignore_paths=("",))
+        with pytest.raises(ValueError, match="empty path suppresses"):
+            policy.check(old, "t.M", new, "t.M")
+
+    def test_nonempty_ignore_still_works(self) -> None:
+        """Adjacent-behavior gate: rejecting the empty path must not
+        disturb ordinary suppression.
+        """
+        old, new = self._pair()
+        checker = SchemaChecker()
+        checker.ignore("x")
+        report = checker.check(old, "t.M", new, "t.M")
+        assert all(str(f.path) != "x" for f in report.findings)
+
+
 class TestIgnorePaths:
     def test_ignore_suppresses_exact_path(self) -> None:
         old = descriptor_pool.DescriptorPool()
