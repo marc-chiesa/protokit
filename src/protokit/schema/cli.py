@@ -1255,7 +1255,10 @@ def history(
             any_diagnostics = True
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
-                click.echo(f"{prefix} ({new_ref[:12]}): {d}", err=True)
+                click.echo(
+                    f"{prefix} ({new_ref[:12]}): {_safe_for_stderr(d)}",
+                    err=True,
+                )
                 aggregated_diagnostics.append(CommitDiagnostic(
                     commit=new_ref,
                     level=d.level,
@@ -1629,7 +1632,10 @@ def bisect(
             any_diagnostics = True
             for d in report.diagnostics:
                 prefix = "Error" if d.level == "error" else "Warning"
-                click.echo(f"{prefix} ({sha[:12]}): {d}", err=True)
+                click.echo(
+                    f"{prefix} ({sha[:12]}): {_safe_for_stderr(d)}",
+                    err=True,
+                )
                 diagnostics.append(CommitDiagnostic(
                     commit=sha,
                     level=d.level,

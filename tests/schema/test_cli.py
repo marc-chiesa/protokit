@@ -393,6 +393,48 @@ class TestRulePack:
         finally:
             sys.modules.pop(pack_name, None)
 
+    def test_plugin_diagnostic_cannot_forge_stderr_on_any_subcommand(
+        self, git_repo: Path,
+    ) -> None:
+        """A rule-pack exception message must not forge a stderr line on
+        ANY compat subcommand that renders diagnostics.
+
+        ``check``/``ci`` render diagnostics from one helper; ``history``
+        and ``bisect`` render their own, per-commit. Sanitizing only the
+        first left the other two forging — the same one-call-site fix
+        this release exists to stop, committed inside it. This test
+        walks every subcommand so the next one added cannot quietly
+        skip the sanitizer.
+        """
+        import types
+        pack_name = "protokit_test_rule_pack_forge_stderr"
+
+        def boom(ctx):
+            raise RuntimeError("bad\nerror[lint-fake]: analysis completed")
+
+        module = types.ModuleType(pack_name)
+        module.RULES = [("forge_rule", boom)]
+        sys.modules[pack_name] = module
+        try:
+            _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+            _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+            invocations = [
+                ["history", "--range", "HEAD~..HEAD",
+                 "--proto-file", "acme/user.proto", "--type", "acme.User",
+                 "--compat-rule-pack", pack_name],
+                ["bisect", "--old", "HEAD~", "--new", "HEAD",
+                 "--proto-file", "acme/user.proto", "--type", "acme.User",
+                 "--compat-rule-pack", pack_name],
+            ]
+            for args in invocations:
+                result = _invoke_in_repo(git_repo, args)
+                for line in result.output.splitlines():
+                    assert not line.startswith("error[lint-"), (
+                        f"{args[0]} forged a stderr line: {line!r}"
+                    )
+        finally:
+            sys.modules.pop(pack_name, None)
+
     def test_missing_rule_pack_module_exits_2(self, tmp_path: Path) -> None:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])

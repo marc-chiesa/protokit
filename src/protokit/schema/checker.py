@@ -344,7 +344,16 @@ class SchemaChecker:
         # ``__bool__`` to return True passes ``if not path`` while still
         # being the empty string, and ``FieldPath.parse`` then returns
         # the root path — restoring the exact suppression this guard
-        # exists to prevent. Length is not overridable into a lie here.
+        # exists to prevent.
+        #
+        # This is not a security boundary and cannot be one: ``__len__``
+        # is overridable too, so a hostile ``str`` subclass can still lie
+        # in either direction. It does not need to be — anyone able to
+        # subclass ``str`` in this process can call ``_ignore_paths``
+        # directly. The guard exists to stop an *ordinary* empty value
+        # (an unset shell variable reaching ``--ignore``) from silently
+        # suppressing every finding, and ``__bool__`` is the override
+        # that a plain wrapper type plausibly has.
         if len(path) == 0:
             raise ValueError(
                 "empty path suppresses every finding; omit the call instead"

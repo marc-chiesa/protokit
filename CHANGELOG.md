@@ -9,11 +9,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > flagged in `BREAKING`-prefixed section headings below (formats vary
 > across the changelog: `### Changed — BREAKING`, `### BREAKING (D5 U3 ...)`,
 > etc.). Consumers should pin to a specific minor version (e.g.,
-> `protokit~=0.5.0`) until 1.0 ships. The 1.0 release will **define
+> `protokit~=0.15.0`) until 1.0 ships. The 1.0 release will **define
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## Unreleased
+## 0.15.1 — 2026-08-30
 
 ### Security
 - **Two CI gates reported success on runs where the analysis never
@@ -47,7 +47,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
     rule pack that crashes on every element produces *zero* findings. A CI job
     gating on `protokit lint` saw a clean, empty report and passed. The same
     held for `unloaded_rule`: a rule the resolved profile names but the engine
-    never loaded. Both now exit **2** with a new
+    never loaded. (`unloaded_rule` has no known reproduction through the
+    ordinary CLI — profile composition only registers rule ids it just loaded —
+    so it is gated for correctness rather than because a user pipeline is
+    currently reaching it. It is deliberately absent from the upgrade table
+    below for that reason.) Both now exit **2** with a new
     `error[lint-analysis-incomplete]:` stderr code, **after** the report is
     rendered, so the findings that were produced remain visible.
 
@@ -60,6 +64,17 @@ All notable changes to `protokit` are documented here. Format loosely follows
     `lint` side; the compat side now uses the same `_safe_for_stderr` sanitizer
     at its rule-pack, `--ignore`, and diagnostic emission sites. Carriage
     returns, NUL bytes, and ANSI escapes are collapsed too.
+
+### Note for contributors
+
+- Five existing tests asserted `exit_code == 0` for a lint run whose analysis
+  did not complete — four crashed-rule cases and one `unloaded_rule` case. They
+  codified the fail-open rather than catching it. Their assertions change to
+  `== 2` in this release. If you maintain a fork or a
+  local test suite that pins the old exit code, that is the change to make.
+  A classification meta-test now forces every `LintRuntimeWarning` category
+  into exactly one of gated / deferred / advisory, so a future category meaning
+  "a rule did not run" cannot silently land outside the gate.
 
 ### Known residual
 
@@ -101,12 +116,13 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
   | Change | What starts happening |
   |---|---|
-  | `compat check\|ci\|history\|bisect --ignore=` | exits 2 (usage error) instead of 0 with `COMPATIBLE` on a schema with breaking changes |
+  | `compat check\|ci --ignore=` | exits 2 (usage error) instead of 0 with `COMPATIBLE` on a schema with breaking changes |
+  | `compat history\|bisect --ignore=` | exits 2 instead of 0. These commands never printed `COMPATIBLE`: they printed `OK`/`BROKEN` per commit, or `no commits touch <file>` on an empty walk |
+  | `compat history\|bisect` with **any** malformed `--ignore` value, on a walk that finds **no commits** | exits 2 instead of 0. Previously the checker was built inside the per-commit loop, so an empty walk never validated the flag at all — every malformed value was accepted silently, not only the empty one |
   | `SchemaChecker.ignore("")` *(API)* | raises `ValueError` instead of suppressing every finding and reporting no breaks |
   | `CompatibilityPolicy(ignore_paths=("",)).check(...)` *(API)* | raises `ValueError` on first use; construction still succeeds |
   | `lint` with a rule pack whose rule raises | exits 2 (`error[lint-analysis-incomplete]:`) instead of 0, at every `--max-warnings` setting including `0` |
-  | `lint` with a profile naming an unloaded rule | exits 2 instead of 0 |
-  | `lint` with **both** findings and a crashed rule | exits 2 instead of 1 — exit 1 asserts the tool ran and found a problem, which is unavailable when part of the analysis did not run |
+  | `lint` with **both** a crashed rule and findings that would otherwise have produced exit 1 | exits 2 instead of 1 — exit 1 asserts the tool ran and found a problem, which is unavailable when part of the analysis did not run. Findings that would have exited 0 (INFO, or WARNING under an unexceeded `--max-warnings`) move 0 → 2 by the row above |
 
 ## 0.15.0 — 2026-08-30
 
