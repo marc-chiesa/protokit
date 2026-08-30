@@ -779,6 +779,78 @@ class TestErrors:
         # test honest about what it proves.
         assert "empty path suppresses every finding" not in result.output
 
+    def test_ignore_parse_error_cannot_forge_a_stderr_line(
+        self, tmp_path: Path,
+    ) -> None:
+        """A newline in an ``--ignore`` value must not become a second
+        stderr line.
+
+        ``{path!r}`` is repr-quoted and safe, but ``FieldPath.parse``
+        embeds the offending path *unquoted* in its ``ValueError`` text,
+        so interpolating the exception raw let the value forge a line
+        beginning with ``error[lint-...]:`` — the stable prefix CI
+        scripts grep on. Same class as the module-name forge already
+        fixed on the lint side; this pins the compat side.
+        """
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}], [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        payload = "bad\nerror[lint-fake]: analysis completed cleanly"
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", payload,
+        ])
+        assert result.exit_code == 2, result.output
+        for line in result.output.splitlines():
+            assert not line.startswith("error[lint-"), (
+                f"forged stderr line: {line!r}"
+            )
+
+    @pytest.mark.parametrize("payload", [
+        "bad\rerror[lint-fake]: forged",
+        "bad\x00truncated",
+        "bad\x1b[31mcolored",
+    ])
+    def test_ignore_parse_error_collapses_control_characters(
+        self, tmp_path: Path, payload: str,
+    ) -> None:
+        """Carriage return, NUL, and ANSI escapes are the same class as
+        the newline and are collapsed by the same sanitizer."""
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}], [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", payload,
+        ])
+        assert result.exit_code == 2, result.output
+        assert "\x00" not in result.output
+        assert "\x1b" not in result.output
+
+    def test_mixed_valid_and_empty_ignore_values_rejected(
+        self, tmp_path: Path,
+    ) -> None:
+        """``--ignore x --ignore ""`` is the realistic CI shape: several
+        values from shell variables, only some of them set. The empty
+        one must still be rejected rather than passing because a valid
+        sibling was present.
+        """
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}], [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", "x", "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "COMPATIBLE" not in result.output
+
     def test_nonempty_ignore_still_suppresses(self, tmp_path: Path) -> None:
         """V31 adjacent-behavior gate: rejecting the empty value must
         not disturb the ordinary suppression path a real ``--ignore``
@@ -1320,6 +1392,7 @@ class TestEmptyIgnoreRejectedEverySubcommand:
         ])
         assert result.exit_code == 2, result.output
         assert "--ignore" in result.output
+        assert "no commits touch" not in result.output
 
     def test_bisect_rejects_empty_ignore(self, git_repo: Path) -> None:
         old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
@@ -1347,6 +1420,67 @@ class TestEmptyIgnoreRejectedEverySubcommand:
         ])
         assert result.exit_code == 2, result.output
         assert "COMPATIBLE" not in result.output
+
+    def test_history_rejects_empty_ignore_on_empty_range(
+        self, git_repo: Path,
+    ) -> None:
+        """The branch the tests above missed.
+
+        ``history`` and ``bisect`` build the checker INSIDE the
+        per-commit loop, so an empty commit range never reached the
+        validation at all: ``--range HEAD..HEAD --ignore=`` printed
+        "no commits touch ..." and exited 0 with the invalid flag
+        silently accepted. That is V31 surviving one level below its
+        own fix — a shared boundary is only shared when it is reached.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "no commits touch" not in result.output
+
+    def test_bisect_rejects_empty_ignore_on_empty_range(
+        self, git_repo: Path,
+    ) -> None:
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        result = _invoke_in_repo(git_repo, [
+            "bisect",
+            "--old", "HEAD", "--new", "HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "no commits touch" not in result.output
+
+    def test_empty_ignore_rejected_before_rule_pack_import(
+        self, git_repo: Path,
+    ) -> None:
+        """A usage error must not cost arbitrary code execution.
+
+        ``--compat-rule-pack`` imports a user-named module, running its
+        module-level code. Validating ``--ignore`` only inside the
+        checker builder meant an invalid flag still imported the pack
+        first. A nonexistent module is used here: if the empty
+        ``--ignore`` is rejected first, the error names ``--ignore``;
+        if the import runs first, it names the rule pack.
+        """
+        _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
+        _commit(git_repo, "acme/user.proto", _USER_V2_DROP, msg="v2")
+        result = _invoke_in_repo(git_repo, [
+            "history", "--range", "HEAD~..HEAD",
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--compat-rule-pack", "definitely.not.a.real.module",
+            "--ignore", "",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--ignore" in result.output, result.output
+        assert "rule pack" not in result.output, result.output
 
 
 class TestBisectKeepGoing:

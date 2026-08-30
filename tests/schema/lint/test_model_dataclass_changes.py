@@ -121,6 +121,89 @@ class TestCategoryLiteral:
         )
 
 
+class TestIncompleteAnalysisCategoryClassification:
+    """Every ``LintRuntimeWarning`` category must be *classified* with
+    respect to the V33 ``analysis-incomplete`` exit gate.
+
+    ``_INCOMPLETE_ANALYSIS_CATEGORIES`` in ``schema/lint/cli.py`` is a
+    hand-maintained tuple. A future category that means "a rule did not
+    run" would land outside it silently, and the CLI would go on
+    reporting a clean exit for an analysis that never completed — the
+    exact drift class the 0.16.0 release exists to close, reintroduced
+    by the fix for it.
+
+    The gate's own comment classifies the other categories in prose.
+    Prose is not a guard, so the two other buckets are mirrored here as
+    explicit tuples: adding a category to the model Literal without
+    deciding which bucket it belongs to fails this test.
+
+    Modelled on ``test_test_helper_mirror_stays_in_sync_with_model``
+    above — same ratcheting discipline, different mirror.
+    """
+
+    #: Categories that mean a rule DID NOT RUN but are deliberately not
+    #: gated yet, for blast radius. Owned by U7/U8 (the ``_trust`` seam).
+    #: Moving one of these into the gate is a deliberate breaking change.
+    DEFERRED_INCOMPLETE: tuple[str, ...] = (
+        "extension_unresolved",
+        "custom_annotation_extension_unresolved",
+        "all_files_excluded",
+    )
+
+    #: Categories that are genuinely advisory: they describe an
+    #: ineffective override, a severity-policy note, or a nonexistent
+    #: rule id — not a selected rule that failed to execute.
+    ADVISORY: tuple[str, ...] = (
+        "severities_unloaded_rule",
+        "min_severity_relaxed",
+        "contradictory_disable_config",
+        "unknown_rule_id",
+    )
+
+    def test_every_category_is_classified(self) -> None:
+        from protokit.schema.lint.cli import _INCOMPLETE_ANALYSIS_CATEGORIES
+
+        type_hints = typing.get_type_hints(LintRuntimeWarning)
+        literal_args = set(typing.get_args(type_hints["category"]))
+        classified = (
+            set(_INCOMPLETE_ANALYSIS_CATEGORIES)
+            | set(self.DEFERRED_INCOMPLETE)
+            | set(self.ADVISORY)
+        )
+        assert classified == literal_args, (
+            "A LintRuntimeWarning category is unclassified with respect to "
+            "the analysis-incomplete exit gate. Unclassified: "
+            f"{sorted(literal_args - classified)}; classified but not in "
+            f"the model: {sorted(classified - literal_args)}. Decide "
+            "whether the new category means a rule did not run (add it to "
+            "_INCOMPLETE_ANALYSIS_CATEGORIES in "
+            "src/protokit/schema/lint/cli.py, with a CHANGELOG BREAKING "
+            "row) or is advisory (add it to ADVISORY here). Silence is "
+            "the one option that reintroduces the fail-open."
+        )
+
+    def test_buckets_are_disjoint(self) -> None:
+        """A category in two buckets means the classification is
+        incoherent, which the union check alone would not catch."""
+        from protokit.schema.lint.cli import _INCOMPLETE_ANALYSIS_CATEGORIES
+
+        gated = set(_INCOMPLETE_ANALYSIS_CATEGORIES)
+        deferred = set(self.DEFERRED_INCOMPLETE)
+        advisory = set(self.ADVISORY)
+        assert not (gated & deferred), gated & deferred
+        assert not (gated & advisory), gated & advisory
+        assert not (deferred & advisory), deferred & advisory
+
+    def test_gated_set_is_exactly_the_two_shipped_in_0_15_1(self) -> None:
+        """Pins the gate's current membership so widening it is a
+        deliberate, reviewed act rather than a drive-by edit."""
+        from protokit.schema.lint.cli import _INCOMPLETE_ANALYSIS_CATEGORIES
+
+        assert set(_INCOMPLETE_ANALYSIS_CATEGORIES) == {
+            "rule_exception", "unloaded_rule",
+        }
+
+
 # ---------------------------------------------------------------------------
 # rule_id type widening (BREAKING)
 # ---------------------------------------------------------------------------

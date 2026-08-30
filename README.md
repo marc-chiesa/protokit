@@ -423,7 +423,7 @@ report = policy.check(old_pool, "acme.User", new_pool, "acme.User")
 | `--format NAME` | Output format (default: `human`). Built-in for compat: `human`, `json`, `junit`, `sarif`. See [Output Formatters](#output-formatters). |
 | `--formatter-module MODULE` | Python module exposing a `FORMATTERS = [(name, fn, kind), ...]` list (repeatable). See [Output Formatters](#output-formatters). |
 | `--compat-rule-pack MODULE` | Dotted module name exposing a `RULES` list. Repeatable. Renamed in 0.8.0 (D7); the old name `--rule-pack` is accepted as a deprecation alias and will be removed in protokit 1.0. |
-| `--ignore PATH` | Suppress findings at this dotted path prefix. Repeatable. |
+| `--ignore PATH` | Suppress findings at this dotted path prefix. Repeatable. An empty value is a usage error (exit 2): it would parse to the root path and suppress every finding — omit the flag instead. |
 | `--dedupe-by-type` | Emit findings for each shared nested type only once (original behavior). Default is path-complete: findings appear at every path where the type is referenced. |
 | `--quiet` | Suppress output; return exit code only. Mutually exclusive with any non-`human` `--format`. |
 

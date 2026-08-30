@@ -180,6 +180,14 @@ class CompatibilityPolicy:
         Raises:
             ValueError: If either type name cannot be resolved in its
                 pool. Propagated from ``SchemaChecker.check``.
+            ValueError: If any ``ignore_paths`` entry is empty or is
+                not a parseable dotted path. Propagated from
+                :meth:`SchemaChecker.ignore`, and raised here rather
+                than at construction — a policy carrying an empty
+                entry builds successfully and fails on first use. An
+                empty entry is rejected because it parses to the root
+                path, which prefix-matches every finding and would
+                silently suppress the whole report.
         """
         # Imported here to avoid a circular import at module load.
         from protokit.schema.checker import SchemaChecker

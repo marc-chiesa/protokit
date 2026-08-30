@@ -446,9 +446,11 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     metavar="N",
     help="CI gate threshold. When set, exit 1 if WARNING-severity "
          "findings (post --min-severity filter) exceed N. "
-         "ERROR-severity findings always exit 1 regardless of N. "
+         "ERROR-severity findings always exit 1 regardless of N, "
+         "unless the analysis was incomplete (exit 2). "
          "Omit the flag to skip the WARNING gate entirely (exit 0 "
-         "on findings without ERROR). Must be >= 0.",
+         "on findings without ERROR, when the analysis completed). "
+         "Must be >= 0.",
 )
 @click.option(
     "--statistics/--no-statistics",
@@ -468,7 +470,8 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
     default=False,
     help="Suppress findings on stdout; exit code still reflects "
          "the standard exit-code ladder (0 clean, 1 ERROR or "
-         "WARNING > --max-warnings, 2 lint-internal error). Hard "
+         "WARNING > --max-warnings, 2 lint-internal error or "
+         "incomplete analysis). Hard "
          "mutex with "
          "--format=json/junit/sarif (click usage error). Soft "
          "mutex with --statistics — emits a stderr advisory line "
@@ -1490,7 +1493,14 @@ def _main_impl(
         if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES
     ]
     if blocking:
-        categories = ", ".join(sorted({w.category for w in blocking}))
+        # Sanitized per-slot like every other stderr interpolation in
+        # this module. ``category`` is a closed Literal today, so this is
+        # defense in depth rather than a live vector — but the whole
+        # point of a stable ``error[lint-CODE]:`` prefix is that nothing
+        # downstream of it can forge another one.
+        categories = ", ".join(
+            sorted({_safe_for_stderr(w.category) for w in blocking})
+        )
         error_exit_with_code(
             "analysis-incomplete",
             f"{len(blocking)} of {len(report.runtime_warnings)} runtime "

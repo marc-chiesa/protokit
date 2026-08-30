@@ -127,8 +127,10 @@ _LINT_ERROR_CODES: tuple[str, ...] = (
     # V33 (0.15.1): the run finished but part of the analysis never
     # executed — a rule raised (`rule_exception`) or a rule the
     # resolved profile names was never loaded (`unloaded_rule`).
-    # Distinct from every code above, which all fire BEFORE any
-    # linting happens: this one fires AFTER the report is rendered,
+    # Every code above except `formatter-exception` fires BEFORE any
+    # linting happens; `formatter-exception` fires during rendering.
+    # This one is the only code that fires AFTER the report has already
+    # been written to stdout,
     # because the findings that were produced are still worth
     # showing. What is not available is the claim that the absence
     # of other findings means anything. Exit 2 ("the tool could not

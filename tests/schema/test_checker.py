@@ -988,6 +988,43 @@ class TestIgnoreRejectsEmptyPath:
         with pytest.raises(ValueError, match="empty path suppresses"):
             policy.check(old, "t.M", new, "t.M")
 
+    def test_truthy_empty_str_subclass_is_rejected(self) -> None:
+        """A ``str`` subclass overriding ``__bool__`` is empty but
+        truthy, so a falsiness check (``if not path``) waves it through
+        and ``FieldPath.parse`` returns the root path — restoring the
+        exact suppression the guard exists to prevent. The guard tests
+        length, which cannot be overridden into a lie here.
+        """
+        class TruthyEmpty(str):
+            def __bool__(self) -> bool:
+                return True
+
+        checker = SchemaChecker()
+        with pytest.raises(ValueError, match="empty path suppresses"):
+            checker.ignore(TruthyEmpty(""))
+        assert checker._ignore_paths == []
+
+    def test_policy_construction_succeeds_and_check_raises(self) -> None:
+        """Pins WHERE the ValueError surfaces.
+
+        ``CompatibilityPolicy`` is a frozen, reusable config object; an
+        entry that is invalid is only discovered on first use, which can
+        be far from where the policy was built. That is the current
+        contract and the CHANGELOG describes it that way. Moving the
+        check into ``__post_init__`` belongs with the frozen-record
+        normalization work (which also has to decide what
+        ``ignore_paths="debug"`` — a bare str satisfying
+        ``Sequence[str]`` — should mean), so this test pins today's
+        boundary rather than asserting the one we want later.
+        """
+        from protokit.schema import CompatibilityPolicy
+
+        policy = CompatibilityPolicy(ignore_paths=("",))
+        assert policy.ignore_paths == ("",)
+        old, new = self._pair()
+        with pytest.raises(ValueError, match="empty path suppresses"):
+            policy.check(old, "t.M", new, "t.M")
+
     def test_nonempty_ignore_still_works(self) -> None:
         """Adjacent-behavior gate: rejecting the empty path must not
         disturb ordinary suppression.

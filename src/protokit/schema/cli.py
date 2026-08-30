@@ -34,6 +34,7 @@ import click
 from google.protobuf import descriptor_pool
 
 from protokit._cli_utils import (
+    _safe_for_stderr,
     compile_proto,
     error_exit,
     load_descriptor_pool,
@@ -158,11 +159,17 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
         try:
             module = importlib.import_module(name)
         except Exception as exc:
-            error_exit(f"failed to import rule pack '{name}': {exc}")
+            error_exit(
+                f"failed to import rule pack '{_safe_for_stderr(name)}': "
+                f"{_safe_for_stderr(exc)}"
+            )
         try:
             checker.load_rule_pack(module)
         except (AttributeError, TypeError) as exc:
-            error_exit(f"failed to load rule pack '{name}': {exc}")
+            error_exit(
+                f"failed to load rule pack '{_safe_for_stderr(name)}': "
+                f"{_safe_for_stderr(exc)}"
+            )
 
 
 def _warn_rule_pack_deprecated(
@@ -552,6 +559,38 @@ def _resolve_common_flags(
     return old_type_name, new_type_name, level
 
 
+def _validate_ignore_paths(ignore_paths: tuple[str, ...]) -> None:
+    """Reject malformed ``--ignore`` values before any real work starts.
+
+    ``_build_configured_checker`` already validates, but it runs too late
+    to be the only check:
+
+    - ``history`` / ``bisect`` construct the checker *inside* the
+      per-commit loop, so an **empty commit range** never reaches it.
+      ``--range HEAD..HEAD --ignore=`` therefore printed
+      ``no commits touch ...`` and exited **0** with the invalid flag
+      silently accepted — the V31 fail-open surviving one level down
+      from its own fix.
+    - Every route reaches it only after rule-pack import, git ref
+      resolution, and proto compilation. A usage error should not cost
+      a repository walk, and ``--ignore= --compat-rule-pack evil.mod``
+      should not execute the pack's module-level code first.
+
+    Validation itself still belongs to ``SchemaChecker.ignore`` (one
+    owner); this only moves *when* it is consulted. The throwaway
+    checker exists solely to reach that owner without duplicating its
+    rule here.
+    """
+    probe = SchemaChecker()
+    for path in ignore_paths:
+        try:
+            probe.ignore(path)
+        except ValueError as exc:
+            error_exit(
+                f"invalid --ignore path {path!r}: {_safe_for_stderr(exc)}"
+            )
+
+
 def _build_configured_checker(
     *,
     level: CompatibilityLevel,
@@ -581,7 +620,16 @@ def _build_configured_checker(
         try:
             checker.ignore(path)
         except ValueError as exc:
-            error_exit(f"invalid --ignore path {path!r}: {exc}")
+            # ``{path!r}`` is repr-quoted and therefore already safe, but
+            # ``FieldPath.parse`` embeds the offending path *unquoted* in
+            # its ValueError text, so interpolating ``exc`` raw let a
+            # newline in the flag value forge a second stderr line —
+            # reproduced as a fake ``error[lint-...]:`` gate result. Same
+            # class as the module-name forge already fixed on the lint
+            # side; the sanitizer is the one that fix introduced.
+            error_exit(
+                f"invalid --ignore path {path!r}: {_safe_for_stderr(exc)}"
+            )
     return checker
 
 
@@ -638,7 +686,10 @@ def _run_check_pipeline(
     # with different prefixes so operators can triage.
     for d in report.diagnostics:
         prefix = "Error:" if d.level == "error" else "Warning:"
-        click.echo(f"{prefix} {d}", err=True)
+        # A compat rule pack is arbitrary user Python; its diagnostic
+        # text is attacker-controlled from this CLI's perspective and
+        # must not be able to forge a second stderr line.
+        click.echo(f"{prefix} {_safe_for_stderr(d)}", err=True)
 
     if not quiet:
         if header:
@@ -872,6 +923,10 @@ def check(
         protokit compat check --against-base --proto-file acme/user.proto --type X
             # auto-resolves @{upstream} → origin/main → origin/master
     """
+    # V31: validate before rule-pack import, git traversal, or
+    # compilation. history/bisect build the checker inside the
+    # per-commit loop, which an empty range never enters.
+    _validate_ignore_paths(ignore_paths)
     # --------------------------------------------------------------
     # Structural validation first — fail with the most
     # mode-specific, actionable error before falling through to
@@ -1100,6 +1155,10 @@ def history(
     (unknown ref, missing import, any diagnostic from the
     registered plugins).
     """
+    # V31: validate before rule-pack import, git traversal, or
+    # compilation. history/bisect build the checker inside the
+    # per-commit loop, which an empty range never enters.
+    _validate_ignore_paths(ignore_paths)
     load_formatter_packs(formatter_modules)
     # Include packs from the deprecated --rule-pack alias; dedupe so the same
     # module passed via both --rule-pack X and --compat-rule-pack X only loads once.
@@ -1434,6 +1493,10 @@ def bisect(
         2 = hard error (unknown ref, missing import, any diagnostic
             from the registered plugins).
     """
+    # V31: validate before rule-pack import, git traversal, or
+    # compilation. history/bisect build the checker inside the
+    # per-commit loop, which an empty range never enters.
+    _validate_ignore_paths(ignore_paths)
     load_formatter_packs(formatter_modules)
     # Include packs from the deprecated --rule-pack alias; dedupe so the same
     # module passed via both --rule-pack X and --compat-rule-pack X only loads once.
@@ -1751,6 +1814,10 @@ def ci(
     no positional-arg shape, no mode-detection ambiguity, and
     a name that signals intent in pipeline yaml.
     """
+    # V31: validate before rule-pack import, git traversal, or
+    # compilation. history/bisect build the checker inside the
+    # per-commit loop, which an empty range never enters.
+    _validate_ignore_paths(ignore_paths)
     load_formatter_packs(formatter_modules)
     # Include packs from the deprecated --rule-pack alias; dedupe so the same
     # module passed via both --rule-pack X and --compat-rule-pack X only loads once.

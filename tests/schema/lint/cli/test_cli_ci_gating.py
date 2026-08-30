@@ -1228,7 +1228,16 @@ class TestAnalysisIncompleteExitGate:
                 str(clean_descriptor_set),
             ],
         )
-        assert "rule_exception" in result.stderr, result.stderr
+        # Assert on the gate's OWN line. Searching all of stderr was
+        # vacuous: the pre-existing `_emit_human_runtime_warnings` hook
+        # already prints "[rule_exception]" regardless of this gate, so
+        # the assertion passed with the whole gate disabled.
+        gate_lines = [
+            line for line in result.stderr.splitlines()
+            if line.startswith("error[lint-analysis-incomplete]:")
+        ]
+        assert gate_lines, result.stderr
+        assert "rule_exception" in gate_lines[0], gate_lines[0]
 
     def test_incomplete_gate_wins_over_findings_exit_1(
         self, bad_naming_descriptor_set: Path,
@@ -1248,6 +1257,10 @@ class TestAnalysisIncompleteExitGate:
             ],
         )
         assert result.exit_code == 2, result.output
+        # The gate fires AFTER rendering precisely so the findings that
+        # WERE produced stay readable. Asserting only the exit code
+        # would not catch a regression that swallowed them.
+        assert result.stdout.strip(), result.output
 
     def test_clean_run_without_crashed_rule_still_exits_0(
         self, clean_descriptor_set: Path,
@@ -1276,6 +1289,123 @@ class TestAnalysisIncompleteExitGate:
             ],
         )
         assert result.exit_code == 1, result.output
+        assert "analysis-incomplete" not in result.stderr
+
+    @pytest.mark.parametrize("fmt", ["json", "junit", "sarif"])
+    def test_gate_fires_under_every_machine_format(
+        self, clean_descriptor_set: Path, fmt: str,
+    ) -> None:
+        """The gate must not be human-format-only. A CI job consuming
+        SARIF or JUnit is exactly the consumer that cannot notice a
+        silently-empty report, so exit 2 has to reach it too.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--format", fmt,
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_rule_raises",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 2, result.output
+        assert "error[lint-analysis-incomplete]:" in result.stderr
+        # The structured payload still renders before the gate fires —
+        # the report is written, only the verdict changes.
+        assert result.stdout.strip(), result.output
+
+    def test_multi_category_message_names_both(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The gate joins multiple blocking categories into one message.
+        Every other test produces exactly one, so the join had never
+        actually rendered two names.
+
+        ``unloaded_rule`` cannot be produced from the ordinary CLI flow
+        (``LintProfile.from_pack`` only adds rule_ids it just
+        registered), so the report is injected — the same technique the
+        existing ``unloaded_rule`` CLI test uses.
+        """
+        from google.protobuf import descriptor_pb2
+
+        from protokit.schema.lint.engine import LintEngine
+        from protokit.schema.lint.model import LintReport, LintRuntimeWarning
+
+        fds = descriptor_pb2.FileDescriptorSet()
+        fd = fds.file.add()
+        fd.name = "api/user.proto"
+        fd.syntax = "proto3"
+        fd.package = "api"
+        path = tmp_path / "test.descriptor_set"
+        path.write_bytes(fds.SerializeToString())
+
+        synthetic = LintReport(
+            runtime_warnings=(
+                LintRuntimeWarning(
+                    category="rule_exception",
+                    rule_id="pack/boom",
+                    message="synthetic-failure",
+                ),
+                LintRuntimeWarning(
+                    category="unloaded_rule",
+                    rule_id="missing/rule-id",
+                    message="named in profile but not loaded",
+                ),
+                # A non-blocking category must not appear in the list.
+                LintRuntimeWarning(
+                    category="min_severity_relaxed",
+                    rule_id=None,
+                    message="advisory",
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            LintEngine, "run",
+            lambda self, *a, **k: synthetic,
+        )
+
+        result = CliRunner().invoke(
+            lint_main, ["--no-config", str(path)],
+        )
+        assert result.exit_code == 2, result.output
+        gate = [
+            line for line in result.stderr.splitlines()
+            if line.startswith("error[lint-analysis-incomplete]:")
+        ]
+        assert gate, result.stderr
+        assert "rule_exception" in gate[0], gate[0]
+        assert "unloaded_rule" in gate[0], gate[0]
+        assert "min_severity_relaxed" not in gate[0], gate[0]
+        # "2 of 3": only the blocking ones are counted, but the total is
+        # reported so the operator knows what else is there.
+        assert "2 of 3" in gate[0], gate[0]
+
+    def test_all_files_excluded_still_exits_0_deliberately(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """KNOWN CARVE-OUT, pinned so it reads as a decision.
+
+        ``all_files_excluded`` means the engine was short-circuited and
+        nothing was linted — structurally the lint form of V31. It is
+        deliberately NOT gated in 0.15.1: excluding everything is an
+        explicit user instruction, and a per-directory CI matrix where
+        some directories legitimately match nothing would start failing.
+        U7/U8 own the decision when the `_trust` seam lands.
+
+        This test exists so that flipping the behavior is a deliberate
+        act with a visible diff, not an accident — and so the carve-out
+        cannot be mistaken for an oversight.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--exclude", "**/*",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 0, result.output
         assert "analysis-incomplete" not in result.stderr
 
     def test_non_analysis_runtime_warning_does_not_gate(
