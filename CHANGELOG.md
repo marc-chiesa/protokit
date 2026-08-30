@@ -13,7 +13,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## Unreleased
+## 0.15.0 — 2026-08-30
 
 > **Upgrade note.** This release is dominated by an internal code audit that
 > found and fixed defects in every module — the `Security`, `Fixed — BREAKING`
