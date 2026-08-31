@@ -33,7 +33,9 @@ def build_message(
     Each ``fields`` entry is a dict with keys: name (required), number
     (required), type (required: ``TYPE_*`` constant), type_name (for
     MESSAGE/ENUM), label (default OPTIONAL), oneof_index, proto3_optional,
-    json_name.
+    json_name, default_value (proto2 only, a *string* exactly as
+    ``FieldDescriptorProto.default_value`` stores it — ``"7"``, ``"true"``,
+    ``"alpha"``).
 
     Each ``enums`` entry is a dict with keys: name, values (dict name->number),
     allow_alias (bool).
@@ -91,6 +93,8 @@ def build_message(
             f.proto3_optional = True
         if "json_name" in spec:
             f.json_name = spec["json_name"]
+        if "default_value" in spec:
+            f.default_value = spec["default_value"]
 
     pool.Add(fp)
 
