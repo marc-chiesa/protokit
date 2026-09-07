@@ -116,8 +116,35 @@ class TestU82CrossPoolEnumSetPairing:
 
         assert not result.has_changes()
 
+    def test_repeated_submessage_elements_pair_cleanly_in_one_order_control(self) -> None:
+        """Control: the ``Container{repeated Elem}`` construction is valid and pairable.
+
+        Same two-pool shape as the submessage pin below, in the element
+        order the greedy scan happens to get right. It exists so that a
+        construction failure -- a descriptor pool that cannot resolve
+        ``Elem`` from ``Container`` (the pure-Python protobuf backend
+        rejects ``ProtoBuilder``'s one-file-per-message layout) -- shows
+        up as a RED control here rather than as a pin that never reached
+        its assertion. The bare-enum control above cannot catch that,
+        because it builds a single message.
+        """
+        left_b = _enum_elem_builder(_LEFT_ENUM)
+        right_b = _enum_elem_builder(_RIGHT_ENUM)
+        left_elem = left_b.get_message_class("test.Elem")
+        right_elem = right_b.get_message_class("test.Elem")
+
+        left = left_b.build("test.Container", elems=[left_elem(status=1), left_elem(status=5)])
+        right = right_b.build("test.Container", elems=[right_elem(status=1), right_elem(status=5)])
+
+        d = MessageDifferencer()
+        d.treat_as_set("elems")
+        result = d.compare(left, right)
+
+        assert not result.has_changes()
+
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="U8-2: treat_as_set's greedy first-fit pairing over the non-transitive "
                "cross-pool enum relation (same name OR same number) is order-dependent — "
                "the same multiset reports a spurious REMOVED/ADDED pair in one element "
@@ -150,6 +177,7 @@ class TestU82CrossPoolEnumSetPairing:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="U8-2: the same order-dependent greedy pairing reached through ordinary "
                "repeated submessages — Elem{status} elements carrying cross-pool enums "
                "report a spurious elems[1].status REMOVED/ADDED pair in one order only",
@@ -241,6 +269,7 @@ class TestU83MapKeyOutOfRangeAcrossPools:
     )
     @pytest.mark.xfail(
         strict=True,
+        raises=ValueError,
         reason="U8-3: a map key not representable in the other side's key type escapes "
                "_compare_map's key gate (_types_compatible calls all integer types "
                "compatible) and then raises ValueError: Value out of range out of the "
@@ -366,6 +395,7 @@ class TestU84TreatAsMapOnSchemaOnlyField:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=pytest.fail.Exception,
         reason="U8-4: a treat_as_map field present on only one schema takes "
                "_emit_one_sided's plain repeated branch, which never calls "
                "_extract_keys, so duplicate keys are emitted silently instead of "
@@ -403,6 +433,7 @@ class TestU84TreatAsMapOnSchemaOnlyField:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="U8-4: the same _extract_keys bypass in _emit_one_sided also emits index "
                "paths (items[0].value) for a deleted treat_as_map field where every other "
                "route emits key paths (items[id=\"a\"].value)",
@@ -497,6 +528,7 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
     )
     @pytest.mark.xfail(
         strict=True,
+        raises=pytest.fail.Exception,
         reason="U8-5: the treat_as_map key-conflict guard compares only the exact "
                "f'{map_sel}.{key_name}' spelling, so the fully qualified "
                "'container.items.id' — the same key field of the same in-force map — is "
@@ -528,6 +560,7 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="U8-5: once the evaded ignore erases the element's only populated field, "
                "two messages differing in exactly that field compare EQUAL — "
                "has_changes() is False with an empty diff list",

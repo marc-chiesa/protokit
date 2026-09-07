@@ -218,6 +218,7 @@ def test_u14_3_library_entrypoint_does_fall_back(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U14-3: extract_pool_from_ref() compiles through the legacy "
         "compile_proto(), whose backend choice is a hard if/else — protoxy "
@@ -242,6 +243,7 @@ def test_u14_3_protoc_fallback_is_attempted_when_protoxy_fails(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=SystemExit,
     reason=(
         "U14-3: with a working protoc on PATH, extract_pool_from_ref() still "
         "dies with SystemExit(2) 'protoxy compile failed' on a schema protoc "
@@ -343,11 +345,12 @@ def _install_git_shim(
 
 
 _LOGGING_SHIM = r'''
+tab=$(printf '\t')
 {
   sep=""
   for a in "$@"; do
     printf '%s%s' "$sep" "$a"
-    sep="	"
+    sep="$tab"
   done
   printf '\n'
 } >> "$PROTOKIT_GIT_LOG"
@@ -375,6 +378,7 @@ def _is_immutable_object_id(token: str, *, resolves_to: str) -> bool:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U14-4: extract_pool_from_ref() hands the caller's symbolic ref to "
         "every _git_show() call, so `git show main:<path>` re-resolves the "
@@ -442,6 +446,7 @@ exec "$REAL_GIT" "$@"
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U14-4: with the branch moved between two of the extraction's "
         "`git show` calls (a real `git update-ref`, i.e. what `git fetch` "
@@ -536,6 +541,7 @@ def test_u14_5_head_ref_reads_the_commit(three_state_repo: Path) -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=pytest.fail.Exception,
     reason=(
         "U14-5: extract_pool_from_ref('') builds `git show :demo/m.proto`, which "
         "reads the STAGING INDEX. An unresolvable ref (verify_ref -> False, "

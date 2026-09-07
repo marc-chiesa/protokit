@@ -37,7 +37,6 @@ from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.rules import options_changed
 from tests.schema.helpers import T, build_message
 
-
 ROOT = FieldPath(segments=())
 
 #: The wrong outcome these pins record: every profile — including STRICT,
@@ -178,6 +177,7 @@ class TestDataHazards:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U9-1: proto2 [default=1] -> [default=2] reports COMPATIBLE at every level "
         "(WIRE, CONSUMER_SAFE, PRODUCER_SAFE, STRICT) with zero findings; "
@@ -232,6 +232,7 @@ def test_proto2_default_value_change_is_reported_at_some_level(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U9-2: json_name change (oldX -> newX) reports COMPATIBLE at every level "
         "(WIRE, CONSUMER_SAFE, PRODUCER_SAFE, STRICT) with zero findings; "
@@ -289,6 +290,7 @@ def test_json_name_change_is_reported_at_some_level(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U9-3: bytes -> string reports COMPATIBLE with zero findings at the WIRE "
         "profile even though a non-UTF-8 payload from an old producer raises "

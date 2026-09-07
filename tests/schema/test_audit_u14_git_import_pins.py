@@ -129,6 +129,7 @@ def test_u14_6_guard_repo_really_owns_the_wkt_path(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U14-6: git.py:810 applies _is_well_known() before _resolve_proto_root(), "
         "so a repo-OWNED google/protobuf/timestamp.proto at the requested ref is "
@@ -236,6 +237,7 @@ def test_u14_7_guard_required_first_correctly_refuses_to_compile(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=pytest.fail.Exception,
     reason=(
         "U14-7: _extract_proto_tree's `visited` set (git.py:800-808) is keyed on "
         "the import PATH alone and the dequeued `kind` is discarded, so when the "
@@ -349,6 +351,7 @@ def test_u14_8_guard_construction_and_order_independent_dep_graph(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U14-8: _strip_proto_root() (git.py:406-419) returns on the FIRST "
         "prefix match with no knowledge of which root actually resolved the "

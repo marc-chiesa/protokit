@@ -182,6 +182,7 @@ class TestU141BasenameShadowDetection:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U14-1: _detect_root_transitive_shadow (compile.py:342) probes "
             "Path(inc) / root.name, so an include-path file that merely "
@@ -220,6 +221,7 @@ class TestU141BasenameShadowDetection:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U14-1: the basename false positive is not merely a noisy "
             "diagnostic — compile_protos_to_result early-returns on it, so "
@@ -252,6 +254,7 @@ class TestU141BasenameShadowDetection:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U14-1: the genuine shadow is MISSED. current/acme/user.proto "
             "resolves to the root's own logical name acme/user.proto via "
@@ -306,6 +309,7 @@ class TestU142SameBasenameCollisionIgnoresProtoPaths:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U14-2: _detect_same_basename_collision (compile.py:356) takes "
             "only `paths` — proto_paths is not a parameter — and "
@@ -343,6 +347,7 @@ class TestU142SameBasenameCollisionIgnoresProtoPaths:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U14-2: the collision pre-flight early-returns with "
             "root_files=() / pool_file_names=(), refusing a multi-root "

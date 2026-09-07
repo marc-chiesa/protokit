@@ -27,6 +27,18 @@ Two pins live in this schema-side file even though they exercise
 paths", and the 0.16.0 plan assigns both of those call sites to U8
 alongside the compat ones.
 
+**Every pin names the exception it fails with.** Each ``xfail`` carries
+``raises=`` and every ``CliRunner.invoke`` passes
+``catch_exceptions=False``. Without both, Click folds any unhandled
+exception into ``exit_code == 1`` and an unrestricted strict xfail
+accepts the resulting assertion failure -- so an unrelated crash in a
+subcommand, or a broken fixture, would keep a pin "green" for the wrong
+reason. With them, the three pins whose defect *is* an escaping
+exception (U15-2's iteration failure, U15-4's missing git, U15-6's
+differ ``ValueError``) see that exact exception propagate out of the
+runner and are narrowed to it; everything else is narrowed to the
+assertion (or ``pytest.fail``) on its named line. Anything else is red.
+
 **Deliberately not pinned — closed by 0.15.1.** The original U15-1
 claim also covered a malformed ``--ignore`` on ``history`` / ``bisect``
 (including on an empty commit range, which skipped checker
@@ -144,7 +156,7 @@ def _invoke_in_repo(repo: Path, args: list[str]):
     cwd = os.getcwd()
     try:
         os.chdir(repo)
-        return runner.invoke(compat_main, args)
+        return runner.invoke(compat_main, args, catch_exceptions=False)
     finally:
         os.chdir(cwd)
 
@@ -225,7 +237,7 @@ def nested_pair(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _diff(args: list[str]):
-    return CliRunner().invoke(diff_main, args)
+    return CliRunner().invoke(diff_main, args, catch_exceptions=False)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +254,7 @@ def _diff(args: list[str]):
 )
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U15-1: history/bisect never pre-flight --proto-file, so a path "
         "that does not exist at NEW enumerates zero commits and exits 0 "
@@ -299,6 +312,7 @@ def test_u15_1_history_bisect_typoed_proto_file_is_not_clean(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U15-2: _load_rule_packs wraps importlib.import_module in "
         "`except Exception`, but SystemExit derives from BaseException, "
@@ -345,7 +359,7 @@ def test_u15_2_rule_pack_calling_sys_exit_does_not_forge_exit_0(
         result = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--compat-rule-pack", pack_name,
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 2, (
             "a rule pack that calls sys.exit() during import is a broken "
             "pack (exit 2), not a compatible verdict; got exit "
@@ -358,6 +372,7 @@ def test_u15_2_rule_pack_calling_sys_exit_does_not_forge_exit_0(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=RuntimeError,
     reason=(
         "U15-2: _load_rule_packs guards checker.load_rule_pack with "
         "`except (AttributeError, TypeError)`, so any other exception "
@@ -395,7 +410,7 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
         result = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--compat-rule-pack", pack_name,
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 2, (
             "a rule pack that raises while its RULES are iterated is a "
             "tooling error (exit 2), not an incompatibility verdict "
@@ -411,6 +426,7 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=pytest.fail.Exception,
     reason=(
         "U15-3: rule-pack code writes to the same stdout the CLI uses "
         "for its machine payload, so a print() inside a rule function "
@@ -445,7 +461,7 @@ def test_u15_3_rule_pack_print_does_not_corrupt_json_stdout(
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--format", "json",
             "--compat-rule-pack", pack_name,
-        ])
+        ], catch_exceptions=False)
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -458,6 +474,7 @@ def test_u15_3_rule_pack_print_does_not_corrupt_json_stdout(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U15-3: --quiet documents 'Suppress output; return exit code "
         "only.' but only gates the CLI's own click.echo calls; a "
@@ -488,7 +505,7 @@ def test_u15_3_rule_pack_print_does_not_leak_under_quiet(
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--quiet",
             "--compat-rule-pack", pack_name,
-        ])
+        ], catch_exceptions=False)
         assert result.stdout == "", (
             "--quiet promises exit-code-only, but stdout carried "
             f"{result.stdout!r}"
@@ -522,6 +539,7 @@ def test_u15_3_rule_pack_print_does_not_leak_under_quiet(
 )
 @pytest.mark.xfail(
     strict=True,
+    raises=RuntimeError,
     reason=(
         "U15-4: _run_git translates a missing binary into "
         "RuntimeError('git not found on PATH; ...'), but only "
@@ -552,7 +570,7 @@ def test_u15_4_missing_git_is_a_tooling_error_not_a_break(
     which a pipeline reads as a compatibility BREAK that never
     happened".
     """
-    empty_bin = breaking_repo.parent / "empty_bin"
+    empty_bin = breaking_repo / "empty_bin"
     empty_bin.mkdir(exist_ok=True)
     monkeypatch.setenv("PATH", str(empty_bin))
     result = _invoke_in_repo(breaking_repo, args)
@@ -616,6 +634,7 @@ def merged_repo(git_repo: Path) -> dict[str, str]:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U15-5: history pairs commits by chaining the flat "
         "`git log --reverse` enumeration (anchor = commits[0]^, then "
@@ -706,6 +725,7 @@ def test_u15_5_history_does_not_attribute_a_siblings_change_to_a_commit(
 )
 @pytest.mark.xfail(
     strict=True,
+    raises=ValueError,
     reason=(
         "U15-6: message/cli.py configures the differ "
         "(differ.ignore_fields / differ.treat_as_map) BEFORE the "
@@ -762,6 +782,7 @@ def test_u15_6_diff_flag_validation_errors_exit_2_not_1(
 @pytest.mark.parametrize("depth", ["0", "1"])
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "U15-7: with --max-depth truncating before the differing "
         "subtree, DiffResult.has_changes() is False and the truncation "
@@ -836,20 +857,20 @@ class TestU15Controls:
         old, new = breaking_protos
         human = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
-        ])
+        ], catch_exceptions=False)
         assert human.exit_code == 1
         assert "INCOMPATIBLE" in human.stdout
 
         structured = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--format", "json",
-        ])
+        ], catch_exceptions=False)
         assert json.loads(structured.stdout)["compatible"] is False
 
         quiet = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--quiet",
-        ])
+        ], catch_exceptions=False)
         assert quiet.exit_code == 1
         assert quiet.stdout == ""
 
@@ -857,7 +878,7 @@ class TestU15Controls:
         self, breaking_repo: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """U15-4 control: the correct shape already exists in-tree."""
-        empty_bin = breaking_repo.parent / "empty_bin_control"
+        empty_bin = breaking_repo / "empty_bin_control"
         empty_bin.mkdir(exist_ok=True)
         monkeypatch.setenv("PATH", str(empty_bin))
         result = _invoke_in_repo(breaking_repo, [

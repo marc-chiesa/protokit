@@ -258,6 +258,7 @@ class TestU20PackageDirectoryMatchSuppression:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U20-1: package/directory-match returns early on files at the "
             "module root (`if not dir_parts: return`), so a root-level file "
@@ -294,6 +295,7 @@ class TestU20PackageDirectoryMatchSuppression:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U20-1: package/directory-match returns early when any directory "
             "segment fails _PROTO_IDENTIFIER_RE, so a hyphenated directory "
@@ -332,6 +334,7 @@ class TestU20PackageDirectoryMatchSuppression:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U20-1: the identifier guard suppresses realistic input, not "
             "only degenerate one-segment paths — a versioned "
@@ -483,6 +486,7 @@ class TestU20ImportsUnusedFalsePositives:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U20-2: imports/unused false-positives on an import used only by "
             "a custom method option. check_unused_imports walks field types "
@@ -519,6 +523,7 @@ class TestU20ImportsUnusedFalsePositives:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U20-2: imports/unused false-positives on an import used only by "
             "a proto2 extension declaration. check_unused_imports never "
@@ -550,6 +555,7 @@ class TestU20ImportsUnusedFalsePositives:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason=(
             "U20-2: imports/unused false-positives on "
             "google/protobuf/descriptor.proto in every file that defines a "
