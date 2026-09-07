@@ -1,10 +1,11 @@
 ---
 title: "Pass catch_exceptions=False explicitly when invoking CliRunner in integration tests"
 date: 2026-05-21
+last_updated: 2026-09-07
 category: docs/solutions/best-practices
 module: tests/schema/lint/cli/
 problem_type: best_practice
-component: testing
+component: testing_framework
 severity: medium
 applies_when:
   - "Writing pytest tests that invoke click commands via click.testing.CliRunner"
@@ -20,6 +21,8 @@ tags:
   - false-positive-pass
   - integration-test
   - exit-code-discipline
+  - xfail
+  - regression-pin
 ---
 
 # Pass catch_exceptions=False explicitly when invoking CliRunner in integration tests
@@ -59,7 +62,7 @@ result = CliRunner().invoke(
 With `catch_exceptions=False`:
 
 - An unhandled exception in the CLI propagates up to pytest as the actual exception class with its real traceback. Debug time drops to seconds.
-- Expected exit codes (the CLI's own `sys.exit(N)` calls + click's user-error exit-2 paths) continue to surface as `result.exit_code` normally — the flag does NOT change CLI-side exit handling, only the test harness's exception-absorption behavior.
+- Expected exit codes (the CLI's own `sys.exit(N)` calls + click's user-error exit-2 paths) continue to surface as `result.exit_code` normally — the flag does NOT change CLI-side exit handling, only the test harness's exception-absorption behavior. The corollary cuts the other way too: `CliRunner` catches `SystemExit` unconditionally (click 8.3.2, `click/testing.py`, before the `catch_exceptions` branch), so the flag can never make a `sys.exit(2)` from an `error_exit` path propagate. A test that needs to *see* that exit as an exception must call the function directly under `pytest.raises(SystemExit)` rather than through the runner.
 - The `assert result.exit_code in (0, 1)` post-condition remains correct and continues to catch the `exit_code == 2` "broken fixture" case as before.
 
 **Three companion disciplines** reinforce the diagnostic-clarity goal:
@@ -95,6 +98,8 @@ Apply on **every `CliRunner.invoke()` call** when ANY of the following hold:
 - The test is part of an integration suite where one slow-to-debug failure blocks faster iteration on other tests.
 
 Apply by default — even when the listed conditions don't strictly hold — because the cost of the flag is zero. The only downside of `catch_exceptions=False` is that a test deliberately exercising an exception path needs to wrap the invocation in `pytest.raises(...)`. That's the correct shape anyway: tests that exercise exception paths should be explicit about it.
+
+**A strict xfail regression pin is the case where the flag is load-bearing, not merely diagnostic.** A pin marked `@pytest.mark.xfail(strict=True, raises=<Exc>)` names the exception the pinned defect raises; with the click default, that exception is folded into `exit_code == 1` before pytest ever sees it, the pin's `assert result.exit_code == 2` fails for the wrong reason, and the marker records it as xfailed — indistinguishable from an unrelated crash in the same subcommand. `tests/schema/test_audit_u15_cli_exit_pins.py` (nine `CliRunner.invoke` calls, all `catch_exceptions=False`) is the canonical instance: it initially violated this discipline and was corrected in PR #55. The full rule for pins is in [[strict-xfail-pin-without-raises-accepts-any-failure]].
 
 **Do NOT apply** (i.e., keep the default `catch_exceptions=True`) when:
 
@@ -192,6 +197,7 @@ This shape separates the "happy-path or normal-finding-gate" assertion from the 
 ## Related
 
 - [[subprocess-exit-code-validation-test-harness-2026-05-13]] — sibling: exit-code-discipline learning for subprocess-driven CLI tests. That doc covers `subprocess.run` callers; this doc covers click's in-process `CliRunner`. The two harness paths have different default behaviors but the same "always assert on a SPECIFIC exit-code value, then inspect output" discipline.
-- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 — meta-pattern: this learning emerged from a 3-way reviewer convergence at D6d new-U3 ce:review (2026-05-21). correctness TG-2 + kieran KP-5 + adversarial ADV-1 each independently flagged the trap. The convergence is the trust signal.
+- ce-review-convergence-rescues-sub-threshold-findings-2026-05-17 (maintainer-side learning; relocated to the private learnings repo in commit `a494624`, no longer under `docs/solutions/`) — meta-pattern: this learning emerged from a 3-way reviewer convergence at D6d new-U3 ce:review (2026-05-21). correctness TG-2 + kieran KP-5 + adversarial ADV-1 each independently flagged the trap. The convergence is the trust signal.
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — sibling: latent-bug surface patterns. Where that doc covers parity gates surfacing real CLI bugs that pass-but-shouldn't, this doc covers test-harness behavior that obscures real bugs the CLI did surface.
-- Anchor commit: D6d new-U3 ce:review follow-up (2026-05-21, `c8ff42d`). See `tests/schema/lint/cli/test_d6d_custom_annotation_example.py:_run_lint` for the canonical-correct shape. Pre-existing reference: `tests/schema/lint/cli/test_version_output.py` documents the same discipline with its own inline comment.
+- [[strict-xfail-pin-without-raises-accepts-any-failure]] — the case where this flag is load-bearing rather than diagnostic: a strict xfail pin whose expected failure is the escaping exception. That doc also covers the `SystemExit` vector this flag cannot close.
+- Anchor commit: D6d new-U3 ce:review follow-up (2026-05-21, `6668c6a`; the pre-squash SHA `c8ff42d` originally cited here no longer resolves). See the `_run_lint` helper in `tests/schema/lint/cli/test_d6d_custom_annotation_example.py` for the canonical-correct shape. Pre-existing reference: `tests/schema/lint/cli/test_version_output.py` documents the same discipline with its own inline comment.
