@@ -50,6 +50,7 @@ pinned.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -104,6 +105,35 @@ def _commit(repo: Path, path: str, contents: str, *, msg: str) -> str:
     _git("add", path, cwd=repo)
     _git("commit", "-q", "-m", msg, cwd=repo)
     return _git("rev-parse", "HEAD", cwd=repo)
+
+
+@contextlib.contextmanager
+def _temp_rule_pack(pack_name: str, rules: object):
+    """Register a synthetic rule pack in ``sys.modules`` for one test.
+
+    Three pins here need a rule pack that misbehaves in a different way,
+    and each needs it visible to ``--compat-rule-pack``'s importlib
+    lookup. Registering and popping by hand three times invites one of
+    them to leak into a later test if an assertion raises, so the
+    register/pop pair lives here behind ``try/finally``.
+    """
+    module = types.ModuleType(pack_name)
+    module.RULES = rules
+    sys.modules[pack_name] = module
+    try:
+        yield pack_name
+    finally:
+        sys.modules.pop(pack_name, None)
+
+
+def _noisy_rule(ctx):
+    """A rule whose only effect is writing to stdout.
+
+    Used by the pins that show a rule pack's ``print`` corrupting
+    ``--format json`` and leaking past ``--quiet``.
+    """
+    print("noisy_rule: examining field")
+    return None
 
 
 def _invoke_in_repo(repo: Path, args: list[str]):
@@ -361,10 +391,7 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
         def __iter__(self):
             raise RuntimeError("boom from __iter__")
 
-    module = types.ModuleType(pack_name)
-    module.RULES = _BadRules()
-    sys.modules[pack_name] = module
-    try:
+    with _temp_rule_pack(pack_name, _BadRules()):
         result = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--compat-rule-pack", pack_name,
@@ -375,8 +402,6 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
             f"(exit 1); got exit {result.exit_code}, "
             f"exception={result.exception!r}"
         )
-    finally:
-        sys.modules.pop(pack_name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -415,14 +440,7 @@ def test_u15_3_rule_pack_print_does_not_corrupt_json_stdout(
     old, new = breaking_protos
     pack_name = "u15_print_rule_pack"
 
-    def noisy_rule(ctx):  # a rule that does nothing but print
-        print("noisy_rule: examining field")
-        return None
-
-    module = types.ModuleType(pack_name)
-    module.RULES = [("noisy", noisy_rule)]
-    sys.modules[pack_name] = module
-    try:
+    with _temp_rule_pack(pack_name, [("noisy", _noisy_rule)]):
         result = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--format", "json",
@@ -436,8 +454,6 @@ def test_u15_3_rule_pack_print_does_not_corrupt_json_stdout(
                 f"stdout={result.stdout[:200]!r}"
             )
         assert payload["compatible"] is False
-    finally:
-        sys.modules.pop(pack_name, None)
 
 
 @pytest.mark.xfail(
@@ -467,14 +483,7 @@ def test_u15_3_rule_pack_print_does_not_leak_under_quiet(
     old, new = breaking_protos
     pack_name = "u15_print_rule_pack_quiet"
 
-    def noisy_rule(ctx):  # a rule that does nothing but print
-        print("noisy_rule: examining field")
-        return None
-
-    module = types.ModuleType(pack_name)
-    module.RULES = [("noisy", noisy_rule)]
-    sys.modules[pack_name] = module
-    try:
+    with _temp_rule_pack(pack_name, [("noisy", _noisy_rule)]):
         result = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
             "--quiet",
@@ -484,8 +493,6 @@ def test_u15_3_rule_pack_print_does_not_leak_under_quiet(
             "--quiet promises exit-code-only, but stdout carried "
             f"{result.stdout!r}"
         )
-    finally:
-        sys.modules.pop(pack_name, None)
 
 
 # ---------------------------------------------------------------------------

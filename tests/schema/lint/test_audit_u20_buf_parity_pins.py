@@ -122,10 +122,9 @@ from typing import Any
 
 import pytest
 
-from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint.rules import imports as imports_pack
 from protokit.schema.lint.rules import package as package_pack
-from tests.schema.lint.rules.conftest import _run_single
+from tests.schema.lint.rules.conftest import _compile, _run_single
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -147,16 +146,7 @@ def _compiles(tmp_path: Path, sources: dict[str, str]) -> bool:
     every backend (protoxy raises; protoc exits non-zero), so the check
     does not depend on which compiler happens to be installed.
     """
-    paths: list[Path] = []
-    for name, text in sources.items():
-        p = tmp_path / name
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text)
-        paths.append(p)
-    result = compile_protos_to_result(
-        paths=paths, proto_paths=(str(tmp_path),),
-    )
-    return bool(result.root_files)
+    return bool(_compile(tmp_path, sources).root_files)
 
 
 def _without_import(source: str, imported: str) -> str:
