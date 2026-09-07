@@ -2,7 +2,7 @@
 
 Shared domain vocabulary for this project — entities, named processes, and status concepts with project-specific meaning. Seeded with core domain vocabulary, then accretes as ce-compound and ce-compound-refresh process learnings; direct edits are fine. Glossary only, not a spec or catch-all.
 
-> Seeded 2026-06-16 from the columnar/Parquet fidelity-signal work, so it currently covers the **storage / data-at-rest** area. Other areas (schema lint, compatibility checking, the message differ) are not yet defined here.
+> Seeded 2026-06-16 from the columnar/Parquet fidelity-signal work; covers **storage / data-at-rest**, **forensics / wire-level analysis**, and the **testing** vocabulary the audit-remediation work introduced. Other areas (schema lint, compatibility checking, the message differ) are not yet defined here.
 
 ## Storage / data-at-rest
 
@@ -49,3 +49,11 @@ A schema-less reader that decodes `(field number, wire type)` observations direc
 
 ### Drift
 The per-field divergence between wire data observed by the Wire-format field walker and a chosen candidate schema: an undeclared tag, a wire-type mismatch on a declared tag, a reserved tag in use, or a proto2 `required` field absent from the data. Where the Fidelity signal counts that bytes are unmodeled, Drift names which field diverges and how.
+
+## Testing
+
+### Regression pin
+A test that asserts the *correct* behaviour of a defect that is confirmed but not yet fixed, marked as a strict expected-failure whose reason string leads with the finding's identifier. It fails today, keeps the suite green while the defect is live, and turns into a hard failure the day the mechanism is fixed, so a fix cannot land silently and the pin cannot rot into a permanently red test. Distinct from a version pin (a dependency or tool version held fixed) and from a presence ratchet (a meta-test that fails when a required phrase or marker disappears from the tree).
+*Avoid:* xfail test, expected failure (too broad: those do not carry a finding identifier or a flip obligation)
+
+A pin is only a pin when it names the exception it fails with; a strict expected-failure alone detects the flip to passing, not the reason for failing, so an unrelated crash before the pin's assertion would otherwise count as the pinned defect. Each pin is paired with a **pin control**: a passing sibling that builds the same construction on the path the mechanism gets right, so a broken precondition shows up as a red control rather than as a pin that never reached its assertion. A pin whose construction cannot be built on some environment is red there, never quietly expected-failed. A pin nobody can make pass is a trap, so the bar for landing one is having shown it flip under a simulated fix.
