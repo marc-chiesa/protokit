@@ -1,12 +1,12 @@
 # protokit
 
-Python toolkit for Protocol Buffers — four pillars: message diffing, schema compatibility, linting (buf BASIC parity), and data-at-rest scan/filter.
+Python toolkit for Protocol Buffers — four pillars: message diffing, schema compatibility, linting (buf BASIC parity, tracked against a pinned buf version), and data-at-rest scan/filter.
 
 `protokit diff` — structural, filterable message diffs with cross-descriptor-pool comparison, schema evolution detection, and a pytest hook.
 
 `protokit compat` — descriptor-level schema compatibility checks with 18 built-in rules, four profiles, and a pluggable rule API.
 
-`protokit lint` — descriptor-level linting with full **buf BASIC parity** (26/26 rules), AIP-122 naming, a `[tool.protokit.lint]` pyproject table, and pluggable rule packs.
+`protokit lint` — descriptor-level linting with **buf BASIC parity: 26/26 rules as of buf v1.70.0** (see [Parity alignment](#parity-alignment) for the current pin and how drift is tracked), AIP-122 naming, a `[tool.protokit.lint]` pyproject table, and pluggable rule packs.
 
 `protokit storage` — schema-aware scan/filter over **stored** protobuf (length-delimited files, a pybind11 `memoryview`, any buffer source): `scan` / `head` / `count` with a minimal `--where` filter, presence-faithful field selection (`--fields`), dense full-record JSON (`--explicit-defaults`), typed Parquet output (`--format parquet -o`, via the optional `protokit[parquet]` extra), and safe concurrent multi-version scanning via isolated per-stream descriptor pools.
 
@@ -515,6 +515,29 @@ walk against a ref where the importer has been updated.
 ## Schema Linting
 
 > **Positioning**: protokit targets buf BASIC coverage; defaults reflect Python-protobuf-developer ergonomics, not buf's defaults (see `proto2-strict` for opt-in proto2 strictness).
+
+### Parity alignment
+
+**Currently aligned to buf `v1.70.0`.** protokit implements 26 of 26 buf
+BASIC lint rules *as they were defined at that version*. The pin lives in
+`_BUF_PARITY_PIN` (`src/protokit/schema/lint/cli.py`) and is echoed by
+`protokit lint --version`; the parity CI job builds against the same pin, and
+`tests/meta/test_buf_parity_pin_drift.py` fails if the two ever disagree.
+
+**The pin can lag upstream buf, and does today.** A scheduled watcher
+(`.github/workflows/buf-release-watch.yml`) compares the pin against buf's
+latest stable every week and opens — or updates in place — a tracking issue when
+it falls behind. That issue staying open is deliberate: it is a real, known work
+item, kept visible rather than silenced, because "26/26" only means something
+against a stated version. Parity is maintained at a lower priority than
+correctness work, so expect the pin to trail buf's release cadence.
+
+**What this means for you.** If you need lint results that match the very latest
+buf release exactly, run `buf lint` — it installs as an ordinary Python dev
+dependency (`pip install buf-bin`). If you want lint rules you can write in
+Python, ship in your own repo with no build step, and configure from
+`pyproject.toml`, that is what protokit is for. The two are complementary, and
+using both is a reasonable setup.
 
 `protokit lint` runs descriptor-level lint rules against one or
 more `.proto` files (or pre-built `FileDescriptorSet` binaries).
