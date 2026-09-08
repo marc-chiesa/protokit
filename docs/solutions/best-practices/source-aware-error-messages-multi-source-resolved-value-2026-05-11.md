@@ -52,7 +52,7 @@ reviewer — each flagging from a different angle: CI grep stability,
 operator UX, and agent stderr parsing respectively). The convergence
 was itself the signal that this was a load-bearing contract change,
 not a cosmetic wording preference. See
-[`apply-institutional-learnings-postdating-plan-during-ce-review`](./apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.md)
+`apply-institutional-learnings-postdating-plan-during-ce-review` (maintainer-side learning, kept in the private learnings repository rather than this tree)
 for the convergence-as-signal doctrine.
 
 This learning is distinct from but adjacent to

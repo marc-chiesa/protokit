@@ -50,6 +50,14 @@ A schema-less reader that decodes `(field number, wire type)` observations direc
 ### Drift
 The per-field divergence between wire data observed by the Wire-format field walker and a chosen candidate schema: an undeclared tag, a wire-type mismatch on a declared tag, a reserved tag in use, or a proto2 `required` field absent from the data. Where the Fidelity signal counts that bytes are unmodeled, Drift names which field diverges and how.
 
+## Lint
+
+### Rule pack
+A module that contributes lint rules as a unit: the built-in packs the CLI always loads, plus any user pack loaded on top of them. A pack declares which profiles each of its rules belongs to, so the resolved rule set for a run is composed across packs by profile, and multi-pack runs announce their composition.
+
+### Buf parity
+The claim that a protokit lint rule reports the same findings as the equivalent `buf lint` rule, held to a pinned buf version and checked by an in-repo harness that runs each such rule's fixtures through both tools. Parity is asserted per rule and per pinned version; a rule that intentionally diverges documents the divergence rather than claiming parity.
+
 ## Testing
 
 ### Regression pin
@@ -57,3 +65,19 @@ A test that asserts the *correct* behaviour of a defect that is confirmed but no
 *Avoid:* xfail test, expected failure (too broad: those do not carry a finding identifier or a flip obligation)
 
 A pin is only a pin when it names the exception it fails with; a strict expected-failure alone detects the flip to passing, not the reason for failing, so an unrelated crash before the pin's assertion would otherwise count as the pinned defect. Each pin is paired with a **pin control**: a passing sibling that builds the same construction on the path the mechanism gets right, so a broken precondition shows up as a red control rather than as a pin that never reached its assertion. A pin whose construction cannot be built on some environment is red there, never quietly expected-failed. A pin nobody can make pass is a trap, so the bar for landing one is having shown it flip under a simulated fix.
+
+### Presence ratchet
+A meta-test that fails when a required phrase, marker, or registration disappears from the tree — a guard on the *existence* of a discipline (a convention paragraph, a lint-gated path, a `raises=` on every expected-failure marker), not on its wording or its application. It starts at zero violations and refuses new ones, so it can be strict from its first commit without an allowlist. Distinct from a Regression pin, which guards a specific defect's fix.
+
+### Sibling blindness
+The failure mode where a fix lands at the call site that reported the defect while structurally identical sites elsewhere stay broken, and review does not notice because the reported case is now green. The defence is to derive the set of sites from the code (grep the ingredient, not the symptom) rather than from the list someone wrote down, and to fix every site in one change.
+
+### Runtime backend
+Which implementation of the protobuf Python library executes at test time: upb, the compiled default, or pure-Python, selected by environment variable before the library is imported. The two differ in how a descriptor pool resolves cross-file references (pure-Python only through a file's declared dependencies; upb against the whole pool) and in what registering a file returns, so a suite green under one has expressed one backend's opinion. Distinct from the Compile backend, which produces descriptors rather than executing them.
+
+### Compile backend
+Which tool turns `.proto` source into descriptors for a test or a CLI run: the optional in-process compiler, or the system `protoc` it falls back to. The two agree on descriptor semantics but not on byte-level details such as source-code-info layout, so comparisons across them are made on meaning, not bytes. Distinct from the Runtime backend.
+
+## Flagged ambiguities
+
+- "backend" had been used for both the protobuf Runtime backend (upb / pure-Python) and the Compile backend (in-process compiler / system `protoc`) — these are distinct axes, and a finding or CI cell names which one it is about.

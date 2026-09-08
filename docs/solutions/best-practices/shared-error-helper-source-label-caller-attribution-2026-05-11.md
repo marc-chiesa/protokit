@@ -328,7 +328,7 @@ test.
   for `OSError` on walk-up stat calls); this doc covers the
   caller-attribution angle (parameterized error messages for shared
   helpers). Both fixes landed in commit `24e688f`.
-- `docs/solutions/best-practices/apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.md` —
+- `apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09` (maintainer-side learning, kept in the private learnings repository rather than this tree) —
   this finding is itself an example: the gap was caught at
   ce:review, not at plan/brainstorm time, because plan reviewers
   read the helper signature without each caller's context in scope.
@@ -370,7 +370,7 @@ test.
 - The 5-persona convergence on `_read_and_parse` source attribution
   in this doc's Context section is one of the calibration data
   points cited in
-  `docs/solutions/best-practices/apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09.md`
+  `apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09` (maintainer-side learning, kept in the private learnings repository rather than this tree)
   (see its 2026-05-11 refinement note). 5-persona is among the
   strongest signals to date; the parallel D5 U2 review showed that
   3-way convergence with diverse reasoning chains is also a

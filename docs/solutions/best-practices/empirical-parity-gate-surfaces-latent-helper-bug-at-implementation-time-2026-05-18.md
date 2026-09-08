@@ -250,7 +250,7 @@ The invariant pin (Case 3) is the **earliest** of the three — it fires at U2 t
 
 ## Related
 
-- audit-wire-format-before-claiming-sibling-parity-2026-05-03 — planning-time complement: this doc catches at implementation time what that doc catches at plan time.
+- audit-wire-format-before-claiming-sibling-parity-2026-05-03 (maintainer-side learning, kept in the private learnings repository rather than this tree) — planning-time complement: this doc catches at implementation time what that doc catches at plan time.
 - [[buf-parity-divergence-documentation-discipline-2026-05-13]] — what to do once the snapshot gate fires and divergence is confirmed (four-site documentation discipline + `_PARITY_EXCEPTIONS` entry).
 - [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]] — contrast: programmatic fixtures (unit-test) vs committed NDJSON snapshots (parity gate). Different fixture strategies for different verification goals.
 - [[fixture-precondition-assertion-surfaces-silent-test-2026-05-17]] — sibling pattern at a different abstraction layer (fixture precondition vs emission-layer parity).

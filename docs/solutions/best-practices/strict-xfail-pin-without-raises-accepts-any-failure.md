@@ -1,6 +1,7 @@
 ---
 title: "Strict xfail only detects XPASS: a regression pin must declare raises= (and CliRunner catch_exceptions=False) or any failure before its assertion is accepted as the pinned defect"
 date: 2026-09-07
+last_updated: 2026-09-08
 category: docs/solutions/best-practices
 module: testing/pytest-conventions
 problem_type: best_practice
@@ -122,8 +123,9 @@ Measured on the current tree under pure-Python protobuf: the pre-fix U8
 file reported `3 failed, 5 passed, 10 xfailed`; the fixed file reports
 `8 failed, 5 passed, 6 xfailed`. Four pins that had been silently
 absorbing `KeyError` are now red, plus the new control. (The ProtoBuilder
-fix itself belongs to the pure-Python CI cell unit, U2 -- the pins are now
-*honest* there, not green.)
+fix itself landed as unit U22, PR #57 -- see
+[[wire-filedescriptorproto-dependency-through-pool-pure-python-vs-upb]];
+until then the pins are *honest* there, not green.)
 
 ## Guidance
 
@@ -169,15 +171,37 @@ Three further rules that fell out of the review:
    author sees the discipline before the first marker.
 
 The guard landed as `tests/meta/test_xfail_raises_ratchet.py` (U22 of the
-0.16.0 plan): an `ast` walk over `tests/**/*.py` that fails with the
-file:line of any `pytest.mark.xfail` decorator lacking a `raises=` keyword
--- strict or not -- and forbids the three shapes that cannot carry the
-discipline at the decorator: a module-level `pytestmark` xfail,
-`pytest.param(..., marks=xfail)`, and imperative `pytest.xfail()`. It
-started at zero violations (all 38 markers carried `raises=`; none of the
-other shapes existed under `tests/`), so it is strict from its first
-commit with no allowlist. Markers a `conftest.py` hook applies at
-collection time are not decorators and fall outside the walk.
+0.16.0 plan, PR #57): an `ast` walk over `tests/**/*.py` that fails with
+the file:line of any `pytest.mark.xfail` *construction* -- decorator or
+not, strict or not -- that lacks a `raises=` keyword, and it forbids the
+shapes that evade a decorator-only check: a module-level `pytestmark`
+xfail, `pytest.param(..., marks=xfail)`, imperative `pytest.xfail()`, and
+any alias of the marker (`import pytest as pt`, `from pytest import
+mark`, `xfail = pytest.mark.xfail`). It started at zero violations (all
+38 markers carried `raises=`; none of the other shapes existed under
+`tests/`), so it is strict from its first commit with no allowlist.
+
+Two review findings on that ratchet are the durable part, because each is
+a way a guard can pass while the thing it guards is absent:
+
+1. **Check every construction, not one position.** The first cut inspected
+   only `decorator_list`. A test body that calls
+   `request.applymarker(pytest.mark.xfail(strict=True))` or
+   `item.add_marker(...)` produces an XFAIL the decorator walk never sees,
+   and a review probe showed pytest reporting it green. The fix scans every
+   `pytest.mark.xfail` call and bare-attribute use anywhere in the module,
+   so a `conftest.py` hook that builds a marker is checked by the same rule
+   (it passes when it names `raises=`, which the pure-Python inventory hook
+   must).
+2. **Validate the value, not the keyword's presence.** `raises=None`,
+   `raises=Exception`, `raises=BaseException`, or a tuple holding one of
+   them satisfied a presence check while leaving pytest's exception filter
+   effectively off -- precisely the false green this document is about.
+   Those are now offenders in their own right.
+
+The general rule: a ratchet over a discipline must enumerate the ways the
+discipline can be spelled, not the one way the author first wrote it, and
+its self-checks must include each evasion shape as an injected violation.
 
 ## Why This Matters
 

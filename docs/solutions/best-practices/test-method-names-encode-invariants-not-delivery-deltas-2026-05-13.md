@@ -146,10 +146,10 @@ def test_builtin_default_emits_provenance_line_two_packs(
     """
 ```
 
-The method name pins the invariant (`_two_packs` describes the gate-firing condition); the docstring captures the delivery history without polluting the test-ID surface. The sibling method `test_multi_pack_emits_provenance_line` followed the same timeless convention from the start and needed no rename — the U4 rename brought the inverted test into line with that existing convention.
+The method name pins the invariant (`_two_packs` describes the gate-firing condition); the docstring captures the delivery history without polluting the test-ID surface. The sibling method `test_multi_pack_emits_provenance_line` followed the same timeless convention from the start and needed no rename — the U4 rename brought the inverted test into line with that existing convention. (Postscript: the real test was later renamed to `..._multi_pack` when the fixture grew past two packs — the invariant itself changed, which is the one legitimate reason an invariant-shaped name changes; the delivery-delta suffix still never appeared.)
 
 ## Related
 
 - [[rule-pack-extension-ssot-rule-ids-and-test-class-naming-2026-05-12]] — natural sibling: that doc covers test *class* naming (deduplication across sibling files); this doc covers test *method* naming (invariant-vs-delivery-moment encoding). Together they cover both granularities of test-naming hygiene.
-- apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09 — adjacent: the discipline of absorbing post-plan ce:review findings into the docstring (rather than the method name) is one application of the "docstring holds the history, method name holds the invariant" split this doc generalizes.
+- apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09 (maintainer-side learning, kept in the private learnings repository rather than this tree) — adjacent: the discipline of absorbing post-plan ce:review findings into the docstring (rather than the method name) is one application of the "docstring holds the history, method name holds the invariant" split this doc generalizes.
 - [[perf-smoke-profile-compose-across-builtin-packs-2026-05-13]] — sibling from the same ce:review pass; both surfaced as P2/P3 findings during D6a U4 ce:review and both are net-new institutional knowledge for the project.
