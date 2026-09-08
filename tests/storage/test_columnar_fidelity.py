@@ -15,10 +15,16 @@ required field -> cannot measure.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.storage._columnar import _unmodeled_byte_delta
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 F = descriptor_pb2.FieldDescriptorProto
 
 
@@ -204,3 +210,36 @@ def test_missing_required_field_cannot_measure():
     m.ParseFromString(bytes([0x10, 0x05]))  # field 2 (o) = 5; required r unset
     assert m.IsInitialized() is False
     assert _unmodeled_byte_delta(m) is None
+
+
+# --- backend guard for the pool helpers ---------------------------------------
+#
+# Pure-Python ``DescriptorPool.Add`` returns None where upb returns the
+# FileDescriptor, so ``fd = pool.Add(fdp)`` only breaks under the backend CI does
+# not run. The child asserts it really is on the pure-Python backend, then drives
+# ``_cls`` and the inline pool site in ``test_declared_extension_is_a_blind_spot``.
+
+_PURE_PYTHON_SCRIPT = "\n".join((
+    "from google.protobuf.internal import api_implementation",
+    "assert api_implementation.Type() == 'python', api_implementation.Type()",
+    "from tests.storage import test_columnar_fidelity as mod",
+    "cls = mod._cls(mod._enum_file('proto3'), 'M')",
+    "assert cls.DESCRIPTOR.full_name == 'e3.M', cls.DESCRIPTOR.full_name",
+    "mod.test_declared_extension_is_a_blind_spot()",
+    "print('pure-python-ok')",
+))
+
+
+def test_pool_helpers_work_under_pure_python_backend():
+    """``_cls`` and the extension test's pool site must resolve the FileDescriptor
+    via ``FindFileByName`` rather than ``Add``'s return value. Runs in a subprocess
+    because the protobuf backend is chosen at import time."""
+    env = dict(
+        os.environ, PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="python", PYTHONPATH=str(_REPO_ROOT)
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", _PURE_PYTHON_SCRIPT], cwd=_REPO_ROOT, env=env,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "pure-python-ok", result.stdout

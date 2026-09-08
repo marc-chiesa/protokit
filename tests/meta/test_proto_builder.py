@@ -14,6 +14,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 T = descriptor_pb2.FieldDescriptorProto
 
 
+def _add_extendable_base(pool: descriptor_pool.DescriptorPool) -> None:
+    """Add proto2 ``t.Base`` (extension range 100-200) to ``pool`` as ``base.proto``."""
+    fp = descriptor_pb2.FileDescriptorProto(name="base.proto", package="t", syntax="proto2")
+    base = fp.message_type.add()
+    base.name = "Base"
+    rng = base.extension_range.add()
+    rng.start, rng.end = 100, 200
+    pool.Add(fp)
+
+
 class TestProtoBuilderBasic:
     def test_simple_message(self) -> None:
         builder = ProtoBuilder()
@@ -169,7 +179,13 @@ class TestDependencyWiring:
         user_file = pool.FindFileByName("generated_1.proto")
         assert [d.name for d in user_file.dependencies] == ["hand_made.proto"]
 
-    def test_map_message_value_never_crosses_files(self) -> None:
+    def test_map_message_entry_reference_is_same_file(self) -> None:
+        """The synthetic MapEntry reference is in-file, so no dependency is recorded.
+
+        ``map_message`` has no ``type_name`` channel for message-valued maps;
+        the only reference it emits is the parent's ``type_name`` pointing at
+        its own nested ``*Entry`` message.
+        """
         builder = ProtoBuilder()
         builder.map_message(
             "test.Config",
@@ -223,10 +239,89 @@ class TestDependencyWiring:
         wire_dependencies(fp, pool)
         assert list(fp.dependency) == ["ab.proto", "ab2.proto"]
 
+    def test_file_level_extension_records_extendee_and_value_files(self) -> None:
+        """A file-level ``extend`` names two cross-file types: its extendee and
+        its message-typed value. Both files are recorded, extendee first.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        _add_extendable_base(pool)
+        build_message(pool, "t.Val", syntax="proto2", file_name="val.proto")
+        fp = descriptor_pb2.FileDescriptorProto(name="ext.proto", package="t", syntax="proto2")
+        ext = fp.extension.add()
+        ext.name, ext.number, ext.label = "val", 100, T.LABEL_OPTIONAL
+        ext.type, ext.type_name, ext.extendee = T.TYPE_MESSAGE, ".t.Val", ".t.Base"
+        wire_dependencies(fp, pool)
+        assert list(fp.dependency) == ["base.proto", "val.proto"]
+        pool.Add(fp)  # the fixture is a shape protobuf accepts
+
+    def test_message_scoped_extension_records_extendee_file(self) -> None:
+        """A proto2 ``extend`` block nested inside a message is walked too."""
+        pool = descriptor_pool.DescriptorPool()
+        _add_extendable_base(pool)
+        fp = descriptor_pb2.FileDescriptorProto(name="wrap.proto", package="t", syntax="proto2")
+        wrapper = fp.message_type.add()
+        wrapper.name = "Wrapper"
+        ext = wrapper.extension.add()
+        ext.name, ext.number, ext.label = "wrapped", 101, T.LABEL_OPTIONAL
+        ext.type, ext.extendee = T.TYPE_INT32, ".t.Base"
+        wire_dependencies(fp, pool)
+        assert list(fp.dependency) == ["base.proto"]
+        pool.Add(fp)  # the fixture is a shape protobuf accepts
+
+    def test_nested_message_field_records_cross_file_reference(self) -> None:
+        """A field on a nested sub-message (not a map entry) is walked too."""
+        pool = descriptor_pool.DescriptorPool()
+        build_message(pool, "t.Ref", file_name="ref.proto")
+        fp = descriptor_pb2.FileDescriptorProto(name="outer.proto", package="t")
+        outer = fp.message_type.add()
+        outer.name = "Outer"
+        inner = outer.nested_type.add()
+        inner.name = "Inner"
+        f = inner.field.add()
+        f.name, f.number, f.type, f.type_name = "r", 1, T.TYPE_MESSAGE, ".t.Ref"
+        wire_dependencies(fp, pool)
+        assert list(fp.dependency) == ["ref.proto"]
+
+    def test_bare_relative_name_resolves_through_package(self) -> None:
+        """A package-unqualified ``type_name`` is tried under the file's package."""
+        pool = descriptor_pool.DescriptorPool()
+        build_message(pool, "t.Inner", file_name="inner.proto")
+        fp = descriptor_pb2.FileDescriptorProto(name="outer.proto", package="t")
+        m = fp.message_type.add()
+        m.name = "Outer"
+        f = m.field.add()
+        f.name, f.number, f.type, f.type_name = "inner", 1, T.TYPE_MESSAGE, "Inner"
+        wire_dependencies(fp, pool)
+        assert list(fp.dependency) == ["inner.proto"]
+
+    def test_bare_name_prefers_package_scope_over_pool_root(self) -> None:
+        """Candidates follow protobuf scope order: innermost package first.
+
+        With root-level ``X`` and ``a.X`` both in the pool, a file in package
+        ``a`` referencing bare ``X`` must depend on ``a.proto`` — protobuf
+        itself resolves to ``a.X``, and a bare-name-first order would instead
+        record ``r.proto`` and (under pure Python) resolve to the root type.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        build_message(pool, "X", file_name="r.proto")
+        build_message(pool, "a.X", file_name="a.proto")
+        fp = descriptor_pb2.FileDescriptorProto(name="y.proto", package="a", syntax="proto3")
+        m = fp.message_type.add()
+        m.name = "Y"
+        f = m.field.add()
+        f.name, f.number, f.type, f.type_name = "x", 1, T.TYPE_MESSAGE, "X"
+        f.label = T.LABEL_OPTIONAL
+        wire_dependencies(fp, pool)
+        assert list(fp.dependency) == ["a.proto"]
+        pool.Add(fp)
+        resolved = pool.FindMessageTypeByName("a.Y").fields_by_name["x"].message_type
+        assert resolved.full_name == "a.X"
+
     def test_cross_file_reference_resolves_under_pure_python(self) -> None:
         """The construction that used to raise ``KeyError`` on the pure-Python
         backend now resolves. Runs in a subprocess because the backend is
-        chosen at import time; skipped only if the runtime cannot be forced.
+        chosen at import time; a runtime that cannot be forced fails loudly on
+        the child's ``api_implementation`` assertion rather than skipping.
         """
         script = (
             "from google.protobuf.internal import api_implementation\n"

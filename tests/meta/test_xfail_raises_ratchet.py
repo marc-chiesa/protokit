@@ -7,19 +7,27 @@ across four audit pin files (see
 ``docs/solutions/best-practices/strict-xfail-pin-without-raises-accepts-any-failure.md``).
 This ratchet makes that discipline structural (U22, KTD11's companion):
 
-* every ``@pytest.mark.xfail(...)`` decorator carries a ``raises=`` keyword,
-  whether or not it is ``strict``;
+* every construction of ``pytest.mark.xfail`` — as a decorator, an
+  ``add_marker``/``applymarker`` argument, a ``marks=`` value, an assignment
+  value, anywhere in the module — names a *specific* ``raises=``: the keyword
+  is present and is not ``None``, ``Exception`` or ``BaseException`` (alone
+  or inside a tuple), any of which leaves pytest's exception filter off;
 * a module-level ``pytestmark`` xfail, a ``pytest.param(..., marks=xfail)``,
   and an imperative ``pytest.xfail(...)`` call are forbidden outright — none
   exists today, so there is no allowlist to maintain and the first one to
-  appear is a review conversation, not a silent precedent.
+  appear is a review conversation, not a silent precedent;
+* the literal ``pytest.mark.xfail`` spelling is the only accepted one:
+  ``import pytest as ...``, ``from pytest import mark|xfail|param``, and
+  ``name = pytest.mark.xfail`` aliases are forbidden, so no spelling of the
+  marker can sit where this walk cannot see it.
 
 Markers applied at collection time by a ``conftest.py`` hook (the pure-Python
-known-failure inventory, U2) are not source decorators and fall outside this
-walk by construction.
+known-failure inventory, U2) are constructions like any other —
+``item.add_marker(pytest.mark.xfail(...))`` is a ``pytest.mark.xfail(...)``
+call in source — so the same ``raises=`` check covers them.
 
 The check is an ``ast`` walk over ``tests/**/*.py``; docstrings and comments
-that *mention* the marker are not decorators and are ignored.
+that *mention* the marker are not constructions and are ignored.
 """
 
 from __future__ import annotations
@@ -40,6 +48,11 @@ _DISCOVERY_COMMAND = (
 
 _XFAIL_MARK = "pytest.mark.xfail"
 _IMPERATIVE_XFAIL = "pytest.xfail"
+# ``raises=`` values that match every exception, i.e. no filter at all.
+_CATCH_ALL_RAISES = frozenset({"None", "Exception", "BaseException"})
+# ``from pytest import <name>`` forms that let the marker be spelled without ``pytest.``.
+_ALIASABLE_PYTEST_NAMES = frozenset({"mark", "xfail", "param", "*"})
+_ALIAS_KIND = "aliased pytest marker import"
 
 
 @dataclass(frozen=True)
@@ -61,9 +74,7 @@ def _dotted(node: ast.AST) -> str:
 
 
 def _is_xfail_marker(node: ast.AST) -> bool:
-    """True for ``pytest.mark.xfail`` and ``pytest.mark.xfail(...)``."""
-    if isinstance(node, ast.Call):
-        node = node.func
+    """True for the literal ``pytest.mark.xfail`` attribute chain."""
     return isinstance(node, ast.Attribute) and _dotted(node) == _XFAIL_MARK
 
 
@@ -71,10 +82,26 @@ def _contains_xfail_marker(node: ast.AST) -> bool:
     return any(_is_xfail_marker(child) for child in ast.walk(node))
 
 
-def _marker_has_raises(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and any(
-        kw.arg == "raises" for kw in node.keywords
-    )
+def _is_catch_all_raises(value: ast.expr) -> bool:
+    """True when ``raises=`` names no real filter: ``None``, ``Exception``,
+    ``BaseException``, or a tuple/list holding any of them.
+    """
+    elts = value.elts if isinstance(value, (ast.Tuple, ast.List)) else [value]
+    return any(_dotted(elt) in _CATCH_ALL_RAISES for elt in elts)
+
+
+def _raises_offence(marker: ast.expr) -> str | None:
+    """Offender kind for one marker construction, or None when it names a
+    specific ``raises=``. A bare ``pytest.mark.xfail`` carries no keywords.
+    """
+    if not isinstance(marker, ast.Call):
+        return "xfail marker without raises="
+    for kw in marker.keywords:
+        if kw.arg == "raises":
+            if _is_catch_all_raises(kw.value):
+                return "xfail marker with catch-all raises="
+            return None
+    return "xfail marker without raises="
 
 
 @dataclass(frozen=True)
@@ -88,36 +115,64 @@ def scan_source(source: str, path: str) -> ScanResult:
     tree = ast.parse(source, filename=path)
     found = 0
     offenders: list[Offender] = []
+    # A marker heading a call is that call's construction; an attribute that
+    # is *not* a call head is a bare ``pytest.mark.xfail`` used as a value.
+    call_heads = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+
+    def flag(node: ast.AST, kind: str) -> None:
+        offenders.append(Offender(path, node.lineno, kind))
 
     for node in ast.walk(tree):
-        # 1. Decorators: every xfail marker must carry raises=.
-        for dec in getattr(node, "decorator_list", ()):
-            if not _is_xfail_marker(dec):
-                continue
+        # 1. Every construction of the marker, wherever it sits (decorator,
+        #    add_marker/applymarker argument, marks= value, assignment value),
+        #    must name a specific raises=.
+        is_construction = (isinstance(node, ast.Call) and _is_xfail_marker(node.func)) or (
+            _is_xfail_marker(node) and id(node) not in call_heads
+        )
+        if is_construction:
             found += 1
-            if not _marker_has_raises(dec):
-                offenders.append(Offender(path, dec.lineno, "xfail marker without raises="))
+            kind = _raises_offence(node)
+            if kind is not None:
+                flag(node, kind)
 
-        # 2. Module-level ``pytestmark = pytest.mark.xfail(...)`` (or a list holding one).
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            is_pytestmark = any(
-                isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets
-            )
-            if is_pytestmark and node.value is not None and _contains_xfail_marker(node.value):
-                offenders.append(Offender(path, node.lineno, "pytestmark xfail"))
+        # 2. ``pytestmark = pytest.mark.xfail(...)`` (or a list holding one) is
+        #    forbidden; any other name bound to the marker is an alias that
+        #    hides its later uses from this walk.
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            value = node.value
+            if value is not None and _contains_xfail_marker(value):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                is_pytestmark = any(
+                    isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets
+                )
+                flag(node, "pytestmark xfail" if is_pytestmark else _ALIAS_KIND)
+
+        # 3. Aliased imports: the literal ``pytest.mark.xfail`` spelling is the
+        #    only one this walk can see, so every other spelling is forbidden.
+        if isinstance(node, ast.Import) and any(
+            a.name == "pytest" and a.asname not in (None, "pytest") for a in node.names
+        ):
+            flag(node, _ALIAS_KIND)
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "pytest"
+            and any(a.name in _ALIASABLE_PYTEST_NAMES for a in node.names)
+        ):
+            flag(node, _ALIAS_KIND)
 
         if isinstance(node, ast.Call):
             head = _dotted(node.func)
-            # 3. ``pytest.param(..., marks=pytest.mark.xfail(...))``.
+            # 4. ``pytest.param(..., marks=pytest.mark.xfail(...))``.
             if head == "pytest.param":
                 for kw in node.keywords:
                     if kw.arg == "marks" and _contains_xfail_marker(kw.value):
-                        offenders.append(Offender(path, node.lineno, "pytest.param(marks=xfail)"))
-            # 4. Imperative ``pytest.xfail(...)``.
+                        flag(node, "pytest.param(marks=xfail)")
+            # 5. Imperative ``pytest.xfail(...)``.
             elif head == _IMPERATIVE_XFAIL:
-                offenders.append(Offender(path, node.lineno, "imperative pytest.xfail()"))
+                flag(node, "imperative pytest.xfail()")
 
+    # ``ast.walk`` order is unspecified; report in source order.
+    offenders.sort(key=lambda o: (o.line, o.kind))
     return ScanResult(found, tuple(offenders))
 
 
@@ -137,10 +192,13 @@ def _format_failure(offenders: tuple[Offender, ...]) -> str:
     return (
         "xfail markers that can pass for the wrong reason:\n"
         f"{lines}\n"
-        f"Every pytest.mark.xfail decorator must name raises=; pytestmark "
-        f"xfails, pytest.param(marks=xfail), and imperative pytest.xfail() "
-        f"are not allowed. Why: {_LEARNING}. To see what each pin actually "
-        f"raises today, run: {_DISCOVERY_COMMAND}"
+        "Every pytest.mark.xfail construction (decorator, add_marker/applymarker "
+        "argument, marks= value, assignment) must name a specific raises= — not "
+        "None, Exception or BaseException; pytestmark xfails, "
+        "pytest.param(marks=xfail), imperative pytest.xfail(), and aliased "
+        "spellings (import pytest as ..., from pytest import mark/xfail/param, "
+        f"name = pytest.mark.xfail) are not allowed. Why: {_LEARNING}. To see "
+        f"what each pin actually raises today, run: {_DISCOVERY_COMMAND}"
     )
 
 
@@ -160,6 +218,8 @@ class TestXfailRaisesRatchetSelfCheck:
 
     def _offenders(self, source: str) -> list[str]:
         return [str(o) for o in scan_source(source, "synthetic.py").offenders]
+
+    # -- rule 1: every construction names a specific raises= ------------------
 
     def test_strict_marker_without_raises_is_an_offender(self) -> None:
         src = (
@@ -185,6 +245,50 @@ class TestXfailRaisesRatchetSelfCheck:
         )
         assert self._offenders(src) == ["synthetic.py:2: xfail marker without raises="]
 
+    def test_applymarker_in_test_body_without_raises_is_an_offender(self) -> None:
+        src = (
+            "import pytest\n"
+            "def test_a(request):\n"
+            "    request.applymarker(pytest.mark.xfail(strict=True, reason='late'))\n"
+            "    assert False\n"
+        )
+        assert self._offenders(src) == ["synthetic.py:3: xfail marker without raises="]
+
+    def test_add_marker_in_test_body_without_raises_is_an_offender(self) -> None:
+        src = (
+            "import pytest\n"
+            "def test_a(request):\n"
+            "    request.node.add_marker(pytest.mark.xfail(strict=True))\n"
+            "    assert False\n"
+        )
+        assert self._offenders(src) == ["synthetic.py:3: xfail marker without raises="]
+
+    def test_raises_none_is_an_offender(self) -> None:
+        src = (
+            "import pytest\n"
+            "@pytest.mark.xfail(strict=True, raises=None)\n"
+            "def test_a():\n    pass\n"
+        )
+        assert self._offenders(src) == ["synthetic.py:2: xfail marker with catch-all raises="]
+
+    def test_raises_exception_is_an_offender(self) -> None:
+        src = "import pytest\n@pytest.mark.xfail(raises=Exception)\ndef test_a():\n    pass\n"
+        assert self._offenders(src) == ["synthetic.py:2: xfail marker with catch-all raises="]
+
+    def test_raises_base_exception_is_an_offender(self) -> None:
+        src = "import pytest\n@pytest.mark.xfail(raises=BaseException)\ndef test_a():\n    pass\n"
+        assert self._offenders(src) == ["synthetic.py:2: xfail marker with catch-all raises="]
+
+    def test_raises_tuple_holding_catch_all_is_an_offender(self) -> None:
+        src = (
+            "import pytest\n"
+            "@pytest.mark.xfail(strict=True, raises=(KeyError, Exception))\n"
+            "def test_a():\n    pass\n"
+        )
+        assert self._offenders(src) == ["synthetic.py:2: xfail marker with catch-all raises="]
+
+    # -- rules 2, 4, 5: forbidden shapes, raises= or not ----------------------
+
     def test_pytestmark_xfail_is_an_offender(self) -> None:
         src = "import pytest\npytestmark = pytest.mark.xfail(raises=KeyError)\n"
         assert self._offenders(src) == ["synthetic.py:2: pytestmark xfail"]
@@ -194,6 +298,10 @@ class TestXfailRaisesRatchetSelfCheck:
             "import pytest\n"
             "pytestmark = [pytest.mark.parity, pytest.mark.xfail(raises=KeyError)]\n"
         )
+        assert self._offenders(src) == ["synthetic.py:2: pytestmark xfail"]
+
+    def test_annotated_pytestmark_holding_xfail_is_an_offender(self) -> None:
+        src = "import pytest\npytestmark: list = [pytest.mark.xfail(raises=KeyError)]\n"
         assert self._offenders(src) == ["synthetic.py:2: pytestmark xfail"]
 
     def test_param_marks_xfail_is_an_offender(self) -> None:
@@ -206,9 +314,49 @@ class TestXfailRaisesRatchetSelfCheck:
         )
         assert self._offenders(src) == ["synthetic.py:3: pytest.param(marks=xfail)"]
 
+    def test_param_marks_list_holding_xfail_is_an_offender(self) -> None:
+        src = (
+            "import pytest\n"
+            "@pytest.mark.parametrize('x', [\n"
+            "    pytest.param(1, marks=[pytest.mark.xfail(raises=ValueError)]),\n"
+            "])\n"
+            "def test_a(x):\n    pass\n"
+        )
+        assert self._offenders(src) == ["synthetic.py:3: pytest.param(marks=xfail)"]
+
     def test_imperative_xfail_is_an_offender(self) -> None:
         src = "import pytest\ndef test_a():\n    pytest.xfail('not today')\n"
         assert self._offenders(src) == ["synthetic.py:3: imperative pytest.xfail()"]
+
+    # -- rule 3: the literal spelling is the only one ------------------------
+
+    def test_import_pytest_as_alias_is_an_offender(self) -> None:
+        src = "import pytest as pt\n@pt.mark.xfail(strict=True)\ndef test_a():\n    pass\n"
+        assert self._offenders(src) == ["synthetic.py:1: aliased pytest marker import"]
+
+    def test_from_pytest_import_mark_is_an_offender(self) -> None:
+        src = "from pytest import mark\n@mark.xfail(strict=True)\ndef test_a():\n    pass\n"
+        assert self._offenders(src) == ["synthetic.py:1: aliased pytest marker import"]
+
+    def test_from_pytest_import_xfail_is_an_offender(self) -> None:
+        src = "from pytest import xfail\ndef test_a():\n    xfail('not today')\n"
+        assert self._offenders(src) == ["synthetic.py:1: aliased pytest marker import"]
+
+    def test_marker_bound_to_a_name_is_an_offender(self) -> None:
+        # The binding is the alias; the bare marker it binds is also a
+        # construction without raises=, so both fire on the same line.
+        src = (
+            "import pytest\n"
+            "xfail = pytest.mark.xfail\n"
+            "@xfail(strict=True)\n"
+            "def test_a():\n    pass\n"
+        )
+        assert self._offenders(src) == [
+            "synthetic.py:2: aliased pytest marker import",
+            "synthetic.py:2: xfail marker without raises=",
+        ]
+
+    # -- allowed shapes -------------------------------------------------------
 
     def test_marker_with_raises_is_allowed(self) -> None:
         src = (
@@ -220,15 +368,37 @@ class TestXfailRaisesRatchetSelfCheck:
         assert result.offenders == ()
         assert result.markers_found == 1
 
+    def test_marker_with_tuple_of_specific_raises_is_allowed(self) -> None:
+        src = (
+            "import pytest\n"
+            "@pytest.mark.xfail(strict=True, raises=(KeyError, ValueError))\n"
+            "def test_a():\n    pass\n"
+        )
+        result = scan_source(src, "synthetic.py")
+        assert result.offenders == ()
+        assert result.markers_found == 1
+
+    def test_conftest_style_add_marker_with_raises_is_allowed(self) -> None:
+        # U2's known-failure inventory applies markers from a conftest hook;
+        # the construction is checked like a decorator and passes with raises=.
+        src = (
+            "import pytest\n"
+            "def pytest_collection_modifyitems(items):\n"
+            "    for item in items:\n"
+            "        item.add_marker(pytest.mark.xfail(strict=True, raises=KeyError, reason='x'))\n"
+        )
+        result = scan_source(src, "synthetic.py")
+        assert result.offenders == ()
+        assert result.markers_found == 1
+
     def test_other_markers_and_mentions_are_ignored(self) -> None:
         src = (
             "import pytest\n"
             "'''Docstring mentioning @pytest.mark.xfail(strict=True) is prose.'''\n"
             "pytestmark = pytest.mark.parity\n"
             "@pytest.mark.skipif(True, reason='x')\n"
-            "def test_a(item):\n"
-            "    # a conftest hook applies markers at collection time, not here\n"
-            "    item.add_marker(pytest.mark.xfail(strict=True, raises=KeyError))\n"
+            "def test_a():\n"
+            "    pass  # pytest.mark.xfail(strict=True) in a comment is prose too\n"
         )
         result = scan_source(src, "synthetic.py")
         assert result.offenders == ()

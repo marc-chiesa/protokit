@@ -28,22 +28,56 @@ def _declared_type_names(file_proto: descriptor_pb2.FileDescriptorProto) -> set[
 
 
 def _referenced_type_names(file_proto: descriptor_pb2.FileDescriptorProto) -> list[str]:
-    """Every ``type_name`` a field in ``file_proto`` references, in source order."""
+    """Every type name ``file_proto`` references, in source order.
+
+    Covers a field's ``type_name`` and, for an extension at either file or
+    message scope, its ``extendee`` as well: the pure-Python backend resolves
+    both through the file's dependencies, and a proto2 ``extend`` block may
+    sit inside a message.
+    """
     refs: list[str] = []
+
+    def _extension(ext: descriptor_pb2.FieldDescriptorProto) -> None:
+        if ext.extendee:
+            refs.append(ext.extendee)
+        if ext.type_name:
+            refs.append(ext.type_name)
 
     def _walk(msg: descriptor_pb2.DescriptorProto) -> None:
         for field in msg.field:
             if field.type_name:
                 refs.append(field.type_name)
+        for ext in msg.extension:
+            _extension(ext)
         for nested in msg.nested_type:
             _walk(nested)
 
     for msg in file_proto.message_type:
         _walk(msg)
     for ext in file_proto.extension:
-        if ext.type_name:
-            refs.append(ext.type_name)
+        _extension(ext)
     return refs
+
+
+def _resolution_candidates(type_name: str, package: str) -> list[str]:
+    """Fully-qualified names ``type_name`` may denote, in protobuf scope order.
+
+    A leading dot marks the name absolute: only the stripped name is tried.
+    A relative name is tried innermost-scope first, walking outward through
+    the package and ending at the bare name — package ``a.b`` and name ``X``
+    yield ``["a.b.X", "a.X", "X"]`` — so the first candidate that resolves is
+    the one protobuf would pick, and a same-named type at the root of a
+    shared pool cannot shadow the package-local one.
+    """
+    if type_name.startswith("."):
+        return [type_name[1:]]
+    candidates: list[str] = []
+    scope = package
+    while scope:
+        candidates.append(f"{scope}.{type_name}")
+        scope = scope.rpartition(".")[0]
+    candidates.append(type_name)
+    return candidates
 
 
 def wire_dependencies(
@@ -61,23 +95,24 @@ def wire_dependencies(
     ``pool.Add(file_proto)``.
 
     Resolution goes through ``pool`` — never a builder-local file list —
-    because several call sites pre-populate a shared pool by hand. A referent
-    that is not in the pool (a same-file or forward reference) is a miss, not
-    an error; the same-file case is additionally excluded by name so a shared
-    pool that already holds an identically named type from another file does
-    not acquire a spurious edge. Each dependency is recorded once, in
-    first-reference order.
+    because several call sites pre-populate a shared pool by hand. Each
+    reference is tried in protobuf scope order (see
+    ``_resolution_candidates``): the first candidate that is either declared
+    in this file or present in the pool settles it, so a shared pool holding
+    a same-named type at an outer scope never shadows the inner one. A
+    referent that is not in the pool (a same-file or forward reference) is a
+    miss, not an error; the same-file case is additionally excluded by name
+    so a shared pool that already holds an identically named type from
+    another file does not acquire a spurious edge. Each dependency is
+    recorded once, in first-reference order.
     """
     declared = _declared_type_names(file_proto)
     package = file_proto.package
     for type_name in _referenced_type_names(file_proto):
-        candidates = [type_name.lstrip(".")]
-        if package and not candidates[0].startswith(f"{package}."):
-            candidates.append(f"{package}.{candidates[0]}")
-        if any(c in declared for c in candidates):
-            continue
         referent = None
-        for candidate in candidates:
+        for candidate in _resolution_candidates(type_name, package):
+            if candidate in declared:
+                break
             for finder in (pool.FindMessageTypeByName, pool.FindEnumTypeByName):
                 try:
                     referent = finder(candidate)
