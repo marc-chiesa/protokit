@@ -8,9 +8,11 @@ and ``allow_alias`` enums.
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from google.protobuf import descriptor_pb2, descriptor_pool
+
+from tests.proto_builder import wire_dependencies
 
 T = descriptor_pb2.FieldDescriptorProto
 M = descriptor_pb2.DescriptorProto
@@ -96,6 +98,7 @@ def build_message(
         if "default_value" in spec:
             f.default_value = spec["default_value"]
 
+    wire_dependencies(fp, pool)
     pool.Add(fp)
 
 
@@ -126,4 +129,5 @@ def build_enum(
         vp = ep.value.add()
         vp.name = val_name
         vp.number = val_number
+    wire_dependencies(fp, pool)
     pool.Add(fp)

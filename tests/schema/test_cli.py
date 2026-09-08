@@ -263,9 +263,10 @@ class TestDedupeByType:
                 {"name": "b", "number": 2, "type": T.TYPE_MESSAGE,
                  "type_name": "t.Shared"},
             ], file_name=f"cli_outer_{label}.proto")
-        # Include both types so the emitted descriptor set carries
-        # the Shared file alongside Outer (build_message doesn't
-        # auto-wire dependency edges between sibling files).
+        # Name both types so the emitted descriptor set carries the
+        # Shared file alongside Outer: the writer serializes the files
+        # of the types it is given, and does not follow ``dependency``
+        # (which build_message now wires via ``wire_dependencies``).
         return (
             _write_desc(tmp_path, "old_shared", old, ["t.Outer", "t.Shared"]),
             _write_desc(tmp_path, "new_shared", new, ["t.Outer", "t.Shared"]),

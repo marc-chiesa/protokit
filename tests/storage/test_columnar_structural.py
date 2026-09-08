@@ -39,7 +39,8 @@ def _base_with_extensions(
 def _desc(fdp: descriptor_pb2.FileDescriptorProto, type_name: str = "Base"):
     """Build an isolated pool from one FileDescriptorProto, return the Descriptor."""
     pool = descriptor_pool.DescriptorPool()
-    fd = pool.Add(fdp)
+    pool.Add(fdp)
+    fd = pool.FindFileByName(fdp.name)
     return fd.message_types_by_name[type_name]
 
 

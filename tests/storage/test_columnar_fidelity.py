@@ -25,7 +25,8 @@ F = descriptor_pb2.FieldDescriptorProto
 def _cls(fdp: descriptor_pb2.FileDescriptorProto, type_name: str):
     """Build an isolated pool from one FileDescriptorProto and return a message class."""
     pool = descriptor_pool.DescriptorPool()
-    fd = pool.Add(fdp)
+    pool.Add(fdp)
+    fd = pool.FindFileByName(fdp.name)
     return message_factory.GetMessageClass(fd.message_types_by_name[type_name])
 
 
@@ -169,7 +170,8 @@ def test_declared_extension_is_a_blind_spot():
     unknown set, so the probe stays silent — the documented non-goal."""
     fdp = _extension_file()
     pool = descriptor_pool.DescriptorPool()
-    fd = pool.Add(fdp)
+    pool.Add(fdp)
+    fd = pool.FindFileByName(fdp.name)
     base_cls = message_factory.GetMessageClass(fd.message_types_by_name["Base"])
     ext_field = pool.FindExtensionByName("x.ext_val")
 

@@ -15,7 +15,7 @@ from protokit.schema import (
     Verdict,
     check_compatibility,
 )
-from tests.proto_builder import ProtoBuilder
+from tests.proto_builder import ProtoBuilder, wire_dependencies
 from tests.schema.helpers import T, build_enum, build_message
 
 
@@ -274,6 +274,7 @@ class TestCycles:
             fb.type = T.TYPE_MESSAGE
             fb.type_name = "t.A"
             fb.label = T.LABEL_OPTIONAL
+            wire_dependencies(fp, p)
             p.Add(fp)
         report = check_compatibility(old, "t.A", new, "t.A")
         assert report.is_compatible
@@ -349,6 +350,7 @@ class TestCycles:
         m.name = "M"
         _field(m, "n", 1, T.TYPE_MESSAGE, "t.N")
         _field(m, "leaf", 2, T.TYPE_INT32)
+        wire_dependencies(fp, pool)
         pool.Add(fp)
 
 
@@ -560,6 +562,7 @@ class TestMaps:
         f.name, f.number, f.type = "items", 1, T.TYPE_MESSAGE
         f.type_name = ".t.M.ItemsEntry"
         f.label = T.LABEL_REPEATED
+        wire_dependencies(fp, new)
         new.Add(fp)
         report = check_compatibility(old, "t.M", new, "t.M")
         hits = [f for f in report.findings
@@ -701,6 +704,7 @@ def _build_map_msg_value(
     f.type = T.TYPE_MESSAGE
     f.type_name = f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
     f.label = T.LABEL_REPEATED
+    wire_dependencies(fp, pool)
     pool.Add(fp)
 
 
@@ -745,6 +749,7 @@ def _build_map_enum_value(
     f.type = T.TYPE_MESSAGE
     f.type_name = f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
     f.label = T.LABEL_REPEATED
+    wire_dependencies(fp, pool)
     pool.Add(fp)
 
 
@@ -784,6 +789,7 @@ def _build_outer_two_maps_msg_value(
         f.name, f.number, f.type = map_field, idx + 1, T.TYPE_MESSAGE
         f.type_name = f".t.Outer.{entry_name}"
         f.label = T.LABEL_REPEATED
+    wire_dependencies(fp, pool)
     pool.Add(fp)
 
 
@@ -822,6 +828,7 @@ def _build_self_map_cycle(
         f2 = mp.field.add()
         f2.name, f2.number, f2.type = "tag", 2, T.TYPE_INT32
         f2.label = T.LABEL_OPTIONAL
+    wire_dependencies(fp, pool)
     pool.Add(fp)
 
 
