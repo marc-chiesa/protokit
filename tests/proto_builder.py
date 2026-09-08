@@ -7,6 +7,127 @@ from typing import Any
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 
+def _declared_type_names(file_proto: descriptor_pb2.FileDescriptorProto) -> set[str]:
+    """Fully-qualified names of every message and enum ``file_proto`` declares."""
+    package = file_proto.package
+    names: set[str] = set()
+
+    def _walk(msg: descriptor_pb2.DescriptorProto, prefix: str) -> None:
+        full = f"{prefix}.{msg.name}" if prefix else msg.name
+        names.add(full)
+        for enum in msg.enum_type:
+            names.add(f"{full}.{enum.name}")
+        for nested in msg.nested_type:
+            _walk(nested, full)
+
+    for msg in file_proto.message_type:
+        _walk(msg, package)
+    for enum in file_proto.enum_type:
+        names.add(f"{package}.{enum.name}" if package else enum.name)
+    return names
+
+
+def _referenced_type_names(file_proto: descriptor_pb2.FileDescriptorProto) -> list[str]:
+    """Every type name ``file_proto`` references, in source order.
+
+    Covers a field's ``type_name`` and, for an extension at either file or
+    message scope, its ``extendee`` as well: the pure-Python backend resolves
+    both through the file's dependencies, and a proto2 ``extend`` block may
+    sit inside a message.
+    """
+    refs: list[str] = []
+
+    def _extension(ext: descriptor_pb2.FieldDescriptorProto) -> None:
+        if ext.extendee:
+            refs.append(ext.extendee)
+        if ext.type_name:
+            refs.append(ext.type_name)
+
+    def _walk(msg: descriptor_pb2.DescriptorProto) -> None:
+        for field in msg.field:
+            if field.type_name:
+                refs.append(field.type_name)
+        for ext in msg.extension:
+            _extension(ext)
+        for nested in msg.nested_type:
+            _walk(nested)
+
+    for msg in file_proto.message_type:
+        _walk(msg)
+    for ext in file_proto.extension:
+        _extension(ext)
+    return refs
+
+
+def _resolution_candidates(type_name: str, package: str) -> list[str]:
+    """Fully-qualified names ``type_name`` may denote, in protobuf scope order.
+
+    A leading dot marks the name absolute: only the stripped name is tried.
+    A relative name is tried innermost-scope first, walking outward through
+    the package and ending at the bare name — package ``a.b`` and name ``X``
+    yield ``["a.b.X", "a.X", "X"]`` — so the first candidate that resolves is
+    the one protobuf would pick, and a same-named type at the root of a
+    shared pool cannot shadow the package-local one.
+    """
+    if type_name.startswith("."):
+        return [type_name[1:]]
+    candidates: list[str] = []
+    scope = package
+    while scope:
+        candidates.append(f"{scope}.{type_name}")
+        scope = scope.rpartition(".")[0]
+    candidates.append(type_name)
+    return candidates
+
+
+def wire_dependencies(
+    file_proto: descriptor_pb2.FileDescriptorProto,
+    pool: descriptor_pool.DescriptorPool,
+) -> None:
+    """Record the file of every cross-file referent in ``file_proto.dependency``.
+
+    Test builders emit one ``FileDescriptorProto`` per message and reference
+    earlier types by ``type_name`` alone. The upb backend resolves such a
+    reference from the whole pool, so the missing ``dependency`` entry was
+    invisible for the suite's entire life; the pure-Python backend resolves
+    ``type_name`` only through the file's declared dependencies and raises
+    ``KeyError`` at the first lookup (KTD11). Call this immediately before
+    ``pool.Add(file_proto)``.
+
+    Resolution goes through ``pool`` — never a builder-local file list —
+    because several call sites pre-populate a shared pool by hand. Each
+    reference is tried in protobuf scope order (see
+    ``_resolution_candidates``): the first candidate that is either declared
+    in this file or present in the pool settles it, so a shared pool holding
+    a same-named type at an outer scope never shadows the inner one. A
+    referent that is not in the pool (a same-file or forward reference) is a
+    miss, not an error; the same-file case is additionally excluded by name
+    so a shared pool that already holds an identically named type from
+    another file does not acquire a spurious edge. Each dependency is
+    recorded once, in first-reference order.
+    """
+    declared = _declared_type_names(file_proto)
+    package = file_proto.package
+    for type_name in _referenced_type_names(file_proto):
+        referent = None
+        for candidate in _resolution_candidates(type_name, package):
+            if candidate in declared:
+                break
+            for finder in (pool.FindMessageTypeByName, pool.FindEnumTypeByName):
+                try:
+                    referent = finder(candidate)
+                except KeyError:
+                    continue
+                break
+            if referent is not None:
+                break
+        if referent is None:
+            continue
+        dep_name = referent.file.name
+        if dep_name != file_proto.name and dep_name not in file_proto.dependency:
+            file_proto.dependency.append(dep_name)
+
+
 class ProtoBuilder:
     """Compact DSL for building protobuf descriptors programmatically.
 
@@ -134,6 +255,7 @@ class ProtoBuilder:
                 field_proto.proto3_optional = True
                 field_proto.oneof_index = len(msg_proto.oneof_decl) - 1
 
+        wire_dependencies(file_proto, self.pool)
         self.pool.Add(file_proto)
 
     def message_with_repeated(
@@ -212,9 +334,12 @@ class ProtoBuilder:
             map_field.name = map_name
             map_field.number = field_num
             map_field.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
-            map_field.type_name = f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
+            map_field.type_name = (
+                f".{package}.{msg_name}.{entry_name}" if package else f".{msg_name}.{entry_name}"
+            )
             map_field.label = descriptor_pb2.FieldDescriptorProto.LABEL_REPEATED
 
+        wire_dependencies(file_proto, self.pool)
         self.pool.Add(file_proto)
 
     def get_message_class(self, full_name: str) -> type:

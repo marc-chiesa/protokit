@@ -11,10 +11,16 @@ pin live in ``test_columnar.py``.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.storage._columnar import _dropped_declared_extensions
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 F = descriptor_pb2.FieldDescriptorProto
 
 
@@ -39,7 +45,8 @@ def _base_with_extensions(
 def _desc(fdp: descriptor_pb2.FileDescriptorProto, type_name: str = "Base"):
     """Build an isolated pool from one FileDescriptorProto, return the Descriptor."""
     pool = descriptor_pool.DescriptorPool()
-    fd = pool.Add(fdp)
+    pool.Add(fdp)
+    fd = pool.FindFileByName(fdp.name)
     return fd.message_types_by_name[type_name]
 
 
@@ -182,3 +189,35 @@ def test_nested_extension_not_suppressed_by_a_top_level_column():
     same-named TOP-LEVEL column must not suppress it."""
     desc = _desc(_nested_fdp(), "Outer")
     assert _dropped_declared_extensions(desc, ["inner", "inner_ext"]) == ("n.inner_ext",)
+
+
+# --- backend guard for the pool helper ----------------------------------------
+#
+# Pure-Python ``DescriptorPool.Add`` returns None where upb returns the
+# FileDescriptor, so ``fd = pool.Add(fdp)`` only breaks under the backend CI does
+# not run. The child asserts it really is on the pure-Python backend, then drives
+# ``_desc`` through a real fixture.
+
+_PURE_PYTHON_SCRIPT = "\n".join((
+    "from google.protobuf.internal import api_implementation",
+    "assert api_implementation.Type() == 'python', api_implementation.Type()",
+    "from tests.storage import test_columnar_structural as mod",
+    "desc = mod._desc(mod._base_with_extensions([('ext_val', 100)]))",
+    "assert desc.full_name == 'x.Base', desc.full_name",
+    "print('pure-python-ok')",
+))
+
+
+def test_desc_helper_works_under_pure_python_backend():
+    """``_desc`` must resolve the FileDescriptor via ``FindFileByName`` rather
+    than ``Add``'s return value. Runs in a subprocess because the protobuf
+    backend is chosen at import time."""
+    env = dict(
+        os.environ, PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="python", PYTHONPATH=str(_REPO_ROOT)
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", _PURE_PYTHON_SCRIPT], cwd=_REPO_ROOT, env=env,
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "pure-python-ok", result.stdout

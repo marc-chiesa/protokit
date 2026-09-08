@@ -168,14 +168,16 @@ Three further rules that fell out of the review:
    paragraph ("Every pin names the exception it fails with") so the next
    author sees the discipline before the first marker.
 
-Proposed guard, not yet landed: a `tests/meta/` ratchet in the shape of
-`tests/meta/test_drift_defense_convention_presence_ratchet.py` -- walk
-`tests/**/*.py` with `ast`, collect every decorator whose call is
-`pytest.mark.xfail` with `strict=True`, and fail with the file:line of any
-marker lacking a `raises=` keyword. Today the ratchet would start at zero
-violations (all 38 markers carry `raises=`; no other `xfail` markers exist
-under `tests/`), so it can be strict from the first commit rather than
-allow-listed.
+The guard landed as `tests/meta/test_xfail_raises_ratchet.py` (U22 of the
+0.16.0 plan): an `ast` walk over `tests/**/*.py` that fails with the
+file:line of any `pytest.mark.xfail` decorator lacking a `raises=` keyword
+-- strict or not -- and forbids the three shapes that cannot carry the
+discipline at the decorator: a module-level `pytestmark` xfail,
+`pytest.param(..., marks=xfail)`, and imperative `pytest.xfail()`. It
+started at zero violations (all 38 markers carried `raises=`; none of the
+other shapes existed under `tests/`), so it is strict from its first
+commit with no allowlist. Markers a `conftest.py` hook applies at
+collection time are not decorators and fall outside the walk.
 
 ## Why This Matters
 
@@ -275,7 +277,9 @@ only-protoc-can-compile pin, whose defect is `error_exit` firing);
 body that does not raise); `tests/message/test_audit_u8_differ_pins.py`
 (`raises=ValueError`, the differ's own validation error).
 
-**Proposed ratchet sketch** (`tests/meta/`, not yet landed):
+**The sketch that became the ratchet** (kept for the shape; the landed test
+also catches non-strict markers, class-level decorators, and the three
+forbidden forms, and self-checks each with a synthetic source):
 
 ```python
 def test_every_strict_xfail_pin_names_its_exception() -> None:
