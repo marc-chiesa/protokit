@@ -195,7 +195,7 @@ The inverse — when the discipline is not applicable:
   to JSON/JUnit — they keep the canonical `.value`.
 
 (session history) The discipline is also missing from the
-existing `audit-wire-format-before-claiming-sibling-parity`
+existing `audit-wire-format-before-claiming-sibling-parity` (maintainer-side learning, kept in the private learnings repository rather than this tree)
 learning. That learning covers STRUCTURAL wire format (RULES
 element types, method signatures, operational semantics) but
 not VALUE-REPRESENTATION wire format (enum string form, case,
@@ -390,7 +390,7 @@ test is the next defense-in-depth layer.)
   Together they define the two directions of boundary
   discipline in this codebase: **normalize early (inputs),
   serialize consistently (outputs)**.
-- `docs/solutions/best-practices/audit-wire-format-before-claiming-sibling-parity-2026-05-03.md`
+- `audit-wire-format-before-claiming-sibling-parity-2026-05-03` (maintainer-side learning, kept in the private learnings repository rather than this tree)
   — the design-time upstream discipline. That learning covers
   STRUCTURAL wire format (RULES element types, method
   signatures); this learning covers VALUE-REPRESENTATION wire

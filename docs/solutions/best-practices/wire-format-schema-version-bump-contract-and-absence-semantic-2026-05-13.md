@@ -365,7 +365,7 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   stabilization. This learning is the design rationale; that
   learning is the operational discipline for keeping the
   README table accurate against the source.
-- audit-wire-format-before-claiming-sibling-parity-2026-05-03 —
+- audit-wire-format-before-claiming-sibling-parity-2026-05-03 (maintainer-side learning, kept in the private learnings repository rather than this tree) —
   structural sibling-parity audit. The bump contract is itself
   a wire-format claim; the audit discipline applies to verifying
   the version field is actually emitted at both sibling sites.
