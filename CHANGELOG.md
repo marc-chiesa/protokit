@@ -23,11 +23,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
   supported platform, is unaffected. The fixes are owned by a later 0.16.0
   unit (audit findings V1, V10, V34); the entries below stay until it lands.*
 
-  - **`protokit compat` crashes on pool-built schemas** with
-    `google.protobuf.descriptor.Error: Descriptor does not contain
-    serialization` — `Descriptor.CopyToProto` is not implemented for
-    pool-built descriptors on that backend, and the drift walker and the
-    schema pytest helpers reach the same call (V34).
+  - **`protokit compat`, `protokit forensics match` / `drift`, and the
+    schema pytest helpers (`assert_compatible`, `schema_checker`) crash on
+    pool-built schemas** with `google.protobuf.descriptor.Error: Descriptor
+    does not contain serialization` — `Descriptor.CopyToProto` is not
+    implemented for pool-built descriptors on that backend (V34).
   - **`protokit lint` exits 0 over a descriptor set with missing imports**
     instead of `error[lint-missing-imports]` with exit 2: the pure-Python
     pool resolves dependencies lazily, so the missing import that upb rejects
