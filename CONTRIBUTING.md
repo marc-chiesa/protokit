@@ -22,6 +22,30 @@ The full test suite runs under `pytest`:
 .venv/bin/pytest
 ```
 
+### The pure-Python protobuf backend
+
+CI also runs the full suite under protobuf's pure-Python runtime
+(`test-pure-python`, advisory until its known-failure inventory is empty).
+Several audit defects only show up there, because they rely on an exception
+that only the default upb backend raises. To reproduce locally:
+
+```sh
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python .venv/bin/pytest tests/ -q -rfE
+```
+
+Known pure-Python failures live in `tests/pure_python_expected_failures.txt`,
+one node id per line with the audit finding it traces to and the exception it
+raises; `tests/_pure_python_inventory.py` applies them as strict,
+exception-specific xfails under that backend only. The file's header records
+the protobuf version the entries were measured against, and the hook refuses
+to apply the inventory on a different `major.minor`. If your venv does not
+match, `--pure-python-inventory-ignore-version` lets an exploratory local run
+proceed — it is never the verification of record. The inventory is harvested
+from the CI cell's own run (its harvest step prints every unlisted failure in
+inventory format), not from a local measurement: the cell is Python 3.12 on
+Linux with apt `protoc` and `.[compiler,dev]` only, which a developer venv
+rarely matches.
+
 ## Tests that require `buf`
 
 **Note:** `buf` is a parity-test-only optional dependency; `protokit`

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf.internal import api_implementation
 
 from protokit._pools import (
     DescriptorPoolError,
@@ -58,6 +59,16 @@ class TestFileDescriptorSetSchema:
         resolved = FileDescriptorSetSchema(_fds(b, a), "b.B").resolve()
         assert resolved.message_class().DESCRIPTOR.full_name == "b.B"
 
+    @pytest.mark.skipif(
+        api_implementation.Type() == "python",
+        reason=(
+            "premise holds only on upb: a raw DescriptorPool().Add() of a file "
+            "whose dependency is absent raises eagerly there, while the "
+            "pure-Python pool resolves lazily and accepts it — not a protokit "
+            "defect, so a permanent backend skip rather than an inventory entry "
+            "(U2, KTD10)"
+        ),
+    )
     def test_out_of_order_naive_add_would_fail_proving_sort_matters(self) -> None:
         # Guards the previous test's meaning: adding b before a into a fresh
         # pool raises, so the topo-sort in resolve() is doing real work.

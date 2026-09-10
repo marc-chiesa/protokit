@@ -46,6 +46,7 @@ import time
 from pathlib import Path
 
 import pytest
+from google.protobuf.internal import api_implementation
 
 from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint.engine import LintEngine
@@ -128,6 +129,18 @@ def _generate_synthetic_fixture(tmp_path: Path) -> list[Path]:
         "perf smoke runs on linux+py3.12 only (D5 R23b). The companion "
         "test_perf_smoke_coverage.py meta-test asserts the CI matrix "
         "contains at least one cell matching this predicate."
+    ),
+)
+@pytest.mark.skipif(
+    api_implementation.Type() == "python",
+    reason=(
+        "pure-Python protobuf backend: the 0.5 s threshold was calibrated on upb "
+        "(~14 ms locally, ~35x headroom); the same walk under pure-Python "
+        "measured 0.23-0.44 s locally, leaving no headroom for a slower CI "
+        "runner, so the smoke would trip there on a walker that has not "
+        "regressed. Pre-emptive backend skip (U2, KTD10) — the linux+py3.12 "
+        "predicate matches the pure-Python cell too; do not widen the "
+        "threshold instead."
     ),
 )
 def test_lint_engine_walks_10k_fields_under_smoke_threshold(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf.internal import api_implementation
 
 from protokit import _pools
 
@@ -64,6 +65,16 @@ class TestSortFilesByDependency:
         ordered = _pools.sort_files_by_dependency([b, a])
         assert [f.name for f in ordered] == ["a.proto", "b.proto"]
 
+    @pytest.mark.skipif(
+        api_implementation.Type() == "python",
+        reason=(
+            "premise holds only on upb: a raw DescriptorPool().Add() of a file "
+            "whose dependency is absent raises eagerly there, while the "
+            "pure-Python pool resolves lazily and accepts it — not a protokit "
+            "defect, so a permanent backend skip rather than an inventory entry "
+            "(U2, KTD10)"
+        ),
+    )
     def test_naive_in_order_add_would_fail_proving_sort_matters(self) -> None:
         # Guards the test's own meaning: adding b before a into a fresh pool
         # raises, so the topo-sort in build_pool is doing real work.

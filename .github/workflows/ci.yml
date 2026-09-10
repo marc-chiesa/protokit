@@ -167,6 +167,105 @@ jobs:
         run: pytest tests/ -v
 
   # =====================================================================
+  # Pure-Python protobuf runtime cell — the backend guard (0.16.0 U2).
+  # =====================================================================
+  #
+  # The `test` matrix above always resolves protobuf's default backend,
+  # upb. Three audit defects (V1, V10, the V9 swallow) rely on an
+  # exception only upb raises; under the pure-Python runtime each
+  # degrades silently to a wrong value, and nothing exercised that
+  # runtime. This job runs the FULL suite (a tests/storage-scoped cell
+  # would miss every V34 and most V10 failures) with
+  # PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python at job level.
+  # Python 3.12 + apt protoc + `.[compiler,dev]`, mirroring the
+  # storage-protobuf-floor install shape: the runtime backend is the
+  # axis; both compile backends stay exercised so protoxy-gated tests
+  # do not skip. The sanity step asserts the runtime actually is
+  # pure-Python (a silent fallback to upb would pass vacuously) and
+  # prints the protobuf + Python versions the inventory header records.
+  #
+  # Known failures live in tests/pure_python_expected_failures.txt,
+  # applied by tests/_pure_python_inventory.py as strict, exception-
+  # specific xfails under this backend only (plan KTD10). The cell is
+  # therefore red only on a NEW pure-Python failure, on an XPASS (a fix
+  # landed: delete the entry), on a failure whose exception changed, or
+  # on a stale entry. The harvest step prints every unlisted failure in
+  # inventory format with its exact exception type, so a red run reads
+  # as the lines to add — entries are harvested from this cell's own
+  # log, never from a local run (the maintainer's venv is not the cell).
+  # tests/meta/test_pure_python_cell_presence_ratchet.py asserts this
+  # job's shape.
+  #
+  # ----- Advisory posture (DO NOT add to required-checks) -----
+  #
+  # `test-pure-python` is INTENTIONALLY ADVISORY until U23 promotes it:
+  # job-level continue-on-error keeps the workflow run green while the
+  # job's own check still reports its failure in the PR checks list.
+  # U23 (after U3 empties the inventory) deletes continue-on-error and
+  # this banner, flips the presence ratchet, and adds the job to the
+  # required checks by hand. Until then, do NOT include it in any
+  # required-checks rule.
+  test-pure-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system protoc
+        # apt protobuf-compiler, mirroring the `test` job, so the
+        # protoc-backend compile tests run here too.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install package + dev deps (with protoxy)
+        run: pip install -e ".[compiler,dev]"
+
+      - name: Sanity — protobuf runtime backend must be pure-Python
+        # In the storage-protobuf-floor version-assert shape. The env var
+        # is honoured at import time; if a future protobuf drops or
+        # renames it, this fails loudly instead of the suite passing on
+        # upb with the inventory silently unapplied. The versions
+        # printed here are what the inventory header records.
+        run: |
+          python -c "
+          import sys
+          from google.protobuf import __version__
+          from google.protobuf.internal import api_implementation
+          impl = api_implementation.Type()
+          assert impl == 'python', impl
+          print('backend', impl, 'protobuf', __version__, 'python', sys.version.split()[0])
+          "
+
+      - name: Run test suite (pure-Python backend)
+        run: pytest tests/ -q -rfE --tb=short --pure-python-inventory-harvest=pure-python-harvest.txt
+
+      - name: Harvest — unlisted failures in inventory format
+        # Always runs, so a red cell's log and step summary carry the
+        # exact lines to triage into tests/pure_python_expected_failures.txt
+        # (the docs-refs step-summary mechanism).
+        if: always()
+        run: |
+          cat pure-python-harvest.txt
+          {
+            echo '### test-pure-python harvest'
+            echo '```'
+            cat pure-python-harvest.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # =====================================================================
   # Storage protobuf-floor job — pin the lower bound and verify storage.
   # =====================================================================
   #

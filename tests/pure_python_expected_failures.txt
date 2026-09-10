@@ -1,0 +1,13 @@
+# Pure-Python protobuf known-failure inventory (0.16.0 U2, KTD10).
+#
+# Applied by tests/_pure_python_inventory.py only when the suite runs under
+# PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python: each listed test gets a strict
+# xfail naming the exception below, so the test-pure-python CI cell is red only
+# on a new failure, an XPASS (a fix landed: delete the entry), a failure whose
+# exception changed, or a stale entry. Not read under upb.
+#
+# Format (see the module docstring): a `protobuf:` / `python:` header recording
+# the runtime the entries were measured on, then one entry per line:
+#   <node id> <finding[,pin-id...]> <exception[,exception...]>
+# Entries are harvested from the cell's own run (its harvest step prints them),
+# never from a local measurement.

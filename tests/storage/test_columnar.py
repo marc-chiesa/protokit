@@ -22,6 +22,7 @@ from google.protobuf import (  # noqa: E402
     struct_pb2,
     timestamp_pb2,
 )
+from google.protobuf.internal import api_implementation  # noqa: E402
 
 from protokit.storage import (  # noqa: E402
     FidelityError,
@@ -652,6 +653,17 @@ def _import_chain_fds(depth: int):
     return fds
 
 
+@pytest.mark.skipif(
+    api_implementation.Type() == "python",
+    reason=(
+        "pure-Python protobuf backend: DescriptorPool resolves file dependencies "
+        "recursively, one frame per import level, so registering the 1200-deep "
+        "chain raises RecursionError against the interpreter's default limit of "
+        "1000 before protokit's iterative walker ever runs; a runtime limit, not "
+        "a protokit defect, so a permanent backend skip rather than an inventory "
+        "entry (U2, KTD10)"
+    ),
+)
 def test_transitive_file_descriptors_survives_deep_import_chain():
     from protokit.storage._columnar import _transitive_file_descriptors
 
