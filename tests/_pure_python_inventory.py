@@ -230,9 +230,11 @@ def load_inventory(path: Path) -> Inventory:
     label = str(path)
     with contextlib.suppress(ValueError):
         label = str(path.relative_to(Path.cwd()))
-    if not path.is_file():
-        raise InventoryError(f"{label}: inventory file not found")
-    return parse_inventory(path.read_text(encoding="utf-8"), label)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise InventoryError(f"{label}: inventory file not found") from None
+    return parse_inventory(text, label)
 
 
 def version_mismatch(header: str | None, installed: str) -> str | None:
@@ -273,6 +275,9 @@ def is_full_suite_run(config: pytest.Config, tests_root: Path) -> bool:
 # --- pytest hooks -----------------------------------------------------------------
 
 _HARVEST_KEY: pytest.StashKey[list[str]] = pytest.StashKey()
+# The inventory entry applied to an item, so the harvest can report a
+# raises= mismatch against the entry rather than re-deriving it from the marker.
+_APPLIED_KEY: pytest.StashKey[Entry] = pytest.StashKey()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -328,6 +333,7 @@ def pytest_collection_modifyitems(
         entry = by_nodeid.pop(item.nodeid, None)
         if entry is None:
             continue
+        item.stash[_APPLIED_KEY] = entry
         # Prepended, so the entry's exception governs ahead of a marker the test
         # already carries (a U1 pin): pytest evaluates the first xfail marker.
         item.add_marker(
@@ -366,26 +372,14 @@ def pytest_runtest_makereport(
         # The only exception-free failure of a call phase is a strict XPASS.
         harvest.append(f"# XPASS(strict): {item.nodeid} -- delete its inventory entry")
         return report
-    listed = _listed_finding(item)
+    entry = item.stash.get(_APPLIED_KEY, None)
     spelling = spell_exception(call.excinfo.type)
-    if listed is None:
+    if entry is None:
         harvest.append(f"{item.nodeid} {UNTRIAGED} {spelling}")
     else:
-        finding, expected = listed
-        harvest.append(f"# raises= mismatch: the entry names {expected}")
-        harvest.append(f"{item.nodeid} {finding} {spelling}")
+        harvest.append(f"# raises= mismatch: the entry names {entry.raises_spelling}")
+        harvest.append(f"{item.nodeid} {entry.finding} {spelling}")
     return report
-
-
-def _listed_finding(item: pytest.Item) -> tuple[str, str] | None:
-    """(finding, expected spelling) when the item carries an inventory marker."""
-    for mark in item.iter_markers(name="xfail"):
-        reason = str(mark.kwargs.get("reason", ""))
-        if reason.startswith("pure-Python known failure "):
-            finding = reason.split(" ")[3].rstrip(":")
-            raises = mark.kwargs.get("raises") or ()
-            return finding, ",".join(spell_exception(r) for r in raises)
-    return None
 
 
 def pytest_configure(config: pytest.Config) -> None:
