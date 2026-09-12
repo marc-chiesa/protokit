@@ -1,7 +1,7 @@
 ---
 title: "Strict xfail only detects XPASS: a regression pin must declare raises= (and CliRunner catch_exceptions=False) or any failure before its assertion is accepted as the pinned defect"
 date: 2026-09-07
-last_updated: 2026-09-08
+last_updated: 2026-09-12
 category: docs/solutions/best-practices
 module: testing/pytest-conventions
 problem_type: best_practice
@@ -197,7 +197,12 @@ a way a guard can pass while the thing it guards is absent:
    `raises=Exception`, `raises=BaseException`, or a tuple holding one of
    them satisfied a presence check while leaving pytest's exception filter
    effectively off -- precisely the false green this document is about.
-   Those are now offenders in their own right.
+   Those are now offenders in their own right. The qualified spellings
+   `builtins.Exception` and `builtins.BaseException` are offenders too
+   (refreshed 2026-09-12, per PR #59): the ratchet compares spellings, so
+   a bare-name list missed them until an independent falsification pass of
+   the pure-Python inventory unit reproduced the bypass; a check on the
+   resolved class, as the inventory's own loader does, never had the hole.
 
 The general rule: a ratchet over a discipline must enumerate the ways the
 discipline can be spelled, not the one way the author first wrote it, and
@@ -336,5 +341,6 @@ failing on its declared exception; the full suite is
 - [[pytestmark-does-not-guard-module-top-imports-2026-05-02]] -- companion marker-semantics gotcha: that doc is about what `pytestmark` does not gate at collection; this one is about what `strict=True` does not gate at report time.
 - [[mock-patch-c-extension-method-descriptor-2026-05-06]] -- Rule 2 there (direct invocation plus `pytest.raises(SystemExit)` instead of CliRunner) is how a pin can name `SystemExit` in `raises=` at all; through CliRunner the exit is always folded and the pin must assert the code instead.
 - [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]] and [[pytest-static-analysis-gate-ratchet-2026-05-02]] -- the `tests/meta` ratchet family the proposed guard belongs to, including the "inject a violation and watch it fail" self-check.
+- [[pure-python-backend-known-failure-inventory-ci-harvest]] -- the same `raises=` discipline applied to a data file: a committed known-failure inventory a conftest-registered hook turns into strict, exception-specific xfails under the pure-Python backend, with catch-alls rejected at load by resolved class rather than by spelling.
 - [[formatter-systemexit-exit-code-bypass-2026-04-19]] -- why `SystemExit` must be named explicitly in `raises=`: it is outside the `Exception` subtree.
 - PR #55 -- where the pins and this fix landed.
