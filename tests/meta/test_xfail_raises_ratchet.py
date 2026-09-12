@@ -48,8 +48,12 @@ _DISCOVERY_COMMAND = (
 
 _XFAIL_MARK = "pytest.mark.xfail"
 _IMPERATIVE_XFAIL = "pytest.xfail"
-# ``raises=`` values that match every exception, i.e. no filter at all.
-_CATCH_ALL_RAISES = frozenset({"None", "Exception", "BaseException"})
+# ``raises=`` values that match every exception, i.e. no filter at all. The
+# ``builtins.``-qualified spellings are the same classes under a name the
+# bare-spelling check would miss (found by the U2 cross-model pass).
+_CATCH_ALL_RAISES = frozenset(
+    {"None", "Exception", "BaseException", "builtins.Exception", "builtins.BaseException"}
+)
 # ``from pytest import <name>`` forms that let the marker be spelled without ``pytest.``.
 _ALIASABLE_PYTEST_NAMES = frozenset({"mark", "xfail", "param", "*"})
 _ALIAS_KIND = "aliased pytest marker import"
@@ -278,6 +282,14 @@ class TestXfailRaisesRatchetSelfCheck:
     def test_raises_base_exception_is_an_offender(self) -> None:
         src = "import pytest\n@pytest.mark.xfail(raises=BaseException)\ndef test_a():\n    pass\n"
         assert self._offenders(src) == ["synthetic.py:2: xfail marker with catch-all raises="]
+
+    def test_builtins_qualified_catch_all_is_an_offender(self) -> None:
+        src = (
+            "import builtins\nimport pytest\n"
+            "@pytest.mark.xfail(strict=True, raises=builtins.Exception)\n"
+            "def test_a():\n    pass\n"
+        )
+        assert self._offenders(src) == ["synthetic.py:3: xfail marker with catch-all raises="]
 
     def test_raises_tuple_holding_catch_all_is_an_offender(self) -> None:
         src = (

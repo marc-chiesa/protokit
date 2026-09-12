@@ -1,0 +1,192 @@
+# Pure-Python protobuf known-failure inventory (0.16.0 U2, KTD10).
+#
+# Applied by tests/_pure_python_inventory.py only when the suite runs under
+# PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python: each listed test gets a strict
+# xfail naming the exception below, so the test-pure-python CI cell is red only
+# on a new failure, an XPASS (a fix landed: delete the entry), a failure whose
+# exception changed, or a stale entry. Not read under upb.
+#
+# Format (see the module docstring): a `protobuf:` / `python:` header recording
+# the runtime the entries were measured on, then one entry per line:
+#   <node id> <finding[,pin-id...]> <exception[,exception...]>
+# Entries are harvested from the cell's own run (its harvest step prints them),
+# never from a local measurement.
+#
+# Harvested from the cell's first run on PR #59:
+#   https://github.com/marc-chiesa/protokit/actions/runs/34425343201/job/102709277970
+# Counts: 166 V34 (122 direct descriptor.Error, 44 CLI-downstream; 10 on U1 pins), 5 V10, 2 V1.
+protobuf: 5.27.5
+python: 3.12.14
+tests/core/test_pools.py::TestBuildPool::test_dangling_symbol_raises_typed_error_not_raw_typeerror V10 pytest.fail.Exception
+tests/forensics/cli/test_drift.py::test_drift_clean_message V34 google.protobuf.descriptor.Error
+tests/forensics/cli/test_drift.py::test_drift_writes_grep_able_stderr_summary V34 google.protobuf.descriptor.Error
+tests/forensics/cli/test_drift.py::test_drift_reports_undeclared V34 google.protobuf.descriptor.Error
+tests/forensics/cli/test_drift.py::test_drift_json_carries_schema_version V34 google.protobuf.descriptor.Error
+tests/forensics/cli/test_match.py::test_no_clean_match V34 google.protobuf.descriptor.Error
+tests/forensics/cli/test_match.py::test_fault_row_renders_dashes V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_clean_message_has_no_divergences V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_undeclared_tag_flagged V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_wire_type_mismatch_flagged V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_proto2_required_missing_flagged V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_packed_repeated_not_flagged_as_mismatch V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_reserved_tag_in_use_flagged V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_reserved_to_max_does_not_materialize V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_unpacked_repeated_undeclared_dedups_to_one_divergence V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_declared_extension_not_flagged_undeclared V34 google.protobuf.descriptor.Error
+tests/forensics/test_drift_core.py::test_incompatible_occurrence_not_masked_by_a_compatible_one V34 google.protobuf.descriptor.Error
+tests/forensics/test_match_core.py::test_proto2_missing_required_is_incomplete V1 AssertionError
+tests/forensics/test_ranking.py::test_no_clean_match_when_every_candidate_leaves_residual V34 google.protobuf.descriptor.Error
+tests/forensics/test_ranking.py::test_superset_ranks_below_exact_producer V34 google.protobuf.descriptor.Error
+tests/forensics/test_ranking.py::test_multiple_clean_matches_when_indistinguishable V34 google.protobuf.descriptor.Error
+tests/forensics/test_tiebreak.py::test_compatibility_score_prefers_the_fitting_schema V34 google.protobuf.descriptor.Error
+tests/forensics/test_tiebreak.py::test_ambiguous_top_flagged_for_near_fractions V34 google.protobuf.descriptor.Error
+tests/forensics/test_tiebreak.py::test_symmetric_tie_remains_multiple_clean V34 google.protobuf.descriptor.Error
+tests/forensics/test_tiebreak.py::test_tiebreak_prefers_the_smaller_residual_when_compat_and_coverage_tie V34 google.protobuf.descriptor.Error
+tests/forensics/test_tiebreak.py::test_tiebreak_is_deterministic_under_input_reordering V34 google.protobuf.descriptor.Error
+tests/formatters/test_formatters_cli.py::TestCompatFormatDispatch::test_check_unknown_format V34 AssertionError
+tests/formatters/test_formatters_cli.py::TestCompatFormatDispatch::test_check_junit_succeeds V34 AssertionError
+tests/formatters/test_formatters_cli.py::TestCompatFormatDispatch::test_check_sarif_succeeds V34 AssertionError
+tests/formatters/test_formatters_integration.py::TestCompatCheckIntegration::test_junit_output_validates_via_cli V34 xml.etree.ElementTree.ParseError
+tests/formatters/test_formatters_integration.py::TestCompatCheckIntegration::test_sarif_output_validates_via_cli V34 json.decoder.JSONDecodeError
+tests/formatters/test_formatters_integration.py::TestCompatCheckIntegration::test_human_format_no_xml_or_json_artifacts V34 AssertionError
+tests/formatters/test_formatters_integration.py::TestExampleFormatterPack::test_examples_custom_formatter_works V34 AssertionError
+tests/schema/lint/cli/test_cli_descriptor_set_source_info.py::TestLoaderPoolAddFailure::test_missing_imports_raises_system_exit V10 pytest.fail.Exception
+tests/schema/lint/cli/test_cli_input_modes.py::TestErrorCodes::test_cross_set_symbol_collision_routes_to_pool_conflict V10 AssertionError
+tests/schema/lint/cli/test_cli_input_modes.py::TestErrorCodes::test_missing_imports_routes_to_missing_imports_loaded_marker V10 AssertionError
+tests/schema/lint/cli/test_cli_input_modes.py::TestErrorCodes::test_missing_imports_routes_to_missing_imports_resolve_name_marker V10 AssertionError
+tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_3_rule_pack_print_does_not_corrupt_json_stdout V34,U15-3 google.protobuf.descriptor.Error
+tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_3_rule_pack_print_does_not_leak_under_quiet V34,U15-3 google.protobuf.descriptor.Error
+tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_5_history_does_not_attribute_a_siblings_change_to_a_commit V34,U15-5 google.protobuf.descriptor.Error
+tests/schema/test_audit_u15_cli_exit_pins.py::TestU15Controls::test_history_on_the_real_path_reports_the_break V34 google.protobuf.descriptor.Error
+tests/schema/test_audit_u15_cli_exit_pins.py::TestU15Controls::test_check_without_a_rule_pack_is_incompatible_and_valid_json V34 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_proto2_default_value_change_is_reported_at_some_level[changed_int] V34,U9-1 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_proto2_default_value_change_is_reported_at_some_level[added] V34,U9-1 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_proto2_default_value_change_is_reported_at_some_level[removed] V34,U9-1 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_proto2_default_value_change_is_reported_at_some_level[changed_string] V34,U9-1 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_json_name_change_is_reported_at_some_level[renamed] V34,U9-2 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_json_name_change_is_reported_at_some_level[annotated] V34,U9-2 google.protobuf.descriptor.Error
+tests/schema/test_audit_u9_compat_rule_pins.py::test_bytes_to_string_is_reported_at_the_wire_profile V34,U9-3 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEmptyMessages::test_no_findings_when_identical_empty V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEmptyMessages::test_no_findings_when_identical_simple V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestSimpleDifferences::test_field_removed_at_root V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestSimpleDifferences::test_field_added_at_root V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestSimpleDifferences::test_path_set_correctly_on_finding V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestNestedMessages::test_field_change_in_nested_message V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestNestedMessages::test_field_added_in_nested_message V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestNestedMessages::test_two_levels_deep V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_self_reference_does_not_loop V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_self_reference_findings_emitted_once V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_shared_nested_type_findings_appear_at_every_path V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_shared_nested_type_dedupe_opt_in V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_mutual_recursion V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_cycle_truncated_subtree_not_replayed_at_sibling_path V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCycles::test_cycle_truncation_still_terminates_on_self_reference V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEnumViaField::test_enum_value_removed_via_field V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEnumViaField::test_enum_value_renumbered_is_a_wire_break V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEnumViaField::test_number_swap_emits_reuse_before_renumber V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEnumViaField::test_enum_in_nested_message V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_to_repeated_fires V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_value_message_recursion V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_value_type_rename_fires_field_type_name_changed V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_value_scalar_type_change_fires V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_value_kind_change_fires_wire_incompatible V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_outer_rename_stays_silent_on_value V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_shared_map_value_findings_at_every_path V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_cycle_through_map_value V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestMaps::test_map_value_enum_rename_fires_field_type_name_changed V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEndToEndProfileBehavior::test_consumer_safe_surfaces_risks_to_old_consumers V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEndToEndProfileBehavior::test_producer_safe_surfaces_risks_to_new_consumers V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEndToEndProfileBehavior::test_strict_includes_all V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestEndToEndProfileBehavior::test_wire_only_no_findings V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestIgnoreRejectsEmptyPath::test_baseline_reports_the_break V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestIgnoreRejectsEmptyPath::test_ignore_empty_string_does_not_suppress V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestIgnoreRejectsEmptyPath::test_nonempty_ignore_still_works V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestIgnorePaths::test_ignore_suppresses_exact_path V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestIgnorePaths::test_ignore_suppresses_descendants V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestIgnorePaths::test_ignore_suppresses_map_value_path V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCustomRules::test_custom_field_rule_invoked V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCustomRules::test_custom_field_rule_emits V34 google.protobuf.descriptor.Error
+tests/schema/test_checker.py::TestCrossType::test_different_type_names V34 google.protobuf.descriptor.Error
+tests/schema/test_cli.py::TestCompatibleExit0::test_identical_schemas_exit_0 V34 AssertionError
+tests/schema/test_cli.py::TestIncompatibleExit1::test_field_removed_exits_1 V34 AssertionError
+tests/schema/test_cli.py::TestCrossType::test_old_and_new_type_flags V34 AssertionError
+tests/schema/test_cli.py::TestLevel::test_consumer_safe_surfaces_field_added V34 AssertionError
+tests/schema/test_cli.py::TestLevel::test_producer_safe_filters_field_added V34 AssertionError
+tests/schema/test_cli.py::TestLevel::test_wire_only V34 AssertionError
+tests/schema/test_cli.py::TestJsonOutput::test_json_shape V34 json.decoder.JSONDecodeError
+tests/schema/test_cli.py::TestIgnore::test_ignore_suppresses_path V34 AssertionError
+tests/schema/test_cli.py::TestDedupeByType::test_default_is_path_complete V34 AssertionError
+tests/schema/test_cli.py::TestDedupeByType::test_dedupe_flag_collapses_to_first_path V34 AssertionError
+tests/schema/test_cli.py::TestQuiet::test_quiet_no_output_exit_0 V34 AssertionError
+tests/schema/test_cli.py::TestRulePack::test_rule_pack_plugin_fires V34 google.protobuf.descriptor.Error
+tests/schema/test_cli.py::TestRulePack::test_rule_pack_plugin_failure_exits_2 V34 google.protobuf.descriptor.Error
+tests/schema/test_cli.py::TestRulePack::test_compat_rule_pack_loads_pack_no_warning V34 google.protobuf.descriptor.Error
+tests/schema/test_cli.py::TestRulePack::test_rule_pack_legacy_emits_user_warning V34 google.protobuf.descriptor.Error
+tests/schema/test_cli.py::TestRulePack::test_both_flags_accumulate_warn_once V34 google.protobuf.descriptor.Error
+tests/schema/test_cli.py::TestErrors::test_nonempty_ignore_still_suppresses V34 AssertionError
+tests/schema/test_cli.py::TestCheckSince::test_against_prior_commit_detects_break V34 AssertionError
+tests/schema/test_cli.py::TestCheckSince::test_unchanged_schema_is_compatible V34 AssertionError
+tests/schema/test_cli.py::TestCheckAgainstBase::test_explicit_base_branch V34 AssertionError
+tests/schema/test_cli.py::TestHistory::test_finds_break_in_range V34 AssertionError
+tests/schema/test_cli.py::TestHistory::test_json_format V34 json.decoder.JSONDecodeError
+tests/schema/test_cli.py::TestHistory::test_json_has_resolved_shas_and_walk_count V34 json.decoder.JSONDecodeError
+tests/schema/test_cli.py::TestBisect::test_finds_first_breaking_commit V34 AssertionError
+tests/schema/test_cli.py::TestBisect::test_no_break_in_range_exits_0 V34 AssertionError
+tests/schema/test_cli.py::TestPluginParity::test_history_accepts_ignore V34 AssertionError
+tests/schema/test_cli.py::TestPluginParity::test_bisect_accepts_ignore V34 AssertionError
+tests/schema/test_cli.py::TestPluginParity::test_ci_accepts_ignore V34 AssertionError
+tests/schema/test_cli.py::TestBisectKeepGoing::test_without_keep_going_stops_at_first_break V34 AssertionError
+tests/schema/test_cli.py::TestBisectKeepGoing::test_keep_going_still_reports_first_break V34 AssertionError
+tests/schema/test_cli.py::TestBisectDepAware::test_default_mode_finds_dep_only_break V34 AssertionError
+tests/schema/test_cli.py::TestBisectDepAware::test_fast_mode_also_finds_dep_break V34 AssertionError
+tests/schema/test_cli.py::TestBisectJson::test_break_json_payload V34 json.decoder.JSONDecodeError
+tests/schema/test_cli.py::TestBisectJson::test_clean_json_payload V34 AssertionError
+tests/schema/test_cli.py::TestCi::test_against_explicit_base V34 AssertionError
+tests/schema/test_cli.py::TestCi::test_clean_branch_exits_0 V34 AssertionError
+tests/schema/test_cli.py::TestCrossTypeBisect::test_bisect_cross_type_finds_rename_break V34 AssertionError
+tests/schema/test_cli.py::TestHistoryBisectStructuredFormats::test_history_junit_round_trip_validates V34 xmlschema.exceptions.XMLResourceOSError
+tests/schema/test_cli.py::TestHistoryBisectStructuredFormats::test_history_sarif_round_trip_validates V34 json.decoder.JSONDecodeError
+tests/schema/test_cli.py::TestHistoryBisectStructuredFormats::test_bisect_junit_round_trip_validates V34 xmlschema.exceptions.XMLResourceOSError
+tests/schema/test_cli.py::TestHistoryBisectStructuredFormats::test_bisect_sarif_round_trip_validates V34 json.decoder.JSONDecodeError
+tests/schema/test_cli.py::TestEntryPointDispatch::test_compat_check_via_top_level_cli V34 AssertionError
+tests/schema/test_git.py::TestEndToEndWithCompatibilityCheck::test_two_pools_feed_check_compatibility V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_context_carries_descriptors_and_pools V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_emit_appears_in_report V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_emit_default_direction_is_both V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_silent_plugin_emits_nothing V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_plugin_exception_recorded_and_traversal_continues V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_plugin_exception_surfaces_in_report_warnings V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_plugin_does_not_also_emit_python_warning V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestFieldPlugin::test_plugin_emit_validation_error_surfaces_in_warnings V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestMessagePlugin::test_message_context_carries_descriptors V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestMessagePlugin::test_message_plugin_never_sees_a_one_sided_visit V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestMessagePlugin::test_message_plugin_emit V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestMessagePlugin::test_message_plugin_exception_recorded V34 google.protobuf.descriptor.Error
+tests/schema/test_plugins.py::TestLoadRulePack::test_registers_all_pack_rules V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_runs_check_with_base_level V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_producer_safe_filters_field_removed V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_ignore_paths_suppresses V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_custom_field_plugin_invoked V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_custom_field_plugin_emits_through_filter V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_message_plugin_invoked V34 google.protobuf.descriptor.Error
+tests/schema/test_profiles.py::TestCompatibilityPolicyCheck::test_message_plugin_emits_through_filter V34 google.protobuf.descriptor.Error
+tests/schema/test_pytest_plugin.py::TestFixtures::test_schema_checker_customizable V34 google.protobuf.descriptor.Error
+tests/schema/test_pytest_plugin.py::TestAssertCompatible::test_compatible_report_does_not_raise V34 google.protobuf.descriptor.Error
+tests/schema/test_pytest_plugin.py::TestAssertCompatible::test_incompatible_report_raises_with_findings V34 google.protobuf.descriptor.Error
+tests/schema/test_pytest_plugin.py::TestAssertCompatible::test_failure_message_lists_every_finding V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestFieldAdded::test_silent_for_oneof_member_add V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestFieldAdded::test_fires_for_proto3_optional_add V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestOneofMembershipChanged::test_fires_when_moved_into_oneof V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestOneofMembershipChanged::test_fires_when_moved_out_of_oneof V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestOneofMembershipChanged::test_silent_when_same_oneof V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestOneofMembershipChanged::test_synthetic_oneof_does_not_trigger V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestOneofFieldAdded::test_fires_when_field_added_to_oneof V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestOneofFieldAdded::test_silent_for_synthetic_oneof_add V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_fires_for_reserved_number_reused V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_fires_for_reserved_name_reused V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_wide_reserved_range_does_not_materialize V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_many_reserved_ranges_do_not_scan_linearly V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_reserved_range_end_is_exclusive V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_silent_when_no_reservations_used V34 google.protobuf.descriptor.Error
+tests/schema/test_rules.py::TestReservedFieldReused::test_both_number_and_name_fires_twice V34 google.protobuf.descriptor.Error
+tests/storage/test_columnar_fidelity.py::test_missing_required_field_cannot_measure V1 AssertionError

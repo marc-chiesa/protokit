@@ -13,6 +13,35 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
+## Unreleased
+
+### Known issues
+- **Under the pure-Python protobuf runtime
+  (`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`), three surfaces
+  misbehave.** *Surfaced by the 0.16.0 audit remediation's new pure-Python CI
+  cell; the default upb runtime, which `pip install protobuf` selects on every
+  supported platform, is unaffected. The fixes are owned by a later 0.16.0
+  unit (audit findings V1, V10, V34); the entries below stay until it lands.*
+
+  - **`protokit compat`, `protokit forensics match` / `drift`, and the
+    schema pytest helpers (`assert_compatible`, `schema_checker`) crash on
+    pool-built schemas** with `google.protobuf.descriptor.Error: Descriptor
+    does not contain serialization` — `Descriptor.CopyToProto` is not
+    implemented for pool-built descriptors on that backend (V34).
+  - **`protokit lint` exits 0 over a descriptor set with missing imports**
+    instead of `error[lint-missing-imports]` with exit 2: the pure-Python
+    pool resolves dependencies lazily, so the missing import that upb rejects
+    at `pool.Add` time is never observed (V10).
+  - **The storage fidelity probe reports a byte delta of 0 for a proto2
+    message missing a required field** instead of "cannot measure": it relies
+    on the `EncodeError` only upb raises for an uninitialized message (V1).
+
+  CI now runs the full suite under that backend as an **advisory** cell
+  (`test-pure-python`) with these defects held in a committed, finding-tagged
+  known-failure inventory (`tests/pure_python_expected_failures.txt`), so a
+  *new* pure-Python failure turns the cell red while the known ones do not.
+  The cell becomes a required check once the inventory is empty.
+
 ## 0.15.1 — 2026-08-30
 
 ### Security

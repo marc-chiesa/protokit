@@ -16,7 +16,7 @@ This repo is public. Confirm before merging:
 - [ ] Tests added or updated where applicable
 - [ ] Docs (`docs/`, `README.md`) updated if behavior or surface changed
 - [ ] Behavioral claims about a moving target (a pinned version, an external tool's behavior) in `docs/solutions/` are marked current-state or provenance per the [drift-defense convention](docs/solutions/best-practices/docs-code-drift-defense-convention-2026-06-13.md)
-- [ ] CI green
+- [ ] CI green, including the advisory `test-pure-python` cell (red means a pure-Python failure outside `tests/pure_python_expected_failures.txt`; its harvest step prints the lines to triage)
 
 ## Test plan
 
