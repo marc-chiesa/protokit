@@ -124,6 +124,14 @@ def runtime_backend() -> str:
     return str(api_implementation.Type())
 
 
+def skip_under_pure_python(reason: str) -> pytest.MarkDecorator:
+    """A ``skipif`` for a test whose premise is a upb runtime fact, not a
+    protokit defect (KTD10's permanent backend skips). The reason must name
+    the premise; the marker is the single spelling of the backend predicate.
+    """
+    return pytest.mark.skipif(runtime_backend() == "python", reason=reason)
+
+
 # --- exception spellings ---------------------------------------------------------
 
 
@@ -255,11 +263,22 @@ def is_full_suite_run(config: pytest.Config, tests_root: Path) -> bool:
     """True when the invocation collected everything under ``tests_root``.
 
     Positional args must each be the tests root or one of its ancestors, with
-    no ``-k`` / ``-m`` / ``--lf`` / ``--deselect`` narrowing. Only then is an
+    no collection narrowing: ``-k`` / ``-m`` / ``--lf`` / ``--sw`` /
+    ``--deselect`` / ``--ignore`` / ``--ignore-glob``. Only then is an
     unmatched inventory entry a stale entry rather than a deselected test.
     """
     opt = config.option
-    if opt.keyword or opt.markexpr or getattr(opt, "lf", False) or opt.deselect:
+    narrowing = (
+        opt.keyword,
+        opt.markexpr,
+        opt.deselect,
+        getattr(opt, "ignore", None),
+        getattr(opt, "ignore_glob", None),
+        getattr(opt, "lf", False),
+        getattr(opt, "stepwise", False),
+        getattr(opt, "stepwise_skip", False),
+    )
+    if any(narrowing):
         return False
     root = tests_root.resolve()
     for arg in config.args:
@@ -342,21 +361,34 @@ def pytest_collection_modifyitems(
         )
     if not by_nodeid:
         return
-    stale = "\n".join(
-        f"  {inventory.path}:{entry.line}: {entry.nodeid}" for entry in by_nodeid.values()
-    )
     if is_full_suite_run(config, inventory_path.parent):
         raise pytest.UsageError(
             f"pure-Python known-failure inventory: {len(by_nodeid)} listed node id(s) "
             f"were not collected by a full-suite run; the test was renamed or "
-            f"removed, so delete or update the entry:\n{stale}"
+            f"removed, so delete or update the entry:\n{_listing(inventory, by_nodeid)}"
         )
-    warnings.warn(
-        PurePythonInventoryWarning(
-            f"{len(by_nodeid)} inventory entries were not collected by this subset "
-            f"run and could not be checked:\n{stale}"
-        ),
-        stacklevel=1,
+    # A subset run cannot tell an out-of-subset entry from a stale one, except
+    # where the entry's own module was collected and the id is still missing.
+    collected_files = {item.nodeid.split("::", 1)[0] for item in items}
+    suspect = {
+        nodeid: entry
+        for nodeid, entry in by_nodeid.items()
+        if nodeid.split("::", 1)[0] in collected_files
+    }
+    if suspect:
+        warnings.warn(
+            PurePythonInventoryWarning(
+                f"{len(suspect)} inventory entries name tests that were not collected "
+                f"from a module this subset run did collect; they may be stale:\n"
+                f"{_listing(inventory, suspect)}"
+            ),
+            stacklevel=1,
+        )
+
+
+def _listing(inventory: Inventory, entries: dict[str, Entry]) -> str:
+    return "\n".join(
+        f"  {inventory.path}:{entry.line}: {entry.nodeid}" for entry in entries.values()
     )
 
 
@@ -366,13 +398,21 @@ def pytest_runtest_makereport(
 ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     report = yield
     harvest = item.config.stash.get(_HARVEST_KEY, None)
+    # Teardown failures are a fixture finalizer's, not the test's; a red cell
+    # from one shows in -rfE, not here.
     if harvest is None or not report.failed or call.when == "teardown":
         return report
+    entry = item.stash.get(_APPLIED_KEY, None)
     if call.excinfo is None:
         # The only exception-free failure of a call phase is a strict XPASS.
-        harvest.append(f"# XPASS(strict): {item.nodeid} -- delete its inventory entry")
+        if entry is None:
+            harvest.append(
+                f"# XPASS(strict) on a marker of its own: {item.nodeid} -- the inventory "
+                f"cannot absorb an XPASS; gate that pin on the backend or land its fix"
+            )
+        else:
+            harvest.append(f"# XPASS(strict): {item.nodeid} -- delete its inventory entry")
         return report
-    entry = item.stash.get(_APPLIED_KEY, None)
     spelling = spell_exception(call.excinfo.type)
     if entry is None:
         harvest.append(f"{item.nodeid} {UNTRIAGED} {spelling}")
@@ -399,6 +439,13 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     ]
     if harvest is None:
         lines.append(f"# backend is {runtime_backend()}, not python: nothing harvested")
+    elif exitstatus not in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
+        # A usage error (stale entry, version mismatch) or an interrupted run
+        # harvested nothing meaningful; say so rather than "no unlisted failures".
+        lines.append(
+            f"# session ended with {pytest.ExitCode(exitstatus).name}: the run did not "
+            f"complete, so nothing was harvested; see the job log"
+        )
     else:
         lines += [
             f"protobuf: {_PROTOBUF_VERSION}",

@@ -54,11 +54,22 @@ def load_workflow() -> tuple[dict[str, Any], str]:
     return yaml.safe_load(text), text
 
 
-def _run_tokens(step: dict[str, Any]) -> list[str]:
+def _pytest_commands(step: dict[str, Any]) -> list[list[str]]:
+    """The tokenised ``pytest ...`` / ``python -m pytest ...`` commands in a
+    step's ``run`` script, one per command line. A line that merely mentions
+    pytest in a message is not an invocation.
+    """
     run = step.get("run")
     if not isinstance(run, str):
         return []
-    return run.replace("\\\n", " ").split()
+    commands: list[list[str]] = []
+    for line in run.replace("\\\n", " ").splitlines():
+        tokens = line.split()
+        if tokens[:1] == ["pytest"]:
+            commands.append(tokens)
+        elif tokens[:3] == ["python", "-m", "pytest"]:
+            commands.append(tokens[2:])
+    return commands
 
 
 def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
@@ -95,11 +106,10 @@ def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
             f"{job_id} must set up Python {PYTHON_VERSION} (setup-python), found {versions}"
         )
 
-    pytest_steps = [s for s in steps if "pytest" in _run_tokens(s)]
-    if not pytest_steps:
+    commands = [command for step in steps for command in _pytest_commands(step)]
+    if not commands:
         violations.append(f"{job_id} has no run step invoking pytest")
-    for step in pytest_steps:
-        tokens = _run_tokens(step)
+    for tokens in commands:
         if not any(t in ("tests", "tests/") for t in tokens) or any(
             t.startswith("tests/") and t != "tests/" for t in tokens
         ):
@@ -211,3 +221,43 @@ class TestPurePythonCellPresenceRatchetSelfCheck:
     def test_missing_banner_is_named(self) -> None:
         (violation,) = _violations(_SYNTHETIC, banner="")
         assert "banner" in violation
+
+    def test_job_with_no_pytest_step_is_named(self) -> None:
+        mutated = _SYNTHETIC.replace(
+            "      - name: Run test suite\n        run: pytest tests/ -q -rfE --tb=short\n", "",
+        )
+        (violation,) = _violations(mutated)
+        assert "no run step invoking pytest" in violation
+
+    def test_run_step_without_a_tests_path_is_named(self) -> None:
+        # ``pytest -q`` with no path collects from the working directory: the
+        # ratchet cannot tell what that covers, so the full-suite property fails.
+        mutated = _SYNTHETIC.replace("pytest tests/ -q -rfE", "pytest -q -rfE")
+        (violation,) = _violations(mutated)
+        assert "full suite" in violation
+
+    def test_a_message_mentioning_pytest_is_not_an_invocation(self) -> None:
+        # The harvest step's own wording names pytest; only a command that
+        # starts with pytest (or python -m pytest) is checked for the suite path.
+        mutated = _SYNTHETIC + (
+            "      - name: Harvest\n"
+            "        run: |\n"
+            "          echo \"pytest did not reach session finish\"\n"
+        )
+        assert _violations(mutated) == []
+
+    def test_python_dash_m_pytest_is_an_invocation(self) -> None:
+        mutated = _SYNTHETIC.replace(
+            "run: pytest tests/ -q", "run: python -m pytest tests/storage -q",
+        )
+        (violation,) = _violations(mutated)
+        assert "full suite" in violation and "tests/storage" in violation
+
+    def test_a_second_backend_job_is_named(self) -> None:
+        # A renamed copy of the cell's job body: two jobs now set the backend
+        # variable at job level, so the "exactly one" property names both.
+        cell_body = _SYNTHETIC.split(f"  {JOB_ID}:\n", 1)[1]
+        mutated = _SYNTHETIC + "  test-pure-python-matrix:\n" + cell_body
+        (violation,) = _violations(mutated)
+        assert "exactly one job" in violation
+        assert JOB_ID in violation and "test-pure-python-matrix" in violation

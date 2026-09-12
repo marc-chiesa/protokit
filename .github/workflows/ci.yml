@@ -254,9 +254,16 @@ jobs:
       - name: Harvest — unlisted failures in inventory format
         # Always runs, so a red cell's log and step summary carry the
         # exact lines to triage into tests/pure_python_expected_failures.txt
-        # (the docs-refs step-summary mechanism).
+        # (the docs-refs step-summary mechanism). The file is written at
+        # session finish; a crash before pytest's session starts leaves
+        # none, and that must read as "look at the run step", not as an
+        # error of its own.
         if: always()
         run: |
+          if [ ! -f pure-python-harvest.txt ]; then
+            echo "no harvest file: pytest did not reach session finish; see the run step's log"
+            exit 0
+          fi
           cat pure-python-harvest.txt
           {
             echo '### test-pure-python harvest'

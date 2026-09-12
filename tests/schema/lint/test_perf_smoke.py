@@ -21,7 +21,11 @@ solidly inside the failure envelope.
 The companion ``test_perf_smoke_coverage.py`` parses
 ``.github/workflows/ci.yml`` to verify at least one matrix cell
 matches this predicate (fail-closed if py3.12 leaves the matrix
-without the skipif being updated).
+without the skipif being updated). A second, independent skip excludes
+the pure-Python protobuf backend (0.16.0 U2, KTD10): the threshold was
+calibrated on upb, and the ``test-pure-python`` cell matches the
+platform predicate too, so without it the smoke would time a slower
+runtime against a threshold it was never meant for.
 
 **Slow marker** (per the D5 plan / R23a): also marked ``@pytest.mark.slow``
 so ``pytest -m "not slow"`` skips it during fast-iteration loops.
@@ -46,12 +50,12 @@ import time
 from pathlib import Path
 
 import pytest
-from google.protobuf.internal import api_implementation
 
 from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.lint.engine import LintEngine
 from protokit.schema.lint.model import LintProfile, LintSeverity
 from protokit.schema.lint.rules import BUILTIN_PACKS
+from tests._pure_python_inventory import skip_under_pure_python
 
 # Synthetic fixture dimensions (per D5 plan / R22). 50 × 20 × 10 =
 # 10,000 fields. Picked to exercise the walker enough that an O(n²)
@@ -131,17 +135,13 @@ def _generate_synthetic_fixture(tmp_path: Path) -> list[Path]:
         "contains at least one cell matching this predicate."
     ),
 )
-@pytest.mark.skipif(
-    api_implementation.Type() == "python",
-    reason=(
-        "pure-Python protobuf backend: the 0.5 s threshold was calibrated on upb "
-        "(~14 ms locally, ~35x headroom); the same walk under pure-Python "
-        "measured 0.23-0.44 s locally, leaving no headroom for a slower CI "
-        "runner, so the smoke would trip there on a walker that has not "
-        "regressed. Pre-emptive backend skip (U2, KTD10) — the linux+py3.12 "
-        "predicate matches the pure-Python cell too; do not widen the "
-        "threshold instead."
-    ),
+@skip_under_pure_python(
+    "pure-Python protobuf backend: the 0.5 s threshold was calibrated on upb "
+    "(~14 ms locally, ~35x headroom); the same walk under pure-Python measured "
+    "0.23-0.44 s locally, leaving no headroom for a slower CI runner, so the smoke "
+    "would trip there on a walker that has not regressed. Pre-emptive backend skip "
+    "(U2, KTD10) — the linux+py3.12 predicate matches the pure-Python cell too; do "
+    "not widen the threshold instead."
 )
 def test_lint_engine_walks_10k_fields_under_smoke_threshold(
     tmp_path: Path,

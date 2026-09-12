@@ -124,9 +124,21 @@ class TestExceptionSpelling:
         assert inv.spell_exception(AssertionError) == "AssertionError"
         assert inv.resolve_exception("AssertionError") is AssertionError
 
-    def test_pytest_fail_is_spelled_publicly(self) -> None:
-        assert inv.spell_exception(pytest.fail.Exception) == "pytest.fail.Exception"
-        assert inv.resolve_exception("pytest.fail.Exception") is pytest.fail.Exception
+    @pytest.mark.parametrize(
+        ("exc_type", "spelling"),
+        [
+            (pytest.fail.Exception, "pytest.fail.Exception"),
+            (pytest.skip.Exception, "pytest.skip.Exception"),
+            (pytest.exit.Exception, "pytest.exit.Exception"),
+        ],
+    )
+    def test_pytest_outcomes_are_spelled_publicly(
+        self, exc_type: type[BaseException], spelling: str,
+    ) -> None:
+        assert inv.spell_exception(exc_type) == spelling
+        assert inv.resolve_exception(spelling) is exc_type
+
+    def test_private_pytest_spelling_still_resolves(self) -> None:
         assert inv.resolve_exception("_pytest.outcomes.Failed") is pytest.fail.Exception
 
     def test_dotted_round_trip(self) -> None:
@@ -151,7 +163,10 @@ class TestVersionGuard:
 
 class TestFullSuiteDetection:
     def _config(self, args: list[str], tmp_path: Path, **option: object) -> SimpleNamespace:
-        opts = {"keyword": "", "markexpr": "", "lf": False, "deselect": None}
+        opts: dict[str, object] = {
+            "keyword": "", "markexpr": "", "lf": False, "deselect": None,
+            "ignore": None, "ignore_glob": None, "stepwise": False, "stepwise_skip": False,
+        }
         opts.update(option)
         return SimpleNamespace(
             args=args,
@@ -180,6 +195,10 @@ class TestFullSuiteDetection:
         assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, markexpr="slow"), root)
         assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, lf=True), root)
         assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, deselect=["tests/x"]), root)
+        assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, ignore=["tests/meta"]), root)
+        assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, ignore_glob=["*meta*"]), root)
+        assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, stepwise=True), root)
+        assert not inv.is_full_suite_run(cfg(["tests"], tmp_path, stepwise_skip=True), root)
 
 
 # --- collection-time behaviour (pure-Python child sessions) ------------------
@@ -226,6 +245,30 @@ def test_unlisted_fails():
 
 def test_unlisted_pass():
     pass
+
+
+@pytest.fixture
+def dies_in_setup():
+    if PURE:
+        raise LookupError("fixture dies under pure-Python")
+    return None
+
+
+def test_listed_setup_error(dies_in_setup):
+    # listed with LookupError: a setup-phase error is absorbed like a call failure
+    pass
+
+
+def test_unlisted_setup_error(dies_in_setup):
+    # not listed -> setup error -> harvested with the fixture's exception
+    pass
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="U8-9: passes under pure-Python")
+def test_own_pin_xpasses():
+    # its own strict pin passes under pure-Python: nothing the inventory can absorb
+    if not PURE:
+        assert False, "the pinned defect"
 '''
 
 _LISTED = (
@@ -233,6 +276,7 @@ _LISTED = (
     "test_scenario.py::test_listed_passes V34 KeyError\n"
     "test_scenario.py::test_listed_wrong_type V34 KeyError\n"
     "test_scenario.py::test_pinned V34,U9-1 KeyError\n"
+    "test_scenario.py::test_listed_setup_error V34 LookupError\n"
 )
 
 
@@ -285,13 +329,16 @@ def test_inventory_applies_only_under_pure_python(tmp_path: Path, pure: bool) ->
             "test_pinned": "XFAIL",
             "test_unlisted_fails": "FAILED",
             "test_unlisted_pass": "PASSED",
+            "test_listed_setup_error": "XFAIL",
+            "test_unlisted_setup_error": "ERROR",
+            "test_own_pin_xpasses": "FAILED",
         }, result.stdout
         assert "[XPASS(strict)]" in result.stdout
         assert "pure-Python known failure V34" in result.stdout
     else:
         # the hook is a no-op under upb: every listed test simply runs, and the
-        # scenario module raises nothing there, so the pinned test's own marker
-        # governs (its AssertionError -> xfailed) and everything else passes
+        # scenario module raises nothing there, so the pinned tests' own markers
+        # govern (their AssertionError -> xfailed) and everything else passes
         assert outcomes == {
             "test_listed_fails": "PASSED",
             "test_listed_passes": "PASSED",
@@ -299,6 +346,9 @@ def test_inventory_applies_only_under_pure_python(tmp_path: Path, pure: bool) ->
             "test_pinned": "XFAIL",
             "test_unlisted_fails": "PASSED",
             "test_unlisted_pass": "PASSED",
+            "test_listed_setup_error": "PASSED",
+            "test_unlisted_setup_error": "PASSED",
+            "test_own_pin_xpasses": "XFAIL",
         }, result.stdout
         assert "pure-Python known failure" not in result.stdout
 
@@ -379,13 +429,17 @@ def test_harvest_writes_unlisted_failures_in_inventory_format(tmp_path: Path) ->
         "test_scenario.py::test_listed_wrong_type V34 ValueError",
         # a new failure is untriaged until a human names its finding
         f"test_scenario.py::test_unlisted_fails {inv.UNTRIAGED} RuntimeError",
+        # a setup-phase error is harvested with the fixture's exception
+        f"test_scenario.py::test_unlisted_setup_error {inv.UNTRIAGED} LookupError",
     ]
-    # the XPASS is not an entry to add but an entry to delete
-    assert "XPASS" in text and "test_scenario.py::test_listed_passes" in text
+    # the XPASS of a listed test is an entry to delete ...
+    assert "# XPASS(strict): test_scenario.py::test_listed_passes -- delete" in text
+    # ... while the XPASS of a test's own pin is something the inventory cannot absorb
+    assert "XPASS(strict) on a marker of its own: test_scenario.py::test_own_pin_xpasses" in text
     # the harvest round-trips through the parser once its findings are triaged
     triaged = text.replace(inv.UNTRIAGED, "V99")
     parsed = inv.parse_inventory(triaged, "harvest.txt")
-    assert [e.raises for e in parsed.entries] == [(ValueError,), (RuntimeError,)]
+    assert [e.raises for e in parsed.entries] == [(ValueError,), (RuntimeError,), (LookupError,)]
 
 
 def test_harvest_is_empty_when_nothing_is_unlisted(tmp_path: Path) -> None:
@@ -400,6 +454,27 @@ def test_harvest_is_empty_when_nothing_is_unlisted(tmp_path: Path) -> None:
         if line and not line.startswith("#") and not line.startswith(("protobuf:", "python:"))
     ]
     assert entry_lines == []
+
+
+def test_harvest_names_an_aborted_session_instead_of_claiming_a_clean_run(
+    tmp_path: Path,
+) -> None:
+    inventory = _write_scenario(tmp_path, f"protobuf: 1.0.0\n{_LISTED}")
+    harvest = tmp_path / "harvest.txt"
+    result = _run_child(tmp_path, inventory, f"{inv.HARVEST_OPTION}={harvest}")
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
+    text = harvest.read_text()
+    assert "USAGE_ERROR" in text and "did not complete" in text
+    assert "no unlisted failures" not in text
+
+
+def test_harvest_under_upb_records_the_backend_and_nothing_else(tmp_path: Path) -> None:
+    inventory = _write_scenario(tmp_path, f"protobuf: {_PROTOBUF_VERSION}\n{_LISTED}")
+    harvest = tmp_path / "harvest.txt"
+    _run_child(tmp_path, inventory, f"{inv.HARVEST_OPTION}={harvest}", pure=False)
+    text = harvest.read_text()
+    assert "backend is upb, not python: nothing harvested" in text
+    assert "protobuf:" not in text
 
 
 # --- the committed inventory ---------------------------------------------------
