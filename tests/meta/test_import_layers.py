@@ -6,9 +6,9 @@ a layer-0 seam module (``_fieldview``, ``_extensions``, ``_records``,
 imports. That is safe only while the package's import graph stays acyclic at
 module-load time and the seams themselves import nothing from ``protokit``.
 This test commits both properties as a gate, so a seam PR is checked by CI
-rather than by an audit-time script. (The 2026-08-30 audit's own count —
-"exactly one cycle, in ``protokit.formatters``" — was wrong; measured under the
-rules below, the tree has zero.)
+rather than by an audit-time script. Zero is the measured count under the
+rules below; the one cycle an earlier audit reported in ``protokit.formatters``
+is the package-initialisation shape the second rule excludes.
 
 What counts as an edge — the load-bearing rules:
 
@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import ast
 import graphlib
+import importlib.util
 from collections.abc import Iterable, Iterator, Mapping
 from itertools import pairwise
 from pathlib import Path
@@ -98,7 +99,7 @@ def discover_modules(src_root: Path, package: str) -> dict[str, Path]:
     modules: dict[str, Path] = {}
     for path in sorted((src_root / package).rglob("*.py")):
         parts = path.relative_to(src_root).with_suffix("").parts
-        if parts[-1] == "__init__":
+        if path.stem == "__init__":
             parts = parts[:-1]
         modules[".".join(parts)] = path
     return modules
@@ -137,30 +138,21 @@ def _executed_imports(
             )
 
 
-def _from_import_base(importer: str, is_package: bool, node: ast.ImportFrom) -> str:
-    """The absolute module a ``from ... import`` names, resolving a relative level."""
-    if not node.level:
-        return node.module or ""
-    parts = importer.split(".")
-    if not is_package:
-        parts = parts[:-1]
-    parts = parts[: max(len(parts) - (node.level - 1), 0)]
-    if node.module:
-        parts.extend(node.module.split("."))
-    return ".".join(parts)
-
-
 def _import_targets(
-    importer: str,
-    is_package: bool,
+    importer_package: str,
     node: ast.Import | ast.ImportFrom,
     modules: Mapping[str, Path],
     package: str,
 ) -> set[str]:
-    """The package modules ``node`` is an edge to, under the rules in the docstring."""
+    """The package modules ``node`` is an edge to, under the rules in the docstring.
+
+    ``importer_package`` is the importer's ``__package__`` — the module itself
+    for a package ``__init__``, its parent otherwise — which is what a relative
+    ``from`` level resolves against.
+    """
     if isinstance(node, ast.Import):
         return {alias.name for alias in node.names if _in_package(alias.name, package)}
-    base = _from_import_base(importer, is_package, node)
+    base = importlib.util.resolve_name("." * node.level + (node.module or ""), importer_package)
     if not _in_package(base, package):
         return set()
     targets: set[str] = set()
@@ -183,10 +175,10 @@ def build_import_graph(
     graph: dict[str, set[str]] = {}
     for name, path in modules.items():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        is_package = path.name == "__init__.py"
+        importer_package = name if path.stem == "__init__" else name.rpartition(".")[0]
         targets: set[str] = set()
         for node in _executed_imports(tree.body, include_deferred=include_deferred):
-            targets |= _import_targets(name, is_package, node, modules, package)
+            targets |= _import_targets(importer_package, node, modules, package)
         targets.discard(name)
         graph[name] = targets
     return graph
@@ -234,7 +226,7 @@ class TestImportLayers:
         cycle = find_cycle(graph)
         assert cycle is None, (
             "protokit has a module-load import cycle (KTD8):\n"
-            f"  {format_cycle(cycle or ())}\n"
+            f"  {format_cycle(cycle)}\n"
             "(-> reads 'imports at module load'; a deferred, function-level import "
             "is the sanctioned way to break one — see this module's docstring)"
         )
@@ -317,22 +309,23 @@ class TestImportLayers:
 # KTD3: injected-violation self-tests over synthetic packages
 # ---------------------------------------------------------------------------
 
-_PKG = "pkg"
-
 
 def _write_package(tmp_path: Path, files: Mapping[str, str]) -> Path:
     """Write ``files`` (path relative to ``src/pkg`` -> source) and return ``src``."""
     src = tmp_path / "src"
     for rel, source in files.items():
-        path = src / _PKG / rel
+        path = src / "pkg" / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
-    (src / _PKG / "__init__.py").touch()
+    (src / "pkg" / "__init__.py").touch()
     return src
 
 
-def _cycle_of(tmp_path: Path, files: Mapping[str, str], **kwargs: bool) -> list[str] | None:
-    return find_cycle(build_import_graph(_write_package(tmp_path, files), _PKG, **kwargs))
+def _cycle_of(
+    tmp_path: Path, files: Mapping[str, str], *, include_deferred: bool = False
+) -> list[str] | None:
+    src = _write_package(tmp_path, files)
+    return find_cycle(build_import_graph(src, "pkg", include_deferred=include_deferred))
 
 
 class TestImportLayersSelfCheck:
@@ -349,7 +342,7 @@ class TestImportLayersSelfCheck:
             tmp_path,
             {"_a.py": "import pkg._b\n", "_b.py": "import pkg._c\n", "_c.py": "import pkg._a\n"},
         )
-        graph = build_import_graph(src, _PKG)
+        graph = build_import_graph(src, "pkg")
         cycle = find_cycle(graph)
         assert cycle is not None and len(cycle) == 4
         for importer, imported in pairwise(cycle):
@@ -479,7 +472,7 @@ class TestImportLayersSelfCheck:
             "sub/_c.py": "from .._a import x\n",
         }
         src = _write_package(tmp_path, files)
-        graph = build_import_graph(src, _PKG)
+        graph = build_import_graph(src, "pkg")
         assert graph["pkg._a"] == {"pkg._b"}
         assert graph["pkg._b"] == {"pkg.sub._c"}
         assert graph["pkg.sub._c"] == {"pkg._a"}
@@ -488,12 +481,12 @@ class TestImportLayersSelfCheck:
 
     def test_dotted_import_is_an_edge_to_exactly_that_module(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg.sub._c\n", "sub/__init__.py": "", "sub/_c.py": ""}
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert graph["pkg._a"] == {"pkg.sub._c"}
 
     def test_self_import_is_not_an_edge(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg._a\nfrom pkg import _a\n"}
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert graph["pkg._a"] == set()
         assert find_cycle(graph) is None
 
@@ -501,14 +494,14 @@ class TestImportLayersSelfCheck:
         # ``pkgutil`` shares the package's prefix: a startswith check without
         # the dot would count it.
         files = {"_a.py": "import os\nimport pkgutil\nfrom collections import abc\n"}
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert graph["pkg._a"] == set()
 
     def test_every_module_in_the_tree_is_a_node(self, tmp_path: Path) -> None:
         files = {"_a.py": "", "sub/__init__.py": "", "sub/_c.py": ""}
         src = _write_package(tmp_path, files)
-        assert set(discover_modules(src, _PKG)) == {"pkg", "pkg._a", "pkg.sub", "pkg.sub._c"}
-        assert set(build_import_graph(src, _PKG)) == {"pkg", "pkg._a", "pkg.sub", "pkg.sub._c"}
+        assert set(discover_modules(src, "pkg")) == {"pkg", "pkg._a", "pkg.sub", "pkg.sub._c"}
+        assert set(build_import_graph(src, "pkg")) == {"pkg", "pkg._a", "pkg.sub", "pkg.sub._c"}
 
     def test_layer0_violation_names_the_seam_and_what_it_imports(self, tmp_path: Path) -> None:
         files = {
@@ -516,20 +509,20 @@ class TestImportLayersSelfCheck:
             "_a.py": "",
             "_b.py": "",
         }
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert layer0_violations(graph, ["pkg._seam"]) == {"pkg._seam": {"pkg._a", "pkg._b"}}
 
     def test_layer0_passes_on_a_seam_importing_only_the_stdlib(self, tmp_path: Path) -> None:
         files = {"_seam.py": "import os\nfrom pathlib import Path\n", "_a.py": "import pkg._seam\n"}
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert layer0_violations(graph, ["pkg._seam"]) == {}
 
     def test_layer0_passes_with_an_empty_seam_list(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg._b\n", "_b.py": ""}
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert layer0_violations(graph, []) == {}
 
     def test_layer0_skips_seams_absent_from_the_tree(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg._b\n", "_b.py": ""}
-        graph = build_import_graph(_write_package(tmp_path, files), _PKG)
+        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
         assert layer0_violations(graph, ["pkg._not_yet"]) == {}
