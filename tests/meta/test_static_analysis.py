@@ -69,6 +69,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "tests/meta/test_xfail_raises_ratchet.py",
     "tests/meta/test_pure_python_cell_presence_ratchet.py",
     "tests/meta/test_pure_python_inventory.py",
+    "tests/meta/test_import_layers.py",
     "tests/_pure_python_inventory.py",
     "tests/conftest.py",
     "tests/proto_builder.py",
