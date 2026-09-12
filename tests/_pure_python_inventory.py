@@ -361,7 +361,7 @@ def pytest_collection_modifyitems(
         )
     if not by_nodeid:
         return
-    if is_full_suite_run(config, inventory_path.parent):
+    if is_full_suite_run(config, _tests_root(config)):
         raise pytest.UsageError(
             f"pure-Python known-failure inventory: {len(by_nodeid)} listed node id(s) "
             f"were not collected by a full-suite run; the test was renamed or "
@@ -386,6 +386,18 @@ def pytest_collection_modifyitems(
         )
 
 
+def _tests_root(config: pytest.Config) -> Path:
+    """The suite root a "full" run must cover: the configured ``testpaths``
+    (one entry, as in this repository) or the rootdir. Not the inventory's
+    own directory, so ``--pure-python-inventory=/elsewhere`` cannot turn a
+    stale-entry hard error into a subset warning.
+    """
+    testpaths = [str(p) for p in config.getini("testpaths")]
+    if len(testpaths) == 1:
+        return Path(config.rootpath) / testpaths[0]
+    return Path(config.rootpath)
+
+
 def _listing(inventory: Inventory, entries: dict[str, Entry]) -> str:
     return "\n".join(
         f"  {inventory.path}:{entry.line}: {entry.nodeid}" for entry in entries.values()
@@ -398,9 +410,7 @@ def pytest_runtest_makereport(
 ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     report = yield
     harvest = item.config.stash.get(_HARVEST_KEY, None)
-    # Teardown failures are a fixture finalizer's, not the test's; a red cell
-    # from one shows in -rfE, not here.
-    if harvest is None or not report.failed or call.when == "teardown":
+    if harvest is None or not report.failed:
         return report
     entry = item.stash.get(_APPLIED_KEY, None)
     if call.excinfo is None:
@@ -414,6 +424,10 @@ def pytest_runtest_makereport(
             harvest.append(f"# XPASS(strict): {item.nodeid} -- delete its inventory entry")
         return report
     spelling = spell_exception(call.excinfo.type)
+    if call.when != "call":
+        # pytest's xfail filter applies in every phase, so an entry absorbs a
+        # fixture error of the named type too; say which phase raised.
+        harvest.append(f"# raised during {call.when}, not the test body:")
     if entry is None:
         harvest.append(f"{item.nodeid} {UNTRIAGED} {spelling}")
     else:
@@ -428,18 +442,17 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    target = session.config.getoption(HARVEST_OPTION)
-    if not target:
-        return
     harvest = session.config.stash.get(_HARVEST_KEY, None)
+    if harvest is None:
+        # No harvest requested, or not the pure-Python backend: write nothing.
+        return
+    target = session.config.getoption(HARVEST_OPTION)
     lines = [
         "# pure-Python known-failure harvest (tests/_pure_python_inventory.py).",
         f"# Name each {UNTRIAGED} finding (V<n>, plus the U<n>-<m> pin id where the test",
         "# carries one) and add the line to tests/pure_python_expected_failures.txt.",
     ]
-    if harvest is None:
-        lines.append(f"# backend is {runtime_backend()}, not python: nothing harvested")
-    elif exitstatus not in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
+    if exitstatus not in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
         # A usage error (stale entry, version mismatch) or an interrupted run
         # harvested nothing meaningful; say so rather than "no unlisted failures".
         lines.append(
@@ -447,6 +460,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             f"complete, so nothing was harvested; see the job log"
         )
     else:
+        if not harvest and exitstatus == pytest.ExitCode.TESTS_FAILED:
+            harvest = ["# the session reported failures this harvest did not see; see -rfE"]
         lines += [
             f"protobuf: {_PROTOBUF_VERSION}",
             f"python: {sys.version.split()[0]}",

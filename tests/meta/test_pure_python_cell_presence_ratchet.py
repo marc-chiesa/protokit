@@ -34,6 +34,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -72,6 +73,34 @@ def _pytest_commands(step: dict[str, Any]) -> list[list[str]]:
     return commands
 
 
+# Options that narrow collection or disable the xfail machinery; any of them
+# on the cell's command turns "the full suite under pure-Python" into
+# something else while the step still says ``pytest tests/``.
+_NARROWING_PREFIXES = (
+    "-k", "-m", "--deselect", "--ignore", "--ignore-glob", "--lf", "--last-failed",
+    "--sw", "--stepwise", "--runxfail", "-p", "--co", "--collect-only", "-x",
+    "--maxfail", "--pure-python-inventory=", "--pure-python-inventory-ignore-version",
+)
+
+
+def _narrows(token: str) -> bool:
+    for prefix in _NARROWING_PREFIXES:
+        if token == prefix or token.startswith(prefix.rstrip("=") + "="):
+            return True
+    # attached short forms: -kexpr, -mexpr, -pno:plugin
+    return token[:2] in ("-k", "-m", "-p") and len(token) > 2 and not token.startswith("--")
+
+
+def _asserts_pure_python(script: str) -> bool:
+    """A sanity step must *assert* the backend, not merely print it: the
+    script reads the backend through ``api_implementation.Type()`` and some
+    line asserts it equal to ``'python'``.
+    """
+    return SANITY_FRAGMENT in script and any(
+        "assert" in line and "'python'" in line for line in script.splitlines()
+    )
+
+
 def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
     """Every way the workflow fails to carry the advisory pure-Python cell.
 
@@ -106,10 +135,10 @@ def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
             f"{job_id} must set up Python {PYTHON_VERSION} (setup-python), found {versions}"
         )
 
-    commands = [command for step in steps for command in _pytest_commands(step)]
-    if not commands:
+    pytest_steps = [(step, command) for step in steps for command in _pytest_commands(step)]
+    if not pytest_steps:
         violations.append(f"{job_id} has no run step invoking pytest")
-    for tokens in commands:
+    for step, tokens in pytest_steps:
         if not any(t in ("tests", "tests/") for t in tokens) or any(
             t.startswith("tests/") and t != "tests/" for t in tokens
         ):
@@ -117,11 +146,23 @@ def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
                 f"{job_id} must run pytest over the full suite (tests/ with no "
                 f"subpath); its run step passes {tokens!r}"
             )
+        narrowing = [t for t in tokens if _narrows(t)]
+        if narrowing:
+            violations.append(
+                f"{job_id}'s pytest command must not narrow or escape the run; it "
+                f"passes {narrowing!r}"
+            )
+        if "if" in step or "working-directory" in step:
+            violations.append(
+                f"{job_id}'s pytest step must run unconditionally from the checkout "
+                f"root (no if:, no working-directory:)"
+            )
+        if BACKEND_ENV in (step.get("env") or {}):
+            violations.append(
+                f"{job_id}'s pytest step must not override {BACKEND_ENV} at step level"
+            )
 
-    if not any(
-        SANITY_FRAGMENT in (s.get("run") or "") and "python" in (s.get("run") or "")
-        for s in steps
-    ):
+    if not any(_asserts_pure_python(s.get("run") or "") for s in steps):
         violations.append(
             f"{job_id} has no backend sanity step asserting {SANITY_FRAGMENT} == 'python'"
         )
@@ -252,6 +293,47 @@ class TestPurePythonCellPresenceRatchetSelfCheck:
         )
         (violation,) = _violations(mutated)
         assert "full suite" in violation and "tests/storage" in violation
+
+    @pytest.mark.parametrize(
+        "flag",
+        ["-k test_x", "-m slow", "--deselect tests/x.py::t", "--ignore=tests/schema",
+         "--lf", "--sw", "--runxfail", "-p no:tests._pure_python_inventory", "-x",
+         "--pure-python-inventory=/tmp/other.txt", "--pure-python-inventory-ignore-version"],
+    )
+    def test_a_narrowing_or_escaping_option_is_named(self, flag: str) -> None:
+        mutated = _SYNTHETIC.replace("pytest tests/ -q", f"pytest tests/ -q {flag}")
+        violations = _violations(mutated)
+        assert any("narrow or escape" in v for v in violations), violations
+
+    def test_the_landed_flags_do_not_count_as_narrowing(self) -> None:
+        mutated = _SYNTHETIC.replace(
+            "pytest tests/ -q -rfE --tb=short",
+            "pytest tests/ -q -rfE --tb=short --pure-python-inventory-harvest=h.txt",
+        )
+        assert _violations(mutated) == []
+
+    def test_a_conditioned_or_relocated_pytest_step_is_named(self) -> None:
+        for extra in ("        if: 'false'\n", "        working-directory: tests/core\n"):
+            mutated = _SYNTHETIC.replace(
+                "      - name: Run test suite\n", "      - name: Run test suite\n" + extra,
+            )
+            (violation,) = _violations(mutated)
+            assert "unconditionally" in violation
+
+    def test_a_step_level_backend_override_is_named(self) -> None:
+        mutated = _SYNTHETIC.replace(
+            "      - name: Run test suite\n",
+            f"      - name: Run test suite\n        env:\n          {BACKEND_ENV}: upb\n",
+        )
+        (violation,) = _violations(mutated)
+        assert "step level" in violation
+
+    def test_a_sanity_step_that_only_prints_is_named(self) -> None:
+        mutated = _SYNTHETIC.replace(
+            f"assert {SANITY_FRAGMENT} == 'python'", f"print({SANITY_FRAGMENT})",
+        )
+        (violation,) = _violations(mutated)
+        assert "sanity" in violation
 
     def test_a_second_backend_job_is_named(self) -> None:
         # A renamed copy of the cell's job body: two jobs now set the backend

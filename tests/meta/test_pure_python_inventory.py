@@ -269,6 +269,18 @@ def test_own_pin_xpasses():
     # its own strict pin passes under pure-Python: nothing the inventory can absorb
     if not PURE:
         assert False, "the pinned defect"
+
+
+@pytest.fixture
+def dies_in_teardown():
+    yield None
+    if PURE:
+        raise OSError("finalizer dies under pure-Python")
+
+
+def test_unlisted_teardown_error(dies_in_teardown):
+    # not listed -> the finalizer's error is red and harvested with its phase
+    pass
 '''
 
 _LISTED = (
@@ -312,7 +324,10 @@ def _outcomes(stdout: str) -> dict[str, str]:
         if word in {"PASSED", "FAILED", "XFAIL", "XPASS", "ERROR", "SKIPPED"}:
             nodeid = rest.split(" ")[0]
             if "::" in nodeid:
-                outcomes[nodeid.split("::", 1)[1]] = word
+                name = nodeid.split("::", 1)[1]
+                # a test that passed and then errored in teardown lists twice
+                if outcomes.get(name) != "ERROR":
+                    outcomes[name] = word
     return outcomes
 
 
@@ -332,6 +347,7 @@ def test_inventory_applies_only_under_pure_python(tmp_path: Path, pure: bool) ->
             "test_listed_setup_error": "XFAIL",
             "test_unlisted_setup_error": "ERROR",
             "test_own_pin_xpasses": "FAILED",
+            "test_unlisted_teardown_error": "ERROR",
         }, result.stdout
         assert "[XPASS(strict)]" in result.stdout
         assert "pure-Python known failure V34" in result.stdout
@@ -349,6 +365,7 @@ def test_inventory_applies_only_under_pure_python(tmp_path: Path, pure: bool) ->
             "test_listed_setup_error": "PASSED",
             "test_unlisted_setup_error": "PASSED",
             "test_own_pin_xpasses": "XFAIL",
+            "test_unlisted_teardown_error": "PASSED",
         }, result.stdout
         assert "pure-Python known failure" not in result.stdout
 
@@ -431,7 +448,11 @@ def test_harvest_writes_unlisted_failures_in_inventory_format(tmp_path: Path) ->
         f"test_scenario.py::test_unlisted_fails {inv.UNTRIAGED} RuntimeError",
         # a setup-phase error is harvested with the fixture's exception
         f"test_scenario.py::test_unlisted_setup_error {inv.UNTRIAGED} LookupError",
+        # so is a teardown-phase error: pytest's xfail filter applies there too
+        f"test_scenario.py::test_unlisted_teardown_error {inv.UNTRIAGED} OSError",
     ]
+    assert "# raised during setup, not the test body:" in text
+    assert "# raised during teardown, not the test body:" in text
     # the XPASS of a listed test is an entry to delete ...
     assert "# XPASS(strict): test_scenario.py::test_listed_passes -- delete" in text
     # ... while the XPASS of a test's own pin is something the inventory cannot absorb
@@ -439,7 +460,9 @@ def test_harvest_writes_unlisted_failures_in_inventory_format(tmp_path: Path) ->
     # the harvest round-trips through the parser once its findings are triaged
     triaged = text.replace(inv.UNTRIAGED, "V99")
     parsed = inv.parse_inventory(triaged, "harvest.txt")
-    assert [e.raises for e in parsed.entries] == [(ValueError,), (RuntimeError,), (LookupError,)]
+    assert [e.raises for e in parsed.entries] == [
+        (ValueError,), (RuntimeError,), (LookupError,), (OSError,),
+    ]
 
 
 def test_harvest_is_empty_when_nothing_is_unlisted(tmp_path: Path) -> None:
@@ -468,13 +491,29 @@ def test_harvest_names_an_aborted_session_instead_of_claiming_a_clean_run(
     assert "no unlisted failures" not in text
 
 
-def test_harvest_under_upb_records_the_backend_and_nothing_else(tmp_path: Path) -> None:
+def test_harvest_option_writes_nothing_under_upb(tmp_path: Path) -> None:
+    # The plugin is a no-op under upb, harvest option included: no file, no
+    # write attempt that an unwritable path could turn into an error.
     inventory = _write_scenario(tmp_path, f"protobuf: {_PROTOBUF_VERSION}\n{_LISTED}")
-    harvest = tmp_path / "harvest.txt"
-    _run_child(tmp_path, inventory, f"{inv.HARVEST_OPTION}={harvest}", pure=False)
-    text = harvest.read_text()
-    assert "backend is upb, not python: nothing harvested" in text
-    assert "protobuf:" not in text
+    harvest = tmp_path / "no-such-dir" / "harvest.txt"
+    result = _run_child(tmp_path, inventory, f"{inv.HARVEST_OPTION}={harvest}", pure=False)
+    assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
+    assert not harvest.exists()
+
+
+def test_stale_entry_is_a_hard_error_even_with_the_inventory_outside_the_root(
+    tmp_path: Path,
+) -> None:
+    _write_scenario(tmp_path, "")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    inventory = elsewhere / "inventory.txt"
+    inventory.write_text(
+        f"protobuf: {_PROTOBUF_VERSION}\ntest_scenario.py::test_missing V34 KeyError\n"
+    )
+    result = _run_child(tmp_path, inventory)
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
+    assert "test_scenario.py::test_missing" in result.stdout + result.stderr
 
 
 # --- the committed inventory ---------------------------------------------------
