@@ -102,7 +102,11 @@ class TestProtoBuilderBasic:
         builder.message(
             "test.WithEnum",
             fields={
-                "status": (descriptor_pb2.FieldDescriptorProto.TYPE_ENUM, 1, ".test.WithEnum.Status"),
+                "status": (
+                    descriptor_pb2.FieldDescriptorProto.TYPE_ENUM,
+                    1,
+                    ".test.WithEnum.Status",
+                ),
             },
             enums={
                 "Status": {"UNKNOWN": 0, "ACTIVE": 1, "INACTIVE": 2},

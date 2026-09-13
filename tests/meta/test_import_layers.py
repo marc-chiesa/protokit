@@ -16,10 +16,18 @@ What counts as an edge — the load-bearing rules:
   is deferred, and in this codebase deferred imports exist precisely to break
   a load-time cycle (``schema/profiles.py`` imports ``schema.checker`` inside
   a method; ``message/pytest_plugin.py`` imports ``message.matchers`` inside a
-  hook), so counting them would report the cycles they prevent. An import
-  under ``if TYPE_CHECKING:`` never executes and is excluded; that block's
-  ``else`` branch, a ``try``/``except`` arm, a plain ``if``, and a class body
-  all run at import time and count.
+  method, ``_ProtoMatcherFactory.__call__``), so counting them would report
+  the cycles they prevent. An import under ``if TYPE_CHECKING:`` never
+  executes and is excluded; that block's ``else`` branch, a ``try``/``except``
+  arm, a plain ``if``, and a class body all run at import time and count. The
+  guard is recognised by its ``typing`` binding, not its spelling: a name
+  bound by ``from typing import TYPE_CHECKING [as X]`` (``typing_extensions``
+  counts too), or the ``TYPE_CHECKING`` attribute of a name bound by ``import
+  typing [as T]``. The negated form ``if not TYPE_CHECKING:`` counts its body
+  and skips its ``else``. Any other test — a compound one such as
+  ``TYPE_CHECKING or X``, or ``TYPE_CHECKING`` on some other receiver — is a
+  plain ``if`` and both arms are entered: at worst a false positive, never a
+  missed edge.
 * **``from <pkg> import <name>`` is an edge to the submodule ``<pkg>.<name>``
   when that is a module in the tree, and to ``<pkg>`` otherwise.** A package
   ``__init__`` that imports its own submodules, which in turn do ``from <pkg>
@@ -28,11 +36,24 @@ What counts as an edge — the load-bearing rules:
   shape is a five-module strongly connected component; it is a
   package-initialisation artefact, not a load-order hazard, and this rule
   excludes it. A ``from <pkg> import <attr>`` where ``<attr>`` is *not* a
-  module is an edge to ``<pkg>``: it needs ``<pkg>/__init__`` to have bound
-  the name, which is a genuine load-order dependency.
+  module is treated as a load-order dependency on ``<pkg>`` regardless of
+  where ``<pkg>/__init__`` binds the name.
 * **``import <mod>`` is an edge to exactly ``<mod>``**, whoever the importer's
   parent package is — a submodule importing its own package is not exempt.
+* **An import of ``a.b.c`` also depends on every package on that path the
+  importer does not itself live under** — CPython initialises ``a`` and
+  ``a.b`` before ``a.b.c``, so a cycle through one of those ``__init__``
+  modules is a real load-order failure. Packages the importer lives under are
+  already initialising or initialised; those are the package-initialisation
+  artefact the ``from <pkg> import <name>`` rule excludes.
 * A module's import of itself is not an edge.
+
+Outside the edge model: an import executed through a call at module load
+(a ``register()`` whose body imports), ``importlib.import_module`` /
+``__import__`` strings, module ``__getattr__``, and compiled extension
+modules. None occur in the tree; for the first two the fresh-interpreter
+sweep (``test_every_module_imports_in_a_fresh_interpreter``) is the runtime
+complement.
 
 Acyclicity is decided by ``graphlib.TopologicalSorter.prepare()``; the
 ``CycleError`` it raises carries the cycle in ``args[1]``, which the failure
@@ -52,7 +73,12 @@ from __future__ import annotations
 import ast
 import graphlib
 import importlib.util
+import os
+import subprocess
+import sys
 from collections.abc import Iterable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
@@ -63,7 +89,11 @@ _SRC_ROOT = _REPO_ROOT / "src"
 PACKAGE = "protokit"
 
 # Layer-0 seam modules the 0.16.0 plan introduces (KTD8). Each is asserted to
-# import nothing from ``protokit`` once it exists in the tree; a name absent
+# import nothing from ``protokit`` at any scope once it exists in the tree:
+# function-level imports count too, because a seam is cycle-free by depending
+# on nothing above it, not by deferring the dependency. Only an import under
+# ``if TYPE_CHECKING:`` is exempt, because it never executes. A seam that
+# lands as a package is checked with every module under it. A name absent
 # from the tree is skipped, so the assertion grows as Wave B lands (U3, U5,
 # U6, U7, U12, U13) instead of failing on modules that have not landed yet.
 SEAM_MODULES = (
@@ -75,11 +105,19 @@ SEAM_MODULES = (
     "protokit.schema._git_cmd",
 )
 
-# Function-level imports that exist to break a load-time cycle: the reverse
-# direction is a top-level import, so hoisting either of these to module scope
-# closes a cycle. Pinned so the top-level-only rule is proven on the real tree
-# — each edge is absent from the load-time graph and present once deferred
-# imports are counted — rather than only on synthetic packages.
+# The seams that have landed. Each Wave B unit adds its seam here when it
+# lands: the pin makes every landing a deliberate one-line update, and it
+# catches a seam that lands under a spelling SEAM_MODULES does not list —
+# which the absent-is-skipped rule above would otherwise pass over silently.
+LANDED_SEAMS: frozenset[str] = frozenset()
+
+# Function-level imports that exist to break a load-time cycle: the named
+# importer's *runtime* imports of the named module occur only inside function
+# bodies (a typing-only import of the same module may also exist), while the
+# reverse direction is a top-level import, so hoisting either of these to
+# module scope closes a cycle. Pinned so the top-level-only rule is proven on
+# the real tree — each edge is absent from the load-time graph and present
+# once deferred imports are counted — rather than only on synthetic packages.
 DEFERRED_EDGES = (
     ("protokit.schema.profiles", "protokit.schema.checker"),
     ("protokit.message.pytest_plugin", "protokit.message.matchers"),
@@ -92,6 +130,9 @@ DEFERRED_EDGES = (
 
 # Scopes whose body runs when called, not when the module loads.
 _DEFERRED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+# Modules whose ``TYPE_CHECKING`` is the type checker's flag.
+_TYPING_MODULES = frozenset({"typing", "typing_extensions"})
 
 
 def discover_modules(src_root: Path, package: str) -> dict[str, Path]:
@@ -109,32 +150,89 @@ def _in_package(name: str, package: str) -> bool:
     return name == package or name.startswith(package + ".")
 
 
-def _is_type_checking(test: ast.expr) -> bool:
-    if isinstance(test, ast.Name):
-        return test.id == "TYPE_CHECKING"
-    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+def _prefixes(dotted: str) -> list[str]:
+    """``"a.b.c"`` -> ``["a", "a.b", "a.b.c"]``."""
+    parts = dotted.split(".")
+    return [".".join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+@dataclass(frozen=True)
+class _TypeCheckingGuards:
+    """How one module spells ``typing.TYPE_CHECKING``, read off its own bindings.
+
+    ``names`` are bound by ``from typing import TYPE_CHECKING [as X]`` and
+    ``typing_modules`` by ``import typing [as T]`` (``typing_extensions``
+    counts for both). Recognising the guard by binding rather than by
+    spelling means ``Flags.TYPE_CHECKING`` on some other receiver is a plain
+    ``if`` — entered, so at worst a false positive.
+    """
+
+    names: frozenset[str]
+    typing_modules: frozenset[str]
+
+    @classmethod
+    def from_module(cls, tree: ast.Module) -> _TypeCheckingGuards:
+        names: set[str] = set()
+        typing_modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module in _TYPING_MODULES:
+                    names.update(
+                        alias.asname or alias.name
+                        for alias in node.names
+                        if alias.name == "TYPE_CHECKING"
+                    )
+            elif isinstance(node, ast.Import):
+                typing_modules.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in _TYPING_MODULES
+                )
+        return cls(names=frozenset(names), typing_modules=frozenset(typing_modules))
+
+    def is_guard(self, test: ast.expr) -> bool:
+        """``TYPE_CHECKING`` or ``typing.TYPE_CHECKING`` under this module's bindings."""
+        if isinstance(test, ast.Name):
+            return test.id in self.names
+        return (
+            isinstance(test, ast.Attribute)
+            and test.attr == "TYPE_CHECKING"
+            and isinstance(test.value, ast.Name)
+            and test.value.id in self.typing_modules
+        )
+
+    def is_negated_guard(self, test: ast.expr) -> bool:
+        """``not <guard>``: the body runs at module load and the ``else`` never does."""
+        return (
+            isinstance(test, ast.UnaryOp)
+            and isinstance(test.op, ast.Not)
+            and self.is_guard(test.operand)
+        )
 
 
 def _executed_imports(
-    nodes: Iterable[ast.AST], *, include_deferred: bool
+    nodes: Iterable[ast.AST], guards: _TypeCheckingGuards, *, include_deferred: bool
 ) -> Iterator[ast.Import | ast.ImportFrom]:
     """Import statements among ``nodes``, recursively, that run at module load.
 
     A function body is skipped unless ``include_deferred``. The body of an
-    ``if TYPE_CHECKING:`` block is always skipped; its ``else`` branch runs.
-    Every other compound statement (``if``, ``try``, ``with``, ``class``) is
-    entered, because its body executes as the module loads.
+    ``if TYPE_CHECKING:`` block is always skipped and its ``else`` branch
+    walked; ``if not TYPE_CHECKING:`` is the mirror image. Every other
+    compound statement (``if``, ``try``, ``with``, ``for``, ``match``,
+    ``class``) is entered, because its body executes as the module loads.
     """
     for node in nodes:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             yield node
         elif isinstance(node, _DEFERRED_SCOPES) and not include_deferred:
             continue
-        elif isinstance(node, ast.If) and _is_type_checking(node.test):
-            yield from _executed_imports(node.orelse, include_deferred=include_deferred)
+        elif isinstance(node, ast.If) and guards.is_guard(node.test):
+            yield from _executed_imports(node.orelse, guards, include_deferred=include_deferred)
+        elif isinstance(node, ast.If) and guards.is_negated_guard(node.test):
+            yield from _executed_imports(node.body, guards, include_deferred=include_deferred)
         else:
             yield from _executed_imports(
-                ast.iter_child_nodes(node), include_deferred=include_deferred
+                ast.iter_child_nodes(node), guards, include_deferred=include_deferred
             )
 
 
@@ -162,6 +260,22 @@ def _import_targets(
     return targets
 
 
+def _packages_on_path(target: str, importer_package: str, modules: Mapping[str, Path]) -> set[str]:
+    """Packages initialised on the way to ``target`` that the importer does not live under.
+
+    ``import a.b.c`` runs ``a/__init__`` and ``a/b/__init__`` before ``a/b/c``,
+    so each package on the path is a load-order dependency of the importer —
+    except the importer's own package and its ancestors, which are already
+    initialising or initialised by the time the importer runs.
+    """
+    own_packages = set(_prefixes(importer_package))
+    return {
+        prefix
+        for prefix in _prefixes(target)[:-1]
+        if prefix in modules and prefix not in own_packages
+    }
+
+
 def build_import_graph(
     src_root: Path, package: str, *, include_deferred: bool = False
 ) -> dict[str, set[str]]:
@@ -174,11 +288,16 @@ def build_import_graph(
     modules = discover_modules(src_root, package)
     graph: dict[str, set[str]] = {}
     for name, path in modules.items():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        # Parsed from bytes so a BOM or a PEP 263 coding cookie the
+        # interpreter accepts does not error the gate.
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+        guards = _TypeCheckingGuards.from_module(tree)
         importer_package = name if path.stem == "__init__" else name.rpartition(".")[0]
         targets: set[str] = set()
-        for node in _executed_imports(tree.body, include_deferred=include_deferred):
-            targets |= _import_targets(importer_package, node, modules, package)
+        for node in _executed_imports(tree.body, guards, include_deferred=include_deferred):
+            for target in _import_targets(importer_package, node, modules, package):
+                targets.add(target)
+                targets |= _packages_on_path(target, importer_package, modules)
         targets.discard(name)
         graph[name] = targets
     return graph
@@ -199,16 +318,49 @@ def find_cycle(graph: Mapping[str, set[str]]) -> list[str] | None:
     return None
 
 
-def format_cycle(cycle: Iterable[str]) -> str:
-    return " -> ".join(cycle)
+def _under_seam(module: str, seams: Iterable[str]) -> bool:
+    return any(module == seam or module.startswith(seam + ".") for seam in seams)
 
 
 def layer0_violations(graph: Mapping[str, set[str]], seams: Iterable[str]) -> dict[str, set[str]]:
-    """``seam -> {package modules it imports}`` for every listed seam in ``graph``.
+    """``module -> {package modules it imports}`` for every seam module in ``graph``.
 
-    A seam absent from the graph has not landed yet and is skipped.
+    A seam that landed as a package is checked with every module under it. A
+    seam absent from the graph has not landed yet and is skipped.
     """
-    return {seam: set(graph[seam]) for seam in seams if seam in graph and graph[seam]}
+    seams = tuple(seams)
+    return {
+        module: set(targets)
+        for module, targets in graph.items()
+        if targets and _under_seam(module, seams)
+    }
+
+
+# ---------------------------------------------------------------------------
+# Runtime complement
+# ---------------------------------------------------------------------------
+
+
+def import_in_fresh_interpreter(
+    module: str, *, src_root: Path, cwd: Path
+) -> subprocess.CompletedProcess[str]:
+    """``import <module>`` in a fresh interpreter that finds it through ``src_root`` alone.
+
+    ``PYTHONSAFEPATH`` keeps ``cwd`` off ``sys.path`` (3.11+; an older
+    interpreter ignores it). The caller reads ``returncode`` and ``stderr``.
+    """
+    return subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        cwd=cwd,
+        env={**os.environ, "PYTHONPATH": str(src_root), "PYTHONSAFEPATH": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _stderr_tail(result: subprocess.CompletedProcess[str], lines: int = 3) -> str:
+    return "\n".join(f"    {line}" for line in result.stderr.strip().splitlines()[-lines:])
 
 
 # ---------------------------------------------------------------------------
@@ -221,14 +373,23 @@ def graph() -> dict[str, set[str]]:
     return build_import_graph(_SRC_ROOT, PACKAGE)
 
 
+@pytest.fixture(scope="module")
+def graph_with_deferred() -> dict[str, set[str]]:
+    return build_import_graph(_SRC_ROOT, PACKAGE, include_deferred=True)
+
+
 class TestImportLayers:
     def test_protokit_has_no_module_load_import_cycles(self, graph: dict[str, set[str]]) -> None:
         cycle = find_cycle(graph)
         assert cycle is None, (
             "protokit has a module-load import cycle (KTD8):\n"
-            f"  {format_cycle(cycle)}\n"
-            "(-> reads 'imports at module load'; a deferred, function-level import "
-            "is the sanctioned way to break one — see this module's docstring)"
+            f"  {' -> '.join(cycle)}\n"
+            "(-> reads 'imports at module load'. The sanctioned breaks: an "
+            "annotation-only import goes under `if TYPE_CHECKING:`; a runtime "
+            "import moves into the function that needs it — never into a "
+            "containment `except` arm; a from-import of a package attribute is "
+            "rewritten to import from the submodule that defines it. See this "
+            "module's docstring.)"
         )
 
     def test_graph_covers_every_module_and_every_edge_resolves_in_tree(
@@ -240,21 +401,29 @@ class TestImportLayers:
         modules = discover_modules(_SRC_ROOT, PACKAGE)
         assert set(graph) == set(modules)
         assert len(modules) == len(list((_SRC_ROOT / PACKAGE).rglob("*.py")))
-        anchors = {PACKAGE, f"{PACKAGE}.formatters", f"{PACKAGE}.schema.lint.engine"}
+        anchors = {PACKAGE, f"{PACKAGE}.formatters", f"{PACKAGE}.schema.lint"}
         assert anchors <= set(modules), (
             f"expected the protokit tree; missing {anchors - set(modules)}"
         )
         dangling = {t for targets in graph.values() for t in targets if t not in graph}
         assert not dangling, f"edges to names that are not modules in the tree: {dangling}"
 
-    def test_deferred_imports_are_the_cycle_prevention_mechanism(
-        self, graph: dict[str, set[str]]
-    ) -> None:
-        with_deferred = build_import_graph(_SRC_ROOT, PACKAGE, include_deferred=True)
-        assert find_cycle(with_deferred) is not None, (
-            "counting function-level imports no longer produces a cycle; the "
-            "top-level-only rule is not being exercised by this tree"
+    def test_every_package_directory_has_an_init(self) -> None:
+        # A directory of ``.py`` files without an ``__init__.py`` is a
+        # namespace package: an import target with no source file, so no node
+        # in the graph — which breaks the one-node-per-file invariant the
+        # cycle assertion relies on.
+        directories = {path.parent for path in (_SRC_ROOT / PACKAGE).rglob("*.py")}
+        missing = sorted(
+            str(directory.relative_to(_SRC_ROOT))
+            for directory in directories
+            if not (directory / "__init__.py").is_file()
         )
+        assert not missing, f"package directories without an __init__.py: {missing}"
+
+    def test_deferred_imports_are_the_cycle_prevention_mechanism(
+        self, graph: dict[str, set[str]], graph_with_deferred: dict[str, set[str]]
+    ) -> None:
         for importer, imported in DEFERRED_EDGES:
             assert importer in graph and imported in graph, (
                 f"{importer} or {imported} is no longer in the tree; update DEFERRED_EDGES"
@@ -263,7 +432,7 @@ class TestImportLayers:
                 f"{importer} now imports {imported} at module load; that closes a "
                 "cycle with the top-level import in the other direction"
             )
-            assert imported in with_deferred[importer], (
+            assert imported in graph_with_deferred[importer], (
                 f"{importer} no longer imports {imported} anywhere; update "
                 "DEFERRED_EDGES if the deferred import was removed on purpose"
             )
@@ -293,16 +462,45 @@ class TestImportLayers:
         )
 
     def test_layer0_seam_modules_import_nothing_from_protokit(
-        self, graph: dict[str, set[str]]
+        self, graph_with_deferred: dict[str, set[str]]
     ) -> None:
-        violations = layer0_violations(graph, SEAM_MODULES)
+        violations = layer0_violations(graph_with_deferred, SEAM_MODULES)
         listing = "\n".join(
-            f"  {seam} imports {', '.join(sorted(targets))}"
-            for seam, targets in sorted(violations.items())
+            f"  {module} imports {', '.join(sorted(targets))}"
+            for module, targets in sorted(violations.items())
         )
         assert not violations, (
-            f"layer-0 seam modules must import nothing from protokit (KTD8):\n{listing}"
+            "layer-0 seam modules must import nothing from protokit at any scope "
+            f"(KTD8):\n{listing}"
         )
+
+    def test_landed_seams_pin_matches_the_tree(self, graph: dict[str, set[str]]) -> None:
+        landed = {seam for seam in SEAM_MODULES if seam in graph}
+        assert landed == LANDED_SEAMS, (
+            f"seams in the tree {sorted(landed)} != LANDED_SEAMS {sorted(LANDED_SEAMS)}; "
+            "a Wave B landing updates LANDED_SEAMS in the same PR (a seam that landed "
+            "under another spelling goes into SEAM_MODULES first)"
+        )
+
+    def test_every_module_imports_in_a_fresh_interpreter(self) -> None:
+        # The interpreter-level truth the static gate approximates: this
+        # catches a load-time failure the edge model cannot see (an import
+        # executed through a module-level call, an ``importlib`` string) and
+        # inherits the CI cell's protobuf backend through the environment.
+        modules = sorted(discover_modules(_SRC_ROOT, PACKAGE))
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {
+                module: pool.submit(
+                    import_in_fresh_interpreter, module, src_root=_SRC_ROOT, cwd=_REPO_ROOT
+                )
+                for module in modules
+            }
+        results = {module: future.result() for module, future in futures.items()}
+        failures = {module: result for module, result in results.items() if result.returncode}
+        listing = "\n".join(
+            f"  {module}:\n{_stderr_tail(result)}" for module, result in sorted(failures.items())
+        )
+        assert not failures, f"modules that fail to import in a fresh interpreter:\n{listing}"
 
 
 # ---------------------------------------------------------------------------
@@ -317,15 +515,48 @@ def _write_package(tmp_path: Path, files: Mapping[str, str]) -> Path:
         path = src / "pkg" / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
+    # ``touch`` creates the root ``__init__`` only when ``files`` did not; an
+    # explicit one keeps its content.
     (src / "pkg" / "__init__.py").touch()
     return src
+
+
+def _graph_of(
+    tmp_path: Path, files: Mapping[str, str], *, include_deferred: bool = False
+) -> dict[str, set[str]]:
+    src = _write_package(tmp_path, files)
+    return build_import_graph(src, "pkg", include_deferred=include_deferred)
 
 
 def _cycle_of(
     tmp_path: Path, files: Mapping[str, str], *, include_deferred: bool = False
 ) -> list[str] | None:
-    src = _write_package(tmp_path, files)
-    return find_cycle(build_import_graph(src, "pkg", include_deferred=include_deferred))
+    return find_cycle(_graph_of(tmp_path, files, include_deferred=include_deferred))
+
+
+def _fresh_import_of(tmp_path: Path, module: str) -> subprocess.CompletedProcess[str]:
+    """Import ``module`` from the package ``_write_package`` wrote under ``tmp_path``."""
+    return import_in_fresh_interpreter(module, src_root=tmp_path / "src", cwd=tmp_path)
+
+
+# Shapes on which the interpreter's verdict is loud, so the gate's can be
+# checked against it (``test_gate_verdict_agrees_with_the_interpreter``).
+_NON_ANCESTOR_PACKAGE_CYCLE = {
+    "_a.py": "import pkg.sub._c\nX = 1\n",
+    "sub/__init__.py": "from pkg._a import X\n",
+    "sub/_c.py": "",
+}
+_FROM_NAME_CYCLE = {
+    "_a.py": "from pkg._b import y\nx = 1\n",
+    "_b.py": "from pkg._a import x\ny = 2\n",
+}
+# The protokit.formatters shape: __init__ imports the submodules; a submodule
+# does ``from pkg import <sibling>``.
+_PACKAGE_INIT_SHAPE = {
+    "__init__.py": "from pkg import _a\nfrom pkg import _b\n",
+    "_a.py": "from pkg import _b as sibling\n",
+    "_b.py": "",
+}
 
 
 class TestImportLayersSelfCheck:
@@ -334,15 +565,12 @@ class TestImportLayersSelfCheck:
         assert cycle is not None
         assert cycle[0] == cycle[-1]
         assert set(cycle) == {"pkg._a", "pkg._b"}
-        rendered = format_cycle(cycle)
-        assert "pkg._a" in rendered and "pkg._b" in rendered
 
     def test_cycle_is_rendered_in_import_order(self, tmp_path: Path) -> None:
-        src = _write_package(
+        graph = _graph_of(
             tmp_path,
             {"_a.py": "import pkg._b\n", "_b.py": "import pkg._c\n", "_c.py": "import pkg._a\n"},
         )
-        graph = build_import_graph(src, "pkg")
         cycle = find_cycle(graph)
         assert cycle is not None and len(cycle) == 4
         for importer, imported in pairwise(cycle):
@@ -355,26 +583,11 @@ class TestImportLayersSelfCheck:
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
     def test_from_module_import_name_cycle_is_reported(self, tmp_path: Path) -> None:
-        cycle = _cycle_of(
-            tmp_path,
-            {"_a.py": "from pkg._b import y\nx = 1\n", "_b.py": "from pkg._a import x\ny = 2\n"},
-        )
+        cycle = _cycle_of(tmp_path, _FROM_NAME_CYCLE)
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
     def test_package_init_importing_its_own_submodules_is_not_a_cycle(self, tmp_path: Path) -> None:
-        # The protokit.formatters shape: __init__ imports the submodules; a
-        # submodule does ``from pkg import <sibling>``.
-        assert (
-            _cycle_of(
-                tmp_path,
-                {
-                    "__init__.py": "from pkg import _a\nfrom pkg import _b\n",
-                    "_a.py": "from pkg import _b as sibling\n",
-                    "_b.py": "",
-                },
-            )
-            is None
-        )
+        assert _cycle_of(tmp_path, _PACKAGE_INIT_SHAPE) is None
 
     def test_submodule_importing_its_own_package_is_a_cycle(self, tmp_path: Path) -> None:
         # Same shape, with a genuine back-edge: ``import pkg`` from a submodule
@@ -408,17 +621,72 @@ class TestImportLayersSelfCheck:
         )
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
-    def test_function_level_import_is_not_an_edge(self, tmp_path: Path) -> None:
-        files = {"_a.py": "import pkg._b\n", "_b.py": "def f():\n    import pkg._a\n"}
-        assert _cycle_of(tmp_path, files) is None
-        assert _cycle_of(tmp_path, files, include_deferred=True) is not None
+    def test_import_through_a_non_ancestor_package_init_is_a_cycle(self, tmp_path: Path) -> None:
+        # ``pkg._a`` imports ``pkg.sub._c``, which initialises ``pkg.sub``
+        # first — and ``pkg.sub`` needs a name ``pkg._a`` has not bound yet.
+        cycle = _cycle_of(tmp_path, _NON_ANCESTOR_PACKAGE_CYCLE)
+        assert cycle is not None and set(cycle) == {"pkg._a", "pkg.sub"}
 
-    def test_method_body_import_is_not_an_edge(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("files", "gate_reports_a_cycle"),
+        [
+            (_NON_ANCESTOR_PACKAGE_CYCLE, True),
+            (_FROM_NAME_CYCLE, True),
+            (_PACKAGE_INIT_SHAPE, False),
+        ],
+        ids=["non-ancestor-package-init", "from-name-cycle", "package-init-shape"],
+    )
+    def test_gate_verdict_agrees_with_the_interpreter(
+        self, tmp_path: Path, files: Mapping[str, str], gate_reports_a_cycle: bool
+    ) -> None:
+        # Ties the gate's verdict to ground truth on the shapes where the
+        # interpreter is loud. A plain-import mutual cycle (``import pkg._b``
+        # / ``import pkg._a``) does not raise at runtime — the half-initialised
+        # module is simply bound — which is why the static gate exists.
+        cycle = _cycle_of(tmp_path, files)
+        result = _fresh_import_of(tmp_path, "pkg._a")
+        if gate_reports_a_cycle:
+            assert cycle is not None
+            assert result.returncode != 0, "the interpreter accepted a cycle the gate reports"
+            assert "partially initialized module" in result.stderr, result.stderr
+        else:
+            assert cycle is None
+            assert result.returncode == 0, result.stderr
+
+    def test_import_executed_through_a_module_level_call_is_outside_the_edge_model(
+        self, tmp_path: Path
+    ) -> None:
+        # A documented boundary of the static gate: the walk is syntactic and
+        # a call is not an import statement, so the import ``register()``
+        # executes at module load is invisible here while the interpreter
+        # fails on it. ``test_every_module_imports_in_a_fresh_interpreter`` is
+        # the runtime complement; extending the walker to follow module-level
+        # calls updates this pin.
         files = {
-            "_a.py": "import pkg._b\n",
-            "_b.py": "class C:\n    def m(self):\n        import pkg._a\n",
+            "_a.py": "import pkg._b\nX = 1\n",
+            "_b.py": "def register():\n    from pkg._a import X\n\n\nregister()\n",
         }
         assert _cycle_of(tmp_path, files) is None
+        result = _fresh_import_of(tmp_path, "pkg._a")
+        assert result.returncode != 0, "the interpreter accepted the call-executed import"
+        assert "partially initialized module" in result.stderr, result.stderr
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "def f():\n    import pkg._a\n",
+            "async def f():\n    import pkg._a\n",
+            "class C:\n    def m(self):\n        import pkg._a\n",
+            "class C:\n    @staticmethod\n    def s():\n        import pkg._a\n",
+            "def outer():\n    def inner():\n        import pkg._a\n",
+        ],
+        ids=["def", "async-def", "method", "static-method", "nested-def"],
+    )
+    def test_import_in_a_deferred_scope_is_not_an_edge(self, tmp_path: Path, source: str) -> None:
+        files = {"_a.py": "import pkg._b\n", "_b.py": source}
+        assert _cycle_of(tmp_path, files) is None
+        cycle = _cycle_of(tmp_path, files, include_deferred=True)
+        assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
     @pytest.mark.parametrize(
         "guard",
@@ -426,8 +694,10 @@ class TestImportLayersSelfCheck:
             "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n",
             "import typing\nif typing.TYPE_CHECKING:\n",
             "import typing as t\nif t.TYPE_CHECKING:\n",
+            "from typing import TYPE_CHECKING as TC\nif TC:\n",
+            "from typing_extensions import TYPE_CHECKING\nif TYPE_CHECKING:\n",
         ],
-        ids=["name", "attribute", "aliased-attribute"],
+        ids=["name", "attribute", "aliased-attribute", "aliased-name", "typing-extensions"],
     )
     def test_type_checking_import_is_not_an_edge(self, tmp_path: Path, guard: str) -> None:
         files = {"_a.py": "import pkg._b\n", "_b.py": guard + "    from pkg._a import A\n"}
@@ -443,50 +713,134 @@ class TestImportLayersSelfCheck:
         cycle = _cycle_of(tmp_path, files)
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
-    def test_plain_if_block_import_is_an_edge(self, tmp_path: Path) -> None:
-        files = {
-            "_a.py": "import pkg._b\n",
-            "_b.py": "import sys\nif sys.version_info >= (3, 10):\n    import pkg._a\n",
-        }
+    @pytest.mark.parametrize(
+        ("source", "expect_cycle"),
+        [
+            ("if not TYPE_CHECKING:\n    import pkg._a\n", True),
+            ("if not TYPE_CHECKING:\n    pass\nelse:\n    import pkg._a\n", False),
+        ],
+        ids=["body-is-counted", "else-is-excluded"],
+    )
+    def test_negated_type_checking_guard(
+        self, tmp_path: Path, source: str, expect_cycle: bool
+    ) -> None:
+        files = {"_a.py": "import pkg._b\n", "_b.py": "from typing import TYPE_CHECKING\n" + source}
+        cycle = _cycle_of(tmp_path, files)
+        if expect_cycle:
+            assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
+        else:
+            assert cycle is None
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "class Flags:\n    TYPE_CHECKING = True\nif Flags.TYPE_CHECKING:\n    import pkg._a\n",
+            "from typing import TYPE_CHECKING\nif TYPE_CHECKING or False:\n    import pkg._a\n",
+        ],
+        ids=["non-typing-receiver", "compound-test"],
+    )
+    def test_unrecognised_type_checking_spelling_is_counted(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        # Fail-closed pin: a test the walker does not recognise as the guard
+        # is a plain ``if`` and is entered — a false positive at worst, never
+        # a missed edge.
+        files = {"_a.py": "import pkg._b\n", "_b.py": source}
         cycle = _cycle_of(tmp_path, files)
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
-    def test_try_block_import_is_an_edge(self, tmp_path: Path) -> None:
-        files = {
-            "_a.py": "import pkg._b\n",
-            "_b.py": "try:\n    import pkg._a\nexcept ImportError:\n    pass\n",
-        }
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "try:\n    import pkg._a\nexcept ImportError:\n    pass\n",
+            "try:\n    import nonesuch_mod\nexcept ImportError:\n    import pkg._a\n",
+            "try:\n    pass\nexcept ImportError:\n    pass\nelse:\n    import pkg._a\n",
+            "try:\n    pass\nfinally:\n    import pkg._a\n",
+            "import sys\nif sys.version_info >= (3, 10):\n    import pkg._a\n",
+            "import sys\nif sys.version_info < (3, 10):\n    pass\nelse:\n    import pkg._a\n",
+            "import sys\nif sys.version_info < (3, 10):\n    pass\nelif True:\n    import pkg._a\n",
+            "import contextlib\nwith contextlib.nullcontext():\n    import pkg._a\n",
+            "for _ in range(1):\n    import pkg._a\n",
+            "while True:\n    import pkg._a\n    break\n",
+            "match 1:\n    case _:\n        import pkg._a\n",
+            "class C:\n    import pkg._a\n",
+            "class C:\n    class D:\n        import pkg._a\n",
+        ],
+        ids=[
+            "try-body",
+            "except-arm",
+            "try-else",
+            "try-finally",
+            "if-body",
+            "if-else",
+            "elif",
+            "with",
+            "for-body",
+            "while-body",
+            "match-arm",
+            "class-body",
+            "nested-class-body",
+        ],
+    )
+    def test_import_in_a_load_time_compound_statement_is_an_edge(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        files = {"_a.py": "import pkg._b\n", "_b.py": source}
         cycle = _cycle_of(tmp_path, files)
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
-    def test_class_body_import_is_an_edge(self, tmp_path: Path) -> None:
-        files = {"_a.py": "import pkg._b\n", "_b.py": "class C:\n    import pkg._a\n"}
-        cycle = _cycle_of(tmp_path, files)
-        assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
+    def test_every_name_of_a_multi_name_import_is_an_edge(self, tmp_path: Path) -> None:
+        files = {
+            "_a.py": "import pkg._b, pkg._c\nfrom pkg import _d, _e\n",
+            "_b.py": "",
+            "_c.py": "",
+            "_d.py": "",
+            "_e.py": "",
+        }
+        graph = _graph_of(tmp_path, files)
+        assert graph["pkg._a"] == {"pkg._b", "pkg._c", "pkg._d", "pkg._e"}
+
+    def test_star_import_is_an_edge_to_the_module(self, tmp_path: Path) -> None:
+        files = {"_a.py": "from pkg._b import *\n", "_b.py": ""}
+        graph = _graph_of(tmp_path, files)
+        assert graph["pkg._a"] == {"pkg._b"}
 
     def test_relative_imports_resolve_against_the_importer_package(self, tmp_path: Path) -> None:
         files = {
+            "__init__.py": "from . import _a\n",
             "_a.py": "from . import _b\n",
             "_b.py": "from .sub import _c\n",
-            "sub/__init__.py": "",
+            "sub/__init__.py": "from . import _c\n",
             "sub/_c.py": "from .._a import x\n",
         }
-        src = _write_package(tmp_path, files)
-        graph = build_import_graph(src, "pkg")
+        graph = _graph_of(tmp_path, files)
+        assert graph["pkg"] == {"pkg._a"}
         assert graph["pkg._a"] == {"pkg._b"}
-        assert graph["pkg._b"] == {"pkg.sub._c"}
+        assert graph["pkg._b"] == {"pkg.sub._c", "pkg.sub"}
+        assert graph["pkg.sub"] == {"pkg.sub._c"}
         assert graph["pkg.sub._c"] == {"pkg._a"}
-        cycle = find_cycle(graph)
-        assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b", "pkg.sub._c"}
+        # More than one cycle closes here (through ``pkg.sub._c`` directly and
+        # through ``pkg.sub``); the exact sets are proven by the dedicated
+        # cycle tests.
+        assert find_cycle(graph) is not None
 
-    def test_dotted_import_is_an_edge_to_exactly_that_module(self, tmp_path: Path) -> None:
-        files = {"_a.py": "import pkg.sub._c\n", "sub/__init__.py": "", "sub/_c.py": ""}
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
-        assert graph["pkg._a"] == {"pkg.sub._c"}
+    def test_dotted_import_is_an_edge_to_the_module_and_the_non_ancestor_packages_on_its_path(
+        self, tmp_path: Path
+    ) -> None:
+        files = {
+            "_a.py": "import pkg.sub._c\n",
+            "sub/__init__.py": "",
+            "sub/_c.py": "",
+            "sub/_d.py": "import pkg.sub._c\n",
+        }
+        graph = _graph_of(tmp_path, files)
+        assert graph["pkg._a"] == {"pkg.sub._c", "pkg.sub"}
+        # ``pkg.sub`` is ``pkg.sub._d``'s own package: already initialising.
+        assert graph["pkg.sub._d"] == {"pkg.sub._c"}
 
     def test_self_import_is_not_an_edge(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg._a\nfrom pkg import _a\n"}
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
+        graph = _graph_of(tmp_path, files)
         assert graph["pkg._a"] == set()
         assert find_cycle(graph) is None
 
@@ -494,7 +848,7 @@ class TestImportLayersSelfCheck:
         # ``pkgutil`` shares the package's prefix: a startswith check without
         # the dot would count it.
         files = {"_a.py": "import os\nimport pkgutil\nfrom collections import abc\n"}
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
+        graph = _graph_of(tmp_path, files)
         assert graph["pkg._a"] == set()
 
     def test_every_module_in_the_tree_is_a_node(self, tmp_path: Path) -> None:
@@ -509,20 +863,49 @@ class TestImportLayersSelfCheck:
             "_a.py": "",
             "_b.py": "",
         }
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
+        graph = _graph_of(tmp_path, files)
         assert layer0_violations(graph, ["pkg._seam"]) == {"pkg._seam": {"pkg._a", "pkg._b"}}
+
+    def test_layer0_counts_a_seam_function_level_import_on_the_deferred_graph(
+        self, tmp_path: Path
+    ) -> None:
+        files = {"_seam.py": "def f():\n    from pkg._a import x\n", "_a.py": "x = 1\n"}
+        assert layer0_violations(_graph_of(tmp_path, files), ["pkg._seam"]) == {}
+        with_deferred = _graph_of(tmp_path, files, include_deferred=True)
+        assert layer0_violations(with_deferred, ["pkg._seam"]) == {"pkg._seam": {"pkg._a"}}
+
+    def test_layer0_checks_every_module_under_a_package_shaped_seam(self, tmp_path: Path) -> None:
+        # ``pkg._seamless`` shares the seam's prefix: a startswith check
+        # without the dot would count it.
+        files = {
+            "_seam/__init__.py": "",
+            "_seam/impl.py": "import pkg._a\n",
+            "_seamless.py": "import pkg._a\n",
+            "_a.py": "",
+        }
+        graph = _graph_of(tmp_path, files)
+        assert layer0_violations(graph, ["pkg._seam"]) == {"pkg._seam.impl": {"pkg._a"}}
+
+    def test_layer0_exempts_a_type_checking_only_import(self, tmp_path: Path) -> None:
+        files = {
+            "_seam.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+            "    from pkg._a import A\n",
+            "_a.py": "",
+        }
+        with_deferred = _graph_of(tmp_path, files, include_deferred=True)
+        assert layer0_violations(with_deferred, ["pkg._seam"]) == {}
 
     def test_layer0_passes_on_a_seam_importing_only_the_stdlib(self, tmp_path: Path) -> None:
         files = {"_seam.py": "import os\nfrom pathlib import Path\n", "_a.py": "import pkg._seam\n"}
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
+        graph = _graph_of(tmp_path, files)
         assert layer0_violations(graph, ["pkg._seam"]) == {}
 
     def test_layer0_passes_with_an_empty_seam_list(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg._b\n", "_b.py": ""}
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
+        graph = _graph_of(tmp_path, files)
         assert layer0_violations(graph, []) == {}
 
     def test_layer0_skips_seams_absent_from_the_tree(self, tmp_path: Path) -> None:
         files = {"_a.py": "import pkg._b\n", "_b.py": ""}
-        graph = build_import_graph(_write_package(tmp_path, files), "pkg")
+        graph = _graph_of(tmp_path, files)
         assert layer0_violations(graph, ["pkg._not_yet"]) == {}
