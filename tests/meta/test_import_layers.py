@@ -23,8 +23,11 @@ What counts as an edge — the load-bearing rules:
   guard is recognised by its ``typing`` binding, not its spelling: a name
   bound by ``from typing import TYPE_CHECKING [as X]`` (``typing_extensions``
   counts too), or the ``TYPE_CHECKING`` attribute of a name bound by ``import
-  typing [as T]``. The negated form ``if not TYPE_CHECKING:`` counts its body
-  and skips its ``else``. Any other test — a compound one such as
+  typing [as T]``. Both bindings are read off module-scope statements only,
+  and a name the module rebinds or deletes at module scope — or binds only
+  inside a function — is not a guard, because the flag the ``if`` tests is
+  then not ``typing``'s. The negated form ``if not TYPE_CHECKING:`` counts
+  its body and skips its ``else``. Any other test — a compound one such as
   ``TYPE_CHECKING or X``, or ``TYPE_CHECKING`` on some other receiver — is a
   plain ``if`` and both arms are entered: at worst a false positive, never a
   missed edge.
@@ -42,17 +45,30 @@ What counts as an edge — the load-bearing rules:
   parent package is — a submodule importing its own package is not exempt.
 * **An import of ``a.b.c`` also depends on every package on that path the
   importer does not itself live under** — CPython initialises ``a`` and
-  ``a.b`` before ``a.b.c``, so a cycle through one of those ``__init__``
-  modules is a real load-order failure. Packages the importer lives under are
-  already initialising or initialised; those are the package-initialisation
-  artefact the ``from <pkg> import <name>`` rule excludes.
+  ``a.b`` before ``a.b.c``, so the importer's load can trigger those
+  ``__init__`` modules, and the edge is counted like a plain import of each.
+  That over-approximates on purpose: ``import a.b`` needs ``a`` only to have
+  *started* initialising, so the rule also reports a cycle through a
+  package's ``__init__`` where the interpreter would tolerate the partially
+  initialised package — a self-test pins one such call as deliberate. The
+  rule stays because the failures it does catch are real load-order
+  failures, and dropping it reopens them. Packages the importer lives under
+  are already initialising or initialised; those are the
+  package-initialisation artefact the ``from <pkg> import <name>`` rule
+  excludes.
 * A module's import of itself is not an edge.
 
 Outside the edge model: an import executed through a call at module load
 (a ``register()`` whose body imports), ``importlib.import_module`` /
-``__import__`` strings, module ``__getattr__``, and compiled extension
-modules. None occur in the tree; for the first two the fresh-interpreter
-sweep (``test_every_module_imports_in_a_fresh_interpreter``) is the runtime
+``__import__`` strings, module ``__getattr__``, compiled extension modules,
+and whatever a ``from <pkg> import *`` pulls in through ``<pkg>.__all__``
+(the star itself is an edge to the module named, but a submodule that
+``__all__`` re-exports is invisible). None of these occurs *at module load*
+in the tree: the three ``importlib.import_module`` call sites
+(``_cli_utils.py``, ``schema/cli.py``, ``schema/lint/_cli_utils.py``) are
+deferred plugin loading inside function bodies, and there are no star
+imports at all. The fresh-interpreter sweep
+(``test_every_module_imports_in_a_fresh_interpreter``) is the runtime
 complement.
 
 Acyclicity is decided by ``graphlib.TopologicalSorter.prepare()``; the
@@ -91,8 +107,9 @@ PACKAGE = "protokit"
 # Layer-0 seam modules the 0.16.0 plan introduces (KTD8). Each is asserted to
 # import nothing from ``protokit`` at any scope once it exists in the tree:
 # function-level imports count too, because a seam is cycle-free by depending
-# on nothing above it, not by deferring the dependency. Only an import under
-# ``if TYPE_CHECKING:`` is exempt, because it never executes. A seam that
+# on nothing above it, not by deferring the dependency. An import under
+# ``if TYPE_CHECKING:`` is exempt because it never executes, and a seam's
+# import of itself is discarded with every other self-import. A seam that
 # lands as a package is checked with every module under it. A name absent
 # from the tree is skipped, so the assertion grows as Wave B lands (U3, U5,
 # U6, U7, U12, U13) instead of failing on modules that have not landed yet.
@@ -106,9 +123,11 @@ SEAM_MODULES = (
 )
 
 # The seams that have landed. Each Wave B unit adds its seam here when it
-# lands: the pin makes every landing a deliberate one-line update, and it
-# catches a seam that lands under a spelling SEAM_MODULES does not list —
-# which the absent-is-skipped rule above would otherwise pass over silently.
+# lands: the pin makes every landing a deliberate one-line update, so a seam
+# that landed cannot sit in the tree while this list says it has not — the
+# absent-is-skipped rule above would otherwise pass over a typo'd seam name
+# silently. It compares names already in SEAM_MODULES, so a seam that lands
+# under a spelling SEAM_MODULES does not list goes into SEAM_MODULES first.
 LANDED_SEAMS: frozenset[str] = frozenset()
 
 # Function-level imports that exist to break a load-time cycle: the named
@@ -146,6 +165,26 @@ def discover_modules(src_root: Path, package: str) -> dict[str, Path]:
     return modules
 
 
+def directories_without_an_init(package_root: Path) -> list[str]:
+    """Directories of the package tree, ``package_root`` included, that are not packages.
+
+    Every directory is examined, not only the parents of ``.py`` files: a
+    directory holding nothing but subdirectories is still resolved on the way
+    to what is under it, so it is a namespace package just the same.
+    """
+    directories = [package_root]
+    directories.extend(
+        path
+        for path in package_root.rglob("*")
+        if path.is_dir() and "__pycache__" not in path.relative_to(package_root).parts
+    )
+    return sorted(
+        str(directory.relative_to(package_root.parent))
+        for directory in directories
+        if not (directory / "__init__.py").is_file()
+    )
+
+
 def _in_package(name: str, package: str) -> bool:
     return name == package or name.startswith(package + ".")
 
@@ -154,6 +193,71 @@ def _prefixes(dotted: str) -> list[str]:
     """``"a.b.c"`` -> ``["a", "a.b", "a.b.c"]``."""
     parts = dotted.split(".")
     return [".".join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+def _module_scope_nodes(nodes: Iterable[ast.AST]) -> Iterator[ast.AST]:
+    """``nodes`` and every descendant that belongs to the module's own namespace.
+
+    A compound statement is entered, because its body runs as the module
+    loads. A ``def``, ``async def``, ``class`` or ``lambda`` is yielded but
+    not entered: it is a namespace of its own, so what its body binds is
+    invisible at module scope — which is why a ``TYPE_CHECKING`` imported
+    inside a function is not this module's guard.
+    """
+    for node in nodes:
+        yield node
+        if isinstance(node, (*_DEFERRED_SCOPES, ast.ClassDef, ast.Lambda)):
+            continue
+        yield from _module_scope_nodes(ast.iter_child_nodes(node))
+
+
+def _rebound_at_module_scope(tree: ast.Module) -> set[str]:
+    """Names the module binds or deletes at module scope other than by a typing import.
+
+    Every binding form is covered by the store/delete contexts the walk sees
+    (assignment, unpacking, augmented and annotated targets, ``for``,
+    ``with``, ``:=``) plus the ones that spell the name as a string (``def``,
+    ``class``, ``except ... as``, a ``match`` capture, an import alias). Only
+    the ``TYPE_CHECKING`` an import binds *from a typing module* is left out,
+    because that is the binding the guard is read from.
+
+    The set is allowed to be too large — a comprehension target does not
+    really leak into module scope, and ``global`` is counted wherever it is
+    declared — because dropping a guard name only ever costs a false
+    positive, while keeping one that is no longer typing's flag would skip an
+    import CPython executes.
+    """
+    rebound: set[str] = set()
+    for node in _module_scope_nodes(tree.body):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            rebound.add(node.id)
+        elif isinstance(node, (*_DEFERRED_SCOPES, ast.ClassDef)):
+            rebound.add(node.name)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            if node.name is not None:
+                rebound.add(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest is not None:
+                rebound.add(node.rest)
+        elif isinstance(node, ast.Import):
+            rebound.update(
+                alias.asname or alias.name.partition(".")[0]
+                for alias in node.names
+                if alias.name not in _TYPING_MODULES
+            )
+        elif isinstance(node, ast.ImportFrom):
+            from_typing = node.level == 0 and node.module in _TYPING_MODULES
+            rebound.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if not (from_typing and alias.name == "TYPE_CHECKING")
+            )
+    # ``global X`` binds a module-level name from inside a body the walk
+    # above does not enter, and a module-load call can run that body.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Global):
+            rebound.update(node.names)
+    return rebound
 
 
 @dataclass(frozen=True)
@@ -165,6 +269,12 @@ class _TypeCheckingGuards:
     counts for both). Recognising the guard by binding rather than by
     spelling means ``Flags.TYPE_CHECKING`` on some other receiver is a plain
     ``if`` — entered, so at worst a false positive.
+
+    Only module-scope bindings register, and a name the module rebinds or
+    deletes is dropped: ``TYPE_CHECKING = True`` after the import, or a
+    ``TYPE_CHECKING`` imported inside a function, leaves an ``if`` whose body
+    CPython executes, and skipping that body would be a missed edge rather
+    than a false positive.
     """
 
     names: frozenset[str]
@@ -174,7 +284,7 @@ class _TypeCheckingGuards:
     def from_module(cls, tree: ast.Module) -> _TypeCheckingGuards:
         names: set[str] = set()
         typing_modules: set[str] = set()
-        for node in ast.walk(tree):
+        for node in _module_scope_nodes(tree.body):
             if isinstance(node, ast.ImportFrom):
                 if node.level == 0 and node.module in _TYPING_MODULES:
                     names.update(
@@ -188,7 +298,11 @@ class _TypeCheckingGuards:
                     for alias in node.names
                     if alias.name in _TYPING_MODULES
                 )
-        return cls(names=frozenset(names), typing_modules=frozenset(typing_modules))
+        rebound = _rebound_at_module_scope(tree)
+        return cls(
+            names=frozenset(names - rebound),
+            typing_modules=frozenset(typing_modules - rebound),
+        )
 
     def is_guard(self, test: ast.expr) -> bool:
         """``TYPE_CHECKING`` or ``typing.TYPE_CHECKING`` under this module's bindings."""
@@ -241,16 +355,32 @@ def _import_targets(
     node: ast.Import | ast.ImportFrom,
     modules: Mapping[str, Path],
     package: str,
+    *,
+    importer: str,
+    path: Path,
 ) -> set[str]:
     """The package modules ``node`` is an edge to, under the rules in the docstring.
 
     ``importer_package`` is the importer's ``__package__`` — the module itself
     for a package ``__init__``, its parent otherwise — which is what a relative
-    ``from`` level resolves against.
+    ``from`` level resolves against. ``importer`` and ``path`` name the source
+    only in the error below.
     """
     if isinstance(node, ast.Import):
         return {alias.name for alias in node.names if _in_package(alias.name, package)}
-    base = importlib.util.resolve_name("." * node.level + (node.module or ""), importer_package)
+    relative = "." * node.level + (node.module or "")
+    try:
+        base = importlib.util.resolve_name(relative, importer_package)
+    except ImportError as exc:
+        # A ``from`` that climbs past the top-level package: ``resolve_name``
+        # raises, and an uncaught raise out of the graph build errors every
+        # gate test with a traceback that names no source file. The
+        # fresh-interpreter sweep owns the verdict on whether such a module
+        # loads; the gate only has to say which one it is.
+        raise ImportError(
+            f"{importer} ({path}): `from {relative} import ...` does not resolve "
+            f"inside package {importer_package!r} ({exc})"
+        ) from exc
     if not _in_package(base, package):
         return set()
     targets: set[str] = set()
@@ -295,7 +425,9 @@ def build_import_graph(
         importer_package = name if path.stem == "__init__" else name.rpartition(".")[0]
         targets: set[str] = set()
         for node in _executed_imports(tree.body, guards, include_deferred=include_deferred):
-            for target in _import_targets(importer_package, node, modules, package):
+            for target in _import_targets(
+                importer_package, node, modules, package, importer=name, path=path
+            ):
                 targets.add(target)
                 targets |= _packages_on_path(target, importer_package, modules)
         targets.discard(name)
@@ -341,13 +473,21 @@ def layer0_violations(graph: Mapping[str, set[str]], seams: Iterable[str]) -> di
 # ---------------------------------------------------------------------------
 
 
+# One import of one module, generously: the whole sweep of the tree runs in
+# about a second locally, so anything near this is a module that blocks (an
+# input read, a socket) rather than a slow machine. Without the bound a
+# blocked import stalls the suite until the CI job cap, naming no module.
+FRESH_IMPORT_TIMEOUT_SECONDS = 120.0
+
+
 def import_in_fresh_interpreter(
-    module: str, *, src_root: Path, cwd: Path
+    module: str, *, src_root: Path, cwd: Path, timeout: float = FRESH_IMPORT_TIMEOUT_SECONDS
 ) -> subprocess.CompletedProcess[str]:
     """``import <module>`` in a fresh interpreter that finds it through ``src_root`` alone.
 
     ``PYTHONSAFEPATH`` keeps ``cwd`` off ``sys.path`` (3.11+; an older
-    interpreter ignores it). The caller reads ``returncode`` and ``stderr``.
+    interpreter ignores it). The caller reads ``returncode`` and ``stderr``,
+    and handles the ``TimeoutExpired`` an import that never returns raises.
     """
     return subprocess.run(
         [sys.executable, "-c", f"import {module}"],
@@ -356,6 +496,24 @@ def import_in_fresh_interpreter(
         capture_output=True,
         text=True,
         check=False,
+        timeout=timeout,
+    )
+
+
+def _timed_out(module: str, exc: subprocess.TimeoutExpired) -> subprocess.CompletedProcess[str]:
+    """A failure record standing in for an import that never returned.
+
+    The sweep reports it like any other failing module, so the timeout stays
+    inside pytest's report instead of taking the job down with it.
+    """
+    return subprocess.CompletedProcess(
+        args=exc.cmd,
+        returncode=1,
+        stdout="",
+        stderr=(
+            f"`import {module}` did not finish within {exc.timeout:.0f}s and was "
+            "killed, so there is no traceback: the import blocks"
+        ),
     )
 
 
@@ -388,8 +546,10 @@ class TestImportLayers:
             "annotation-only import goes under `if TYPE_CHECKING:`; a runtime "
             "import moves into the function that needs it — never into a "
             "containment `except` arm; a from-import of a package attribute is "
-            "rewritten to import from the submodule that defines it. See this "
-            "module's docstring.)"
+            "rewritten to import from the submodule that defines it. An edge to "
+            "a package can come from importing a module beneath it — `import "
+            "a.b.c` initialises `a.b` first — so a package can appear in a cycle "
+            "that no module imports by name. See this module's docstring.)"
         )
 
     def test_graph_covers_every_module_and_every_edge_resolves_in_tree(
@@ -412,13 +572,9 @@ class TestImportLayers:
         # A directory of ``.py`` files without an ``__init__.py`` is a
         # namespace package: an import target with no source file, so no node
         # in the graph — which breaks the one-node-per-file invariant the
-        # cycle assertion relies on.
-        directories = {path.parent for path in (_SRC_ROOT / PACKAGE).rglob("*.py")}
-        missing = sorted(
-            str(directory.relative_to(_SRC_ROOT))
-            for directory in directories
-            if not (directory / "__init__.py").is_file()
-        )
+        # cycle assertion relies on. A directory holding only subdirectories
+        # is checked too: ``pkg/ns/inner`` resolves ``pkg.ns`` on the way in.
+        missing = directories_without_an_init(_SRC_ROOT / PACKAGE)
         assert not missing, f"package directories without an __init__.py: {missing}"
 
     def test_deferred_imports_are_the_cycle_prevention_mechanism(
@@ -495,7 +651,12 @@ class TestImportLayers:
                 )
                 for module in modules
             }
-        results = {module: future.result() for module, future in futures.items()}
+        results: dict[str, subprocess.CompletedProcess[str]] = {}
+        for module, future in futures.items():
+            try:
+                results[module] = future.result()
+            except subprocess.TimeoutExpired as exc:
+                results[module] = _timed_out(module, exc)
         failures = {module: result for module, result in results.items() if result.returncode}
         listing = "\n".join(
             f"  {module}:\n{_stderr_tail(result)}" for module, result in sorted(failures.items())
@@ -508,13 +669,23 @@ class TestImportLayers:
 # ---------------------------------------------------------------------------
 
 
-def _write_package(tmp_path: Path, files: Mapping[str, str]) -> Path:
-    """Write ``files`` (path relative to ``src/pkg`` -> source) and return ``src``."""
+def _write_package(
+    tmp_path: Path, files: Mapping[str, str], *, raw: Mapping[str, bytes] | None = None
+) -> Path:
+    """Write ``files`` (path relative to ``src/pkg`` -> source) and return ``src``.
+
+    ``raw`` writes the same way from bytes, for a source whose encoding is
+    the point of the test rather than the text it decodes to.
+    """
     src = tmp_path / "src"
     for rel, source in files.items():
         path = src / "pkg" / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
+    for rel, data in (raw or {}).items():
+        path = src / "pkg" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     # ``touch`` creates the root ``__init__`` only when ``files`` did not; an
     # explicit one keeps its content.
     (src / "pkg" / "__init__.py").touch()
@@ -556,6 +727,29 @@ _PACKAGE_INIT_SHAPE = {
     "__init__.py": "from pkg import _a\nfrom pkg import _b\n",
     "_a.py": "from pkg import _b as sibling\n",
     "_b.py": "",
+}
+# A guard name rebound at module scope: ``TYPE_CHECKING`` is the typing flag
+# where the import binds it and ``True`` where the ``if`` reads it, so the
+# block runs and the interpreter is loud about what it imports.
+_REBOUND_GUARD_CYCLE = {
+    "_a.py": "import pkg._b\nA = 1\n",
+    "_b.py": "from typing import TYPE_CHECKING\nTYPE_CHECKING = True\n"
+    "if TYPE_CHECKING:\n    from pkg._a import A\n",
+}
+# Two packages deep: the cycle closes through the grandparent ``__init__``,
+# which only a rule that counts *every* package on the path can see.
+_GRANDPARENT_PACKAGE_CYCLE = {
+    "_a.py": "import pkg.x.y._z\nX = 1\n",
+    "x/__init__.py": "from pkg._a import X\n",
+    "x/y/__init__.py": "",
+    "x/y/_z.py": "",
+}
+# The over-approximation the packages-on-path rule accepts: a cycle through a
+# package ``__init__`` that the interpreter imports without complaint.
+_SIBLING_PACKAGE_SHAPE = {
+    "_a.py": "from pkg.sub import _c\n",
+    "sub/__init__.py": "from pkg import _a\n",
+    "sub/_c.py": "",
 }
 
 
@@ -627,14 +821,50 @@ class TestImportLayersSelfCheck:
         cycle = _cycle_of(tmp_path, _NON_ANCESTOR_PACKAGE_CYCLE)
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg.sub"}
 
+    def test_import_through_a_grandparent_package_init_is_a_cycle(self, tmp_path: Path) -> None:
+        # Depth pin: *every* package on the path counts, not just the
+        # target's parent. The real tree imports this deep (``protokit.cli``
+        # -> ``protokit.schema.lint.cli``), and a rule that stopped at the
+        # immediate parent would miss the cycle that closes through
+        # ``pkg.x/__init__`` entirely.
+        graph = _graph_of(tmp_path, _GRANDPARENT_PACKAGE_CYCLE)
+        assert graph["pkg._a"] == {"pkg.x", "pkg.x.y", "pkg.x.y._z"}
+        cycle = find_cycle(graph)
+        assert cycle is not None and set(cycle) == {"pkg._a", "pkg.x"}
+
+    def test_cycle_through_a_sibling_package_init_is_a_deliberate_over_approximation(
+        self, tmp_path: Path
+    ) -> None:
+        # The packages-on-path rule is fail-closed by construction, and this
+        # is what that costs: the gate reports a cycle the interpreter
+        # tolerates from every entry point, because ``from pkg.sub import
+        # _c`` needs ``pkg`` only to have *started* initialising and
+        # ``pkg.sub``'s ``from pkg import _a`` then finds the partially
+        # initialised module in ``sys.modules``. Pinned rather than fixed:
+        # dropping the rule to silence it reopens the real load-order failure
+        # ``test_import_through_a_non_ancestor_package_init_is_a_cycle`` pins.
+        cycle = _cycle_of(tmp_path, _SIBLING_PACKAGE_SHAPE)
+        assert cycle is not None and set(cycle) == {"pkg._a", "pkg.sub"}
+        for entry_point in ("pkg._a", "pkg.sub", "pkg.sub._c"):
+            result = _fresh_import_of(tmp_path, entry_point)
+            assert result.returncode == 0, f"import {entry_point}:\n{result.stderr}"
+
     @pytest.mark.parametrize(
         ("files", "gate_reports_a_cycle"),
         [
             (_NON_ANCESTOR_PACKAGE_CYCLE, True),
+            (_GRANDPARENT_PACKAGE_CYCLE, True),
+            (_REBOUND_GUARD_CYCLE, True),
             (_FROM_NAME_CYCLE, True),
             (_PACKAGE_INIT_SHAPE, False),
         ],
-        ids=["non-ancestor-package-init", "from-name-cycle", "package-init-shape"],
+        ids=[
+            "non-ancestor-package-init",
+            "grandparent-package-init",
+            "rebound-type-checking-guard",
+            "from-name-cycle",
+            "package-init-shape",
+        ],
     )
     def test_gate_verdict_agrees_with_the_interpreter(
         self, tmp_path: Path, files: Mapping[str, str], gate_reports_a_cycle: bool
@@ -671,6 +901,22 @@ class TestImportLayersSelfCheck:
         assert result.returncode != 0, "the interpreter accepted the call-executed import"
         assert "partially initialized module" in result.stderr, result.stderr
 
+    def test_an_import_that_never_returns_becomes_a_named_failure(self, tmp_path: Path) -> None:
+        # Without the wall-clock bound a module that blocks on load (a read,
+        # a socket) stalls the sweep until the CI job cap and names nothing.
+        # A short timeout here stands in for the generous one the sweep uses;
+        # what is pinned is that the bound exists and that the sweep turns it
+        # into an ordinary failure row rather than an error that takes the
+        # whole run down.
+        _write_package(tmp_path, {"_a.py": "import time\n\ntime.sleep(30)\n"})
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            import_in_fresh_interpreter(
+                "pkg._a", src_root=tmp_path / "src", cwd=tmp_path, timeout=0.5
+            )
+        result = _timed_out("pkg._a", caught.value)
+        assert result.returncode != 0
+        assert "did not finish" in result.stderr and "pkg._a" in result.stderr
+
     @pytest.mark.parametrize(
         "source",
         [
@@ -696,8 +942,16 @@ class TestImportLayersSelfCheck:
             "import typing as t\nif t.TYPE_CHECKING:\n",
             "from typing import TYPE_CHECKING as TC\nif TC:\n",
             "from typing_extensions import TYPE_CHECKING\nif TYPE_CHECKING:\n",
+            "import typing_extensions as te\nif te.TYPE_CHECKING:\n",
         ],
-        ids=["name", "attribute", "aliased-attribute", "aliased-name", "typing-extensions"],
+        ids=[
+            "name",
+            "attribute",
+            "aliased-attribute",
+            "aliased-name",
+            "typing-extensions",
+            "typing-extensions-attribute",
+        ],
     )
     def test_type_checking_import_is_not_an_edge(self, tmp_path: Path, guard: str) -> None:
         files = {"_a.py": "import pkg._b\n", "_b.py": guard + "    from pkg._a import A\n"}
@@ -732,20 +986,67 @@ class TestImportLayersSelfCheck:
             assert cycle is None
 
     @pytest.mark.parametrize(
-        "source",
+        ("source", "extra_files"),
         [
-            "class Flags:\n    TYPE_CHECKING = True\nif Flags.TYPE_CHECKING:\n    import pkg._a\n",
-            "from typing import TYPE_CHECKING\nif TYPE_CHECKING or False:\n    import pkg._a\n",
+            (
+                "class Flags:\n    TYPE_CHECKING = True\n"
+                "if Flags.TYPE_CHECKING:\n    import pkg._a\n",
+                {},
+            ),
+            (
+                "from typing import TYPE_CHECKING\nif TYPE_CHECKING or False:\n    import pkg._a\n",
+                {},
+            ),
+            ("TYPE_CHECKING = False\nif TYPE_CHECKING:\n    import pkg._a\n", {}),
+            (
+                "from pkg import TYPE_CHECKING\nif TYPE_CHECKING:\n    import pkg._a\n",
+                {"__init__.py": "from typing import TYPE_CHECKING\n"},
+            ),
+            ("HAS_X = False\nif not HAS_X:\n    import pkg._a\n", {}),
+            ("HAS_X = False\nif not HAS_X:\n    pass\nelse:\n    import pkg._a\n", {}),
+            (
+                "from typing import TYPE_CHECKING as X\nX = True\n"
+                "if X:\n    from pkg._a import A\n",
+                {},
+            ),
+            (_REBOUND_GUARD_CYCLE["_b.py"], {}),
+            (
+                "def f():\n    from typing import TYPE_CHECKING\nTYPE_CHECKING = True\n"
+                "if TYPE_CHECKING:\n    from pkg._a import A\n",
+                {},
+            ),
+            (
+                "def f():\n    from typing import TYPE_CHECKING\n"
+                "if TYPE_CHECKING:\n    import pkg._a\n",
+                {},
+            ),
         ],
-        ids=["non-typing-receiver", "compound-test"],
+        ids=[
+            "non-typing-receiver",
+            "compound-test",
+            "no-typing-import",
+            "re-exported-name",
+            "negated-non-guard-body",
+            "negated-non-guard-else",
+            "rebound-alias",
+            "rebound-name",
+            "rebound-after-a-function-scope-import",
+            "bound-only-inside-a-function",
+        ],
     )
     def test_unrecognised_type_checking_spelling_is_counted(
-        self, tmp_path: Path, source: str
+        self, tmp_path: Path, source: str, extra_files: Mapping[str, str]
     ) -> None:
         # Fail-closed pin: a test the walker does not recognise as the guard
         # is a plain ``if`` and is entered — a false positive at worst, never
-        # a missed edge.
-        files = {"_a.py": "import pkg._b\n", "_b.py": source}
+        # a missed edge. That covers a name that is not typing's flag at all
+        # (never imported, re-exported by another module, negated when it is
+        # not the guard) and one that has stopped being it by the time the
+        # ``if`` runs (rebound at module scope, or bound only inside a
+        # function, where the module-level ``if`` would read a name that is
+        # not there at all). The interpreter agrees on the rebinding shapes —
+        # ``test_gate_verdict_agrees_with_the_interpreter`` runs one of them.
+        files = {"_a.py": "import pkg._b\n", "_b.py": source, **extra_files}
         cycle = _cycle_of(tmp_path, files)
         assert cycle is not None and set(cycle) == {"pkg._a", "pkg._b"}
 
@@ -824,6 +1125,19 @@ class TestImportLayersSelfCheck:
         # cycle tests.
         assert find_cycle(graph) is not None
 
+    def test_a_relative_import_beyond_the_top_level_names_the_importing_module(
+        self, tmp_path: Path
+    ) -> None:
+        # ``resolve_name`` raises on a ``from`` that climbs past the
+        # top-level package, and an uncaught raise out of the module-scoped
+        # ``graph`` fixture errors every gate test with a traceback that
+        # names no source. The gate's job here is to say which file.
+        files = {"sub/__init__.py": "", "sub/_a.py": "from ... import x\n"}
+        with pytest.raises(ImportError) as caught:
+            _graph_of(tmp_path, files)
+        assert "pkg.sub._a" in str(caught.value)
+        assert "_a.py" in str(caught.value)
+
     def test_dotted_import_is_an_edge_to_the_module_and_the_non_ancestor_packages_on_its_path(
         self, tmp_path: Path
     ) -> None:
@@ -856,6 +1170,33 @@ class TestImportLayersSelfCheck:
         src = _write_package(tmp_path, files)
         assert set(discover_modules(src, "pkg")) == {"pkg", "pkg._a", "pkg.sub", "pkg.sub._c"}
         assert set(build_import_graph(src, "pkg")) == {"pkg", "pkg._a", "pkg.sub", "pkg.sub._c"}
+
+    def test_sources_are_parsed_as_bytes_so_a_bom_or_a_coding_cookie_still_builds(
+        self, tmp_path: Path
+    ) -> None:
+        # Both files import fine in the interpreter, and both defeat
+        # ``read_text(encoding="utf-8")``: the BOM raises SyntaxError and the
+        # latin-1 byte raises UnicodeDecodeError — erroring the whole gate on
+        # a file whose imports are not the problem.
+        src = _write_package(
+            tmp_path,
+            {"_b.py": ""},
+            raw={
+                "_bom.py": b"\xef\xbb\xbfimport pkg._b\n",
+                "_cookie.py": b"# -*- coding: latin-1 -*-\nimport pkg._b\nX = '\xe9'\n",
+            },
+        )
+        graph = build_import_graph(src, "pkg")
+        assert graph["pkg._bom"] == {"pkg._b"}
+        assert graph["pkg._cookie"] == {"pkg._b"}
+
+    def test_a_directory_holding_only_subdirectories_is_named(self, tmp_path: Path) -> None:
+        # ``pkg/ns`` holds no source of its own, so deriving directories from
+        # the parents of ``.py`` files makes it invisible — while an import
+        # of ``pkg.ns.inner`` still resolves ``pkg.ns`` as a namespace
+        # package on the way in.
+        src = _write_package(tmp_path, {"ns/inner/__init__.py": "", "ns/inner/_a.py": ""})
+        assert directories_without_an_init(src / "pkg") == ["pkg/ns"]
 
     def test_layer0_violation_names_the_seam_and_what_it_imports(self, tmp_path: Path) -> None:
         files = {
