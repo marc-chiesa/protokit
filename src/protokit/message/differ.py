@@ -71,6 +71,41 @@ def _hook_name(hook: object) -> str:
     )
 
 
+def _field_value(msg: Message, fd: proto_descriptor.FieldDescriptor) -> object:
+    """Read a field's value, whether it is declared or an extension.
+
+    A declared field is an attribute (``msg.name``); a declared *extension*
+    is not — it lives in ``msg.Extensions[fd]``, keyed by descriptor. Every
+    value read in the comparison machinery goes through here so extensions
+    traverse the same leaf/message/repeated paths as declared fields rather
+    than getting a parallel comparison implementation beside them (KTD1).
+    """
+    if fd.is_extension:
+        return msg.Extensions[fd]
+    return getattr(msg, fd.name)
+
+
+def _field_present(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
+    """Presence for a declared field or an extension.
+
+    ``HasField`` raises on an extension descriptor; ``HasExtension`` is the
+    corresponding call. Both answer the same proto2 question.
+    """
+    if fd.is_extension:
+        return bool(msg.HasExtension(fd))
+    return bool(msg.HasField(fd.name))
+
+
+def _extension_key(fd: proto_descriptor.FieldDescriptor) -> str:
+    """Display key for an extension: ``(pkg.ext)``.
+
+    Parenthesised and fully qualified, mirroring proto text format, so an
+    extension can never be confused with — or shadowed by — a declared field
+    of the same short name.
+    """
+    return f"({fd.full_name})"
+
+
 def _replace_bracket(path: FieldPath, bracket: str) -> FieldPath:
     """Return a new FieldPath with the last segment's bracket replaced.
 
@@ -780,12 +815,12 @@ class MessageDifferencer:
         implicit field's zero value; built lazily if not supplied.
         """
         if left_fd.label == left_fd.LABEL_REPEATED:  # repeated + map
-            return len(getattr(msg, left_fd.name)) > 0
+            return len(_field_value(msg, left_fd)) > 0  # type: ignore[arg-type]
         if left_fd.has_presence:
             return msg.HasField(left_fd.name)
         if default_msg is None:
             default_msg = type(msg)()
-        return getattr(msg, left_fd.name) != getattr(default_msg, left_fd.name)
+        return _field_value(msg, left_fd) != _field_value(default_msg, left_fd)
 
     def set_message_field_comparison(
         self, mode: MessageFieldComparison
@@ -989,8 +1024,21 @@ class MessageDifferencer:
                         item.path, warnings, reported_type_names,
                     )
 
-                left_fields = FieldView.of(item.left_msg.DESCRIPTOR).by_name
-                right_fields = FieldView.of(item.right_msg.DESCRIPTOR).by_name
+                # Declared fields, plus the declared EXTENSIONS actually set on
+                # each side under a parenthesised key. Only a set extension can
+                # differ, so ``ListFields`` is the complete candidate set and
+                # avoids walking every extension the pool knows about. Each side
+                # is resolved from its own message, so two schemas that disagree
+                # about an extension still compare against their own descriptor
+                # rather than borrowing the other side's (V19).
+                left_fields = dict(FieldView.of(item.left_msg.DESCRIPTOR).by_name)
+                right_fields = dict(FieldView.of(item.right_msg.DESCRIPTOR).by_name)
+                for _msg, _sink in (
+                    (item.left_msg, left_fields), (item.right_msg, right_fields),
+                ):
+                    for _efd, _ in _msg.ListFields():
+                        if _efd.is_extension:
+                            _sink[_extension_key(_efd)] = _efd
 
                 all_names = left_fields.keys() | right_fields.keys()
 
@@ -1329,8 +1377,8 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        left_val = getattr(left_msg, left_fd.name)
-        right_val = getattr(right_msg, right_fd.name)
+        left_val = _field_value(left_msg, left_fd)
+        right_val = _field_value(right_msg, right_fd)
 
         # Presence check for proto2/proto3 optional
         left_has = has_presence(left_fd)
@@ -1339,8 +1387,8 @@ class MessageDifferencer:
         left_present = True
         right_present = True
         if left_has and right_has:
-            left_present = left_msg.HasField(left_fd.name)
-            right_present = right_msg.HasField(right_fd.name)
+            left_present = _field_present(left_msg, left_fd)
+            right_present = _field_present(right_msg, right_fd)
 
         has_field_hooks = self._has_field_hooks()
 
@@ -2265,8 +2313,8 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        left_list = list(getattr(left_msg, left_fd.name))
-        right_list = list(getattr(right_msg, right_fd.name))
+        left_list = list(_field_value(left_msg, left_fd))  # type: ignore[call-overload]
+        right_list = list(_field_value(right_msg, right_fd))  # type: ignore[call-overload]
 
         def _equal(left_elem: Any, right_elem: Any) -> bool:
             return self._set_elements_equal(
@@ -2540,14 +2588,17 @@ class MessageDifferencer:
                 continue
 
             for fd, value in populated:
-                if fd.is_extension:
-                    continue
-                field_path = cur_path.child(fd.name)
+                # ``ListFields`` yields set extensions alongside declared
+                # fields. They used to be discarded here, so an added or
+                # removed message reported none of the extensions it carried
+                # (V19). They are emitted under a parenthesised key instead.
+                field_name = _extension_key(fd) if fd.is_extension else fd.name
+                field_path = cur_path.child(field_name)
 
                 # Respect ignore_fields (string + predicate forms). The
                 # descriptor is in hand here, so predicate selectors apply to
                 # added/removed (one-sided) fields too — symmetric ignore.
-                if self._is_ignored(fd.name, field_path, fd):
+                if self._is_ignored(field_name, field_path, fd):
                     continue
 
                 if is_map_field(fd):
@@ -2655,8 +2706,8 @@ class MessageDifferencer:
             return _WorkItem(child, None, p, depth + 1)
 
         if fd.type == TYPE_MESSAGE and not is_repeated(fd):
-            if msg.HasField(fd.name):
-                child = getattr(msg, fd.name)
+            if _field_present(msg, fd):
+                child = _field_value(msg, fd)
                 if _has_populated_fields(child):
                     stack.append(_work_item(child, path))
                 else:
@@ -2684,7 +2735,7 @@ class MessageDifferencer:
                         is_new=is_new, diffs=diffs, warnings=warnings,
                     )
         elif is_repeated(fd):
-            vals = getattr(msg, fd.name)
+            vals = _field_value(msg, fd)
             for i, elem in enumerate(vals):
                 idx_path = _replace_bracket(path, str(i)) if path.segments else path
                 if fd.type == TYPE_MESSAGE:
@@ -2701,11 +2752,11 @@ class MessageDifferencer:
                         is_new=is_new, diffs=diffs, warnings=warnings,
                     )
         else:
-            val = getattr(msg, fd.name)
+            val = _field_value(msg, fd)
             # Skip unset fields: use HasField for presence-aware fields,
             # default-value check for proto3 implicit-presence fields
             if has_presence(fd):
-                if not msg.HasField(fd.name):
+                if not _field_present(msg, fd):
                     return
             elif val == fd.default_value:
                 return
