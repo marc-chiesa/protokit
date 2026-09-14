@@ -71,3 +71,37 @@ def test_same_length_mutation_leaves_no_bytecode_and_is_still_detected(
         "bytecode survived the harness run; a same-second restore would keep "
         "executing the mutated module"
     )
+
+
+def test_replacement_containing_its_anchor_is_a_valid_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``return 1`` -> ``return 1 + 1`` contains the anchor; it must still run.
+
+    The harness used to verify the write with substring checks ("new present,
+    old absent"), which rejected any replacement that extends its anchor as a
+    setup failure — so a proof shaped "add one more element to this set"
+    could not be run at all.
+    """
+    pkg = tmp_path / "probe"
+    pkg.mkdir()
+    guarded = pkg / "guarded.py"
+    guarded.write_text("def answer():\n    return 1\n")
+    (pkg / "test_guarded.py").write_text(
+        "import pathlib\nimport sys\n"
+        "sys.path.insert(0, str(pathlib.Path(__file__).parent))\n"
+        "import guarded\n\n\n"
+        "def test_answer():\n    assert guarded.answer() == 1\n"
+    )
+    harness = _load_harness()
+    monkeypatch.setattr(harness, "VENV_PY", sys.executable)
+    monkeypatch.setattr(
+        sys, "argv",
+        [
+            "mutation_check.py", str(guarded), "return 1", "return 1 + 1",
+            str(pkg / "test_guarded.py"),
+        ],
+    )
+    monkeypatch.chdir(tmp_path)
+    assert harness.main() == 0, "a covered, anchor-extending mutation must be NON-VACUOUS"
+    assert guarded.read_text() == "def answer():\n    return 1\n"

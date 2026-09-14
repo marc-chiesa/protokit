@@ -73,7 +73,10 @@ def main() -> int:
         # Re-read from disk: proves the write landed, not just that we built a
         # different string in memory.
         on_disk = p.read_text()
-        if new not in on_disk or old in on_disk:
+        if on_disk != mutated:
+            # Equality, not substring checks: a replacement that contains its
+            # own anchor (``return 1`` -> ``return 1 + 1``) is a legitimate
+            # mutation, and "old still present" would reject it.
             print("SETUP FAILED: mutation not present on disk after write")
             return 1
         print(f"mutation applied to {path}:\n  - {old}\n  + {new}\n")
