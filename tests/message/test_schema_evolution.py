@@ -103,13 +103,13 @@ class TestCardinalityChange:
         f2.label = T.LABEL_REPEATED
         new_pool.Add(fdp2)
 
-        Left = message_factory.GetMessageClass(
+        left_cls = message_factory.GetMessageClass(
             old_pool.FindMessageTypeByName("t.M"),
         )
-        Right = message_factory.GetMessageClass(
+        right_cls = message_factory.GetMessageClass(
             new_pool.FindMessageTypeByName("t.M"),
         )
-        result = diff_messages(Left(x=5), Right(x=[1, 2, 3]))
+        result = diff_messages(left_cls(x=5), right_cls(x=[1, 2, 3]))
         card = next(
             d for d in result if d.change_type == ChangeType.CARDINALITY_CHANGED
         )
@@ -130,10 +130,10 @@ class TestStrictSchemaMode:
         b2.message("test.Outer", {
             "inner": (T.TYPE_MESSAGE, 1, ".test.InnerV2"),
         })
-        InnerV1 = b1.get_message_class("test.InnerV1")
-        InnerV2 = b2.get_message_class("test.InnerV2")
-        msg1 = b1.build("test.Outer", inner=InnerV1(x=1))
-        msg2 = b2.build("test.Outer", inner=InnerV2(x=1))
+        inner_v1_cls = b1.get_message_class("test.InnerV1")
+        inner_v2_cls = b2.get_message_class("test.InnerV2")
+        msg1 = b1.build("test.Outer", inner=inner_v1_cls(x=1))
+        msg2 = b2.build("test.Outer", inner=inner_v2_cls(x=1))
 
         d = MessageDifferencer()
         d.strict_schema = True
@@ -153,10 +153,10 @@ class TestStrictSchemaMode:
         b2.message("test.Outer", {
             "inner": (T.TYPE_MESSAGE, 1, ".test.InnerV2"),
         })
-        InnerV1 = b1.get_message_class("test.InnerV1")
-        InnerV2 = b2.get_message_class("test.InnerV2")
-        msg1 = b1.build("test.Outer", inner=InnerV1(x=1))
-        msg2 = b2.build("test.Outer", inner=InnerV2(x=1))
+        inner_v1_cls = b1.get_message_class("test.InnerV1")
+        inner_v2_cls = b2.get_message_class("test.InnerV2")
+        msg1 = b1.build("test.Outer", inner=inner_v1_cls(x=1))
+        msg2 = b2.build("test.Outer", inner=inner_v2_cls(x=1))
 
         result = diff_messages(msg1, msg2)
         type_warnings = [w for w in result.warnings if "type name" in str(w).lower()]
@@ -215,12 +215,12 @@ class TestStrictSchemaMode:
         b2 = ProtoBuilder()
         b2.message("test.InnerV2", {"x": (T.TYPE_INT32, 1)})
         b2.message("test.Outer", {"inner": (T.TYPE_MESSAGE, 1, ".test.InnerV2")})
-        InnerV1 = b1.get_message_class("test.InnerV1")
-        InnerV2 = b2.get_message_class("test.InnerV2")
+        inner_v1_cls = b1.get_message_class("test.InnerV1")
+        inner_v2_cls = b2.get_message_class("test.InnerV2")
 
         result = diff_messages(
-            b1.build("test.Outer", inner=InnerV1(x=1)),
-            b2.build("test.Outer", inner=InnerV2(x=1)),
+            b1.build("test.Outer", inner=inner_v1_cls(x=1)),
+            b2.build("test.Outer", inner=inner_v2_cls(x=1)),
             strict_schema=True,
         )
 
@@ -244,12 +244,12 @@ class TestStrictSchemaMode:
             {"items": (T.TYPE_MESSAGE, 1, ".test.InnerV2")},
             repeated_fields={"items"},
         )
-        InnerV1 = b1.get_message_class("test.InnerV1")
-        InnerV2 = b2.get_message_class("test.InnerV2")
+        inner_v1_cls = b1.get_message_class("test.InnerV1")
+        inner_v2_cls = b2.get_message_class("test.InnerV2")
 
         result = diff_messages(
-            b1.build("test.Outer", items=[InnerV1(x=1), InnerV1(x=2)]),
-            b2.build("test.Outer", items=[InnerV2(x=1), InnerV2(x=2)]),
+            b1.build("test.Outer", items=[inner_v1_cls(x=1), inner_v1_cls(x=2)]),
+            b2.build("test.Outer", items=[inner_v2_cls(x=1), inner_v2_cls(x=2)]),
             strict_schema=True,
         )
 

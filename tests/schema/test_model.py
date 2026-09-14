@@ -3,9 +3,11 @@
 Pure dataclass / enum behavior. No descriptor traversal, no rules.
 """
 
+import dataclasses
+
 import pytest
 
-from protokit.message.model import Diagnostic, FieldPath
+from protokit.message.model import FieldPath
 from protokit.schema import (
     BisectReport,
     CommitDiagnostic,
@@ -72,7 +74,7 @@ class TestFinding:
 
     def test_frozen(self) -> None:
         f = _make_finding()
-        with pytest.raises(Exception):  # FrozenInstanceError is a dataclasses type
+        with pytest.raises(dataclasses.FrozenInstanceError):
             f.rule_id = "other"  # type: ignore[misc]
 
     def test_equal_findings_compare_equal(self) -> None:
@@ -168,7 +170,7 @@ class TestCompatibilityReport:
 
     def test_report_is_frozen(self) -> None:
         r = CompatibilityReport(level=CompatibilityLevel.STRICT)
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             r.findings = ()  # type: ignore[misc]
 
     def test_default_findings_empty_tuple(self) -> None:
@@ -196,7 +198,7 @@ class TestCommitDiagnostic:
         cd = CommitDiagnostic(
             commit="x", level="info", path=None, message="m",
         )
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             cd.commit = "y"  # type: ignore[misc]
 
 
@@ -217,7 +219,7 @@ class TestHistoryEntry:
             commit_sha="a", parent_sha="b", commit_subject="s",
             report=CompatibilityReport(level=CompatibilityLevel.STRICT),
         )
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             entry.commit_sha = "c"  # type: ignore[misc]
 
 
@@ -267,7 +269,7 @@ class TestHistoryReport:
         r = HistoryReport(
             range_spec="r", old_sha="a", new_sha="b", commits_walked=0,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             r.range_spec = "x"  # type: ignore[misc]
 
 
@@ -315,6 +317,6 @@ class TestBisectReport:
             range_spec="r", old_sha="a", new_sha="b",
             breaking_commit=None, commits_walked=0,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             r.breaking_commit = "x"  # type: ignore[misc]
 

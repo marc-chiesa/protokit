@@ -47,9 +47,13 @@ def _make_int_key_builder() -> ProtoBuilder:
 class TestTreatAsMapEqual:
     def test_same_elements_same_order(self) -> None:
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
-        msg2 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
+        )
+        msg2 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
+        )
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         result = d.compare(msg1, msg2)
@@ -58,9 +62,13 @@ class TestTreatAsMapEqual:
     def test_same_elements_different_order(self) -> None:
         """Key-based matching should ignore order."""
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
-        msg2 = b.build("test.Container", items=[Item(id="b", value=2), Item(id="a", value=1)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
+        )
+        msg2 = b.build(
+            "test.Container", items=[item_cls(id="b", value=2), item_cls(id="a", value=1)],
+        )
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         result = d.compare(msg1, msg2)
@@ -70,9 +78,9 @@ class TestTreatAsMapEqual:
 class TestTreatAsMapDifferences:
     def test_value_changed(self) -> None:
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1)])
-        msg2 = b.build("test.Container", items=[Item(id="a", value=2)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build("test.Container", items=[item_cls(id="a", value=1)])
+        msg2 = b.build("test.Container", items=[item_cls(id="a", value=2)])
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         result = d.compare(msg1, msg2)
@@ -83,9 +91,11 @@ class TestTreatAsMapDifferences:
 
     def test_element_added(self) -> None:
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1)])
-        msg2 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build("test.Container", items=[item_cls(id="a", value=1)])
+        msg2 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
+        )
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         result = d.compare(msg1, msg2)
@@ -95,9 +105,11 @@ class TestTreatAsMapDifferences:
 
     def test_element_removed(self) -> None:
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
-        msg2 = b.build("test.Container", items=[Item(id="a", value=1)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
+        )
+        msg2 = b.build("test.Container", items=[item_cls(id="a", value=1)])
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         result = d.compare(msg1, msg2)
@@ -106,9 +118,9 @@ class TestTreatAsMapDifferences:
 
     def test_int_key(self) -> None:
         b = _make_int_key_builder()
-        Entry = b.get_message_class("test.Entry")
-        msg1 = b.build("test.Container", entries=[Entry(key=1, name="one")])
-        msg2 = b.build("test.Container", entries=[Entry(key=1, name="ONE")])
+        entry_cls = b.get_message_class("test.Entry")
+        msg1 = b.build("test.Container", entries=[entry_cls(key=1, name="one")])
+        msg2 = b.build("test.Container", entries=[entry_cls(key=1, name="ONE")])
         d = MessageDifferencer()
         d.treat_as_map("entries", key="key")
         result = d.compare(msg1, msg2)
@@ -119,9 +131,11 @@ class TestTreatAsMapDifferences:
 class TestTreatAsMapErrors:
     def test_duplicate_key_raises(self) -> None:
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="a", value=2)])
-        msg2 = b.build("test.Container", items=[Item(id="a", value=1)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="a", value=2)],
+        )
+        msg2 = b.build("test.Container", items=[item_cls(id="a", value=1)])
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         with pytest.raises(DuplicateKeyError):
@@ -141,10 +155,10 @@ class TestTreatAsMapErrors:
             repeated_fields={"items"},
             syntax="proto2",
         )
-        Item = builder.get_message_class("test.Item")
+        item_cls = builder.get_message_class("test.Item")
         # Create an element without setting the key field "id"
-        msg1 = builder.build("test.Container", items=[Item(value=1)])
-        msg2 = builder.build("test.Container", items=[Item(id="a", value=1)])
+        msg1 = builder.build("test.Container", items=[item_cls(value=1)])
+        msg2 = builder.build("test.Container", items=[item_cls(id="a", value=1)])
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         with pytest.raises(MissingKeyError, match="missing key field 'id'"):
@@ -178,9 +192,13 @@ class TestTreatAsMapReRegistration:
 
     def test_same_key_is_idempotent(self) -> None:
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="a", value=1), Item(id="b", value=2)])
-        msg2 = b.build("test.Container", items=[Item(id="b", value=2), Item(id="a", value=1)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build(
+            "test.Container", items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
+        )
+        msg2 = b.build(
+            "test.Container", items=[item_cls(id="b", value=2), item_cls(id="a", value=1)],
+        )
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         d.treat_as_map("items", key="id")
@@ -205,7 +223,8 @@ class TestTreatAsMapNonMessage:
         assert result.has_changes()
         # Should have emitted a warning about non-message field
         assert len(result.warnings) == 1
-        assert "treat_as_map configured but field is not a repeated message" in result.warnings[0].message
+        expected_warning = "treat_as_map configured but field is not a repeated message"
+        assert expected_warning in result.warnings[0].message
 
     def test_non_message_field_equal_values(self) -> None:
         """treat_as_map on a repeated scalar with equal values should still work."""
@@ -244,18 +263,18 @@ class TestTreatAsMapDottedPath:
         builder.message("test.Container", {
             "wrapper": (T.TYPE_MESSAGE, 1, ".test.Wrapper"),
         })
-        Item = builder.get_message_class("test.Item")
-        Wrapper = builder.get_message_class("test.Wrapper")
+        item_cls = builder.get_message_class("test.Item")
+        wrapper_cls = builder.get_message_class("test.Wrapper")
         msg1 = builder.get_message_class("test.Container")(
-            wrapper=Wrapper(
+            wrapper=wrapper_cls(
                 name="g1",
-                items=[Item(id="a", value=1), Item(id="b", value=2)],
+                items=[item_cls(id="a", value=1), item_cls(id="b", value=2)],
             )
         )
         msg2 = builder.get_message_class("test.Container")(
-            wrapper=Wrapper(
+            wrapper=wrapper_cls(
                 name="g1",
-                items=[Item(id="b", value=2), Item(id="a", value=1)],
+                items=[item_cls(id="b", value=2), item_cls(id="a", value=1)],
             )
         )
         d = MessageDifferencer()
@@ -288,12 +307,12 @@ class TestTreatAsMapEmitAll:
             "name": (T.TYPE_STRING, 1),
             "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
         })
-        Item = b2.get_message_class("test.Item")
-        Inner = b2.get_message_class("test.Inner")
+        item_cls = b2.get_message_class("test.Item")
+        inner_cls = b2.get_message_class("test.Inner")
         msg1 = b1.build("test.Outer", name="hello")
         msg2 = b2.build("test.Outer",
             name="hello",
-            inner=Inner(items=[Item(id="a", value=1), Item(id="b", value=2)]),
+            inner=inner_cls(items=[item_cls(id="a", value=1), item_cls(id="b", value=2)]),
         )
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
@@ -327,12 +346,12 @@ class TestTreatAsMapEmitAll:
             "name": (T.TYPE_STRING, 1),
             "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
         })
-        Item = b.get_message_class("test.Item")
-        Inner = b.get_message_class("test.Inner")
+        item_cls = b.get_message_class("test.Item")
+        inner_cls = b.get_message_class("test.Inner")
         msg1 = b.build("test.Outer", name="hello")
         msg2 = b.build("test.Outer",
             name="hello",
-            inner=Inner(items=[Item(id="a", value=1), Item(id="a", value=2)]),
+            inner=inner_cls(items=[item_cls(id="a", value=1), item_cls(id="a", value=2)]),
         )
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
@@ -357,10 +376,10 @@ class TestTreatAsMapEmitAll:
             "name": (T.TYPE_STRING, 1),
             "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
         }, syntax="proto2")
-        Item = b.get_message_class("test.Item")
-        Inner = b.get_message_class("test.Inner")
+        item_cls = b.get_message_class("test.Item")
+        inner_cls = b.get_message_class("test.Inner")
         msg1 = b.build("test.Outer", name="hello")
-        msg2 = b.build("test.Outer", name="hello", inner=Inner(items=[Item(value=1)]))
+        msg2 = b.build("test.Outer", name="hello", inner=inner_cls(items=[item_cls(value=1)]))
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         with pytest.raises(MissingKeyError, match="missing key field 'id'"):
@@ -371,9 +390,9 @@ class TestTreatAsMapPath:
     def test_path_contains_key(self) -> None:
         """The diff path should include the key bracket notation."""
         b = _make_items_builder()
-        Item = b.get_message_class("test.Item")
-        msg1 = b.build("test.Container", items=[Item(id="x", value=1)])
-        msg2 = b.build("test.Container", items=[Item(id="x", value=9)])
+        item_cls = b.get_message_class("test.Item")
+        msg1 = b.build("test.Container", items=[item_cls(id="x", value=1)])
+        msg2 = b.build("test.Container", items=[item_cls(id="x", value=9)])
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
         result = d.compare(msg1, msg2)

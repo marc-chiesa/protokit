@@ -14,16 +14,17 @@ from pathlib import Path
 
 import pytest
 import xmlschema
-
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.formatters import (
     FormatterContext,
     FormatterKind,
-    _junit_xml as junit_xml,
     get_formatter,
 )
 from protokit.formatters import _junit_xml as junit
+from protokit.formatters import (
+    _junit_xml as junit_xml,
+)
 from protokit.message import MessageDifferencer
 from protokit.message.model import Diagnostic
 from protokit.schema.model import (
@@ -37,7 +38,6 @@ from protokit.schema.model import (
     HistoryReport,
     Severity,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers

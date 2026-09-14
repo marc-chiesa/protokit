@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import types
 
 import pytest
@@ -71,7 +72,7 @@ class TestFormatterContext:
 
     def test_is_frozen(self) -> None:
         ctx = FormatterContext(subcommand="diff")
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             ctx.subcommand = "compat-check"  # type: ignore[misc]
 
     def test_full_population(self) -> None:

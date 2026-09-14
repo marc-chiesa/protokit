@@ -117,7 +117,7 @@ class TestValidateStage:
         differ.register_validate_hook(hook)
         result = differ.compare(left, right)
         assert any(
-            "bounds violated at x" == w.message and w.path == "x"
+            w.message == "bounds violated at x" and w.path == "x"
             for w in result.warnings
         )
 
@@ -389,9 +389,9 @@ class TestRepeatedAndMapIntegration:
             "t.M", fields={},
             map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
         )
-        MsgCls = builder.get_message_class("t.M")
-        left = MsgCls(items={"a": 1, "b": 2})
-        right = MsgCls(items={"a": 1, "b": 3})
+        msg_cls = builder.get_message_class("t.M")
+        left = msg_cls(items={"a": 1, "b": 2})
+        right = msg_cls(items={"a": 1, "b": 3})
 
         seen_paths: list[str] = []
         saw_override = []
@@ -453,7 +453,11 @@ class TestRepeatedAndMapIntegration:
         assert ("REPORT", "tags[3]", None, "d") in extras
 
         # Diffs carry the REPORT annotation.
-        extras_diffs = [d for d in result if str(d.path).startswith("tags[2]") or str(d.path).startswith("tags[3]")]
+        extras_diffs = [
+            d
+            for d in result
+            if str(d.path).startswith("tags[2]") or str(d.path).startswith("tags[3]")
+        ]
         assert len(extras_diffs) == 2
         for d in extras_diffs:
             assert d.change_type == ChangeType.ADDED
@@ -492,9 +496,9 @@ class TestRepeatedAndMapIntegration:
             "t.M", fields={},
             map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
         )
-        MsgCls = builder.get_message_class("t.M")
-        left = MsgCls(items={"a": 1})
-        right = MsgCls(items={"a": 1, "b": 42})
+        msg_cls = builder.get_message_class("t.M")
+        left = msg_cls(items={"a": 1})
+        right = msg_cls(items={"a": 1, "b": 42})
 
         seen: list[tuple[str, object, object]] = []
 
@@ -526,9 +530,9 @@ class TestRepeatedAndMapIntegration:
             "t.M", fields={},
             map_fields={"items": (T.TYPE_STRING, T.TYPE_INT32, 1)},
         )
-        MsgCls = builder.get_message_class("t.M")
-        left = MsgCls(items={"a": 1, "b": 2})
-        right = MsgCls(items={"a": 1})
+        msg_cls = builder.get_message_class("t.M")
+        left = msg_cls(items={"a": 1, "b": 2})
+        right = msg_cls(items={"a": 1})
 
         seen: list[tuple[object, object]] = []
 
@@ -590,11 +594,11 @@ def _one_sided_subtree_pair() -> tuple[object, object]:
         "leaf": (T.TYPE_MESSAGE, 1, ".t.Leaf"),
         "bag": (T.TYPE_MESSAGE, 2, ".t.Bag"),
     })
-    Leaf = builder.get_message_class("t.Leaf")
-    Bag = builder.get_message_class("t.Bag")
-    Outer = builder.get_message_class("t.Outer")
-    return Outer(), Outer(
-        leaf=Leaf(name="a", tags=["x"]), bag=Bag(scores={"k": 1}),
+    leaf_cls = builder.get_message_class("t.Leaf")
+    bag_cls = builder.get_message_class("t.Bag")
+    outer_cls = builder.get_message_class("t.Outer")
+    return outer_cls(), outer_cls(
+        leaf=leaf_cls(name="a", tags=["x"]), bag=bag_cls(scores={"k": 1}),
     )
 
 
@@ -762,8 +766,8 @@ class TestOneSidedSubtreeHooks:
             "t.N", fields={"x": (T.TYPE_INT32, 1)},
             map_fields={"scores": (T.TYPE_STRING, T.TYPE_INT32, 2)},
         )
-        N1 = b1.get_message_class("t.N")
-        N2 = b2.get_message_class("t.N")
+        n1_cls = b1.get_message_class("t.N")
+        n2_cls = b2.get_message_class("t.N")
 
         seen: list[tuple[str, object, object]] = []
 
@@ -772,7 +776,7 @@ class TestOneSidedSubtreeHooks:
 
         differ = MessageDifferencer()
         differ.register_validate_hook(vhook)
-        differ.compare(N1(x=1), N2(x=1, scores={"k": 7}))
+        differ.compare(n1_cls(x=1), n2_cls(x=1, scores={"k": 7}))
 
         assert ('scores["k"]', None, 7) in seen
 
@@ -822,10 +826,10 @@ class TestMessageValidateHook:
             "t.Outer",
             {"inner": (T.TYPE_MESSAGE, 1, "t.Inner")},
         )
-        Outer = builder.get_message_class("t.Outer")
-        Inner = builder.get_message_class("t.Inner")
-        left = Outer(inner=Inner(v=1))
-        right = Outer(inner=Inner(v=2))
+        outer_cls = builder.get_message_class("t.Outer")
+        inner_cls = builder.get_message_class("t.Inner")
+        left = outer_cls(inner=inner_cls(v=1))
+        right = outer_cls(inner=inner_cls(v=2))
 
         paths: list[str] = []
 
@@ -967,6 +971,7 @@ class TestZeroHooksFastPath:
         ``treat_as_map``).
         """
         import pytest
+
         from protokit.message import DuplicateKeyError
         builder = ProtoBuilder()
         builder.message("t.Item", {"id": (T.TYPE_STRING, 1)})
@@ -975,11 +980,11 @@ class TestZeroHooksFastPath:
             {"items": (T.TYPE_MESSAGE, 1, "t.Item")},
             repeated_fields={"items"},
         )
-        Item = builder.get_message_class("t.Item")
-        M = builder.get_message_class("t.M")
+        item_cls = builder.get_message_class("t.Item")
+        m_cls = builder.get_message_class("t.M")
         # Two elements with duplicate key will raise in treat_as_map.
-        left = M(items=[Item(id="x"), Item(id="x")])
-        right = M(items=[Item(id="x")])
+        left = m_cls(items=[item_cls(id="x"), item_cls(id="x")])
+        right = m_cls(items=[item_cls(id="x")])
 
         differ = MessageDifferencer()
         differ.treat_as_map("items", key="id")

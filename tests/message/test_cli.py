@@ -12,7 +12,6 @@ from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.message.cli import main
 
-
 # ---------------------------------------------------------------------------
 # Test helpers: create descriptor sets and binary message files on disk
 # ---------------------------------------------------------------------------
@@ -106,7 +105,9 @@ class TestFlagValidation:
         assert result.exit_code == 2
         assert "No descriptor source" in result.output
 
-    def test_desc_without_message_type(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+    def test_desc_without_message_type(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
         result = runner.invoke(main, [
             str(simple_setup["left"]),
             str(simple_setup["right_same"]),
@@ -179,7 +180,9 @@ class TestSameSchemaMode:
         assert result.exit_code == 0
         assert "equal" in result.output.lower()
 
-    def test_different_messages_exit_1(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+    def test_different_messages_exit_1(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
         result = runner.invoke(main, [
             str(simple_setup["left"]),
             str(simple_setup["right_diff"]),
@@ -334,7 +337,9 @@ class TestOutputFormats:
         assert result.exit_code == 1
         assert result.output == ""
 
-    def test_human_output_shows_paths(self, runner: CliRunner, simple_setup: dict[str, Path]) -> None:
+    def test_human_output_shows_paths(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
         result = runner.invoke(main, [
             str(simple_setup["left"]),
             str(simple_setup["right_diff"]),

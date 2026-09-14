@@ -37,7 +37,6 @@ from protokit.schema.rules import (
 )
 from tests.schema.helpers import T, build_enum, build_message
 
-
 ROOT = FieldPath(segments=())
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import types
 import warnings
@@ -13,15 +14,16 @@ from click.testing import CliRunner
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.schema.cli import main
-from tests.schema.helpers import T, build_enum, build_message
-
+from tests.schema.helpers import T, build_message
 
 # ---------------------------------------------------------------------------
 # Helpers: write descriptor sets to disk so the CLI can read them
 # ---------------------------------------------------------------------------
 
 
-def _pool_to_descriptor_set_bytes(pool: descriptor_pool.DescriptorPool, type_names: list[str]) -> bytes:
+def _pool_to_descriptor_set_bytes(
+    pool: descriptor_pool.DescriptorPool, type_names: list[str]
+) -> bytes:
     """Build a FileDescriptorSet covering the listed types (and deps)."""
     # Walk back from each type to its file descriptor proto.
     files: dict[str, descriptor_pb2.FileDescriptorProto] = {}
@@ -79,7 +81,7 @@ class TestCompatibleExit0:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
         ])
         assert result.exit_code == 0
@@ -94,7 +96,7 @@ class TestIncompatibleExit1:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
         ])
         assert result.exit_code == 1
@@ -120,7 +122,7 @@ class TestCrossType:
         ])
         old_path = _write_desc(tmp_path, "old", old, ["t.UserV1"])
         new_path = _write_desc(tmp_path, "new", new, ["t.UserV2"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path),
             "--old-type", "t.UserV1",
             "--new-type", "t.UserV2",
@@ -146,7 +148,7 @@ class TestLevel:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--level", "consumer-safe",
         ])
@@ -161,7 +163,7 @@ class TestLevel:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--level", "producer-safe",
         ])
@@ -176,7 +178,7 @@ class TestLevel:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--level", "wire",
         ])
@@ -197,7 +199,7 @@ class TestJsonOutput:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--format", "json",
         ])
@@ -228,7 +230,7 @@ class TestIgnore:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--ignore", "debug",
         ])
@@ -273,7 +275,7 @@ class TestDedupeByType:
 
     def test_default_is_path_complete(self, tmp_path: Path) -> None:
         old_path, new_path = self._build_shared_pair(tmp_path)
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.Outer",
             "--level", "strict",
         ])
@@ -284,7 +286,7 @@ class TestDedupeByType:
 
     def test_dedupe_flag_collapses_to_first_path(self, tmp_path: Path) -> None:
         old_path, new_path = self._build_shared_pair(tmp_path)
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.Outer",
             "--level", "strict",
             "--dedupe-by-type",
@@ -302,7 +304,7 @@ class TestQuiet:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M", "--quiet",
         ])
         assert result.exit_code == 0
@@ -315,7 +317,7 @@ class TestQuiet:
         )
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M", "--quiet",
         ])
         assert result.exit_code == 1
@@ -496,7 +498,9 @@ class TestRulePack:
             sys.modules.pop(pack_name, None)
 
     def test_rule_pack_legacy_emits_user_warning(self, tmp_path: Path) -> None:
-        """AE1 (R3, R4, R10): `--rule-pack` loads the pack and emits a UserWarning containing all four required tokens."""
+        """AE1 (R3, R4, R10): `--rule-pack` loads the pack and emits a
+        UserWarning containing all four required tokens.
+        """
         pack_name = "protokit_test_rule_pack_legacy_warns"
 
         def every_field(ctx):
@@ -542,7 +546,9 @@ class TestRulePack:
             sys.modules.pop(pack_name, None)
 
     def test_both_flags_accumulate_warn_once(self, tmp_path: Path) -> None:
-        """AE3 (R6): both flags supplied → both packs load AND deprecation warning fires exactly once."""
+        """AE3 (R6): both flags supplied → both packs load AND deprecation
+        warning fires exactly once.
+        """
         legacy_pack = "protokit_test_rule_pack_both_legacy"
         canonical_pack = "protokit_test_rule_pack_both_canonical"
 
@@ -587,7 +593,8 @@ class TestRulePack:
                 if issubclass(w.category, UserWarning) and "--rule-pack" in str(w.message)
             ]
             assert len(rule_pack_warnings) == 1, (
-                f"expected exactly 1 deprecation warning even with both flags, got {len(rule_pack_warnings)}"
+                "expected exactly 1 deprecation warning even with both flags, "
+                f"got {len(rule_pack_warnings)}"
             )
         finally:
             sys.modules.pop(legacy_pack, None)
@@ -671,7 +678,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path),
             "--type", "t.M",
             "--old-type", "t.M",
@@ -682,7 +689,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path),
             "--old-type", "t.M",
         ])
@@ -693,7 +700,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.Nonexistent",
         ])
         assert result.exit_code == 2
@@ -703,7 +710,7 @@ class TestErrors:
         old, new = _simple_pair([], [])
         old_path = _write_desc(tmp_path, "old", old, ["t.M"])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(old_path), str(new_path), "--type", "t.M",
             "--proto-path", str(tmp_path),
         ])
@@ -715,7 +722,7 @@ class TestErrors:
         bad.write_bytes(b"this is not a FileDescriptorSet")
         old, new = _simple_pair([], [])
         new_path = _write_desc(tmp_path, "new", new, ["t.M"])
-        result = CliRunner().invoke(main, ["check", 
+        result = CliRunner().invoke(main, ["check",
             str(bad), str(new_path), "--type", "t.M",
         ])
         assert result.exit_code == 2
@@ -957,8 +964,6 @@ class TestErrors:
 # Git-mode CLI tests (Phase 2)
 # ---------------------------------------------------------------------------
 
-import subprocess
-
 
 def _git(*args: str, cwd: Path) -> str:
     return subprocess.run(
@@ -1081,8 +1086,10 @@ class TestCheckSince:
     ) -> None:
         old_sha = _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
         # Create dummy files so click's exists=True doesn't fail first.
-        a = tmp_path / "a.bin"; a.write_bytes(b"")
-        b = tmp_path / "b.bin"; b.write_bytes(b"")
+        a = tmp_path / "a.bin"
+        a.write_bytes(b"")
+        b = tmp_path / "b.bin"
+        b.write_bytes(b"")
         result = _invoke_in_repo(git_repo, [
             "check", str(a), str(b),
             "--since", old_sha,
@@ -1926,6 +1933,7 @@ class TestQuietJsonMutex:
     ) -> None:
         # Build a minimal descriptor-set pair for local-file mode.
         from google.protobuf import descriptor_pool
+
         from tests.schema.helpers import build_message
         old = descriptor_pool.DescriptorPool()
         new = descriptor_pool.DescriptorPool()
@@ -2057,15 +2065,17 @@ class TestHistoryBisectStructuredFormats:
     """
 
     def _validate_junit(self, xml_str: str) -> None:
-        import xmlschema
         from pathlib import Path as _Path
+
+        import xmlschema
         xsd = _Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd"
         xmlschema.XMLSchema(str(xsd)).validate(xml_str)
 
     def _validate_sarif(self, json_str: str) -> None:
         import json as _json
-        import jsonschema
         from pathlib import Path as _Path
+
+        import jsonschema
         schema_path = _Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
         with open(schema_path) as f:
             schema = _json.load(f)
@@ -2167,6 +2177,7 @@ class TestEntryPointDispatch:
         self, git_repo: Path,
     ) -> None:
         import os
+
         from protokit.cli import main as top_level_main
         _commit(git_repo, "acme/user.proto", _USER_V1, msg="v1")
         prev = os.getcwd()

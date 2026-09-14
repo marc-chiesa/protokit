@@ -90,8 +90,8 @@ class TestProto3MessageDefaults:
         builder.message("test.Outer", {
             "inner": (T.TYPE_MESSAGE, 1, ".test.Inner"),
         })
-        Inner = builder.get_message_class("test.Inner")
-        msg1 = builder.build("test.Outer", inner=Inner(x=5))
+        inner_cls = builder.get_message_class("test.Inner")
+        msg1 = builder.build("test.Outer", inner=inner_cls(x=5))
         msg2 = builder.build("test.Outer")
         result = diff_messages(msg1, msg2)
         assert result.has_changes()

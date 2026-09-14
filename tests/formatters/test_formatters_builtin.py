@@ -44,7 +44,6 @@ from protokit.schema.model import (
     Severity,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers — small protobuf fixture for diff tests
 # ---------------------------------------------------------------------------

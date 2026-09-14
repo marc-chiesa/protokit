@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from google.protobuf import descriptor_pool
 
 from protokit.message.model import FieldPath
@@ -14,7 +16,6 @@ from protokit.schema import (
     filter_for_level,
 )
 from tests.schema.helpers import T, build_message
-
 
 ROOT = FieldPath(segments=())
 
@@ -217,7 +218,7 @@ class TestCompatibilityPolicyCheck:
     def test_policy_is_frozen(self) -> None:
         import pytest
         policy = CompatibilityPolicy()
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             policy.base = CompatibilityLevel.WIRE  # type: ignore[misc]
 
     def test_check_raises_on_missing_type(self) -> None:
