@@ -2,7 +2,7 @@
 
 Shared domain vocabulary for this project — entities, named processes, and status concepts with project-specific meaning. Seeded with core domain vocabulary, then accretes as ce-compound and ce-compound-refresh process learnings; direct edits are fine. Glossary only, not a spec or catch-all.
 
-> Seeded 2026-06-16 from the columnar/Parquet fidelity-signal work; covers **storage / data-at-rest**, **forensics / wire-level analysis**, and the **testing** vocabulary the audit-remediation work introduced. Other areas (schema lint, compatibility checking, the message differ) are not yet defined here.
+> Seeded 2026-06-16 from the columnar/Parquet fidelity-signal work; covers **storage / data-at-rest**, **forensics / wire-level analysis**, the **testing** vocabulary the audit-remediation work introduced, and the **package-structure** vocabulary its single-owner seams introduced. Other areas (schema lint, compatibility checking, the message differ) are not yet defined here.
 
 ## Storage / data-at-rest
 
@@ -69,7 +69,7 @@ A pin is only a pin when it names the exception it fails with; a strict expected
 ### Presence ratchet
 A meta-test that fails when a required phrase, marker, registration, or property of a checked-in configuration disappears from the tree — a guard on the *existence* of a discipline (a convention paragraph, a lint-gated path, a `raises=` on every expected-failure marker, a CI job that runs the whole suite under a given backend), not on its wording or its application. It starts at zero violations and refuses new ones, so it can be strict from its first commit without an allowlist. Distinct from a Regression pin, which guards a specific defect's fix.
 
-A ratchet over a configuration must model every way the guarded thing can look present while doing something else — a run step that filters, a step that never executes, an override that changes the setting the ratchet checked — because a guard that only looks for the expected text passes while guarding nothing. Each property it asserts is proven by a self-test that injects the violation.
+A ratchet over a configuration must model every way the guarded thing can look present while doing something else — a run step that filters, a step that never executes, an override that changes the setting the ratchet checked — because a guard that only looks for the expected text passes while guarding nothing. Each property it asserts is proven by a self-test that injects the violation. When the ratchet derives its answer from source rather than matching text, deleting a rule is too coarse a violation to inject: the way such a rule is proven is to write the plausible wrong version of it and require a self-test to fail, because a wrong rule that is still present passes a suite that only checks the rule exists.
 
 ### Known-failure inventory
 A committed list of tests expected to fail under one Runtime backend, each entry naming the audit finding it traces to and the exception it fails with, applied at collection time as a strict expected-failure so that backend's CI cell is red only on a new failure, on a fix (the entry starts passing and is deleted), on a failure that changed shape, or on a stale entry. Distinct from a Regression pin (one test, marked in source, kept until its fix) and from a Presence ratchet (guards that a discipline exists, not which tests fail).
@@ -85,6 +85,13 @@ Which implementation of the protobuf Python library executes at test time: upb, 
 
 ### Compile backend
 Which tool turns `.proto` source into descriptors for a test or a CLI run: the optional in-process compiler, or the system `protoc` it falls back to. The two agree on descriptor semantics but not on byte-level details such as source-code-info layout, so comparisons across them are made on meaning, not bytes. Distinct from the Runtime backend.
+
+## Package structure
+
+### Seam
+A module that owns one recurring decision for the whole package — how a message's fields are enumerated, how a custom option is resolved, how a result type is frozen — so that the next defect in that class is fixed once, at the owner, rather than at each call site that happens to report it. What makes it a seam rather than a convention is that reaching around it fails: a seam lands together with a guard test that fails when a call site bypasses the owner.
+
+A seam sits at layer 0: it imports nothing from the rest of the package at any scope, which is what makes it safe for every layer above to import. Only a typing-guarded import is exempt, since that never executes. Depending on nothing above it, rather than deferring a dependency into a function body, is what keeps a seam from participating in an import cycle — a deferred import is the sanctioned repair for a cycle that already exists, not a way to give a seam a dependency it should not have.
 
 ## Flagged ambiguities
 
