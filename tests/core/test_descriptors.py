@@ -6,8 +6,13 @@ that break behavior surface here instead of via distant failures
 elsewhere.
 """
 
-from google.protobuf import descriptor_pb2
+from collections.abc import Iterator
 
+import pytest
+from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf.descriptor import Descriptor
+
+from protokit import _descriptors
 from protokit._descriptors import (
     format_key,
     has_presence,
@@ -15,6 +20,7 @@ from protokit._descriptors import (
     is_repeated,
     is_required,
     label_name,
+    message_proto,
     type_name,
 )
 from protokit._fieldview import FieldView
@@ -240,3 +246,86 @@ class TestLabelName:
     def test_optional(self) -> None:
         fd = _build_with_label(T.LABEL_OPTIONAL)
         assert label_name(fd) == "LABEL_OPTIONAL"
+
+
+class TestFileProtoCache:
+    """``message_proto``'s per-file cache must hold a realistic schema without thrashing.
+
+    The cache exists because reading the owning file to get one message turns
+    a per-message read into a per-message whole-file serialization, and the
+    compat checker calls it once per message pair. It is bounded so
+    ``compat history`` / ``bisect``, which build a pool per commit, cannot pin
+    a pool per commit walked — bounded, not small. At 32 entries a schema of
+    a few dozen files visited in reference order (the checker's traversal is
+    by message reference, not grouped by file) evicted on every miss: measured
+    9x slower than a larger cap and slower than no cache at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self) -> Iterator[None]:
+        _descriptors._FILE_PROTO_CACHE.clear()
+        yield
+        _descriptors._FILE_PROTO_CACHE.clear()
+
+    @staticmethod
+    def _pool_of_files(n: int) -> tuple[descriptor_pool.DescriptorPool, list[Descriptor]]:
+        """``n`` single-message files; the pool is returned so its descriptors stay alive."""
+        pool = descriptor_pool.DescriptorPool()
+        descs = []
+        for i in range(n):
+            fdp = descriptor_pb2.FileDescriptorProto(
+                name=f"f{i}.proto", package=f"p{i}", syntax="proto3",
+            )
+            fdp.message_type.add(name=f"M{i}").field.add(
+                name="x", number=1,
+                type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+                label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+            )
+            pool.Add(fdp)
+            descs.append(pool.FindMessageTypeByName(f"p{i}.M{i}"))
+        return pool, descs
+
+    def test_a_multi_file_schema_is_serialized_once_per_file(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """64 files visited round-robin twice: the second pass must be all hits.
+
+        Counting ``_index_messages`` calls counts misses — it runs exactly once
+        per whole-file read. A cap below the working set makes every access a
+        miss on the second pass, which is the thrash this pins against.
+        """
+        _pool, descs = self._pool_of_files(64)
+        reads: list[str] = []
+        real_index = _descriptors._index_messages
+
+        def counting_index(proto: descriptor_pb2.FileDescriptorProto) -> dict[
+            str, descriptor_pb2.DescriptorProto,
+        ]:
+            reads.append(proto.name)
+            return real_index(proto)
+
+        monkeypatch.setattr(_descriptors, "_index_messages", counting_index)
+        for desc in descs:
+            message_proto(desc)
+        assert len(reads) == 64
+        for desc in descs:
+            message_proto(desc)
+        assert len(reads) == 64, (
+            f"{len(reads) - 64} files were re-serialized on the second pass: the cache "
+            "cannot hold a 64-file schema and is thrashing"
+        )
+
+    def test_cache_stays_bounded_and_correct_past_the_cap(self) -> None:
+        """Past the cap: entries are evicted, lookups stay right, keys stay pinned."""
+        cap = _descriptors._FILE_PROTO_CACHE_MAX
+        _pool, descs = self._pool_of_files(cap + 16)
+        for i, desc in enumerate(descs):
+            assert message_proto(desc).name == f"M{i}"
+        assert len(_descriptors._FILE_PROTO_CACHE) <= cap
+        # The first entries were evicted; re-reading them must still be correct.
+        for i, desc in enumerate(descs[:8]):
+            assert message_proto(desc).name == f"M{i}"
+        # Every live entry holds the FileDescriptor whose id() keys it, so that
+        # id cannot be reused by another object while the entry lives.
+        for key, (file_desc, _proto, _index) in _descriptors._FILE_PROTO_CACHE.items():
+            assert id(file_desc) == key

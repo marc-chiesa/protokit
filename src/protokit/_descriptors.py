@@ -120,8 +120,15 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
 # a pool is immutable, so a cached proto cannot go stale.
 #
 # Bounded, because `protokit compat history` / `bisect` build a fresh pool per
-# commit; an unbounded cache would pin one pool per commit walked.
-_FILE_PROTO_CACHE_MAX = 32
+# commit; an unbounded cache would pin one pool per commit walked. Bounded is
+# not small: the checker traverses by message reference, not grouped by file,
+# so a schema with more live files than the cap evicts on every miss. Measured
+# at 60 files visited round-robin, a cap of 32 took 3.7 ms against 0.4 ms at
+# 256 — 9x slower, and slower than not caching at all. The cap therefore sits
+# well above any single descriptor set's file count; what it bounds is the
+# number of POOLS a long history walk can keep alive, and 256 files is a
+# handful of commits' worth, not one pool per commit.
+_FILE_PROTO_CACHE_MAX = 256
 _FILE_PROTO_CACHE: OrderedDict[
     int,
     tuple[
