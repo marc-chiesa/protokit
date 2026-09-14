@@ -39,6 +39,7 @@ from protokit._cli_utils import (
     _compile_with_protoxy,
     _has_protoxy,
 )
+from protokit._pools import DescriptorPoolError
 
 if TYPE_CHECKING:
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
@@ -644,15 +645,20 @@ def compile_protos_to_result(
                     proto_paths,
                     include_source_info=include_source_info,
                 )
-            except (protoxy.ProtoxyError, ValueError, TypeError) as exc:
+            except (
+                protoxy.ProtoxyError, ValueError, TypeError, DescriptorPoolError,
+            ) as exc:
                 # ProtoxyError/ValueError: parse-time failures from
                 # protoxy.compile itself.
-                # TypeError: pool.Add() rejecting a FileDescriptorProto
+                # DescriptorPoolError: the pool rejecting a FileDescriptorProto
                 # that protoxy accepted but the python protobuf runtime
                 # rejects (e.g., proto2 group-syntax interop, malformed
-                # custom options). Both flavours mean "protoxy didn't
-                # produce a usable result for this input"; protoc is
-                # the documented fallback for either.
+                # custom options). ``_populate_pool_with_capture`` asserts
+                # resolution after every Add and raises this typed error on
+                # both backends (V10); TypeError stays for the raw shape a
+                # backend may still let through. Every flavour means
+                # "protoxy didn't produce a usable result for this input";
+                # protoc is the documented fallback for each.
                 #
                 # Per A2-2: info-fallback diagnostic comes FIRST so the
                 # tuple's leading entry tells the consumer which backend
