@@ -7,8 +7,10 @@ against a specific file (e.g. ``pytest tests/schema/...``) skips
 this gate, so focused TDD loops stay fast.
 
 All of ``tests/`` is gated as a single directory entry, so a new test
-file is linted the moment it is added — no registration edit, and no
-way for a file to sit outside the gate unnoticed. ``src/`` still
+file is linted the moment it is added, with no registration edit. What
+that entry covers is then decided by ruff's file discovery rather than
+by a list here, so ``test_lint_gate_discovers_every_test_module``
+asserts discovery still reaches every module on disk. ``src/`` still
 ratchets per path: a source module that has become clean under both
 tools should be added to ``_LINT_PATHS`` and/or ``_TYPE_CHECK_PATHS``
 so the gate prevents it from regressing.
@@ -37,8 +39,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # shape leaks: a file added to a per-file bucket is simply not gated until
 # someone remembers to register it, which is silent and indistinguishable
 # from being clean. 46 of 246 test files had drifted outside the gate that
-# way, one of them carrying a real lint error for three months. A directory
-# entry cannot drift, so prefer promoting a bucket over appending to it.
+# way, one of them carrying a real lint error for three months. Prefer
+# promoting a bucket over appending to it.
+#
+# A directory entry does not remove the drift risk, it relocates it: an
+# exclude/extend-exclude entry in pyproject.toml would drop files from
+# ruff's discovery while the clean-check stayed green on the smaller set,
+# which the explicit per-file list could not do (a path passed explicitly
+# is linted even when an exclusion names it).
+# ``test_lint_gate_discovers_every_test_module`` is what closes that.
 _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/formatters/_builtin_lint.py",
@@ -128,6 +137,51 @@ def test_ruff_check_clean_on_gated_paths() -> None:
         "ruff check failed on gated paths.\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
+    )
+
+
+def test_lint_gate_discovers_every_test_module() -> None:
+    """Ruff's discovered file set must contain every ``tests/`` module on disk.
+
+    ``_LINT_PATHS`` names ``tests`` as a directory, so what actually gets
+    linted is decided by ruff's own file discovery rather than by a list in
+    this file. That is the point — a new test file is gated without a
+    registration edit — but it moves the failure mode rather than removing
+    it: an ``exclude`` / ``extend-exclude`` entry in ``pyproject.toml`` (or
+    a ``.gitignore``-driven default) silently drops files from discovery
+    while ``test_ruff_check_clean_on_gated_paths`` stays green, because ruff
+    is then clean on a smaller set. The per-file list this replaced could
+    not fail that way: a path passed explicitly is linted even when an
+    exclusion names it.
+
+    So the directory entry is only as good as this assertion. It compares
+    what ruff says it would check against what is on disk, and fails on any
+    module that discovery drops.
+    """
+    if not _module_available("ruff"):
+        pytest.skip("ruff not installed; run `pip install -e '.[dev]'`")
+    _assert_paths_exist(_LINT_PATHS, "_LINT_PATHS")
+
+    result = _run("ruff", ["check", "--no-cache", "--show-files", *_LINT_PATHS])
+    assert result.returncode == 0, (
+        f"ruff --show-files failed.\nstdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    discovered = {
+        Path(line).resolve()
+        for line in result.stdout.splitlines()
+        if line.strip()
+    }
+    on_disk = {p.resolve() for p in (_REPO_ROOT / "tests").rglob("*.py")}
+
+    missing = sorted(str(p.relative_to(_REPO_ROOT)) for p in on_disk - discovered)
+    assert not missing, (
+        "ruff does not discover these test modules, so they are NOT linted "
+        "despite `tests` being in _LINT_PATHS:\n  "
+        + "\n  ".join(missing)
+        + "\n\nAn exclude/extend-exclude entry in pyproject.toml is the usual "
+        "cause. Either drop the exclusion or register the files explicitly in "
+        "_LINT_PATHS — a directory entry alone will not gate them."
     )
 
 
