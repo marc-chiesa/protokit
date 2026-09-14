@@ -34,7 +34,6 @@ tests/forensics/test_drift_core.py::test_reserved_to_max_does_not_materialize V3
 tests/forensics/test_drift_core.py::test_unpacked_repeated_undeclared_dedups_to_one_divergence V34 google.protobuf.descriptor.Error
 tests/forensics/test_drift_core.py::test_declared_extension_not_flagged_undeclared V34 google.protobuf.descriptor.Error
 tests/forensics/test_drift_core.py::test_incompatible_occurrence_not_masked_by_a_compatible_one V34 google.protobuf.descriptor.Error
-tests/forensics/test_match_core.py::test_proto2_missing_required_is_incomplete V1 AssertionError
 tests/forensics/test_ranking.py::test_no_clean_match_when_every_candidate_leaves_residual V34 google.protobuf.descriptor.Error
 tests/forensics/test_ranking.py::test_superset_ranks_below_exact_producer V34 google.protobuf.descriptor.Error
 tests/forensics/test_ranking.py::test_multiple_clean_matches_when_indistinguishable V34 google.protobuf.descriptor.Error
@@ -189,4 +188,3 @@ tests/schema/test_rules.py::TestReservedFieldReused::test_many_reserved_ranges_d
 tests/schema/test_rules.py::TestReservedFieldReused::test_reserved_range_end_is_exclusive V34 google.protobuf.descriptor.Error
 tests/schema/test_rules.py::TestReservedFieldReused::test_silent_when_no_reservations_used V34 google.protobuf.descriptor.Error
 tests/schema/test_rules.py::TestReservedFieldReused::test_both_number_and_name_fires_twice V34 google.protobuf.descriptor.Error
-tests/storage/test_columnar_fidelity.py::test_missing_required_field_cannot_measure V1 AssertionError
