@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import bisect
 import contextvars
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from google.protobuf import descriptor as proto_descriptor
-from google.protobuf import descriptor_pb2
 
+from protokit import _descriptors
 from protokit._descriptors import (
     has_presence,
     is_map_field,
@@ -160,8 +160,7 @@ def _proto3_optional_fields(
         cached = cache.get(key)
         if cached is not None:
             return cached
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
+    dp = _descriptors.message_proto(desc)
     result = frozenset(
         f.name for f in dp.field if f.proto3_optional
     )
@@ -987,8 +986,7 @@ def _reserved(
     the expensive part -- doing it once per message pair instead of
     twice halves the serialization cost of this rule.
     """
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
+    dp = _descriptors.message_proto(desc)
     ranges = _normalize_ranges((rng.start, rng.end) for rng in dp.reserved_range)
     return ranges, set(dp.reserved_name)
 

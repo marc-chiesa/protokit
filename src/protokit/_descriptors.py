@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from google.protobuf import descriptor as proto_descriptor
+from google.protobuf import descriptor_pb2
 
 from protokit import _fieldview
 
@@ -97,6 +98,58 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
         the ``map_entry`` option set.
     """
     return _fieldview.is_map_field(field_desc)
+
+
+def message_proto(
+    descriptor: proto_descriptor.Descriptor,
+) -> descriptor_pb2.DescriptorProto:
+    """Return the ``DescriptorProto`` for ``descriptor``, on either backend.
+
+    The obvious call, ``descriptor.CopyToProto(DescriptorProto())``, is upb-only
+    (V34). Measured on protobuf 5.27.5, for a descriptor built by adding a
+    ``FileDescriptorProto`` to a pool — which is every descriptor protokit
+    handles — the pure-Python runtime raises
+    ``descriptor.Error("Descriptor does not contain serialization.")``, because
+    it only retains a serialized form for descriptors it generated. upb returns
+    the proto. That asymmetry crashed ``protokit compat`` and the drift walker
+    outright under the pure-Python backend.
+
+    The owning FILE always retains its serialization on both runtimes, so this
+    reads ``descriptor.file`` and locates the message inside it by name,
+    walking ``nested_type`` for a nested message. One owner for the three
+    readers that need this (KTD1): the two in ``schema.rules`` and the one in
+    ``forensics._drift``.
+
+    Args:
+        descriptor: A protobuf message ``Descriptor``.
+
+    Returns:
+        The ``DescriptorProto`` declaring this message.
+
+    Raises:
+        KeyError: If the message cannot be located in its own file's proto,
+            which would mean the descriptor and its file disagree.
+    """
+    file_proto = descriptor_pb2.FileDescriptorProto()
+    descriptor.file.CopyToProto(file_proto)
+
+    package = descriptor.file.package
+    relative = descriptor.full_name
+    if package and relative.startswith(f"{package}."):
+        relative = relative[len(package) + 1 :]
+
+    candidates = file_proto.message_type
+    node: descriptor_pb2.DescriptorProto | None = None
+    for part in relative.split("."):
+        node = next((m for m in candidates if m.name == part), None)
+        if node is None:
+            raise KeyError(
+                f"{descriptor.full_name!r} not found in its own file "
+                f"{descriptor.file.name!r}"
+            )
+        candidates = node.nested_type
+    assert node is not None  # relative is never empty for a real descriptor
+    return node
 
 
 def has_presence(fd: proto_descriptor.FieldDescriptor) -> bool:
