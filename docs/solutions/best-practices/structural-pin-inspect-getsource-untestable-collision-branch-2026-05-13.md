@@ -214,7 +214,7 @@ def test_user_severities_win_over_composed_overrides(
     on-collision dict-spread behavior in the cli.py overlay.
     BUILTIN_PACKS profiles don't declare rule_severity_overrides,
     so we cannot construct a real collision at the integration
-    layer in U9. Per ce:review F1 finding on commit c7a426b. (The
+    layer in U9. Per ce:review F1 finding on commit 0701202. (The
     ideal test would construct a multi-pack composition where
     pack A declares rule_severity_overrides; that requires a
     user-pack fixture with an overrides-bearing profile,
@@ -379,7 +379,7 @@ Behavior survives refactoring; the structural pin can be removed.
   IS the contract, choose the presence ratchet when a
   substring's meaning IS the contract and surrounding shape
   is free to evolve.
-- Anchor commit: ``3c828a4`` (Unit 9 ce:review follow-up F1
+- Anchor commit: ``6a1f520`` (Unit 9 ce:review follow-up F1
   — testing reviewer surfaced the collision-branch gap;
   ``inspect.getsource`` test added as the structural pin).
 - Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``

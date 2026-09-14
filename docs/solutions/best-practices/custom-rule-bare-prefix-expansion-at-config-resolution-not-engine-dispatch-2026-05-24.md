@@ -106,7 +106,7 @@ This pattern does NOT apply when:
 
 ### The expansion function
 
-`src/protokit/schema/lint/_config.py` (D6f U2, commit `fea31b5`):
+`src/protokit/schema/lint/_config.py` (D6f U2, commit `6fdeaf8`):
 
 ```python
 def _expand_custom_prefix(

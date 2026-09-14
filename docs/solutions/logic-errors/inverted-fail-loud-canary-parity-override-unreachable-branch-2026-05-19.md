@@ -46,7 +46,7 @@ ce:review caught this with 4-way convergence: correctness (P2/0.95) traced the c
 
 ## What Didn't Work
 
-**Pre-fix code (commit `d28641f`, then retained through commit `6b9a609` with a docstring asserting fail-loud safety):**
+**Pre-fix code (commit `7b9655e`, then retained through commit `245a119` with a docstring asserting fail-loud safety):**
 
 ```python
 _CANARY_PARITY_OVERRIDE: Mapping[str, str] = {
@@ -92,7 +92,7 @@ The docstring claim said the `elif`'s nested `if protokit_id in mapping` was the
 
 Remove the `_CANARY_PARITY_OVERRIDE` dict and `elif` branch entirely. Replace with a **post-walk assertion** that checks the final state of `mapping` directly:
 
-**After (commit `d1dc094`):**
+**After (commit `b281d3b`):**
 
 ```python
 def _build_rule_id_map() -> Mapping[str, str]:

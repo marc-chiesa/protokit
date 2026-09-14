@@ -149,4 +149,4 @@ The `@functools.cache` decorator is also load-bearing for performance: discovery
 - [[dont-pin-binary-protoc-when-test-suite-cross-checks-protoxy-2026-05-27]] — the operational counterpart: when test suite cross-validates backends, the WKT auto-discovery helper makes apt's split-package layout viable so CI can stay on protoc-3.21 (matching protoxy's embedded version) without manual `-I /usr/include`.
 - [[protoc-25-rejects-end-of-options-separator-2026-05-27]] — sibling protoc cross-version-compatibility learning.
 - first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning that surfaced this whole cluster.
-- Canonical commit: `469af3d` ("fix: WKT include-path auto-discovery for system-protoc backend (0.7.1)").
+- Canonical commit: `c6412ac` ("fix: WKT include-path auto-discovery for system-protoc backend (0.7.1)").

@@ -149,7 +149,7 @@ def fake(name, *a, **k):
     return real(name, *a, **k)   # reads real install state for ptars
 ```
 
-After (commit `e612364`, one line) — fakes *every* probe explicitly; `ptars` is
+After (commit `6614ff1`, one line) — fakes *every* probe explicitly; `ptars` is
 forced present, so the guard deterministically reaches the `pyarrow` branch in any
 environment:
 

@@ -36,7 +36,7 @@ flows through three formatters, all three must emit the same
 canonical string for the same enum value, or downstream
 consumers aggregating the formats see inconsistency.
 
-When `lint_json` was first shipped in commit `017675a` (D3
+When `lint_json` was first shipped in commit `cd6d513` (D3
 Unit 4b feat), a one-line choice in the `findings_payload`
 list comprehension emitted `finding.severity.name` instead of
 `finding.severity.value`. This rendered `"WARNING"` (the Python
@@ -56,7 +56,7 @@ divergence at first-ship review:
   the moment the first consumer reads the field, the casing
   becomes a breaking change to fix.
 
-The fix landed in commit `8de2bd7` (U4b ce:review follow-ups):
+The fix landed in commit `dba6d71` (U4b ce:review follow-ups):
 one character changed, `finding.severity.name` →
 `finding.severity.value`. Plus one updated test assertion. The
 bug class generalizes to any domain enum exposed across
@@ -224,7 +224,7 @@ class LintSeverity(Enum):
 `.value` is the lowercase canonical form. `.name` is the
 Python identifier (`ERROR`, `WARNING`, `INFO`).
 
-**`lint_json` — pre-fix (commit `017675a`, BUGGY):**
+**`lint_json` — pre-fix (commit `cd6d513`, BUGGY):**
 
 ```python
 findings_payload: list[dict[str, Any]] = [
@@ -239,7 +239,7 @@ findings_payload: list[dict[str, Any]] = [
 ]
 ```
 
-**`lint_json` — post-fix (commit `8de2bd7`, ALIGNED):**
+**`lint_json` — post-fix (commit `dba6d71`, ALIGNED):**
 
 The change is a single character — `.name` → `.value`. The
 surrounding fields are unchanged at this scope:
@@ -373,7 +373,7 @@ def test_severity_strings_match_across_json_and_sarif(
     assert json_severity == sarif_level
 ```
 
-(As of commit `8de2bd7` this exact test does not exist — the
+(As of commit `dba6d71` this exact test does not exist — the
 fix was verified by updating the existing
 `test_single_finding_renders_to_findings_list` assertion from
 `"WARNING"` to `"warning"`. A dedicated cross-format equality
@@ -418,8 +418,8 @@ test is the next defense-in-depth layer.)
   this learning is the discipline that catches divergence in
   the value, and that learning is the consumer-contract that
   governs when bumps are needed and what absence means.
-- Anchor commits: `6356cc8` (the one-line `.name` → `.value`
-  fix in `lint_json`); `e547bff` (the U4b feat where the bug
+- Anchor commits: `dba6d71` (the one-line `.name` → `.value`
+  fix in `lint_json`); `cd6d513` (the U4b feat where the bug
   first shipped).
 - Plan: `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`
   Unit 4b.

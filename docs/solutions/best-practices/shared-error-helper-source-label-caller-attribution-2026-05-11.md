@@ -327,7 +327,7 @@ test.
   covers the I/O-boundary-exception-guard angle (spatial-scope audit
   for `OSError` on walk-up stat calls); this doc covers the
   caller-attribution angle (parameterized error messages for shared
-  helpers). Both fixes landed in commit `24e688f`.
+  helpers). Both fixes landed in commit `522b8da`.
 - `apply-institutional-learnings-postdating-plan-during-ce-review-2026-05-09` (maintainer-side learning, kept in the private learnings repository rather than this tree) —
   this finding is itself an example: the gap was caught at
   ce:review, not at plan/brainstorm time, because plan reviewers
@@ -390,9 +390,9 @@ test.
 
 ## Fix Commits
 
-- `c0bbf03` — D5 U1 implementation (the gap was present after this
+- `ce353e9` — D5 U1 implementation (the gap was present after this
   commit; `_read_and_parse` hard-coded `--config path` strings).
-- `89d84ff` — D5 U1 ce:review follow-ups; the `source_label`
+- `522b8da` — D5 U1 ce:review follow-ups; the `source_label`
   parameter was added in this 22-finding fix commit.
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-094847-1685ca47/`

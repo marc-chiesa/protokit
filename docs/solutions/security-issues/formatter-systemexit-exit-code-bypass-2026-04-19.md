@@ -250,14 +250,14 @@ deliveries** of the protokit-lint D3 work, not a single unit.
 Lint-side surface — `_load_user_rule_pack` in
 `src/protokit/schema/lint/_cli_utils.py`:
 
-- The `SystemExit` half landed in **D3 Unit 3** (commit `924a263`):
+- The `SystemExit` half landed in **D3 Unit 3** (commit `3f9d5ec`):
   the `except SystemExit` first / `except Exception` next pattern
   from this learning.
 - The `KeyboardInterrupt` half — predicted parenthetically in this
   doc's Prevention section as "possibly `KeyboardInterrupt`" —
   turned out to be REQUIRED on the rule-pack surface (not
   "possibly"). The D3 Unit 3 ce:review adversarial reviewer
-  constructed the bypass and the fix landed in commit `94708dd`.
+  constructed the bypass and the fix landed in commit `6c28e63`.
   The full per-surface rationale is captured in
   `docs/solutions/security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`.
 - A second, distinct vector was discovered on the same surface
@@ -270,11 +270,11 @@ Compat-side surface — `load_formatter_packs` in
 "Symmetric surface" callout explicitly named alongside
 `_load_rule_packs`):
 
-- The `SystemExit` half landed in **D3 Unit 5** (commit `e6cf374`)
+- The `SystemExit` half landed in **D3 Unit 5** (commit `b869562`)
   with the same `except SystemExit` first / `except Exception`
   next pattern.
 - The `KeyboardInterrupt` half landed in the **D3 Unit 5
-  ce:review follow-up** (commit `719e47e`) once the rule-pack
+  ce:review follow-up** (commit `9b59be2`) once the rule-pack
   learning's per-surface framework was applied to the compat
   sibling. The deferral reasoning that originally kept
   `KeyboardInterrupt` propagating ("operator's Ctrl-C still tears
@@ -349,7 +349,7 @@ unilaterally. Enforce this structurally:
   flagged the same class of bug for rule plugins; fix was scoped
   to checker-side dispatch and deliberately not extended to formatters
   because formatters didn't exist yet. (session history)
-- Fix commit: `a83a6d1` (`fix(formatters): apply ce:review safe-auto
+- Fix commit: `3c7dd7a` (`fix(formatters): apply ce:review safe-auto
   findings (P0 + P1 + P2/P3 cluster)`).
 - [[subprocess-exit-code-validation-test-harness-2026-05-13]] —
   exit-code contract discipline from the INBOUND side (test

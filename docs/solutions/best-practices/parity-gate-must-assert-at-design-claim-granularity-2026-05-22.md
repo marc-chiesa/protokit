@@ -33,9 +33,9 @@ tags:
 
 D6e U3 shipped `package/no-import-cycle` per the user-selected Option B at ce:review session 2026-05-22: "byte-equivalent buf v1.69.0 parity at finding-set + line/column granularity." Implementation extended `FileLocation` with optional `line`/`column` fields, updated JSON + SARIF formatters to render them, and implemented `_import_source_position` to read `SourceCodeInfo.Location` for per-import line/column.
 
-The initial parity test (commit `13ac973`) called the shared `assert_parity_multi_file` helper. Three reviewers (testing T1 at 0.97, adversarial ADV-002 at 0.99, agent-native Warning 2) flagged the same defect: the helper compares `(rule_id, normalized_path, message)` triples — line/column values from the BufFinding snapshots are PARSED THEN DISCARDED. The "byte-equivalent at line/column" design claim was documentation-only; the parity test would silently survive any regression in `_import_source_position` (off-by-one in the 0→1 conversion, wrong field number 3, missing include_source_info plumbing, span index arithmetic errors).
+The initial parity test (commit `b4ccf3a`) called the shared `assert_parity_multi_file` helper. Three reviewers (testing T1 at 0.97, adversarial ADV-002 at 0.99, agent-native Warning 2) flagged the same defect: the helper compares `(rule_id, normalized_path, message)` triples — line/column values from the BufFinding snapshots are PARSED THEN DISCARDED. The "byte-equivalent at line/column" design claim was documentation-only; the parity test would silently survive any regression in `_import_source_position` (off-by-one in the 0→1 conversion, wrong field number 3, missing include_source_info plumbing, span index arithmetic errors).
 
-The fix (commit `3ea93c8`) added a Tier 2 per-finding assertion to the test:
+The fix (commit `c25bfb3`) added a Tier 2 per-finding assertion to the test:
 
 ```python
 buf_position_map = {
@@ -184,9 +184,9 @@ Cross-reviewer convergence at this confidence on the same issue is the strong si
 
 D6e U3 commit sequence:
 
-1. `e66f27c feat(lint): D6e U3 — package/no-import-cycle` — initial implementation with the documentation-only claim of byte-equivalent line/column parity (test only invoked `assert_parity_multi_file`).
+1. `b4ccf3a feat(lint): D6e U3 — package/no-import-cycle` — initial implementation with the documentation-only claim of byte-equivalent line/column parity (test only invoked `assert_parity_multi_file`).
 2. ce:review run `20260522-230615-e23aa0e2` — 3-way convergence on the gap at high confidence (T1 0.97, ADV-002 0.99, Agent-native W2).
-3. `eff3a80 fix(lint): ce:review U3 follow-ups` — added Tier 2 per-finding line/column assertion. All 5 fixtures PASS, confirming protokit's line/column actually do match buf v1.69.0 byte-equivalently (provenance — verified against buf v1.69.0's recorded snapshots; current behavior re-asserted every run by the Tier 2 loop in `tests/parity/test_parity_package_no_import_cycle.py`). The protection is regression-forward: any future change to `_import_source_position` that breaks the byte-equivalence (off-by-one, wrong field number, broken span arithmetic) will fail the new assertion with a structured diagnostic naming the suspect function.
+3. `c25bfb3 fix(lint): ce:review U3 follow-ups` — added Tier 2 per-finding line/column assertion. All 5 fixtures PASS, confirming protokit's line/column actually do match buf v1.69.0 byte-equivalently (provenance — verified against buf v1.69.0's recorded snapshots; current behavior re-asserted every run by the Tier 2 loop in `tests/parity/test_parity_package_no_import_cycle.py`). The protection is regression-forward: any future change to `_import_source_position` that breaks the byte-equivalence (off-by-one, wrong field number, broken span arithmetic) will fail the new assertion with a structured diagnostic naming the suspect function.
 4. `<this commit> docs(solutions): D6e U3 ce:compound` — captures the pattern (this file) + sibling learnings for Tarjan SCC + Phase 0 narrowing.
 
 The lesson for future per-unit work: **if your design choice promises granularity X, your test must compare at granularity X**. The shared helper's coarser default is correct for the common case but the per-test opt-in is mandatory whenever the claim is finer.

@@ -176,5 +176,5 @@ git commit -m "chore: project-wide ruff autofix sweep (113 errors)"
 - delivery-boundary-bundled-commit-feat-plus-review-followups-2026-05-21 — direct companion: the bundled-commit pattern at delivery boundaries depends on a clean diff; this discipline keeps the diff clean.
 - Auto memory: [[Per-Delivery Workflow]] (auto memory [claude]) — per-unit scope discipline applies to tooling invocations too. The auto-memory establishes the cadence; this learning extends it to the tooling invocation layer.
 - Companion concern: `git add -A` / `git add .` (similar broad-scope hazard during staging — same class of bug, different tool).
-- Anchor commit: D6d new-U4 ce:review follow-ups landing at `67cd7fb` (2026-05-21). The bundled commit's diff shows the post-remediation scope — only U4 files modified.
+- Anchor commit: D6d new-U4 ce:review follow-ups landing at `06a1aa5` (2026-05-21). The bundled commit's diff shows the post-remediation scope — only U4 files modified.
 - Prior partial precedent: D6c U3 session `299f7401` (per session-historian) ran `ruff check --fix tests/ src/` broadly and reverted with `git checkout --` before committing. D6d new-U4 is the second observed instance; the [[shared-helper-third-instance-trigger]] pattern would promote this discipline to a pre-commit hook on a third instance.

@@ -91,7 +91,7 @@ The discipline does not apply when:
 
 ## Examples
 
-Both patterns landed in commit `9fae6e9` (D6a U3 ce:review follow-ups) as `safe_auto` fixes:
+Both patterns landed in commit `1db078b` (D6a U3 ce:review follow-ups) as `safe_auto` fixes:
 
 **Derivation** — `tests/schema/lint/rules/test_naming_extended.py`:
 ```python

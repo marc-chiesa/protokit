@@ -29,7 +29,7 @@ tags:
 
 ## Resolution (D6b U5 — 2026-05-17)
 
-**The specific D6a U9 KTD-2 deferred split has shipped.** D6b U5 (commit `c9dbaa2`) added `"severities_unloaded_rule"` to the `LintRuntimeWarning.category` Literal and switched the CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` to the new value. Wire-format `_LINT_JSON_SCHEMA_VERSION` bumped 0.2 → 0.3 as the consumer-facing signal. The three-site documentation discipline was applied in reverse: the Literal docstring at `model.py:351-510` enumerates per-category contracts for all 5 values, the CLI emit-site comment was updated to acknowledge the resolution (`cli.py:877-882` post-ce:review-follow-up), and the TODOS.md backlog entry was retired in place.
+**The specific D6a U9 KTD-2 deferred split has shipped.** D6b U5 (commit `723e9aa`) added `"severities_unloaded_rule"` to the `LintRuntimeWarning.category` Literal and switched the CLI-synthesized emit site at `src/protokit/schema/lint/cli.py:1086-1100` to the new value. Wire-format `_LINT_JSON_SCHEMA_VERSION` bumped 0.2 → 0.3 as the consumer-facing signal. The three-site documentation discipline was applied in reverse: the Literal docstring at `model.py:351-510` enumerates per-category contracts for all 5 values, the CLI emit-site comment was updated to acknowledge the resolution (`cli.py:877-882` post-ce:review-follow-up), and the TODOS.md backlog entry was retired in place.
 
 **The general pattern guidance in this doc is still applicable.** The conflation-vs-widening decision tree (when to reuse, when to widen, the three-site discipline) remains valid for FUTURE Literal-widening decisions on different fields. This Resolution annotation closes only the specific D6a U9 KTD-2 instance; the discipline framework lives on.
 
@@ -416,8 +416,8 @@ def test_unknown_rule_id_emits_unloaded_rule_warning(
   ``from_dict`` boundary; this learning accepts a deferred
   schema split at the ``Literal`` boundary. Different sites,
   same "defer until justified" mindset.
-- Anchor commits: ``c7a426b`` (Unit 9 feat — initial CLI
-  synthesis), ``3c828a4`` (ce:review follow-ups — Literal
+- Anchor commits: ``0701202`` (Unit 9 feat — initial CLI
+  synthesis), ``6a1f520`` (ce:review follow-ups — Literal
   docstring updated, F8 assertion added that the unknown
   rule_id does not appear in findings).
 - Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
@@ -447,7 +447,7 @@ def test_unknown_rule_id_emits_unloaded_rule_warning(
   addition. Forward-compatibility tolerance does NOT protect
   consumers from migration; the schema_version bump is the only
   programmatic signal.
-- D6b U5 anchor commits: ``16b494f`` (D6b U5 feat — split
-  shipped), ``7cd4095`` (D6b U5 ce:review follow-ups), U5
+- D6b U5 anchor commits: ``723e9aa`` (D6b U5 feat — split
+  shipped), ``907ef53`` (D6b U5 ce:review follow-ups), U5
   brainstorm + plan at ``docs/brainstorms/2026-05-17-d6b-u5-r9-severities-category-split-requirements.md``
   + ``docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md``.

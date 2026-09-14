@@ -196,7 +196,7 @@ subclass of `Exception`, `SystemExit`, or `KeyboardInterrupt`).
 Click's top-level handler would then render an unhandled-exception
 traceback and exit non-zero, which is not the `Aborted!` shape from
 the `KeyboardInterrupt` bypass but still violates the stable-prefix
-contract. As of commit `94708dd`, this surface is NOT explicitly
+contract. As of commit `6c28e63`, this surface is NOT explicitly
 guarded; the deliberate decision is the same as for `GeneratorExit`
 (near-zero practical likelihood from a benign or even adversarial
 pack — `BaseExceptionGroup` is a contrived choice when simpler
@@ -248,7 +248,7 @@ assert the literal substring `"KeyboardInterrupt"` in stderr — that
 would couple the test to the exact wording of the message body and
 break for no behavioural reason if the message is later rephrased.
 
-(As of commit `94708dd`, the fixture and test do not yet exist —
+(As of commit `6c28e63`, the fixture and test do not yet exist —
 covered in U4a or U5 hardening pass.)
 
 ### General Python pattern
@@ -452,8 +452,8 @@ for the standalone learning.
 
 ### Fix commits
 
-- `c0bbf03` — D5 U1 implementation (the gap was present after this commit)
-- `89d84ff` — D5 U1 ce:review follow-ups (the 22-finding fix pass that
+- `ce353e9` — D5 U1 implementation (the gap was present after this commit)
+- `522b8da` — D5 U1 ce:review follow-ups (the 22-finding fix pass that
   closed the gap; KTD-9 was already named in the plan but the
   spatial-scope audit happened here)
 - ce:review run artifact: `.context/compound-engineering/ce-review/20260511-094847-1685ca47/`
@@ -488,7 +488,7 @@ for the standalone learning.
   code-execution and format-injection trust boundaries; the
   KeyboardInterrupt gap was not flagged at brainstorm time, only at
   ce:review time after the implementation crystallised the surface.
-- Fix commit: `1249b10` — D3 unit 3 ce:review follow-ups
+- Fix commit: `6c28e63` — D3 unit 3 ce:review follow-ups
   (safe_auto + approved gated). The `KeyboardInterrupt` arm landed
   in the safe_auto pass.
 - Mirror-image companion (added 2026-05-11): `docs/solutions/best-practices/deprecationwarning-poisons-except-exception-strict-warning-ci-2026-05-11.md`.

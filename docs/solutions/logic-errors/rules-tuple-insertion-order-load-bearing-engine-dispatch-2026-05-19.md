@@ -57,7 +57,7 @@ Result: the position of a `@lint_rule`-decorated function within its pack's `RUL
 
 Reorder the `RULES` tuple in `src/protokit/schema/lint/rules/package.py` so R8b precedes R8, then document the ordering as load-bearing inline:
 
-**Before** (initial U2 drop, commit `d28641f`):
+**Before** (initial U2 drop, commit `7b9655e`):
 
 ```python
 RULES: tuple[Callable[..., None], ...] = (
@@ -68,7 +68,7 @@ RULES: tuple[Callable[..., None], ...] = (
 )
 ```
 
-**After** (commit `6b9a609`):
+**After** (commit `245a119`):
 
 ```python
 # Module-level RULES tuple read by ``LintEngine.load_rule_pack``.

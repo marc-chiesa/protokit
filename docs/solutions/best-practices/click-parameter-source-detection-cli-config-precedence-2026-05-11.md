@@ -61,9 +61,9 @@ Click 8.x exposes `Context.get_parameter_source(name)` returning a
 represents "flag's own built-in default fired"; the rest represent
 explicit user intent of some kind.
 
-This pattern emerged during D5 U2 of protokit-lint (commit `5e813c9`,
+This pattern emerged during D5 U2 of protokit-lint (commit `a4335c3`,
 2026-05-11) and was reinforced by the ce:review follow-up commit
-`aa15f98`. Two reviewers — correctness (confidence 0.82) and
+`2a64d74`. Two reviewers — correctness (confidence 0.82) and
 adversarial (confidence 0.82) — independently flagged that
 `DEFAULT_MAP` was absent from the initial `explicit_sources` tuple.
 That 2-way convergence caught the gap before any test failure made
@@ -324,10 +324,10 @@ empirical demand. Under the current flat-config-only architecture, the two-sourc
 
 ## Examples
 
-### Before — initial D5 U2 implementation (commit `5e813c9`), missing `DEFAULT_MAP`
+### Before — initial D5 U2 implementation (commit `a4335c3`), missing `DEFAULT_MAP`
 
 ```python
-# src/protokit/schema/lint/cli.py (pre-aa15f98)
+# src/protokit/schema/lint/cli.py (pre-2a64d74)
 from click.core import ParameterSource as _ParameterSource
 
 explicit_sources = (
@@ -343,7 +343,7 @@ pyproject `profile = "strict"` would see `"strict"` (pyproject wins)
 rather than `"default"` (DEFAULT_MAP intent) — silent precedence
 inversion.
 
-### After — post-ce:review fix (commit `4c56fe7`), as shipped
+### After — post-ce:review fix (commit `2a64d74`), as shipped
 
 ```python
 # src/protokit/schema/lint/cli.py
@@ -435,9 +435,9 @@ distinguishes within tiers 2-3.
 
 ## Reference Commits
 
-- `3463691` — D5 U2 feature delivery; initial `explicit_sources`
+- `a4335c3` — D5 U2 feature delivery; initial `explicit_sources`
   missing `DEFAULT_MAP`.
-- `aa15f98` — D5 U2 ce:review follow-ups; `DEFAULT_MAP` added
+- `2a64d74` — D5 U2 ce:review follow-ups; `DEFAULT_MAP` added
   (F-02 finding, 2-way correctness + adversarial convergence).
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-175812-997cfcc3/`

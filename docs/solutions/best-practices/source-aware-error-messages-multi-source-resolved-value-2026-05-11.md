@@ -223,7 +223,7 @@ Hard-coded `--format=` prefix. Accurate when only the CLI could
 supply the value. Became wrong in U2 when pyproject could supply
 `format`.
 
-### Intermediate — U2 initial (commit `5e813c9`), prefix dropped without source-awareness
+### Intermediate — U2 initial (commit `a4335c3`), prefix dropped without source-awareness
 
 ```python
 # Check moved after from_dict but message did not branch on source:
@@ -245,10 +245,10 @@ Flagged by 3-way convergence in ce:review:
   classify failures cannot route the message correctly when the
   source is ambiguous.
 
-### After — source-aware fix (commit `4c56fe7`), as shipped
+### After — source-aware fix (commit `2a64d74`), as shipped
 
 ```python
-# src/protokit/schema/lint/cli.py lines 394-407 (post-aa15f98)
+# src/protokit/schema/lint/cli.py lines 394-407 (post-2a64d74)
 if quiet and resolved.format != "human":
     if format_explicit:
         source_desc = f"--format={resolved.format!r}"
@@ -345,9 +345,9 @@ simultaneously (the worst-of-both case).
 
 ## Reference Commits
 
-- `3463691` — D5 U2 delivery; mutex check moved after `from_dict` but
+- `a4335c3` — D5 U2 delivery; mutex check moved after `from_dict` but
   attribution not yet source-aware.
-- `aa15f98` — D5 U2 ce:review follow-ups; F-04 (gated_auto) added
+- `2a64d74` — D5 U2 ce:review follow-ups; F-04 (gated_auto) added
   source-aware branching.
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-175812-997cfcc3/`

@@ -101,5 +101,5 @@ The fix is unconditional (not version-gated) because:
 - [[wkt-include-path-auto-discovery-system-protoc-backend-2026-05-27]] — the WKT fix landed first; this separator fix is the second protoc-cross-version concern surfaced by the same CI iteration.
 - [[matcher-backend-path-resolution-skew-silently-empties-output-2026-05-02]] — sibling protoc-quirk learning: protoxy and protoc both don't resolve symlinks in `-I` paths.
 - [[subprocess-exit-code-validation-test-harness-2026-05-13]] — same "shelling out to an external binary; must validate behavior across versions" mental class.
-- first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning. The CI sanity step pattern added in `e0bcd25` is what surfaced `Unknown flag: --` with visible stderr instead of `assert 0 == 1`.
-- Canonical commit: `b857e45` ("fix: drop protoc `--` end-of-options separator (rejected by protoc 25+)").
+- first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning. The CI sanity step pattern added in `e6c8bde` is what surfaced `Unknown flag: --` with visible stderr instead of `assert 0 == 1`.
+- Canonical commit: `374b173` ("fix: drop protoc `--` end-of-options separator (rejected by protoc 25+)").

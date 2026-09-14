@@ -37,7 +37,7 @@ to avoid collision with SARIF's own reserved ``schema`` property,
 but the value is identical per the
 [[cross-format-enum-string-parity-2026-05-08]] discipline).
 
-The initial Unit 9 commit (``c7a426b``) documented only when to
+The initial Unit 9 commit (``0701202``) documented only when to
 bump the version — "(a) addition of new top-level keys, (b) change
 in meaning of an existing field, (c) removal of a previously
 documented field; enum-value additions don't bump". The api-contract
@@ -48,7 +48,7 @@ output emits no key at all. A consumer that switches on
 ``"0.2"`` for new output — and has no contract telling it whether
 ``None`` means "older version" or "malformed response".
 
-The ce:review follow-up commit (``3c828a4``) added the field-absent
+The ce:review follow-up commit (``6a1f520``) added the field-absent
 semantic to the constant's docstring as an explicit clause:
 **absence = implicit ``"0.1"`` = one bump below the first documented
 value; consumers should treat it as a known-older release, NOT as an
@@ -210,7 +210,7 @@ progression narrative. Abbreviated form:
 #:
 #: Worked-example progression (every bump under this contract):
 #:   * ``"0.2"`` — initial (D6a U9, 2026-05-13)
-#:   * ``"0.2"`` → ``"0.3"`` — D6b U5 (commit ``16b494f``); added
+#:   * ``"0.2"`` → ``"0.3"`` — D6b U5 (commit ``723e9aa``); added
 #:     ``"severities_unloaded_rule"`` to ``LintRuntimeWarning.category``
 #:     (first closed-Literal addition).
 #:   * ``"0.3"`` → ``"0.4"`` — D6d U1; added
@@ -241,7 +241,7 @@ contract. Three institutional refinements have accumulated on top
 of the original dual-clause structure:
 
 1. **Closed-Literal vs open-ladder distinction** — landed at D6b U5
-   (commit `c9dbaa2`) as the first closed-Literal-discriminator
+   (commit `723e9aa`) as the first closed-Literal-discriminator
    addition. Before U5 the docstring had a single blanket sentence
    ("enum-value additions don't bump") that was correct for
    `LintFinding.severity` (open ladder) but WRONG for
@@ -373,8 +373,8 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   schema-version-bearing payloads create new validator
   obligations; matrix tests covering all output formats must
   inherit the schema validator that knows about the new field.
-- Anchor commits: ``c7a426b`` (initial U9 R9d feature commit
-  introducing the field at both sites); ``3c828a4`` (ce:review
+- Anchor commits: ``0701202`` (initial U9 R9d feature commit
+  introducing the field at both sites); ``6a1f520`` (ce:review
   follow-up F2 adding the absence semantic to the constant's
   docstring and consolidating the inline comments to pointers).
 - Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
@@ -423,9 +423,9 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   (value-added) or AUDIT them (value-migrated). The two learnings
   together cover the full producer→consumer communication chain
   for wire-format `Literal` changes.
-- D6b U5 anchor commits: `16b494f` (feat — `category` Literal
+- D6b U5 anchor commits: `723e9aa` (feat — `category` Literal
   widening + `_LINT_JSON_SCHEMA_VERSION` 0.2 → 0.3 + bump-contract
-  docstring refinement), `7cd4095` (ce:review follow-ups — 6
+  docstring refinement), `907ef53` (ce:review follow-ups — 6
   safe_auto stale-narrative fixes).
 - D6d U1+U2 anchor commits (0.5.0 release): two-step bump under
   the closed-Literal contract — U1 (`0.3` → `0.4`) added
@@ -434,7 +434,7 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   not in pool), distinct category to let consumers discriminate
   pyproject-mis-config (U1) from missing-googleapis (U2) without
   parsing message text.
-- D6f U2 anchor commit (0.7.0 release): `b8f0168` (feat —
+- D6f U2 anchor commit (0.7.0 release): `6fdeaf8` (feat —
   `_LINT_JSON_SCHEMA_VERSION` `0.5` → `0.6` atomic with the two new
   `LintRuntimeWarning.category` Literal additions). First worked
   example of the multi-value-one-bump observation: two values added

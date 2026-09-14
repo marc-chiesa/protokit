@@ -205,7 +205,7 @@ are case-insensitive. Stored as lowercase so the CLI's resolved
 value (whatever case the user typed) hits the same entry."
 
 The CLI before the fix —
-`src/protokit/schema/lint/cli.py` (pre-`530010e` state):
+`src/protokit/schema/lint/cli.py` (pre-`533a64d` state):
 
 ```python
 def main(..., format_name: str, ...):
@@ -434,8 +434,8 @@ def test_severity_keys_normalized_at_boundary() -> None:
   family — boundary discipline — different direction.
   Together: normalize early at inputs (this doc); serialize
   consistently across sibling outputs (the new doc).
-- Anchor commits: `530010e` (the one-line `format_name.lower()`
-  fix + `TestFormatCaseNormalization`); `e86ee0d` (the U4a feat
+- Anchor commits: `533a64d` (the one-line `format_name.lower()`
+  fix + `TestFormatCaseNormalization`); `0094157` (the U4a feat
   delivery where the bug was latent).
 - Plan: `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`,
   Unit 4a — defined the `--format` / `--quiet` / `--statistics`

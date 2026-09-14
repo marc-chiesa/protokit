@@ -224,7 +224,7 @@ def from_dict(cls, table, cli_overrides):
 
 ## Discovered During
 
-D6a U2 ce:review follow-ups (commit `739a0f2`). The adversarial
+D6a U2 ce:review follow-ups (commit `670f732`). The adversarial
 reviewer surfaced the silent-drop trap as finding A3 during the
-9-reviewer parallel pass on commit `5a464e2` (D6a U2 — pyproject
+9-reviewer parallel pass on commit `32e10db` (D6a U2 — pyproject
 config substrate for R7/R9a/R9c).

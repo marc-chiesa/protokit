@@ -140,7 +140,7 @@ constant has three consumers:
    import the constant directly via Python attribute access; no
    regex required, so no annotation coupling at this consumer.
 
-Before (commit `a7ec9a8`):
+Before (commit `164a18a`):
 
 ```python
 # tests/meta/test_buf_parity_pin_drift.py
@@ -155,7 +155,7 @@ _CLI_PIN_RE = re.compile(
 grep -E '^_BUF_PARITY_PIN\s*:\s*str\s*=\s*"v[^"]+"' src/protokit/schema/lint/cli.py
 ```
 
-After (commit `da3affb`):
+After (commit `31d1dfc`):
 
 ```python
 # tests/meta/test_buf_parity_pin_drift.py
@@ -183,7 +183,7 @@ _CLI_PIN_RE = re.compile(
 grep -E '^_BUF_PARITY_PIN\s*:[^=]+=\s*"v[^"]+"' src/protokit/schema/lint/cli.py
 ```
 
-The same commit (`b425954`) also added `_CI_SHA256_RE` alongside
+The same commit (`31d1dfc`) also added `_CI_SHA256_RE` alongside
 `_CI_PIN_RE` in the drift test, extending the multi-site discipline:
 the constant + tarball URL + sha256.txt URL must all reference the
 same version. Both the constant-side relaxation and the
@@ -229,8 +229,8 @@ confirming the relaxation is correct.
   this doc is the same harness's pin-discipline guard; both docs
   describe disciplines that keep the parity infrastructure honest as
   it evolves.
-- Commit `f81f408` — original regex anchored on `: str`.
-- Commit `b425954` — relaxed to `:[^=]+=` in both consumers atomically.
+- Commit `164a18a` — original regex anchored on `: str`.
+- Commit `31d1dfc` — relaxed to `:[^=]+=` in both consumers atomically.
 - [[presence-ratchet-test-pattern-for-prose-substrings]] — sibling
   ratchet pattern at the prose layer. This doc covers multi-file
   structural agreement (regex spans Python source + CI YAML); the
