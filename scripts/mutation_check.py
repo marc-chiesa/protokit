@@ -8,6 +8,17 @@ producing false "this is covered" readings. So this harness asserts the mutation
 really landed in the file before it trusts any test result, and always restores
 the file — even on exception.
 
+Bytecode is the other way a mutation can lie. CPython validates a cached
+``.pyc`` against the source's *whole-second* mtime and its size, so a mutation
+whose replacement is the same length as its anchor, applied and restored within
+one second, leaves the cache "valid" for the wrong text: the mutated run can
+execute the ORIGINAL bytecode (a false VACUOUS), and every run after restore can
+execute the MUTATED bytecode until something else touches the file — measured
+2026-09-14, when a restored differ.py kept raising for the accessor the source
+no longer called. So the target's cache is dropped before the mutated run and
+again after restore, and pytest runs with ``-B`` so the mutated source never
+writes one.
+
     python3 scripts/mutation_check.py <file> <old> <new> <pytest-target>...
 
 Exit 0 = the target FAILED under mutation (the test is real).
@@ -16,11 +27,24 @@ Exit 1 = the target PASSED under mutation (the test is VACUOUS) or setup failed.
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import subprocess
 import sys
 
 VENV_PY = ".venv/bin/python"
+
+
+def _drop_bytecode(source: pathlib.Path) -> None:
+    """Remove every cached ``.pyc`` for ``source`` so the next import recompiles.
+
+    ``cache_from_source`` names this interpreter's cache file; the glob also
+    catches caches written by other interpreter tags for the same module.
+    """
+    candidates = {pathlib.Path(importlib.util.cache_from_source(str(source)))}
+    candidates.update(source.parent.glob(f"__pycache__/{source.stem}.*.pyc"))
+    for pyc in candidates:
+        pyc.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -53,9 +77,10 @@ def main() -> int:
             print("SETUP FAILED: mutation not present on disk after write")
             return 1
         print(f"mutation applied to {path}:\n  - {old}\n  + {new}\n")
+        _drop_bytecode(p)
 
         result = subprocess.run(
-            [VENV_PY, "-m", "pytest", *targets, "-q", "--no-header", "-p", "no:randomly"],
+            [VENV_PY, "-B", "-m", "pytest", *targets, "-q", "--no-header", "-p", "no:randomly"],
             capture_output=True,
             text=True,
         )
@@ -69,6 +94,7 @@ def main() -> int:
     finally:
         p.write_text(original)
         assert p.read_text() == original, f"FAILED TO RESTORE {path}"
+        _drop_bytecode(p)
         print(f"restored {path}")
 
 
