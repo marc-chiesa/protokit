@@ -1,7 +1,7 @@
 ---
 title: Tarjan SCC with iterative DFS for package-level cycle detection in cross-file lint rules
 date: 2026-05-22
-last_updated: 2026-05-22
+last_updated: 2026-09-14
 category: docs/solutions/best-practices
 module: protokit.schema.lint.engine
 problem_type: best_practice
@@ -59,7 +59,7 @@ The iterative form uses an explicit work stack with `(node, iter(sorted(children
 
 ### Why per-import-edge emission, not per-root-file fan-out
 
-The brainstorm + plan PD-6 originally bound the emission shape to "per-root-file fan-out: each root file in an SCC of size ≥ 2 gets one finding." Phase 0 of U3 empirically verified buf v1.69.0's actual behavior is **per-import-edge**: one finding per cycle-closing `import` statement, pointing at the import's line/column. Sibling "leaf" files in cyclic packages that don't have cycle-closing imports themselves do NOT emit findings. (provenance — verified against buf v1.69.0; current behavior re-asserted by `tests/parity/test_parity_package_no_import_cycle.py` byte-matching the recorded snapshots, and the CI parity job against live buf.)
+The brainstorm + plan PD-6 originally bound the emission shape to "per-root-file fan-out: each root file in an SCC of size ≥ 2 gets one finding." Phase 0 of U3 empirically verified buf v1.69.0's actual behavior is **per-import-edge**: one finding per cycle-closing `import` statement, pointing at the import's line/column. Sibling "leaf" files in cyclic packages that don't have cycle-closing imports themselves do NOT emit findings. (provenance — verified against buf v1.69.0; current behavior re-asserted by `tests/parity/test_parity_package_no_import_cycle.py` byte-matching the recorded snapshots. That module deliberately carries no `parity` marker, so the advisory parity job does not run it; the snapshot match runs in the required test job on every PR instead, which is the stronger guarantee.)
 
 The plan was revised (commit `f5ab8c5`) to bind PD-6/PD-7/PD-8 to per-import-edge granularity. The `leaf_files_in_cyclic_pkg` fixture pins this as a regression guard.
 
@@ -67,7 +67,7 @@ The general lesson: **buf-parity emission shape is empirical, not derivable from
 
 ### Why forward cycle traversal, not Tarjan member order
 
-Tarjan SCC returns members in reverse DFS-finish order. For a 3-package cycle `A → B → C → A`, Tarjan may return `['C', 'B', 'A']`. Buf v1.69.0 renders the cycle following actual import edges: `"Package import cycle: acme.a -> acme.b -> acme.c -> acme.a"` (provenance — verified against buf v1.69.0; this exact rendering is pinned by the recorded snapshot and re-asserted by `tests/parity/test_parity_package_no_import_cycle.py`, with the CI parity job re-verifying against live buf). Simple rotation of Tarjan's output gives `"acme.a -> acme.c -> acme.b -> acme.a"` (wrong direction).
+Tarjan SCC returns members in reverse DFS-finish order. For a 3-package cycle `A → B → C → A`, Tarjan may return `['C', 'B', 'A']`. Buf v1.69.0 renders the cycle following actual import edges: `"Package import cycle: acme.a -> acme.b -> acme.c -> acme.a"` (provenance — verified against buf v1.69.0; this exact rendering is pinned by the recorded snapshot and re-asserted by `tests/parity/test_parity_package_no_import_cycle.py` in the required test job, not the advisory parity job, which does not run that module). Simple rotation of Tarjan's output gives `"acme.a -> acme.c -> acme.b -> acme.a"` (wrong direction).
 
 The fix is a separate helper (`_walk_cycle_forward`) that does DFS within the SCC following the actual graph edges, starting at the source file's package and closing back to it. The helper is iterative (per the recursion-limit discipline above).
 
@@ -79,9 +79,9 @@ The cycle-detection algorithm runs at engine pre-walk time, NOT per-file:
 
 ```
 engine.run():
-  Step 3:   Build package_options accumulator (R7 family)
-  Step 3.5: Build per-package directory accumulator (D6c Arch-D)
-  Step 3.5b: (sibling — directory inverted index)
+  Step 3:   Filter loaded specs by profile.rule_ids
+  Step 3.5: Build package_options accumulator (R7 family)
+  Step 3.5b: Build per-package directory accumulator + inverted index (D6c Arch-D)
   Step 3.5c: Build import-graph accumulator (D6e U3 — NEW)
     └─ _build_import_graph_accumulator(compile_result)
        ├─ For each root_file: read fdp.dependency via CopyToProto
@@ -127,7 +127,7 @@ Do NOT use this pattern for:
 
 - Single-file rules (no cross-file graph; use existing FieldLintContext/MessageLintContext)
 - DAG-only validation (use `graphlib.TopologicalSorter`)
-- "Does any cycle exist" boolean checks (DFS back-edge detection is simpler)
+- "Does any cycle exist" boolean checks — reach for `graphlib.TopologicalSorter` before hand-rolling back-edge DFS. Its `CycleError` carries the cycle path in `args[1]`, so the failure message can name both ends without any extra traversal; that is what the repo's second cycle-detection surface chose (see Related disciplines).
 
 ## Related disciplines
 
@@ -137,7 +137,9 @@ Do NOT use this pattern for:
 - [[family-aware-partition-pattern-multi-family-parity-harness-2026-05-19]] — the per-family conftest constants pattern (`_D6E_PACKAGE_NO_IMPORT_CYCLE_*` follows this).
 - [[closed-literal-discriminator-bump-trigger-2026-05-17]] — used to confirm the FileLocation.line/column extension is open extension (no schema version bump).
 - [[parity-gate-must-assert-at-design-claim-granularity-2026-05-22]] (sibling learning captured at same boundary) — when the design claim is "byte-equivalent at line/column granularity", the parity gate must compare at that granularity, not just at file/message granularity.
-- phase-0-narrowing-rule-reachable-but-narrower-than-brainstorm-assumed-2026-05-22 (sibling learning captured at same boundary) — the file-level-cycles-caught-at-COMPILE-phase finding from U3 Phase 0.
+- The U3 Phase 0 finding that file-level cycles are caught at the COMPILE phase was slated for a third sibling learning that was never written; the behaviour itself is live in the rule and the engine, and this bullet is kept only so a reader who meets the title elsewhere knows there is no such file.
+
+- [`import-cycle-gate-fail-opens-unless-edges-match-cpython-initialisation.md`](import-cycle-gate-fail-opens-unless-edges-match-cpython-initialisation.md) — the repo's **other** cycle-detection surface, and the one to read first when the graph is protokit's own module graph rather than a user's descriptor graph. That gate asks only "is there a cycle at module load", so it takes the `graphlib` branch of the decision tree above; its hard problem is the edge model, not the algorithm. It deliberately does **not** import this module's `_tarjan_scc`, for two reasons worth knowing before anyone proposes sharing the code: a meta gate must not depend on a module a planned decomposition moves out of `src/protokit/schema/lint/engine.py`, and enumerating strongly connected components is more than a yes-or-no cycle question needs.
 
 ## Worked example
 
@@ -153,7 +155,9 @@ The full D6e U3 implementation is the canonical worked example:
 
 Commit sequence on branch `feat/d6e-buf-basic-closure-and-philosophy-revision`:
 
+These commits predate this repo's PR-based workflow, so there are no PR numbers to cite; history has since been rewritten and some SHAs below no longer resolve. They record the order of work, not fetchable references.
+
 1. `5643939 docs(plans): D6e U3 Phase 0 OQ-1/2/3 binding + PD-6/7/8 revision` — Phase 0 findings
 2. `e66f27c feat(lint): D6e U3 — package/no-import-cycle (26th buf BASIC rule) via Tarjan SCC pre-walk` — initial implementation
 3. `eff3a80 fix(lint): ce:review U3 follow-ups — 5 P1 + 6 safe_auto` — recursion-limit safety + dead-code removal + line/column assertion + perf cache + DecodeError handling + migration recipe
-4. `<this commit> docs(solutions): D6e U3 ce:compound` — three institutional learnings (this file + two siblings)
+4. `<this commit> docs(solutions): D6e U3 ce:compound` — two institutional learnings (this file + one sibling; a third was planned and never written)

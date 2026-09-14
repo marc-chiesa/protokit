@@ -1,6 +1,7 @@
 ---
 title: "Break annotation-only import cycles with TYPE_CHECKING when PEP 563 is on — avoid lazy imports inside except arms"
 date: 2026-05-11
+last_updated: 2026-09-14
 category: docs/solutions/best-practices
 module: python/imports
 problem_type: best_practice
@@ -124,9 +125,11 @@ except _RULE_EXCEPTION_TUPLE as exc:
 
 The cycle is broken because `_cli_utils.py` no longer imports `LintEngine` at runtime — `TYPE_CHECKING` is `False` at runtime, so the import block is skipped, and PEP 563 makes the annotation a string that mypy resolves but Python never evaluates.
 
+**Write the guard so the repo's import gate recognises it.** `tests/meta/test_import_layers.py` reads this construct to decide whether an import counts as an edge, and it recognises the guard by its *typing binding* rather than its spelling (`tests/meta/test_import_layers.py:23-33`). These all work: `from typing import TYPE_CHECKING`, the same with `as` some other name, the `typing_extensions` spelling, and `import typing` plus `typing.TYPE_CHECKING`. These are **not** the guard: a name the module rebinds at module scope, a name bound only inside a function, and a `TYPE_CHECKING` attribute hanging off anything that is not the typing module. The gate treats those as an ordinary `if` and enters both arms, so it reports a cycle this fix actually broke. That direction is deliberate — a loud false positive rather than a silent pass — but it means a guard written in one of those shapes fails the gate with a message about a cycle when the real fault is that the guard is not typing's flag. The one shape that does slip past the static gate is mutating the attribute itself (`typing.TYPE_CHECKING = True`), which the fresh-interpreter sweep in the same file catches instead.
+
 Three verification obligations belong with the fix:
 
-1. **Import-smoke test** — confirm both orderings load: `python -c "import protokit.schema.lint.engine; import protokit.schema.lint._cli_utils"` and the reverse.
+1. **Import-smoke test** — now covered repo-wide, and by something stronger than the manual check this obligation used to prescribe. `tests/meta/test_import_layers.py` asserts the package has zero module-load import cycles, and `test_every_module_imports_in_a_fresh_interpreter` imports every module in its own subprocess, so both orderings of any pair are exercised on every CI run. Run an ad-hoc `python -c "import a; import b"` only for a module those gates cannot see. **What they do not cover is the anti-pattern this learning is actually about:** the cycle graph counts only imports that execute at module load, so re-introducing the lazy import *inside* the `except` arm leaves both gates green. Obligations 2 and 3 remain the enforcement for that.
 2. **Cold-import contract test** — if your project enforces a "package X must not transitively load module Y" contract (protokit does; see D1 `tests/schema/lint/test_cold_import_extended.py`), confirm the `TYPE_CHECKING` gate did not disturb it.
 3. **Exit-code contract test** (optional, defense-in-depth) — fault-inject the previously-lazy import (e.g., by deleting `_safe_for_stderr`); the process should now fail at startup with a clear `ImportError`, not silently mid-run after a rule misbehaves.
 
@@ -191,9 +194,9 @@ If `_cli_utils.py` had `engine = LintEngine()` somewhere at runtime — or even 
 ```bash
 # The verification grep:
 grep -n "LintEngine" src/protokit/schema/lint/_cli_utils.py
-# 32: from protokit.schema.lint.engine import LintEngine     # the import itself
-# 382: module_name: str, engine: LintEngine,                  # parameter annotation
-# 415:     engine: The ``LintEngine`` to register the pack into.  # docstring
+# 42: from protokit.schema.lint.engine import LintEngine     # the import itself
+# 457: module_name: str, engine: LintEngine,                  # parameter annotation
+# 490:     engine: The ``LintEngine`` to register the pack into.  # docstring
 #
 # No constructor call, no isinstance check, no class attribute access → safe to gate.
 ```
@@ -217,6 +220,7 @@ grep -n "LintEngine" src/protokit/schema/lint/_cli_utils.py
 
 ## Related
 
+- [`import-cycle-gate-fail-opens-unless-edges-match-cpython-initialisation.md`](import-cycle-gate-fail-opens-unless-edges-match-cpython-initialisation.md) — the consumer side of this construct. That doc covers the gate that reads `if TYPE_CHECKING:` to decide whether an import is an edge, including why it resolves the guard by binding rather than spelling, and the link runs both ways for a reason: an author follows this doc to write the guard, and that one explains how the guard is read.
 - [`deprecationwarning-poisons-except-exception-strict-warning-ci-2026-05-11.md`](deprecationwarning-poisons-except-exception-strict-warning-ci-2026-05-11.md) — sibling "discipline near except arms" learning. Both involve unexpected exceptions escaping a containment `except` arm with wrong attribution; this one's mechanism is `ImportError` from a lazy import, the sibling's mechanism is `DeprecationWarning` promoted to exception under `-W error::DeprecationWarning`. Different mechanism, same failure-mode family.
 - [`keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md`](../security-issues/keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md) — `KeyboardInterrupt` bypassing `except Exception` arms. Different exception family (BaseException), same "containment arm assumes the exception family it caught is the only one that can fire" anti-pattern.
 - [`frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md`](frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md) — companion learning from the same D5 U4 ce:review pass. Different surface (frozen dataclass invariants vs. import cycles) but both are construction-time-correctness disciplines that close silent-failure paths reviewers caught.

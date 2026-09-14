@@ -1,7 +1,7 @@
 ---
 title: "Pytest-driven static analysis gate: ruff + mypy as a ratcheting subprocess test"
 date: 2026-05-02
-last_updated: 2026-06-13
+last_updated: 2026-09-14
 category: docs/solutions/best-practices
 module: tooling/static-analysis
 problem_type: best_practice
@@ -44,7 +44,7 @@ The other constraint that shaped the design: the broader codebase had ~172 ruff 
 
 ### The test file
 
-Create `tests/test_static_analysis.py`. The file is a standard pytest module — no plugins, no fixtures. Replace `<package>`, `<file>`, `<subpackage>`, `<test_dir>` with the concrete paths from your repo; angle brackets are not valid in real path lists.
+Create the gate as a test module under your test tree — in protokit it is `tests/meta/test_static_analysis.py`. The file is a standard pytest module — no plugins, no fixtures. Replace `<package>`, `<file>`, `<subpackage>`, `<test_dir>` with the concrete paths from your repo; angle brackets are not valid in real path lists.
 
 ```python
 """Static-analysis gate run as part of the pytest suite.
@@ -76,12 +76,13 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/<package>/<file>.py",
     "src/<package>/<subpackage>",
     "tests/<test_dir>",
-    "tests/test_static_analysis.py",
+    "tests/<gate_dir>",  # the gate's own bucket, gated as a directory
 )
 
 # Paths gated by ``mypy --strict`` (configuration in pyproject.toml).
-# Mirrors the CI step in .github/workflows/ci.yml; if you add a path
-# here also update CI so local and CI stay in lockstep.
+# Mirrors the CI step in .github/workflows/ci.yml; add a path to BOTH
+# sites in one commit. A companion test parses the workflow and compares
+# the two lists — this list alone is not the gate.
 _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/<package>/<file>.py",
     "src/<package>/<subpackage>",
@@ -183,7 +184,7 @@ ignore_missing_imports = true
 Add a dedicated mypy step that runs before the test suite. Scoped to the same paths as `_TYPE_CHECK_PATHS`:
 
 ```yaml
-- name: Run mypy (scoped to clean surface)
+- name: Run mypy (scoped to ratcheted surface)
   # Strict-mode mypy is configured in pyproject.toml but the broader
   # codebase has pre-existing strict-mode errors. This step gates ONLY
   # the modules that are currently clean so the strict signal is
@@ -218,14 +219,15 @@ Three smaller-but-important design choices:
 ## Caveats
 
 - **The pytest skip is NOT a substitute for the dedicated CI step.** A CI job that forgets to install the `[dev]` extra would see green pytest (the gate skips silently) and a missing tool. Only the dedicated CI step (`python -m mypy ...`) catches that failure mode. Keep both — they cover different gaps.
-- **The `_LINT_PATHS` / `_TYPE_CHECK_PATHS` ↔ CI yaml duplication** is fine for two callers (one pytest test, one CI step). When a third caller appears (a pre-commit hook, a `Makefile` target, an `nox`/`tox` session), hoist the path list into one source of truth — a `pyproject.toml` table read by all callers, or a `scripts/static_analysis.py` invoked from each. Today the comment "mirrors the CI step" enforces the sync manually; that scales to two.
+- **The `_LINT_PATHS` / `_TYPE_CHECK_PATHS` ↔ CI yaml duplication** is fine for two callers (one pytest test, one CI step). When a third caller appears (a pre-commit hook, a `Makefile` target, an `nox`/`tox` session), hoist the path list into one source of truth — a `pyproject.toml` table read by all callers, or a `scripts/static_analysis.py` invoked from each. A comment saying "mirrors the CI step" does **not** enforce the sync — protokit tried that and it drifted exactly the way you would expect, with one source directory ratcheted locally while CI never type-checked it. It is now enforced by a test that parses the workflow YAML and compares the two path sets, which is the shape to copy if you keep the duplication.
 - **`_REPO_ROOT = Path(__file__).resolve().parent.parent` assumes the test file lives exactly two levels deep.** If you copy this into a project where the gate test is at `tests/static/test_gate.py`, the parent count is wrong. **In protokit this caveat came due:** the 2026-06 test reorganization moved the gate to `tests/meta/test_static_analysis.py` (three levels deep), and the fix was to deepen the anchor to `Path(__file__).resolve().parents[2]` — mirroring the existing depth-3 anchor at `tests/storage/test_public_surface.py`, *not* an upward marker search (deferred as scope creep). The trade-off it accepted: `parents[2]` is still depth-coupled, so a future relocation must re-tune the index; an upward `pyproject.toml`-marker search removes the coupling entirely but was out of scope for a behavior-preserving move. See [[behavior-preserving-test-move-breaks-path-coupling-2026-06-13]] for the full four-coupling-class taxonomy such a move triggers (this gate's path-string list and repo-root anchor are two of the four).
-- **New test files at the repo root level require explicit per-file `_LINT_PATHS` entries — directory entries do not cover them.** (Added 2026-05-12 from the D5 U5 ce:review.) `_LINT_PATHS` mixes two entry styles: directory entries that gate every file recursively (`"src/protokit/schema/lint"`, `"tests/schema/lint"`) and per-file entries that gate only the specific path listed (`"tests/core/test_cli_utils.py"`, `"tests/meta/test_static_analysis.py"`). When a new test file is created at the `tests/` root — not in a subdirectory already covered by a directory entry — it silently escapes the gate until explicitly added. The pass-fail signal is identical to a real green run: ruff/mypy pass on the listed paths and the new file is simply not in the listed paths. The gap is invisible. In the D5 U5 ce:review, project-standards (PS-U5-01 at 0.88) and testing (T-U5-04 at 0.85) both flagged that `tests/test_builtin_lint_runtime_warnings.py` (created in the U5 feat commit) was not in `_LINT_PATHS`. The pre-existing `tests/test_builtin_lint_formatter.py` had been outside the ratchet since D3 — at minimum two complete delivery cycles — and was added in the same follow-up commit under pay-as-you-touch. New test file checklist:
+- **New test files at the repo root level require explicit per-file `_LINT_PATHS` entries — directory entries do not cover them.** (Added 2026-05-12 from the D5 U5 ce:review.) `_LINT_PATHS` mixes two entry styles: directory entries that gate every file recursively (`"src/protokit/schema/lint"`, `"tests/schema/lint"`) and per-file entries that gate only the specific path listed (`"tests/core/test_cli_utils.py"`, `"tests/message/test_proto_match.py"`). When a new test file is created at the `tests/` root — not in a subdirectory already covered by a directory entry — it silently escapes the gate until explicitly added. The pass-fail signal is identical to a real green run: ruff/mypy pass on the listed paths and the new file is simply not in the listed paths. The gap is invisible. In the D5 U5 ce:review — the two paths below are the pre-reorg root-level spellings, both since moved into `tests/formatters/` — project-standards (PS-U5-01 at 0.88) and testing (T-U5-04 at 0.85) both flagged that `tests/test_builtin_lint_runtime_warnings.py` (created in the U5 feat commit) was not in `_LINT_PATHS`. The pre-existing `tests/test_builtin_lint_formatter.py` had been outside the ratchet since D3 — at minimum two complete delivery cycles — and was added in the same follow-up commit under pay-as-you-touch. New test file checklist:
   - Does the parent directory have a directory entry in `_LINT_PATHS`? If so, no action needed (the new file is auto-covered).
   - If not, add the new file path to `_LINT_PATHS` in the **same commit** that creates the file. The ratchet should never lag the implementation.
   - When adding a new per-file entry, grep the same directory level for un-gated neighbors and fix them in the same commit (pay-as-you-touch).
   - Convention recommendation: prefer placing new test files under a directory that already has a directory entry, rather than as per-file entries at the root level. Directory entries auto-scale; per-file entries require manual updates and tend to drift.
-  - **Post-reorg (2026-06):** the "new test file at the `tests/` root" scenario this checklist guards against no longer arises in protokit — the test reorganization moved every loose `tests/test_*.py` into a source-mirroring subpackage, so the per-file entries above are now bucketed paths and the convention recommendation is the realized default. The checklist still applies to any project (or any new protokit bucket) still adding root-level files. The reorg repointed all 17 moved-file `_LINT_PATHS` entries in the same commit as the move; see [[behavior-preserving-test-move-breaks-path-coupling-2026-06-13]].
+  - When you touch a bucket whose files are all clean, promote its per-file entries to one directory entry in the same commit. Before doing it, diff the directory listing against the entry list — that diff is what surfaces the files nobody ever added, and it is how the three escapees above were finally found.
+  - **Post-reorg (2026-06), and what it did not fix (corrected 2026-09).** The reorganization did move every loose `tests/test_*.py` into a source-mirroring subpackage and repointed all 17 moved-file `_LINT_PATHS` entries in the same commit (see [[behavior-preserving-test-move-breaks-path-coupling-2026-06-13]]). An earlier revision of this bullet concluded from that the escape scenario "no longer arises in protokit." **That was wrong, and stayed wrong for three months.** Moving files into buckets relocates the escape, it does not close it: a bucketed *per-file* entry still gates exactly one file, so the bucket looks covered while anything else in it is not. Three files sat outside the gate from the reorg until 2026-09 — `tests/meta/test_proto_builder.py`, `tests/meta/test_changelog_delivery_presence_ratchet.py`, and `tests/meta/test_uxd_philosophy_principle_presence_ratchet.py` — and one of them carried a real line-length violation the whole time, inside a ratchet reporting green. They were invisible to the reorg's repoint pass precisely because they had never had an entry to repoint. The scenario is still live: roughly a fifth of the test files under `tests/` are outside the gate today, in the buckets that carry per-file entries only. Treat a bucket as covered only when a directory entry covers it.
 
 ## When to Apply
 
@@ -254,7 +256,7 @@ import os  # unused import — F401 per ruff
 
 ```text
 $ pytest tests/meta/test_static_analysis.py -q
-F.
+F..
 FAILED tests/meta/test_static_analysis.py::test_ruff_check_clean_on_gated_paths
 AssertionError: ruff check failed on gated paths.
 stdout:
@@ -273,8 +275,7 @@ Exit code: 1. Gate confirmed closed. Then `git checkout <file>` restores. The sa
 ## Related
 
 - `docs/solutions/security-issues/formatter-systemexit-exit-code-bypass-2026-04-19.md` — prior gate-integrity fix; same broad theme of "the CI exit-code contract must not be silently defeated," but different mechanism (BaseException hierarchy, not tooling enforcement).
-- `docs/plans/2026-05-01-001-feat-protokit-lint-d1-foundation-plan.md` — plan that introduced per-module ruff/mypy expectations, making the static-analysis gate a natural follow-up.
-- `docs/brainstorms/2026-04-30-protokit-lint-delivery-1-foundation-requirements.md` — requirements doc noting `[tool.ruff] target-version = "py310"` was already configured; context for why ruff was a pre-existing tool being formally gated for the first time.
+- The delivery plan that introduced per-module ruff/mypy expectations, and the requirements note recording that `[tool.ruff] target-version = "py310"` was already configured, are not in this repository; ruff was a pre-existing tool being formally gated for the first time.
 - [[fail-closed-ci-matrix-coverage-meta-test]] — formalizes the CI-yaml ↔ source duplication risk that the caveat section above already flagged. Same gate-as-pytest-test philosophy applied to CI matrix coverage: parse `.github/workflows/ci.yml` via `yaml.safe_load` and assert at-least-one matrix cell exercises a `@pytest.mark.skipif`-gated test's predicate. The "mirrors the CI step" comment pattern in this doc is the informal version of what the meta-test mechanizes.
 - [[smoke-not-benchmark-loose-threshold-calibration]] — parallel gate-as-pytest-test pattern for a different quality dimension (performance regression detection instead of static-analysis cleanliness). Both patterns embed enforcement inside pytest rather than in CI YAML; both use generous tolerances (loose threshold / clean-paths-only) to keep the gate stable.
 - [[conftest-plain-function-relative-import-2026-05-12]] — sibling pytest-infrastructure learning. This learning gates file-set membership; the conftest learning gates how shared test helpers move between same-directory test files (3+ duplicate threshold) and surfaces the auto-load-fixtures-not-functions gotcha. Both are pytest discipline applied to keep the test infrastructure honest.

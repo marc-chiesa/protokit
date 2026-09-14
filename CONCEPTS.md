@@ -96,3 +96,4 @@ A seam sits at layer 0: it imports nothing from the rest of the package at any s
 ## Flagged ambiguities
 
 - "backend" had been used for both the protobuf Runtime backend (upb / pure-Python) and the Compile backend (in-process compiler / system `protoc`) — these are distinct axes, and a finding or CI cell names which one it is about.
+- "ratchet" had been used for both a Presence ratchet, which starts at zero violations and refuses new ones, and a coverage allowlist, which names the paths a tool runs over and grows as they are cleaned — these fail in opposite directions. A presence ratchet is loud about anything new; an allowlist is silent about anything unlisted, so a file nobody added is indistinguishable from a file with nothing wrong. Say which is meant, and for an allowlist prefer gating a directory over listing its files one by one.
