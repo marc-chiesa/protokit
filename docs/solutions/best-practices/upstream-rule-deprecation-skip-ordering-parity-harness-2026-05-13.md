@@ -271,10 +271,10 @@ Plus a docstring update on `check_no_public_imports` mirroring the
   runtime / harness enforcement complement. The planning-time audit
   catches divergences before implementation; this doc handles
   upstream deprecations that surface after implementation.
-- Commit `c270489` — Phase A: `_BUF_DEPRECATED_RULES` set existed
+- Commit `f96ecab` — Phase A: `_BUF_DEPRECATED_RULES` set existed
   but the skip logic was inside `assert_parity`, which raced with
   the exit-code guard.
-- Commit `5eba36b` — ce:review follow-up: extracted
+- Commit `20bb9d7` — ce:review follow-up: extracted
   `skip_if_buf_deprecated` as a standalone helper called at the top
   of each `test_parity` method; updated `imports.py:check_no_weak_imports`
   docstring with the deprecation notice and a pointer at the registry.

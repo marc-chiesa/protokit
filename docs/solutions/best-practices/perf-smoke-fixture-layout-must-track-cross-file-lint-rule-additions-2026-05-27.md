@@ -127,4 +127,4 @@ The rule check passes; the timing assertion is meaningful again.
 - [[per-rule-fixture-symbol-isolation-buf-v2-compile-group-2026-05-13]] — fixture isolation discipline (sibling).
 - [[perf-smoke-filter-expected-warning-categories-by-name-not-rule-list-2026-05-27]] — the companion 0.7.1 fix on the same test module.
 - first-public-push-plan-for-ci-iteration-debugging-2026-05-27 — the meta-learning that surfaced this whole cluster. A test gated to a single CI cell is exactly the shape of bug that hides until the first public CI run.
-- Canonical commit: `b22d60a` ("fix: pin protobuf<6 + restructure perf-smoke fixture per-package directory").
+- Canonical commit: `a13c5a2` ("fix: pin protobuf<6 + restructure perf-smoke fixture per-package directory").

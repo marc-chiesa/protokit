@@ -57,7 +57,7 @@ never actually ran.
 
 ## What Didn't Work
 
-The Phase A harness (commit `5300518`) handled only the most-obvious
+The Phase A harness (commit `f96ecab`) handled only the most-obvious
 failure cases:
 
 ```python
@@ -97,7 +97,7 @@ Enumerate each tool's documented success exit codes as a module-level
 The check must come **before** the empty-stdout fall-through, not after.
 
 ```python
-# AFTER — tests/parity/conftest.py (commit 5eba36b)
+# AFTER — tests/parity/conftest.py (commit 20bb9d7)
 
 #: Buf exit codes that the harness treats as "ran successfully":
 #:   0   = clean (no findings)
@@ -281,8 +281,8 @@ A checklist for any new subprocess wrapper in a test harness:
   is required at every new `subprocess.run` site. The new harness uses
   this pattern; this doc captures the companion concern of exit-code
   validation after the triple-arm guard returns the subprocess result.
-- Commits `c270489` (Phase A — original wrappers without exit-code
-  guards) and `5eba36b` (ce:review follow-up — adds the guards).
+- Commits `f96ecab` (Phase A — original wrappers without exit-code
+  guards) and `20bb9d7` (ce:review follow-up — adds the guards).
 - 10-reviewer ce:review at `.context/compound-engineering/ce-review/
   20260513-091500-u8phaseA/` — correctness, reliability, adversarial,
   and testing reviewers all independently converged on this finding as

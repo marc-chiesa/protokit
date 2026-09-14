@@ -42,7 +42,7 @@ R8b's planned access pattern (from the plan: "iterate `ctx.directory_packages` t
 
 A single-view accumulator optimized for R8 is the wrong shape for R8b, and fixing the access pattern after R8b ships is more expensive than fixing it before U2 begins. The adversarial reviewer caught this BEFORE the bug shipped, at lower fix cost than the parity-gate catches described in [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]].
 
-The user chose option (a): add an inverted index alongside the existing structure in the same single pass, threading both views into `FileLintContext`. Commit `94eb76d` on branch `feat/d6c-u1-arch-d-accumulator`.
+The user chose option (a): add an inverted index alongside the existing structure in the same single pass, threading both views into `FileLintContext`. Commit `fe17455` on branch `feat/d6c-u1-arch-d-accumulator`.
 
 ## Guidance
 
@@ -271,5 +271,5 @@ def check(self, ctx: FileLintContext, fd: FileDescriptorProto) -> ...:
 - dormant-code-changelog-draft-staging-delivery-boundary-2026-05-17 — the dormancy-window staging pattern for R8/R8b. The dual-view accumulator is part of the Arch-D pre-walk infrastructure that ships dormant (engine plumbing in U1) until R8's U2 delivery activates rule consumers.
 - [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]] — the programmatic fixture builder for the R8/R8b rule family's tests. The `TestInvertedIndexView` test class consumes programmatically-built multi-file packages to assert inverse relational consistency.
 - [[pureposixpath-for-proto-descriptor-file-stem-2026-05-12]] — directory grouping via `posixpath.dirname(fd.name) or "."` is the mechanical dependency for the by-directory view's dirname key. Cross-platform determinism (POSIX semantics for descriptor paths regardless of host OS).
-- `src/protokit/schema/lint/engine.py::_build_directory_package_accumulator` — reference implementation (commit `83b95d3`). Method docstring enumerates: (a) `root_files` scope rationale + "DO NOT unify" counterfactual, (b) frozenset-vs-MappingProxyType immutability contract, (c) co-reset discipline.
+- `src/protokit/schema/lint/engine.py::_build_directory_package_accumulator` — reference implementation (commit `fe17455`). Method docstring enumerates: (a) `root_files` scope rationale + "DO NOT unify" counterfactual, (b) frozenset-vs-MappingProxyType immutability contract, (c) co-reset discipline.
 - `tests/schema/lint/test_engine_directory_package_accumulator.py` — 15 tests (11 original + 4 new `TestInvertedIndexView` from ce:review follow-up). Suite: 1921 passed + 7 skipped (was 1906 + 7 baseline).

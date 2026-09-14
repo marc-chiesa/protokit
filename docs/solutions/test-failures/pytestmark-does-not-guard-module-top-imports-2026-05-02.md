@@ -207,7 +207,7 @@ The `reason=` string deserves real prose, not just "needs protoxy." Future maint
 
 **Unifying rule of the two patterns.** Module-top imports of the optional dep → use `pytest.importorskip("dep")`. Inside-function or inside-try-block imports of the optional dep that tests try to monkeypatch around → use `@pytest.mark.skipif(not _has_dep())`. Neither replaces the other.
 
-Affects ~8 tests in this codebase; commit `68f8a30` is the canonical pattern. Compatible 0.7.1 changes also added `_has_protoxy()`-parameterized error-prefix assertions (see commit `68f8a30`'s `tests/schema/test_cli.py` change).
+Affects ~8 tests in this codebase; commit `8fc5368` is the canonical pattern. Compatible 0.7.1 changes also added `_has_protoxy()`-parameterized error-prefix assertions (see commit `8fc5368`'s `tests/schema/test_cli.py` change).
 
 ## Related Issues
 

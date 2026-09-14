@@ -28,9 +28,9 @@ tags:
 
 ## Context
 
-D6a U9 (commit `3ff1870`) introduced `_LINT_JSON_SCHEMA_VERSION = "0.2"` as protokit's first wire-format version constant with a documented bump contract: bump on (a) new top-level keys, (b) change in meaning of an existing field, (c) removal of a previously documented field. The original contract appended a single blanket sentence: "Adding new severity-level / category strings to an existing enum field does NOT bump the version (the field's meaning is unchanged; the enum just gains a value)."
+D6a U9 (commit `0701202`) introduced `_LINT_JSON_SCHEMA_VERSION = "0.2"` as protokit's first wire-format version constant with a documented bump contract: bump on (a) new top-level keys, (b) change in meaning of an existing field, (c) removal of a previously documented field. The original contract appended a single blanket sentence: "Adding new severity-level / category strings to an existing enum field does NOT bump the version (the field's meaning is unchanged; the enum just gains a value)."
 
-D6b U5 (commit `c9dbaa2`) widened `LintRuntimeWarning.category: Literal[...]` from 4 to 5 values by adding `"severities_unloaded_rule"` (resolving D6a U9 KTD-2's accepted conflation). The U5 plan and KTD-5 surfaced a contradiction: the blanket "enum-value additions don't bump" sentence would make the U5 bump look like an over-bump. But the contract was wrong — not all enum-value additions are equivalent. Two regimes coexist:
+D6b U5 (commit `723e9aa`) widened `LintRuntimeWarning.category: Literal[...]` from 4 to 5 values by adding `"severities_unloaded_rule"` (resolving D6a U9 KTD-2's accepted conflation). The U5 plan and KTD-5 surfaced a contradiction: the blanket "enum-value additions don't bump" sentence would make the U5 bump look like an over-bump. But the contract was wrong — not all enum-value additions are equivalent. Two regimes coexist:
 
 - **`severity` field** (`"error"` / `"warning"` / `"info"`) — consumers render the string or compare by ordering. An unknown value can still be rendered, still ordered (with a sensible fallback), still tolerated. Adding a hypothetical `"trace"` level doesn't break correctness.
 - **`category` field** (`"rule_exception"` / `"unloaded_rule"` / ...) — consumers exhaustively switch on the value to route logic (each branch handles a different shape: `rule_exception` populates `exception_type` and `descriptor_path`, while `unloaded_rule` leaves both `None`). An unknown value falls through to a `default:` / `else:` branch the consumer didn't write for the new case.
@@ -167,7 +167,7 @@ _LINT_JSON_SCHEMA_VERSION: str = "0.3"
 
 ### Co-located bump + Literal edit (one atomic commit)
 
-The U5 feat commit (`16b494f`) bundled six edits as ONE commit:
+The U5 feat commit (`723e9aa`) bundled six edits as ONE commit:
 
 1. `src/protokit/schema/lint/model.py` — Literal widening (4 → 5 values) + dataclass docstring rewrite
 2. `src/protokit/formatters/_builtin_lint.py` — `_LINT_JSON_SCHEMA_VERSION = "0.2"` → `"0.3"` + refined bump-contract docstring + `runtime_warnings` docstring rewrite (per-category contract pointer)
@@ -250,7 +250,7 @@ A future contributor adding a 6th value reads this docstring and sees that each 
 - [[cross-format-enum-string-parity-2026-05-08]] — when the bump fires, BOTH sibling formats (lint_json top-level + lint_sarif `runs[].properties.lint_schema_version`) must agree on the new value. Single-constant cascade enforces this structurally.
 - [[parametrized-matrix-tests-inherit-schema-validators-2026-05-12]] — closed-Literal additions automatically gain cross-formatter coverage when the `LINT_RUNTIME_WARNING_CATEGORIES` tuple in `tests/schema/lint/cli/_helpers.py` is updated in lockstep with the model Literal. The cross-check test at `test_model_dataclass_changes.py:56-79` enforces the tuple stays in sync.
 - [[stale-forward-looking-text-cli-help-agent-discoverability-2026-05-12]] — the closed-Literal classification at the field site (the per-category contract docstring) is itself a "narrative enumeration" that needs lockstep updates when the Literal widens. The U5 ce:review surfaced 7 stale narrative sites that the planning-time grep missed because they enumerated the count narratively ("four categories") not literally.
-- Anchor commits: `16b494f` (D6b U5 feat — Literal widening + bump + bump-contract docstring refinement), `7cd4095` (D6b U5 ce:review follow-ups — 6 safe_auto stale-narrative fixes).
+- Anchor commits: `723e9aa` (D6b U5 feat — Literal widening + bump + bump-contract docstring refinement), `907ef53` (D6b U5 ce:review follow-ups — 6 safe_auto stale-narrative fixes).
 - Plan: `docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md` (Key Technical Decisions section — "Coupling acknowledgement: R9-bump and R9-docstring are inseparable", "Bump-scope clarification (closed Literal value ONLY)").
 - Brainstorm: `docs/brainstorms/2026-05-17-d6b-u5-r9-severities-category-split-requirements.md` (R9-docstring section — refined wording template).
 - 9-reviewer ce:review at `.context/compound-engineering/ce-review/20260517-180704-b16077be/` — the api-contract + adversarial + maintainability reviewers converged on the importance of the refined contract.

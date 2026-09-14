@@ -177,5 +177,5 @@ def fixture_builder_helper(attr: str, value: <type>) -> <returnt>:
 - [[programmatic-proto-fixture-builder-multi-file-rule-family-2026-05-17]] — the fixture builder this learning emerged from. The "three sub-pitfalls" enumerated in that learning's Guidance section is the broader context for the precondition assertion described here.
 - `tests/schema/lint/rules/fixtures/package_same/proto_templates.py:62-99` — the `_option_line` precondition assertion in its canonical form.
 - D6b U4b ce:review run artifact: `.context/compound-engineering/ce-review/20260517-142846-d5fdc684/` — adversarial reviewer's ADV-2 finding (0.82 confidence) that prompted the precondition addition.
-- Commit landing the precondition: `dd606e7`.
+- Commit landing the precondition: `435f6cd`.
 - [[module-import-time-fixture-mapping-fail-loud-blast-radius-2026-05-18]] — companion GLOBAL-scope pattern. This doc covers PER-TEST precondition assertion (local failure when one fixture is invalid). The D6b U6 doc covers MODULE-IMPORT-TIME mapping (global failure when ANY fixture is invalid — entire module collection blocked). Both are members of the silent-test-confidence prevention family, operating at different abstraction layers (test-scope vs module-scope). Apply per-test when fixtures are independent; apply import-time when fixture validity is a precondition for ALL tests in the module.

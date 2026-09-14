@@ -242,7 +242,7 @@ each file declares a distinct stub name:
   the four-site documentation protocol applies. The symbol-prefix
   discipline here is the prerequisite — the test cannot meaningfully
   assert divergence shape if a COMPILE error masks both branches.
-- Commit `c270489` — Phase A: original fixtures with symbol
+- Commit `f96ecab` — Phase A: original fixtures with symbol
   collisions, debugged + fixed inline.
-- Commit `5eba36b` — ce:review follow-up: hardened the exit-code
+- Commit `20bb9d7` — ce:review follow-up: hardened the exit-code
   guard so future symbol-collision regressions surface loudly.

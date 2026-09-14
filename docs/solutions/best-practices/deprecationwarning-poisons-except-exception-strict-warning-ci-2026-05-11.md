@@ -308,7 +308,7 @@ Under `pytest -W error::DeprecationWarning` with pathspec 1.1.1:
    (DeprecationWarning): GitWildMatchPattern...`
 6. User's valid `vendor/**` pattern is blamed.
 
-### After — post-ce:review fix (commit `7e5f353`), successor identifier
+### After — post-ce:review fix (commit `2348475`), successor identifier
 
 ```python
 # src/protokit/schema/lint/_config.py — post-fix
@@ -379,9 +379,9 @@ reviewing defensive broad catches:
 
 ## Reference Commits
 
-- `9c79904` — D5 U3 delivery; `"gitwildmatch"` identifier present;
+- `0e70686` — D5 U3 delivery; `"gitwildmatch"` identifier present;
   trap latent (surfaces only under strict-warning CI).
-- `a2809ca` — D5 U3 ce:review follow-ups; F-01 finding swapped
+- `2348475` — D5 U3 ce:review follow-ups; F-01 finding swapped
   identifier to `"gitignore"`; F-10 widened pathspec constraint from
   `<1` to `<2`.
 - ce:review run artifact:

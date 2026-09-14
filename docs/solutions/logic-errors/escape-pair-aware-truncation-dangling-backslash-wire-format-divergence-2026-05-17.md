@@ -137,4 +137,4 @@ Steps 1-4 already existed before the fix; step 5 is the addition that closes the
 - `src/protokit/schema/lint/rules/package_same.py:200-326` — the `_escape_inner_quote` + `_check_package_option` + `_truncate_values_payload` helpers in their canonical composition order.
 - `tests/schema/lint/rules/test_package_same.py::TestAdversarialSanitization` — full adversarial test class housing the regression test alongside newline / U+2028 / U+2029 / multi-KB / control-char sanitization tests.
 - D6b U4b plan: `docs/plans/2026-05-17-002-feat-d6b-u4-r7-package-same-revised-plan.md`
-- Commit landing the fix: `dd606e7`
+- Commit landing the fix: `435f6cd`

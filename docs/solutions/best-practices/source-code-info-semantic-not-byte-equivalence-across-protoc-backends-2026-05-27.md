@@ -137,4 +137,4 @@ The full implementation lives at `tests/schema/lint/test_compile_include_source_
 - [[empirical-parity-gate-surfaces-latent-helper-bug-at-implementation-time-2026-05-18]] — parity-gate pattern that this learning protects (the helper-bug detection relied on byte-equivalence only because both backends shipped the same encoder).
 - changelog-readme-snippet-fixture-byte-equivalence-2026-05-21 — uses byte-equivalence in a different domain (doc fixtures) where there is no version-sensitive encoding; helpful contrast.
 - [[dont-pin-binary-protoc-when-test-suite-cross-checks-protoxy-2026-05-27]] — the operational counterpart that keeps both backends in lockstep so the semantic-equivalence test is the LAST resort, not the first.
-- Canonical commit: `f3ecd69` ("test: cross-backend source_code_info — semantic equivalence, not byte equivalence").
+- Canonical commit: `8e8466d` ("test: cross-backend source_code_info — semantic equivalence, not byte equivalence").

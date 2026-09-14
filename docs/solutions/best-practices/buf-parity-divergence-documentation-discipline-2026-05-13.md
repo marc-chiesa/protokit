@@ -230,7 +230,7 @@ discipline needed.
 
 ## Examples
 
-`file/syntax-specified` (D6a U6, commits `5836802` + `3469523`) is
+`file/syntax-specified` (D6a U6, commits `454fc23` + `a95f80c`) is
 the canonical worked example. The rule:
 
 - Diverges from buf because `fdp.syntax == ""` is ambiguous
@@ -241,13 +241,13 @@ the canonical worked example. The rule:
   2. **Rule docstring** (`check_syntax_specified` body, ~30 lines
      including the editions carve-out).
   3. **`message_template`** (refined in U6 ce:review commit
-     `3469523` to mention `edition = "...";` as also-clean).
+     `a95f80c` to mention `edition = "...";` as also-clean).
   4. **Test method docstrings** (`test_sad_path_explicit_proto2_fires`
      pins the over-buf branch; `test_sad_path_no_syntax_statement_fires`
      pins the buf-parity branch; both docstrings explain the
      branch they cover).
 
-The structured-field deferral is logged in commit `5a97b9e`'s
+The structured-field deferral is logged in commit `a95f80c`'s
 "Plan-deferred residual" section as advisory `AC2`: *"Adding a
 machine-readable `LintRuleSpec.parity_note` field is a D6b
 candidate when a 2nd divergence forces the question."* When D6b

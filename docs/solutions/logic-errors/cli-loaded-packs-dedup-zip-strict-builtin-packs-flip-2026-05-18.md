@@ -62,7 +62,7 @@ The three-mechanism analysis (engine idempotency + CLI accumulator + frozenset u
 
 ## Solution
 
-CLI-level dedup check at `src/protokit/schema/lint/cli.py:841-846`, added in the D6b U7 commit (`b64b05b`):
+CLI-level dedup check at `src/protokit/schema/lint/cli.py:841-846`, added in the D6b U7 commit (`1f1a50c`):
 
 ```python
 user_pack = _load_user_rule_pack(module_name, engine)

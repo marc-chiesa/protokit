@@ -37,7 +37,7 @@ in this codebase so far:
 
 | Proto-form field | Runtime descriptor exposes it? | First use site |
 |---|---|---|
-| `FileDescriptorProto.public_dependency` | No on `FileDescriptor` | `imports/no-public` (D6a Unit 5, commit `e5e99cc`) |
+| `FileDescriptorProto.public_dependency` | No on `FileDescriptor` | `imports/no-public` (D6a Unit 5, commit `5c8f2a4`) |
 | `FileDescriptorProto.weak_dependency` | No on `FileDescriptor` | `imports/no-weak` (D6a Unit 5) |
 | `DescriptorProto.reserved_range` / `reserved_name` | No on `Descriptor` (upb) | `_reserved_names()` in `schema/rules.py` (Phase 1) |
 | `FieldDescriptorProto.proto3_optional` | No on `FieldDescriptor` (upb) | `_proto3_optional_fields()` in `schema/rules.py` (Phase 1) |

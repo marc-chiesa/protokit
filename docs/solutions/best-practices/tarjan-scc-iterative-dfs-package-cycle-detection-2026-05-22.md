@@ -55,13 +55,13 @@ Python's default recursion limit is 1000. Recursive Tarjan on a package graph wi
 
 The iterative form uses an explicit work stack with `(node, iter(sorted(children)))` frames. Backtracking pops both the work-stack frame AND the path/visited bookkeeping together. Bounded memory cost is O(SCC size), same as the recursive form, but without consuming Python frames.
 
-**This discipline applies to ALL DFS-style helpers operating on the same graph, not just Tarjan.** D6e U3's initial implementation made `_walk_cycle_forward` recursive while `_tarjan_scc` was iterative. ce:review (run 20260522-230615-e23aa0e2) flagged this asymmetry across 5 reviewers; adversarial empirically confirmed `_walk_cycle_forward` crashed at 999-node ring SCCs. The follow-up commit (`eff3a80`) converted `_walk_cycle_forward` to iterative DFS with the same explicit-work-stack pattern. **If you're going iterative on Tarjan for recursion-limit safety, every helper operating on the same graph must follow the same posture.**
+**This discipline applies to ALL DFS-style helpers operating on the same graph, not just Tarjan.** D6e U3's initial implementation made `_walk_cycle_forward` recursive while `_tarjan_scc` was iterative. ce:review (run 20260522-230615-e23aa0e2) flagged this asymmetry across 5 reviewers; adversarial empirically confirmed `_walk_cycle_forward` crashed at 999-node ring SCCs. The follow-up commit (`c25bfb3`) converted `_walk_cycle_forward` to iterative DFS with the same explicit-work-stack pattern. **If you're going iterative on Tarjan for recursion-limit safety, every helper operating on the same graph must follow the same posture.**
 
 ### Why per-import-edge emission, not per-root-file fan-out
 
 The brainstorm + plan PD-6 originally bound the emission shape to "per-root-file fan-out: each root file in an SCC of size ≥ 2 gets one finding." Phase 0 of U3 empirically verified buf v1.69.0's actual behavior is **per-import-edge**: one finding per cycle-closing `import` statement, pointing at the import's line/column. Sibling "leaf" files in cyclic packages that don't have cycle-closing imports themselves do NOT emit findings. (provenance — verified against buf v1.69.0; current behavior re-asserted by `tests/parity/test_parity_package_no_import_cycle.py` byte-matching the recorded snapshots. That module deliberately carries no `parity` marker, so the advisory parity job does not run it; the snapshot match runs in the required test job on every PR instead, which is the stronger guarantee.)
 
-The plan was revised (commit `f5ab8c5`) to bind PD-6/PD-7/PD-8 to per-import-edge granularity. The `leaf_files_in_cyclic_pkg` fixture pins this as a regression guard.
+The plan was revised (commit `7837182`) to bind PD-6/PD-7/PD-8 to per-import-edge granularity. The `leaf_files_in_cyclic_pkg` fixture pins this as a regression guard.
 
 The general lesson: **buf-parity emission shape is empirical, not derivable from the rule name.** Phase 0 fixture authoring + capture of recorded snapshots is the cheap detection surface for emission-shape divergence from brainstorm assumptions.
 
@@ -71,7 +71,7 @@ Tarjan SCC returns members in reverse DFS-finish order. For a 3-package cycle `A
 
 The fix is a separate helper (`_walk_cycle_forward`) that does DFS within the SCC following the actual graph edges, starting at the source file's package and closing back to it. The helper is iterative (per the recursion-limit discipline above).
 
-D6e U3's commit `13ac973` initially included a dead `_rotate_cycle_for_source` function from the design-phase rotation approach. ce:review flagged it as a future-author trap (5-way reviewer convergence at 0.95+ confidence) and the follow-up commit deleted it. **Dead design-phase helpers should be deleted, not preserved as "alternative implementations".**
+D6e U3's commit `b4ccf3a` initially included a dead `_rotate_cycle_for_source` function from the design-phase rotation approach. ce:review flagged it as a future-author trap (5-way reviewer convergence at 0.95+ confidence) and the follow-up commit deleted it. **Dead design-phase helpers should be deleted, not preserved as "alternative implementations".**
 
 ## Architecture: the pre-walk accumulator pattern
 
@@ -100,8 +100,8 @@ Threaded into `FileLintContext.import_cycles` (`Mapping[str, tuple[CycleEdge, ..
 
 **This shape extends the D6c Arch-D pre-walk pattern with three new features:**
 - Reads `compile_result.source_info_descriptors` (not `fd.CopyToProto(fdp).source_code_info`) for source positions — the DescriptorPool strips source_code_info on `pool.Add()` per [[copytoproto-round-trip-for-proto-form-only-descriptor-fields-2026-05-13]]; the separate `source_info_descriptors` bag is the only persistent path.
-- Caches per-`src_pkg` SCC member set + cycle path before the inner edge loop (avoids per-edge DFS re-runs with loop-invariant arguments — ce:review PERF-1 follow-up in `eff3a80`).
-- Two-tier exception handling: outer `try/except KeyError` for `FindFileByName`, inner `try/except DecodeError` for `CopyToProto` (ce:review REL-1 follow-up in `eff3a80`).
+- Caches per-`src_pkg` SCC member set + cycle path before the inner edge loop (avoids per-edge DFS re-runs with loop-invariant arguments — ce:review PERF-1 follow-up in `c25bfb3`).
+- Two-tier exception handling: outer `try/except KeyError` for `FindFileByName`, inner `try/except DecodeError` for `CopyToProto` (ce:review REL-1 follow-up in `c25bfb3`).
 
 ## Performance characteristics
 
@@ -157,7 +157,7 @@ Commit sequence on branch `feat/d6e-buf-basic-closure-and-philosophy-revision`:
 
 These commits predate this repo's PR-based workflow, so there are no PR numbers to cite; history has since been rewritten and some SHAs below no longer resolve. They record the order of work, not fetchable references.
 
-1. `5643939 docs(plans): D6e U3 Phase 0 OQ-1/2/3 binding + PD-6/7/8 revision` — Phase 0 findings
-2. `e66f27c feat(lint): D6e U3 — package/no-import-cycle (26th buf BASIC rule) via Tarjan SCC pre-walk` — initial implementation
-3. `eff3a80 fix(lint): ce:review U3 follow-ups — 5 P1 + 6 safe_auto` — recursion-limit safety + dead-code removal + line/column assertion + perf cache + DecodeError handling + migration recipe
+1. `7837182 docs(plans): D6e U3 Phase 0 OQ-1/2/3 binding + PD-6/7/8 revision` — Phase 0 findings
+2. `b4ccf3a feat(lint): D6e U3 — package/no-import-cycle (26th buf BASIC rule) via Tarjan SCC pre-walk` — initial implementation
+3. `c25bfb3 fix(lint): ce:review U3 follow-ups — 5 P1 + 6 safe_auto` — recursion-limit safety + dead-code removal + line/column assertion + perf cache + DecodeError handling + migration recipe
 4. `<this commit> docs(solutions): D6e U3 ce:compound` — two institutional learnings (this file + one sibling; a third was planned and never written)
