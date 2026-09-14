@@ -262,3 +262,87 @@ class TestAdjacentBehaviorUnchanged:
         right.Extensions[tag] = "alpha"
         paths = [str(diff.path) for diff in diff_messages(left, right)]
         assert paths == ["name"], paths
+
+
+def _map_pool() -> descriptor_pool.DescriptorPool:
+    """``m.Msg`` with a map-typed extension: ``extend Msg { map<string,int32> tags = 100; }``."""
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="m.proto", package="m", syntax="proto2")
+    msg = fdp.message_type.add(name="Msg")
+    msg.field.add(name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    msg.extension_range.add(start=100, end=200)
+    entry = msg.nested_type.add(name="TagsEntry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    entry.field.add(name="value", number=2, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    fdp.extension.add(
+        name="tags", number=100, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        extendee=".m.Msg", type_name=".m.Msg.TagsEntry",
+    )
+    outer = fdp.message_type.add(name="Outer")
+    outer.field.add(
+        name="inner", number=1, type=_FD.TYPE_MESSAGE,
+        label=_FD.LABEL_OPTIONAL, type_name=".m.Msg",
+    )
+    pool.Add(fdp)
+    return pool
+
+
+def _map_classes() -> tuple[type[Message], type[Message], d.FieldDescriptor]:
+    pool = _map_pool()
+    msg_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("m.Msg"))
+    outer_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("m.Outer"))
+    return msg_cls, outer_cls, pool.FindExtensionByName("m.tags")
+
+
+class TestMapTypedExtension:
+    """A map-typed extension reaches the two map branches that still read by name.
+
+    ``is_map_field`` is true for an extension whose type is a map entry, so
+    the dispatch sends it into ``_compare_map`` and into the map branch of
+    ``_emit_one_sided`` — the two value reads that were left on
+    ``getattr(msg, fd.name)`` when every sibling branch moved to
+    ``_field_value``. An extension is not an attribute, so both raised
+    ``AttributeError`` instead of comparing.
+
+    The shape is deliberately exotic. ``protoc`` refuses to compile it ("map
+    fields are not allowed to be extensions") and the Python runtime cannot
+    serialize one — measured on protobuf 5.27.5, pure-Python raises from the
+    encoder and upb crashes the interpreter on ``SerializeToString`` and
+    ``CopyFrom``. It is reachable only by in-memory construction, which is
+    why these tests build every message directly and never copy or
+    serialize one. The defect it exposes is not exotic: an accessor site
+    that a descriptor kind can reach but the code did not expect.
+    """
+
+    def test_two_sided_differing_entry_is_reported(self) -> None:
+        msg_cls, _outer, tags = _map_classes()
+        left, right = msg_cls(name="same"), msg_cls(name="same")
+        left.Extensions[tags]["k"] = 1
+        right.Extensions[tags]["k"] = 2
+        diffs = [(str(x.path), x.change_type.name) for x in diff_messages(left, right)]
+        assert diffs == [('(m.tags)["k"]', "MODIFIED")], diffs
+
+    def test_two_sided_equal_reports_nothing(self) -> None:
+        msg_cls, _outer, tags = _map_classes()
+        left, right = msg_cls(name="same"), msg_cls(name="same")
+        left.Extensions[tags]["k"] = 1
+        right.Extensions[tags]["k"] = 1
+        assert list(diff_messages(left, right)) == []
+
+    def test_set_on_one_side_only_is_reported(self) -> None:
+        """Same type on both sides, extension set on one: the ``_emit_one_sided`` route."""
+        msg_cls, _outer, tags = _map_classes()
+        left, right = msg_cls(name="same"), msg_cls(name="same")
+        right.Extensions[tags]["k"] = 2
+        diffs = [(str(x.path), x.change_type.name) for x in diff_messages(left, right)]
+        assert diffs == [('(m.tags)["k"]', "ADDED")], diffs
+
+    def test_added_submessage_reports_its_map_extension(self) -> None:
+        """The ``ListFields`` route already had the value in hand; pinned so it stays that way."""
+        _msg, outer_cls, tags = _map_classes()
+        right = outer_cls()
+        right.inner.name = "n"
+        right.inner.Extensions[tags]["k"] = 2
+        diffs = [(str(x.path), x.change_type.name) for x in diff_messages(outer_cls(), right)]
+        assert diffs == [('inner.(m.tags)["k"]', "ADDED"), ("inner.name", "ADDED")], diffs

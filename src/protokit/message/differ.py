@@ -2113,8 +2113,8 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        left_map = getattr(left_msg, left_fd.name)
-        right_map = getattr(right_msg, right_fd.name)
+        left_map = _field_value(left_msg, left_fd)
+        right_map = _field_value(right_msg, right_fd)
 
         entry_fds = left_fd.message_type.fields_by_name
         right_entry_fds = right_fd.message_type.fields_by_name
@@ -2725,7 +2725,7 @@ class MessageDifferencer:
                         field_type=type_name(fd.type),
                     ))
         elif is_map_field(fd):
-            map_val = getattr(msg, fd.name)
+            map_val = _field_value(msg, fd)
             value_fd = fd.message_type.fields_by_name["value"]
             for k, v in map_val.items():
                 key_str = format_key(k)
