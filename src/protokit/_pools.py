@@ -159,6 +159,12 @@ def add_and_resolve(
     re-raised as :class:`DescriptorPoolError` so the documented "typed library
     exceptions, never raw" contract holds for every caller on either backend.
 
+    One product site does not use this helper on purpose: the lint
+    descriptor-set loader (``schema/lint/_cli_utils.py``) repeats the
+    Add-then-probe sequence inline because it must route on the raw exception
+    to choose a stable ``error[lint-...]`` code, and collapsing both shapes
+    here would hide that. The comment at that site names the U17 follow-up.
+
     Args:
         pool: The pool to populate.
         fd: The ``FileDescriptorProto`` to add.

@@ -386,6 +386,17 @@ def _load_descriptor_sets_to_result(
             # load-bearing invariant this mirrors.
             source_info_descriptors[fd.name] = fd
             try:
+                # Deliberately NOT ``_pools.add_and_resolve``, which is the
+                # owner of this Add-then-probe sequence everywhere else. That
+                # helper collapses both backends' failures into one
+                # ``DescriptorPoolError``; this site must route on the RAW
+                # exception (its type for pure-Python, its text for upb) to
+                # pick between ``error[lint-missing-imports]`` and
+                # ``error[lint-pool-conflict]``, and it also catches the
+                # ``ValueError`` over-catch below. Sharing would push CLI exit
+                # semantics into ``_pools``. Unifying the two is U17's
+                # duplication-removal work: give ``_pools`` typed subclasses
+                # for the two shapes and route here on type alone.
                 pool.Add(fd)
                 # Resolution asserted, not inferred (KTD6, V10). upb resolves
                 # eagerly and raises from Add itself; the pure-Python pool
