@@ -352,19 +352,9 @@ def _populate_pool_with_capture(
     for fd in fds_file:
         if captured is not None:
             captured[fd.name] = fd
-        try:
-            pool.Add(fd)
-            # Resolution asserted, not inferred (KTD6, V10). upb resolves
-            # eagerly and raises TypeError from Add; the pure-Python pool
-            # resolves lazily, so Add returns cleanly for a file whose symbols
-            # cannot be resolved and both compile backends would hand their
-            # caller a pool that merely looks populated. FindFileByName forces
-            # resolution here, raising KeyError(<unresolvable symbol>).
-            pool.FindFileByName(fd.name)
-        except (TypeError, KeyError) as exc:
-            raise _pools.DescriptorPoolError(
-                f"could not build file {fd.name!r} into the descriptor pool: {exc}"
-            ) from exc
+        # Both compile backends funnel through here, so the resolution
+        # assertion lives at this one site rather than in each backend.
+        _pools.add_and_resolve(pool, fd)
         if fd.name in expected_names:
             emitted.add(fd.name)
     return captured, emitted

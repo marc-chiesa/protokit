@@ -8,6 +8,7 @@ them without coupling to either.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any
 
 from google.protobuf import descriptor as proto_descriptor
@@ -100,6 +101,78 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     return _fieldview.is_map_field(field_desc)
 
 
+# Serialized FileDescriptorProtos, keyed by ``id(FileDescriptor)``.
+#
+# ``message_proto`` below reads the whole FILE to get one message, because that
+# is the only route that works on both backends. Without a cache that turns a
+# per-message read into a per-message whole-file serialization: the compat
+# checker calls it once per message pair, so a file with N messages costs
+# O(N * filesize) where the old per-message ``CopyToProto`` cost O(filesize)
+# in total. Measured before caching: a 400-message schema took 10x longer
+# through ``SchemaChecker.check()``.
+#
+# Keyed by ``id()`` because upb's FileDescriptor is NOT weak-referenceable
+# (``weakref.WeakKeyDictionary`` raises TypeError on it), so the obvious
+# identity-safe container is unavailable. The entry therefore holds a STRONG
+# reference to the FileDescriptor alongside its proto: while an entry lives its
+# key object cannot be collected, so that id cannot be reused by a different
+# object — the failure mode a bare ``id()`` cache would have. A file already in
+# a pool is immutable, so a cached proto cannot go stale.
+#
+# Bounded, because `protokit compat history` / `bisect` build a fresh pool per
+# commit; an unbounded cache would pin one pool per commit walked.
+_FILE_PROTO_CACHE_MAX = 32
+_FILE_PROTO_CACHE: OrderedDict[
+    int,
+    tuple[
+        proto_descriptor.FileDescriptor,
+        descriptor_pb2.FileDescriptorProto,
+        dict[str, descriptor_pb2.DescriptorProto],
+    ],
+] = OrderedDict()
+
+
+def _index_messages(
+    file_proto: descriptor_pb2.FileDescriptorProto,
+) -> dict[str, descriptor_pb2.DescriptorProto]:
+    """Map every message in ``file_proto`` to its package-relative dotted name.
+
+    Built once per file so :func:`message_proto` is a dict hit rather than a
+    scan. Without it the whole-file read is still O(N) *per lookup* — a linear
+    walk over N message_type entries — which leaves the compat checker
+    quadratic in message count even with the file proto itself cached.
+    """
+    index: dict[str, descriptor_pb2.DescriptorProto] = {}
+
+    def _walk(nodes: object, prefix: str) -> None:
+        for node in nodes:  # type: ignore[attr-defined]
+            name = f"{prefix}.{node.name}" if prefix else node.name
+            index[name] = node
+            _walk(node.nested_type, name)
+
+    _walk(file_proto.message_type, "")
+    return index
+
+
+def _file_message_index(
+    file_descriptor: proto_descriptor.FileDescriptor,
+) -> dict[str, descriptor_pb2.DescriptorProto]:
+    """``{package-relative dotted name: DescriptorProto}`` for a file, memoized."""
+    key = id(file_descriptor)
+    hit = _FILE_PROTO_CACHE.get(key)
+    if hit is not None and hit[0] is file_descriptor:
+        _FILE_PROTO_CACHE.move_to_end(key)
+        return hit[2]
+    proto = descriptor_pb2.FileDescriptorProto()
+    file_descriptor.CopyToProto(proto)
+    index = _index_messages(proto)
+    _FILE_PROTO_CACHE[key] = (file_descriptor, proto, index)
+    _FILE_PROTO_CACHE.move_to_end(key)
+    while len(_FILE_PROTO_CACHE) > _FILE_PROTO_CACHE_MAX:
+        _FILE_PROTO_CACHE.popitem(last=False)
+    return index
+
+
 def message_proto(
     descriptor: proto_descriptor.Descriptor,
 ) -> descriptor_pb2.DescriptorProto:
@@ -130,25 +203,17 @@ def message_proto(
         KeyError: If the message cannot be located in its own file's proto,
             which would mean the descriptor and its file disagree.
     """
-    file_proto = descriptor_pb2.FileDescriptorProto()
-    descriptor.file.CopyToProto(file_proto)
-
     package = descriptor.file.package
     relative = descriptor.full_name
     if package and relative.startswith(f"{package}."):
         relative = relative[len(package) + 1 :]
 
-    candidates = file_proto.message_type
-    node: descriptor_pb2.DescriptorProto | None = None
-    for part in relative.split("."):
-        node = next((m for m in candidates if m.name == part), None)
-        if node is None:
-            raise KeyError(
-                f"{descriptor.full_name!r} not found in its own file "
-                f"{descriptor.file.name!r}"
-            )
-        candidates = node.nested_type
-    assert node is not None  # relative is never empty for a real descriptor
+    node = _file_message_index(descriptor.file).get(relative)
+    if node is None:
+        raise KeyError(
+            f"{descriptor.full_name!r} not found in its own file "
+            f"{descriptor.file.name!r}"
+        )
     return node
 
 

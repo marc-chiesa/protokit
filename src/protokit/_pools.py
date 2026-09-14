@@ -137,6 +137,44 @@ def sort_files_by_dependency(
     return ordered
 
 
+def add_and_resolve(
+    pool: descriptor_pool.DescriptorPool,
+    fd: descriptor_pb2.FileDescriptorProto,
+) -> None:
+    """``pool.Add(fd)``, then force resolution and raise the typed error family.
+
+    Resolution is asserted, never inferred from ``Add()`` raising (KTD6, V10).
+    The two protobuf backends disagree about when a file with unresolvable
+    symbols fails, measured on 5.27.5:
+
+    * **upb** resolves eagerly and raises ``TypeError`` from ``Add`` itself —
+      e.g. a field referencing a symbol no file in the set defines (a dangling
+      symbol with no *missing-file* dependency, which a topological sort
+      cannot detect).
+    * **pure-Python** resolves lazily, so ``Add()`` returns cleanly and the
+      caller walks away with a pool that merely looks populated. The failure
+      only surfaces when something forces resolution, as ``KeyError``.
+
+    ``FindFileByName`` forces it here on both. Both exception shapes are
+    re-raised as :class:`DescriptorPoolError` so the documented "typed library
+    exceptions, never raw" contract holds for every caller on either backend.
+
+    Args:
+        pool: The pool to populate.
+        fd: The ``FileDescriptorProto`` to add.
+
+    Raises:
+        DescriptorPoolError: If the file cannot be resolved into the pool.
+    """
+    try:
+        pool.Add(fd)
+        pool.FindFileByName(fd.name)
+    except (TypeError, KeyError) as exc:
+        raise DescriptorPoolError(
+            f"could not build file {fd.name!r} into the descriptor pool: {exc}"
+        ) from exc
+
+
 def build_pool(
     fds: descriptor_pb2.FileDescriptorSet,
 ) -> descriptor_pool.DescriptorPool:
@@ -148,29 +186,10 @@ def build_pool(
     """
     pool = descriptor_pool.DescriptorPool()
     for fd in sort_files_by_dependency(list(fds.file)):
-        try:
-            pool.Add(fd)
-            # Resolution is asserted, never inferred from Add() raising (KTD6,
-            # V10). upb resolves eagerly and raises TypeError from Add itself;
-            # the pure-Python pool resolves LAZILY, so Add() returns cleanly for
-            # a file whose symbols cannot be resolved and the caller walks away
-            # with a pool that looks populated. FindFileByName forces resolution
-            # now, raising KeyError(<unresolvable symbol>) there. Files are added
-            # in dependency order above, so a forward reference within this set
-            # is already satisfied by the time its referrer is added.
-            pool.FindFileByName(fd.name)
-        except (TypeError, KeyError) as exc:
-            # upb raises a bare TypeError when a descriptor cannot be built into
-            # the pool — e.g. a field referencing a symbol no file in the set
-            # defines (a dangling symbol with no *missing-file* dependency, which
-            # the topo-sort cannot detect). The pure-Python pool surfaces the
-            # same condition as KeyError from the FindFileByName above. Re-raise
-            # both as the typed family so the documented "typed library
-            # exceptions, never raw" contract holds for every caller, including
-            # the storage register boundary, on either backend.
-            raise DescriptorPoolError(
-                f"could not build file {fd.name!r} into the descriptor pool: {exc}"
-            ) from exc
+        # Files are added in dependency order above, so a forward reference
+        # within this set is already satisfied by the time its referrer is
+        # added and the eager resolution below cannot false-positive.
+        add_and_resolve(pool, fd)
     return pool
 
 

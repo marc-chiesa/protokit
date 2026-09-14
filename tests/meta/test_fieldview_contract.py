@@ -203,7 +203,7 @@ class TestMapEntry:
         view = FieldView.of(pool.FindMessageTypeByName("c3.Msg3"))
         tags = view.by_name["tags"]
         assert is_map_field(tags)
-        entry = view.map_entry(tags)
+        entry = map_entry(tags)
         assert entry is not None
         assert entry.key.name == "key" and entry.key.type == _FD.TYPE_STRING
         assert entry.value.name == "value" and entry.value.type == _FD.TYPE_INT32
@@ -213,7 +213,7 @@ class TestMapEntry:
         self, pool: descriptor_pool.DescriptorPool, field_name: str,
     ) -> None:
         view = FieldView.of(pool.FindMessageTypeByName("c3.Msg3"))
-        assert view.map_entry(view.by_name[field_name]) is None
+        assert map_entry(view.by_name[field_name]) is None
 
     def test_repeated_message_that_is_not_a_map_yields_none(
         self, pool: descriptor_pool.DescriptorPool,
@@ -233,14 +233,40 @@ class TestViewIsImmutable:
         with pytest.raises(TypeError):
             view.by_number[999] = view.by_name["opt"]  # type: ignore[index]
 
-    def test_caller_dict_cannot_mutate_the_view(
+    def test_indexes_are_built_lazily_and_cached(
         self, pool: descriptor_pool.DescriptorPool,
     ) -> None:
-        desc = pool.FindMessageTypeByName("c2.Msg")
-        caller_map = {f.name: f for f in desc.fields}
-        view = FieldView(descriptor=desc, by_name=caller_map, by_number={})
-        caller_map.clear()
-        assert set(view.by_name) == {f.name for f in desc.fields}
+        """Each index is computed on first access and reused thereafter.
+
+        The differ builds a view per message pair and reads only ``by_name``,
+        so building ``by_number`` eagerly was measurable waste. Identity, not
+        equality, is the assertion — equal-but-rebuilt would mean the cache is
+        not working.
+        """
+        view = FieldView.of(pool.FindMessageTypeByName("c2.Msg"))
+        assert view.by_name is view.by_name
+        assert view.by_number is view.by_number
+        assert set(view.by_name) == {f.name for f in view.descriptor.fields}
+        assert set(view.by_number) == {f.number for f in view.descriptor.fields}
+
+    @pytest.mark.parametrize(
+        ("full_name", "expected"), [("c2.Msg", True), ("c3.Msg3", False)],
+    )
+    def test_has_extension_ranges_reports_whether_extensions_are_possible(
+        self, pool: descriptor_pool.DescriptorPool, full_name: str, expected: bool,
+    ) -> None:
+        """The guard the differ uses to skip extension discovery entirely.
+
+        A message declaring no extension range cannot carry a set extension,
+        so the differ may skip walking ``ListFields`` for it. If this ever
+        reports False for a message that CAN carry one, the differ silently
+        stops comparing extensions — so it is asserted here rather than
+        trusted.
+        """
+        view = FieldView.of(pool.FindMessageTypeByName(full_name))
+        assert view.has_extension_ranges is expected
+        if not expected:
+            assert view.extensions == ()
 
 
 # --- Scoped enumeration guard (KTD2) ---------------------------------------

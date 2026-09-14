@@ -37,11 +37,11 @@ from protokit.message.comparators import (
 )
 from protokit.message.model import (
     ChangeType,
+    Diagnostic,
     Difference,
     DiffResult,
     DuplicateKeyError,
     FieldHook,
-    Diagnostic,
     FieldHookContext,
     FieldPath,
     HookStage,
@@ -817,7 +817,7 @@ class MessageDifferencer:
         if left_fd.label == left_fd.LABEL_REPEATED:  # repeated + map
             return len(_field_value(msg, left_fd)) > 0  # type: ignore[arg-type]
         if left_fd.has_presence:
-            return msg.HasField(left_fd.name)
+            return _field_present(msg, left_fd)
         if default_msg is None:
             default_msg = type(msg)()
         return _field_value(msg, left_fd) != _field_value(default_msg, left_fd)
@@ -1031,14 +1031,23 @@ class MessageDifferencer:
                 # is resolved from its own message, so two schemas that disagree
                 # about an extension still compare against their own descriptor
                 # rather than borrowing the other side's (V19).
-                left_fields = dict(FieldView.of(item.left_msg.DESCRIPTOR).by_name)
-                right_fields = dict(FieldView.of(item.right_msg.DESCRIPTOR).by_name)
-                for _msg, _sink in (
-                    (item.left_msg, left_fields), (item.right_msg, right_fields),
-                ):
-                    for _efd, _ in _msg.ListFields():
-                        if _efd.is_extension:
-                            _sink[_extension_key(_efd)] = _efd
+                left_view = FieldView.of(item.left_msg.DESCRIPTOR)
+                right_view = FieldView.of(item.right_msg.DESCRIPTOR)
+                left_fields = left_view.name_map()
+                right_fields = right_view.name_map()
+                # ``ListFields`` is the only way to find which extensions are
+                # SET, but it is not free and this runs at every node of the
+                # comparison tree. A message that declares no extension range
+                # cannot carry one, so skip the walk entirely for it — which is
+                # every proto3 message and most proto2 ones.
+                if left_view.has_extension_ranges:
+                    for efd, _ in item.left_msg.ListFields():
+                        if efd.is_extension:
+                            left_fields[_extension_key(efd)] = efd
+                if right_view.has_extension_ranges:
+                    for efd, _ in item.right_msg.ListFields():
+                        if efd.is_extension:
+                            right_fields[_extension_key(efd)] = efd
 
                 all_names = left_fields.keys() | right_fields.keys()
 
@@ -1900,8 +1909,8 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        left_present = left_msg.HasField(left_fd.name)
-        right_present = right_msg.HasField(right_fd.name)
+        left_present = _field_present(left_msg, left_fd)
+        right_present = _field_present(right_msg, right_fd)
 
         if not left_present and not right_present:
             return
@@ -1915,7 +1924,7 @@ class MessageDifferencer:
             # so the partial gate always drops it here.
             if self._partial:
                 return
-            right_child = getattr(right_msg, right_fd.name)
+            right_child = _field_value(right_msg, right_fd)
             if _has_populated_fields(right_child):
                 stack.append(_WorkItem(None, right_child, path, depth + 1))
             elif self._presence_mode == MessageFieldComparison.EQUAL:
@@ -1931,7 +1940,7 @@ class MessageDifferencer:
                 ))
             return
         if left_present and not right_present:
-            left_child = getattr(left_msg, left_fd.name)
+            left_child = _field_value(left_msg, left_fd)
             if _has_populated_fields(left_child):
                 stack.append(_WorkItem(left_child, None, path, depth + 1))
             elif self._presence_mode == MessageFieldComparison.EQUAL:
@@ -1944,8 +1953,8 @@ class MessageDifferencer:
 
         # Both present: recurse
         stack.append(_WorkItem(
-            getattr(left_msg, left_fd.name),
-            getattr(right_msg, right_fd.name),
+            _field_value(left_msg, left_fd),
+            _field_value(right_msg, right_fd),
             path,
             depth + 1,
         ))
@@ -2009,8 +2018,8 @@ class MessageDifferencer:
             )
             return
 
-        left_list = getattr(left_msg, field_name)
-        right_list = getattr(right_msg, field_name)
+        left_list = _field_value(left_msg, left_fd)
+        right_list = _field_value(right_msg, right_fd)
 
         min_len = min(len(left_list), len(right_list))
 
@@ -2398,8 +2407,8 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        left_list = getattr(left_msg, left_fd.name)
-        right_list = getattr(right_msg, right_fd.name)
+        left_list = _field_value(left_msg, left_fd)
+        right_list = _field_value(right_msg, right_fd)
 
         left_by_key = self._extract_keys(left_list, key_field_name, left_fd, path)
         right_by_key = self._extract_keys(right_list, key_field_name, right_fd, path)

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from types import MappingProxyType
 
 from google.protobuf import descriptor as _d
@@ -97,27 +98,54 @@ class FieldView:
     len(by_number)`` always holds — protobuf forbids duplicate field names
     and duplicate field numbers within a message.
 
-    ``extensions`` is resolved lazily against the descriptor's own pool
-    rather than snapshotted at construction, because a pool can gain
-    extension definitions after this view is built (a later ``pool.Add`` of
-    a file that extends this message). Snapshotting would reintroduce the
-    staleness this seam exists to remove.
+    **Both indexes are built lazily and cached.** The differ constructs a view
+    per message pair in its comparison loop and reads only ``by_name``;
+    building ``by_number`` eagerly there was measurable waste. Each index is
+    computed on first access and frozen behind a ``MappingProxyType``, so the
+    view is still immutable — ``frozen=True`` alone only prevents attribute
+    rebinding, not mutation of a dict it holds.
+
+    ``extensions`` is resolved against the descriptor's own pool on every
+    access rather than snapshotted, because a pool can gain extension
+    definitions after this view is built (a later ``pool.Add`` of a file that
+    extends this message); snapshotting would reintroduce the staleness this
+    seam exists to remove. That makes it the one member with a per-access
+    cost — do not call it in a loop without hoisting the result.
     """
 
     descriptor: _d.Descriptor
-    by_name: Mapping[str, _d.FieldDescriptor]
-    by_number: Mapping[int, _d.FieldDescriptor]
 
-    def __post_init__(self) -> None:
-        """Freeze both indexes against post-construction mutation.
+    @cached_property
+    def by_name(self) -> Mapping[str, _d.FieldDescriptor]:
+        """Declared non-extension fields, keyed by name."""
+        return MappingProxyType({f.name: f for f in self.descriptor.fields})
 
-        ``frozen=True`` prevents attribute *rebinding* only; a caller that
-        handed in a plain dict would still be able to mutate this view's
-        contents afterwards. Wrapping a fresh copy makes the view actually
-        immutable, matching ``CompileResult`` in ``schema/compile.py``.
+    @cached_property
+    def by_number(self) -> Mapping[int, _d.FieldDescriptor]:
+        """Declared non-extension fields, keyed by field number."""
+        return MappingProxyType({f.number: f for f in self.descriptor.fields})
+
+    def name_map(self) -> dict[str, _d.FieldDescriptor]:
+        """A FRESH, mutable ``{name: field}`` the caller may modify.
+
+        :attr:`by_name` is cached and frozen, so a caller that needs to add
+        entries — the differ folds set extensions into its copy — would have to
+        copy it, building two dicts and a proxy per call in a loop that runs at
+        every node of a comparison. This builds exactly one dict and hands over
+        ownership. Use :attr:`by_name` for read-only access.
         """
-        object.__setattr__(self, "by_name", MappingProxyType(dict(self.by_name)))
-        object.__setattr__(self, "by_number", MappingProxyType(dict(self.by_number)))
+        return {f.name: f for f in self.descriptor.fields}
+
+    @property
+    def has_extension_ranges(self) -> bool:
+        """Whether this message declares any ``extensions N to M;`` range.
+
+        A message with no extension range cannot carry a set extension, by
+        protobuf's own invariant. Callers use this to skip extension discovery
+        entirely — the common case, and far cheaper than asking a message what
+        it has set.
+        """
+        return bool(self.descriptor.extension_ranges)
 
     @classmethod
     def of(cls, descriptor: _d.Descriptor) -> FieldView:
@@ -127,15 +155,9 @@ class FieldView:
             descriptor: A protobuf message ``Descriptor``.
 
         Returns:
-            A :class:`FieldView` indexing every declared non-extension field
-            of ``descriptor`` by both name and number.
+            A :class:`FieldView` over ``descriptor``'s declared fields.
         """
-        fields = tuple(descriptor.fields)
-        return cls(
-            descriptor=descriptor,
-            by_name={f.name: f for f in fields},
-            by_number={f.number: f for f in fields},
-        )
+        return cls(descriptor=descriptor)
 
     @property
     def extensions(self) -> tuple[_d.FieldDescriptor, ...]:
@@ -154,7 +176,3 @@ class FieldView:
         """
         pool = self.descriptor.file.pool
         return tuple(sorted(pool.FindAllExtensions(self.descriptor), key=lambda f: f.number))
-
-    def map_entry(self, field_desc: _d.FieldDescriptor) -> MapEntry | None:
-        """Method form of :func:`map_entry`, for callers holding a view."""
-        return map_entry(field_desc)

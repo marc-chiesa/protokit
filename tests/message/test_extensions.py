@@ -62,6 +62,40 @@ def _classes() -> tuple[type[Message], type[Message], d.FieldDescriptor, d.Field
     return msg_cls, outer_cls, pool.FindExtensionByName("x.tag"), pool.FindExtensionByName("x.rank")
 
 
+def _rich_pool() -> descriptor_pool.DescriptorPool:
+    """``b.Msg`` with a message-typed and a repeated extension."""
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="b.proto", package="b", syntax="proto2")
+    sub = fdp.message_type.add(name="Sub")
+    sub.field.add(name="v", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    msg = fdp.message_type.add(name="Msg")
+    msg.field.add(name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    msg.extension_range.add(start=100, end=200)
+    fdp.extension.add(
+        name="subext", number=100, type=_FD.TYPE_MESSAGE,
+        label=_FD.LABEL_OPTIONAL, extendee=".b.Msg", type_name=".b.Sub",
+    )
+    fdp.extension.add(
+        name="repext", number=101, type=_FD.TYPE_INT32,
+        label=_FD.LABEL_REPEATED, extendee=".b.Msg",
+    )
+    pool.Add(fdp)
+    return pool
+
+
+def _rich_classes() -> tuple[
+    type[Message], type[Message], d.FieldDescriptor, d.FieldDescriptor,
+    d.FieldDescriptor, d.FieldDescriptor,
+]:
+    pool = _rich_pool()
+    msg_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("b.Msg"))
+    return (
+        msg_cls, msg_cls,
+        pool.FindExtensionByName("b.subext"), pool.FindExtensionByName("b.repext"),
+        pool.FindExtensionByName("b.subext"), pool.FindExtensionByName("b.repext"),
+    )
+
+
 class TestTwoSidedExtensionComparison:
     def test_differing_extension_value_is_reported(self) -> None:
         """The headline V19 case: equal declared fields, different extension."""
@@ -103,6 +137,64 @@ class TestTwoSidedExtensionComparison:
         right.Extensions[rank] = 2
         paths = [str(diff.path) for diff in diff_messages(left, right)]
         assert paths == ["(x.rank)", "(x.tag)"], paths
+
+
+class TestNonScalarExtensions:
+    """Message-typed and repeated extensions, which scalar coverage missed.
+
+    Folding extensions into the two-sided name map made the message, repeated
+    and treat-as-map comparison branches reachable by an extension descriptor
+    for the first time. Those branches read values with
+    ``getattr(msg, fd.name)``, which does not work for an extension — its
+    value lives in ``msg.Extensions[fd]`` — so both crashed outright
+    (``ValueError: Protocol message Msg has no "subext" field.`` and
+    ``AttributeError: repext``) until they were routed through the accessors.
+    Scalar-only coverage could not catch it, which is why these exist.
+    """
+
+    def test_message_typed_extension_is_compared(self) -> None:
+        msg_cls, _outer, _tag, _rank, subext, _repext = _rich_classes()
+        left, right = msg_cls(name="x"), msg_cls(name="x")
+        left.Extensions[subext].v = 1
+        right.Extensions[subext].v = 2
+        paths = [str(diff.path) for diff in diff_messages(left, right)]
+        assert paths == ["(b.subext).v"], paths
+
+    def test_message_typed_extension_equal_reports_nothing(self) -> None:
+        msg_cls, _outer, _tag, _rank, subext, _repext = _rich_classes()
+        left, right = msg_cls(name="x"), msg_cls(name="x")
+        left.Extensions[subext].v = 7
+        right.Extensions[subext].v = 7
+        assert list(diff_messages(left, right)) == []
+
+    def test_message_typed_extension_on_one_side_only(self) -> None:
+        msg_cls, _outer, _tag, _rank, subext, _repext = _rich_classes()
+        left, right = msg_cls(name="x"), msg_cls(name="x")
+        right.Extensions[subext].v = 3
+        paths = [str(diff.path) for diff in diff_messages(left, right)]
+        assert paths == ["(b.subext).v"], paths
+
+    def test_repeated_extension_is_compared(self) -> None:
+        msg_cls, _outer, _tag, _rank, _subext, repext = _rich_classes()
+        left, right = msg_cls(name="x"), msg_cls(name="x")
+        left.Extensions[repext].extend([1, 2])
+        right.Extensions[repext].extend([1, 9])
+        paths = [str(diff.path) for diff in diff_messages(left, right)]
+        assert paths == ["(b.repext)[1]"], paths
+
+    def test_repeated_extension_equal_reports_nothing(self) -> None:
+        msg_cls, _outer, _tag, _rank, _subext, repext = _rich_classes()
+        left, right = msg_cls(name="x"), msg_cls(name="x")
+        left.Extensions[repext].extend([4, 5])
+        right.Extensions[repext].extend([4, 5])
+        assert list(diff_messages(left, right)) == []
+
+    def test_repeated_extension_length_change_is_reported(self) -> None:
+        msg_cls, _outer, _tag, _rank, _subext, repext = _rich_classes()
+        left, right = msg_cls(name="x"), msg_cls(name="x")
+        left.Extensions[repext].extend([1])
+        right.Extensions[repext].extend([1, 2])
+        assert [str(d.path) for d in diff_messages(left, right)] != []
 
 
 class TestOneSidedExtensionEmission:
