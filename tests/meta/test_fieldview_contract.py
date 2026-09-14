@@ -285,15 +285,22 @@ class TestViewIsImmutable:
 # allowlist is a one-line bypass — the very drift this release exists to
 # stop.
 #
-# TODO(U17): direct field enumeration ALSO lives in the five modules below,
-# which U3 does not migrate. Widening this guard to all of
-# ``src/protokit/`` is a hard precondition of U17; do not add an allowlist
+# TODO(U17): direct field enumeration ALSO lives in the modules named in
+# ``_UNMIGRATED`` below, which U3 does not migrate. Widening this guard to all
+# of ``src/protokit/`` is a hard precondition of U17; do not add an allowlist
 # instead.
-#   - src/protokit/forensics/_drift.py
-#   - src/protokit/forensics/_match.py
-#   - src/protokit/storage/_columnar.py
-#   - src/protokit/schema/lint/rules/field.py
-#   - src/protokit/schema/lint/rules/imports.py
+#
+# ``_UNMIGRATED`` is asserted against the tree, not maintained by hand. The
+# first draft of this comment listed the remaining sites in prose and was
+# wrong in both directions — it named two modules that enumerate nothing and
+# omitted ``schema/rules.py``, whose ``reserved_field_reused`` has the very
+# ``for fd in ...fields: if fd.is_extension: continue`` shape that V19 was
+# (an extension reusing a reserved number is invisible to it; a U17 item). A
+# hand-written list inside the guard that exists to prevent sibling
+# blindness had itself gone blind. So the set below must equal what the
+# walker finds: a module migrated to ``FieldView`` is removed from it (the
+# ratchet), and a module that starts enumerating directly must be added to
+# it on purpose, in a diff a reviewer sees.
 _MIGRATED = (
     "message/differ.py",
     "schema/checker.py",
@@ -301,6 +308,14 @@ _MIGRATED = (
     "storage/_fields.py",
     "_descriptors.py",
 )
+_UNMIGRATED = frozenset({
+    "forensics/_drift.py",
+    "schema/lint/rules/imports.py",
+    "schema/rules.py",
+    "storage/_columnar.py",
+})
+# The one sanctioned enumeration site: ``FieldView.of`` and its indexes.
+_OWNER = "_fieldview.py"
 
 
 def _direct_enumeration_lines(path: Path) -> list[int]:
@@ -335,6 +350,28 @@ def test_migrated_modules_do_not_enumerate_fields_directly(rel: str) -> None:
         f"{rel} enumerates `.fields` directly at line(s) {hits}; route it through "
         "protokit._fieldview.FieldView so the enumeration contract has one owner."
     )
+
+
+def test_direct_enumeration_lives_only_in_the_owner_and_the_unmigrated_set() -> None:
+    """The remaining sites are derived from the tree and must equal ``_UNMIGRATED``.
+
+    Two failure directions, both deliberate: a module that migrated to
+    ``FieldView`` fails here until it is removed from the set (so the U17
+    precondition is tracked by the test, not by prose), and a module that
+    starts enumerating ``.fields`` directly fails here until it is added
+    (so a new blind spot is a reviewed decision, not a silent one).
+    """
+    found = {
+        str(path.relative_to(_SRC))
+        for path in sorted(_SRC.rglob("*.py"))
+        if _direct_enumeration_lines(path)
+    }
+    assert found == _UNMIGRATED | {_OWNER}, (
+        f"direct `.fields` enumeration sites drifted from _UNMIGRATED: "
+        f"unexpected={sorted(found - _UNMIGRATED - {_OWNER})}, "
+        f"no longer enumerating={sorted(_UNMIGRATED - found)}"
+    )
+    assert not (_UNMIGRATED & set(_MIGRATED))
 
 
 def test_guard_detects_an_injected_violation() -> None:
