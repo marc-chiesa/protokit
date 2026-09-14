@@ -1,9 +1,11 @@
 """Shared descriptor traversal helpers.
 
 Small, backend-agnostic utilities for walking protobuf descriptors. These
-are intentionally leaf-level primitives — no comparison logic, no state —
-so both the differ engine and the schema compatibility checker can import
-them without coupling to either.
+are intentionally leaf-level primitives — no comparison logic — so both the
+differ engine and the schema compatibility checker can import them without
+coupling to either. The one piece of state is the bounded, module-level
+cache behind :func:`message_proto`, documented at its definition; it holds
+immutable serialized file protos and never affects what any helper returns.
 """
 
 from __future__ import annotations
