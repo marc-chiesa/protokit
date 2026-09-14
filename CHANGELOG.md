@@ -15,32 +15,58 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
-### Known issues
-- **Under the pure-Python protobuf runtime
-  (`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`), three surfaces
-  misbehave.** *Surfaced by the 0.16.0 audit remediation's new pure-Python CI
-  cell; the default upb runtime, which `pip install protobuf` selects on every
-  supported platform, is unaffected. The fixes are owned by a later 0.16.0
-  unit (audit findings V1, V10, V34); the entries below stay until it lands.*
+### Fixed — BREAKING (U3: comparison completeness)
 
-  - **`protokit compat`, `protokit forensics match` / `drift`, and the
-    schema pytest helpers (`assert_compatible`, `schema_checker`) crash on
-    pool-built schemas** with `google.protobuf.descriptor.Error: Descriptor
-    does not contain serialization` — `Descriptor.CopyToProto` is not
-    implemented for pool-built descriptors on that backend (V34).
-  - **`protokit lint` exits 0 over a descriptor set with missing imports**
-    instead of `error[lint-missing-imports]` with exit 2: the pure-Python
-    pool resolves dependencies lazily, so the missing import that upb rejects
-    at `pool.Add` time is never observed (V10).
-  - **The storage fidelity probe reports a byte delta of 0 for a proto2
-    message missing a required field** instead of "cannot measure": it relies
-    on the `EncodeError` only upb raises for an uninitialized message (V1).
+- **The differ now reports differences in declared proto2 extensions.**
+  Previously it could not see a declared extension by any route, so two
+  messages differing only in an extension value compared **equal**, and an
+  added or removed message reported none of the extensions it carried
+  (audit finding V19). Extensions appear under a parenthesised,
+  fully-qualified path segment — `(pkg.ext)` — mirroring proto text format.
 
-  CI now runs the full suite under that backend as an **advisory** cell
-  (`test-pure-python`) with these defects held in a committed, finding-tagged
-  known-failure inventory (`tests/pure_python_expected_failures.txt`), so a
-  *new* pure-Python failure turns the cell red while the known ones do not.
-  The cell becomes a required check once the inventory is empty.
+  *Upgrade impact:* a pipeline gating on `protokit diff` over proto2 messages
+  that carry extensions may start reporting differences it previously passed
+  over. Those differences were always there; the tool could not see them. Use
+  `--ignore` on the parenthesised path to suppress a specific extension.
+
+### Fixed — pure-Python protobuf runtime
+
+The three defects listed as known issues in the previous Unreleased entry are
+closed. Each was the same shape: protokit inferred a fact about the runtime
+from an exception only the upb backend raises, so under
+`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` it silently took the wrong
+branch. All three now assert the fact explicitly, which also makes them
+backend-neutral rather than merely fixed (KTD6).
+
+- **`protokit compat`, `protokit forensics match` / `drift`, and the schema
+  pytest helpers no longer crash on pool-built schemas** with
+  `descriptor.Error: Descriptor does not contain serialization`. Reserved
+  ranges, reserved names and proto3-`optional` flags are read from the owning
+  file's serialized `FileDescriptorProto`, which both runtimes retain, instead
+  of from `Descriptor.CopyToProto`, which only upb implements for pool-built
+  descriptors (V34).
+- **`protokit lint` no longer exits 0 over a descriptor set with missing
+  imports.** The pure-Python pool resolves lazily, so a missing import that
+  upb rejects at `pool.Add` was never observed; resolution is now forced with
+  an explicit `FindFileByName` probe at every descriptor-pool population site,
+  and a missing import routes to `error[lint-missing-imports]` with exit 2 on
+  both runtimes (V10).
+- **The storage fidelity probe reports "cannot measure" (`None`), not a byte
+  delta of `0`, for a proto2 message missing a required field.** It no longer
+  depends on the `EncodeError` only upb raises (V1).
+
+`tests/pure_python_expected_failures.txt` is now empty: the full suite passes
+under the pure-Python runtime with no known-failure list. The advisory
+`test-pure-python` CI cell becomes a required check in a following unit.
+
+### Internal
+
+- Field enumeration has a single owner, `protokit._fieldview.FieldView`,
+  replacing `_descriptors.get_field_map()`. It indexes by name *and* number
+  and can reach a message's declared extensions, which the previous helper
+  could not — its `is_extension` filter was vestigial, because
+  `Descriptor.fields` never contains extensions in the first place. Both are
+  private APIs; no supported surface changes.
 
 ## 0.15.1 — 2026-08-30
 
