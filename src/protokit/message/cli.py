@@ -360,14 +360,20 @@ def main(
         use_text_format=use_text_format, use_json=use_json,
     )
 
-    # Configure differencer
+    # Configure differencer. A selector the grammar rejects is a usage error
+    # (exit 2) like any other bad flag; left unwrapped it escaped as a
+    # traceback with click's exit 1, which this module reserves for
+    # "messages differ" and a CI gate would read as a genuine difference.
     differ = MessageDifferencer()
 
-    if ignore:
-        differ.ignore_fields(*ignore)
+    try:
+        if ignore:
+            differ.ignore_fields(*ignore)
 
-    for field, key in treat_as_map:
-        differ.treat_as_map(field, key=key)
+        for field, key in treat_as_map:
+            differ.treat_as_map(field, key=key)
+    except ValueError as e:
+        _error(str(e))
 
     if float_mode == "approximate":
         from protokit.message.comparators import FloatComparison
@@ -378,15 +384,14 @@ def main(
 
     differ.strict_schema = strict_schema
 
-    # Run comparison
+    # Run comparison, then apply the filter — which parses ``--filter`` with
+    # the same grammar, so its ValueError is the same usage error.
     try:
         result = differ.compare(left_msg, right_msg)
+        if filter_path:
+            result = result.filter(path=filter_path)
     except ValueError as e:
         _error(str(e))
-
-    # Apply filter
-    if filter_path:
-        result = result.filter(path=filter_path)
 
     # Output
     if quiet:

@@ -346,3 +346,66 @@ class TestMapTypedExtension:
         right.inner.Extensions[tags]["k"] = 2
         diffs = [(str(x.path), x.change_type.name) for x in diff_messages(outer_cls(), right)]
         assert diffs == [('inner.(m.tags)["k"]', "ADDED"), ("inner.name", "ADDED")], diffs
+
+
+class TestIgnoreAndFilterRoundTrip:
+    """The path the differ emits must work in the selectors that consume paths.
+
+    The CHANGELOG's mitigation for the BREAKING change is ``--ignore`` on the
+    parenthesised path. Until the grammar accepted it, that raised
+    ``ValueError`` from ``FieldPath.parse`` — the tool emitted a path it could
+    not read back — and so did ``DiffResult.filter`` over any result that
+    contained an extension, since it re-parses every difference's path.
+    """
+
+    def test_ignore_by_extension_name_suppresses_it_everywhere(self) -> None:
+        """A single parenthesised segment is the extension's *name*: global, like a bare name."""
+        msg_cls, outer_cls, tag, _rank = _classes()
+        differ = MessageDifferencer()
+        differ.ignore_fields("(x.tag)")
+
+        left, right = msg_cls(name="same"), msg_cls(name="same")
+        left.Extensions[tag] = "alpha"
+        right.Extensions[tag] = "beta"
+        assert list(differ.compare(left, right)) == []
+
+        added = outer_cls()
+        added.inner.name = "n"
+        added.inner.Extensions[tag] = "alpha"
+        assert [str(d.path) for d in differ.compare(outer_cls(), added)] == ["inner.name"]
+
+    def test_ignore_by_dotted_path_is_scoped(self) -> None:
+        msg_cls, outer_cls, tag, _rank = _classes()
+        differ = MessageDifferencer()
+        differ.ignore_fields("inner.(x.tag)")
+
+        added = outer_cls()
+        added.inner.name = "n"
+        added.inner.Extensions[tag] = "alpha"
+        assert [str(d.path) for d in differ.compare(outer_cls(), added)] == ["inner.name"]
+
+        left, right = msg_cls(name="same"), msg_cls(name="same")
+        left.Extensions[tag] = "alpha"
+        right.Extensions[tag] = "beta"
+        assert [str(d.path) for d in differ.compare(left, right)] == ["(x.tag)"]
+
+    def test_short_name_does_not_ignore_an_extension(self) -> None:
+        """Extensions live in their own namespace; ``tag`` is not ``(x.tag)``."""
+        msg_cls, _outer, tag, _rank = _classes()
+        differ = MessageDifferencer()
+        differ.ignore_fields("tag")
+        left, right = msg_cls(name="same"), msg_cls(name="same")
+        left.Extensions[tag] = "alpha"
+        right.Extensions[tag] = "beta"
+        assert [str(d.path) for d in differ.compare(left, right)] == ["(x.tag)"]
+
+    def test_filter_over_a_result_containing_an_extension(self) -> None:
+        msg_cls, _outer, tag, _rank = _classes()
+        left, right = msg_cls(name="a"), msg_cls(name="b")
+        left.Extensions[tag] = "alpha"
+        right.Extensions[tag] = "beta"
+        result = diff_messages(left, right)
+        assert [str(d.path) for d in result] == ["(x.tag)", "name"]
+        assert [str(d.path) for d in result.filter(path="name")] == ["name"]
+        assert [str(d.path) for d in result.filter(path="(x.tag)")] == ["(x.tag)"]
+        assert [str(d.path) for d in result.filter(path="(x.tag)", exact=True)] == ["(x.tag)"]

@@ -179,3 +179,51 @@ class TestFieldPathFiltering:
         fp = FieldPath.parse("items")
         child = fp.child("items", bracket="2")
         assert str(child) == "items.items[2]"
+
+
+class TestParenthesisedExtensionSegment:
+    """``(pkg.ext)`` is one segment: the path the differ emits must parse back.
+
+    The differ reports a proto2 extension under its parenthesised
+    fully-qualified name, and the CHANGELOG tells users to hand that exact
+    string to ``--ignore``. A grammar that accepts only identifier segments
+    emits a path it cannot read, so the documented mitigation raised.
+    """
+
+    def test_top_level_extension(self) -> None:
+        fp = FieldPath.parse("(x.tag)")
+        assert fp.segments == (PathSegment("(x.tag)"),)
+        assert str(fp) == "(x.tag)"
+
+    def test_nested_extension(self) -> None:
+        fp = FieldPath.parse("inner.(x.tag)")
+        assert fp.segments == (PathSegment("inner"), PathSegment("(x.tag)"))
+        assert str(fp) == "inner.(x.tag)"
+
+    def test_repeated_extension_index(self) -> None:
+        fp = FieldPath.parse("(x.rep)[2]")
+        assert fp.segments == (PathSegment("(x.rep)", "2"),)
+        assert str(fp) == "(x.rep)[2]"
+
+    def test_deeply_qualified_name(self) -> None:
+        """An extension declared inside a message carries the message in its name."""
+        fp = FieldPath.parse("(a.b.Msg.ext_nested).leaf")
+        assert fp.segments == (PathSegment("(a.b.Msg.ext_nested)"), PathSegment("leaf"))
+
+    def test_unqualified_name_is_still_a_valid_extension_segment(self) -> None:
+        """A file with no package declares extensions with no dots at all."""
+        assert FieldPath.parse("(ext)").segments == (PathSegment("(ext)"),)
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["()", "(a.)", "(.a)", "(a..b)", "(a", "(a)b", "a(b)", "(1a)", "(a-b)", "(a.b.)"],
+    )
+    def test_malformed_parenthesised_segment_is_rejected(self, bad: str) -> None:
+        with pytest.raises(ValueError):
+            FieldPath.parse(bad)
+
+    def test_selector_matching_treats_the_segment_as_one_name(self) -> None:
+        """Exact-length, name-equal: the same rule every other segment follows."""
+        assert FieldPath.parse("inner.(x.tag)").matches_selector(FieldPath.parse("inner.(x.tag)"))
+        assert not FieldPath.parse("(x.tag)").matches_selector(FieldPath.parse("inner.(x.tag)"))
+        assert not FieldPath.parse("(x.tag)").matches_selector(FieldPath.parse("(x.rank)"))

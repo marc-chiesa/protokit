@@ -529,9 +529,12 @@ class MessageDifferencer:
         Accepts three forms, freely mixed in one call:
 
         * **Bare name** (``"timestamp"``) — ignores that field everywhere.
-        * **Dotted path** (``"header.timestamp"``) — ignores only that
-          specific location (bracket-blind, exact-length match, so
-          ``"items.name"`` also matches ``"items[0].name"``).
+          A proto2 extension's name is its parenthesised fully-qualified
+          form, ``"(pkg.ext)"``, exactly as the differ reports it; despite
+          the dots it is one segment and ignores that extension everywhere.
+        * **Dotted path** (``"header.timestamp"``, ``"header.(pkg.ext)"``) —
+          ignores only that specific location (bracket-blind, exact-length
+          match, so ``"items.name"`` also matches ``"items[0].name"``).
         * **Predicate / FieldSelector** — a
           ``(FieldDescriptor, FieldPath) -> bool`` callable (or a
           pre-built :class:`FieldSelector`) consulted per field at the same
@@ -611,10 +614,17 @@ class MessageDifferencer:
         # All validation passed — safe to mutate
         self._ignore_fields_raw.extend(string_selectors)
         for sel in string_selectors:
-            if "." in sel:
-                self._ignore_paths.append(FieldPath.parse(sel))
-            else:
+            if "." not in sel:
                 self._ignore_names.add(sel)
+                continue
+            path = FieldPath.parse(sel)
+            if len(path.segments) == 1:
+                # ``(pkg.ext)``: dots inside the parentheses belong to the
+                # extension's name, so this is a bare name — global — and it
+                # must match the key the differ files the extension under.
+                self._ignore_names.add(path.segments[0].name)
+            else:
+                self._ignore_paths.append(path)
         self._ignore_selectors.extend(selector_forms)
 
     def treat_as_map(self, field_selector: str, *, key: str) -> None:

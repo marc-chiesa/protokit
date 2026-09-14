@@ -27,7 +27,19 @@ All notable changes to `protokit` are documented here. Format loosely follows
   *Upgrade impact:* a pipeline gating on `protokit diff` over proto2 messages
   that carry extensions may start reporting differences it previously passed
   over. Those differences were always there; the tool could not see them. Use
-  `--ignore` on the parenthesised path to suppress a specific extension.
+  `--ignore` on the parenthesised path to suppress a specific extension:
+  `--ignore '(pkg.ext)'` suppresses it everywhere, `--ignore 'parent.(pkg.ext)'`
+  at one location. `FieldPath.parse` accepts the parenthesised segment, so
+  `ignore_fields`, `treat_as_set`, `--filter` and `DiffResult.filter` all take
+  the path exactly as the differ reports it.
+
+### Fixed — `protokit diff` exit codes
+
+- **A malformed selector now exits 2, not 1.** `--ignore`, `--treat-as-map`
+  and `--filter` values the path grammar rejects raised a `ValueError` that
+  escaped as a traceback with exit code 1 — the code documented for "messages
+  differ", which a CI gate would read as a genuine difference. They are usage
+  errors and exit 2 with an `Error:` line like every other bad flag.
 
 ### Fixed — pure-Python protobuf runtime
 

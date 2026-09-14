@@ -175,6 +175,7 @@ differ.set_float_comparison(FloatComparison.APPROXIMATE, fraction=1e-6, margin=1
 differ = MessageDifferencer()
 differ.ignore_fields("timestamp", "request_id")  # bare name = global
 differ.ignore_fields("user.internal_id")          # dotted path = scoped
+differ.ignore_fields("(pkg.ext)")                 # proto2 extension, as the differ reports it
 ```
 
 **Max depth**
@@ -205,7 +206,7 @@ assert not result.is_complete  # truncated subtrees exist
 | `--quiet` | Suppress output, exit code only. Mutually exclusive with any non-`human` `--format`. |
 | `--verbose` | Show warnings even when equal |
 | `--filter PATH` | Filter diffs by path prefix |
-| `--ignore FIELD` | Ignore field. Repeatable. |
+| `--ignore FIELD` | Ignore field. Repeatable. A bare name applies everywhere, a dotted path to one location; a proto2 extension is written as the differ reports it, `(pkg.ext)`. |
 | `--treat-as-map FIELD KEY` | Treat repeated field as map with key |
 | `--float-mode exact\|approximate` | Float comparison mode |
 | `--max-depth N` | Maximum comparison depth. Must be non-negative; a negative value is a usage error (exit 2). |
