@@ -50,9 +50,9 @@ class TestIgnoreBareField:
             "name": (T.TYPE_STRING, 1),
             "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
         })
-        Inner = builder.get_message_class("test.Inner")
-        msg1 = builder.build("test.Outer", name="A", inner=Inner(name="X", score=1))
-        msg2 = builder.build("test.Outer", name="B", inner=Inner(name="Y", score=1))
+        inner_cls = builder.get_message_class("test.Inner")
+        msg1 = builder.build("test.Outer", name="A", inner=inner_cls(name="X", score=1))
+        msg2 = builder.build("test.Outer", name="B", inner=inner_cls(name="Y", score=1))
         d = MessageDifferencer()
         d.ignore_fields("name")
         result = d.compare(msg1, msg2)
@@ -71,9 +71,9 @@ class TestIgnoreDottedPath:
             "name": (T.TYPE_STRING, 1),
             "inner": (T.TYPE_MESSAGE, 2, ".test.Inner"),
         })
-        Inner = builder.get_message_class("test.Inner")
-        msg1 = builder.build("test.Outer", name="A", inner=Inner(name="X"))
-        msg2 = builder.build("test.Outer", name="B", inner=Inner(name="Y"))
+        inner_cls = builder.get_message_class("test.Inner")
+        msg1 = builder.build("test.Outer", name="A", inner=inner_cls(name="X"))
+        msg2 = builder.build("test.Outer", name="B", inner=inner_cls(name="Y"))
         d = MessageDifferencer()
         d.ignore_fields("inner.name")
         result = d.compare(msg1, msg2)
@@ -95,12 +95,12 @@ class TestIgnoreDottedPathRepeated:
             {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
             repeated_fields={"items"},
         )
-        Item = builder.get_message_class("test.Item")
+        item_cls = builder.get_message_class("test.Item")
         msg1 = builder.build("test.Container", items=[
-            Item(name="old_a", value=1), Item(name="old_b", value=2),
+            item_cls(name="old_a", value=1), item_cls(name="old_b", value=2),
         ])
         msg2 = builder.build("test.Container", items=[
-            Item(name="new_a", value=1), Item(name="new_b", value=2),
+            item_cls(name="new_a", value=1), item_cls(name="new_b", value=2),
         ])
         d = MessageDifferencer()
         d.ignore_fields("items.name")
@@ -120,9 +120,9 @@ class TestIgnoreDottedPathRepeated:
             {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
             repeated_fields={"items"},
         )
-        Item = builder.get_message_class("test.Item")
-        msg1 = builder.build("test.Container", items=[Item(name="old", value=1)])
-        msg2 = builder.build("test.Container", items=[Item(name="new", value=99)])
+        item_cls = builder.get_message_class("test.Item")
+        msg1 = builder.build("test.Container", items=[item_cls(name="old", value=1)])
+        msg2 = builder.build("test.Container", items=[item_cls(name="new", value=99)])
         d = MessageDifferencer()
         d.ignore_fields("items.name")
         result = d.compare(msg1, msg2)

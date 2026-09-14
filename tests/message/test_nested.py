@@ -25,9 +25,9 @@ def _make_person_builder() -> ProtoBuilder:
 class TestNestedEqual:
     def test_same_nested_values(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
-        msg1 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
-        msg2 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
+        addr_cls = b.get_message_class("test.Address")
+        msg1 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
+        msg2 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
         result = diff_messages(msg1, msg2)
         assert not result.has_changes()
 
@@ -42,9 +42,9 @@ class TestNestedEqual:
 class TestNestedDifferences:
     def test_nested_field_changed(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
-        msg1 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
-        msg2 = b.build("test.Person", name="Alice", address=Addr(street="2nd", city="NY"))
+        addr_cls = b.get_message_class("test.Address")
+        msg1 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
+        msg2 = b.build("test.Person", name="Alice", address=addr_cls(street="2nd", city="NY"))
         result = diff_messages(msg1, msg2)
         assert len(result) == 1
         d = result.differences[0]
@@ -55,9 +55,9 @@ class TestNestedDifferences:
 
     def test_nested_message_added(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
+        addr_cls = b.get_message_class("test.Address")
         msg1 = b.build("test.Person", name="Alice")
-        msg2 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
+        msg2 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
         result = diff_messages(msg1, msg2)
         assert result.has_changes()
         paths = {str(d.path) for d in result}
@@ -67,8 +67,8 @@ class TestNestedDifferences:
 
     def test_nested_message_removed(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
-        msg1 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
+        addr_cls = b.get_message_class("test.Address")
+        msg1 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
         msg2 = b.build("test.Person", name="Alice")
         result = diff_messages(msg1, msg2)
         assert result.has_changes()
@@ -76,9 +76,9 @@ class TestNestedDifferences:
 
     def test_multiple_nested_fields_changed(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
-        msg1 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
-        msg2 = b.build("test.Person", name="Alice", address=Addr(street="2nd", city="LA"))
+        addr_cls = b.get_message_class("test.Address")
+        msg1 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
+        msg2 = b.build("test.Person", name="Alice", address=addr_cls(street="2nd", city="LA"))
         result = diff_messages(msg1, msg2)
         assert len(result) == 2
         paths = {str(d.path) for d in result}
@@ -101,10 +101,14 @@ class TestDeeplyNested:
             "geo": (T.TYPE_MESSAGE, 2, ".test.Geo"),
         })
 
-        Coord = builder.get_message_class("test.Coord")
-        Geo = builder.get_message_class("test.Geo")
-        msg1 = builder.build("test.Place", name="HQ", geo=Geo(coord=Coord(lat=1.0, lng=2.0)))
-        msg2 = builder.build("test.Place", name="HQ", geo=Geo(coord=Coord(lat=1.0, lng=3.0)))
+        coord_cls = builder.get_message_class("test.Coord")
+        geo_cls = builder.get_message_class("test.Geo")
+        msg1 = builder.build(
+            "test.Place", name="HQ", geo=geo_cls(coord=coord_cls(lat=1.0, lng=2.0)),
+        )
+        msg2 = builder.build(
+            "test.Place", name="HQ", geo=geo_cls(coord=coord_cls(lat=1.0, lng=3.0)),
+        )
         result = diff_messages(msg1, msg2)
         assert len(result) == 1
         assert str(result.differences[0].path) == "geo.coord.lng"
@@ -113,9 +117,9 @@ class TestDeeplyNested:
 class TestMaxDepth:
     def test_truncates_at_max_depth(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
-        msg1 = b.build("test.Person", name="Alice", address=Addr(street="1st", city="NY"))
-        msg2 = b.build("test.Person", name="Alice", address=Addr(street="2nd", city="LA"))
+        addr_cls = b.get_message_class("test.Address")
+        msg1 = b.build("test.Person", name="Alice", address=addr_cls(street="1st", city="NY"))
+        msg2 = b.build("test.Person", name="Alice", address=addr_cls(street="2nd", city="LA"))
 
         differ = MessageDifferencer()
         differ.max_depth = 0
@@ -126,9 +130,9 @@ class TestMaxDepth:
 
     def test_max_depth_1_compares_top_level_only(self) -> None:
         b = _make_person_builder()
-        Addr = b.get_message_class("test.Address")
-        msg1 = b.build("test.Person", name="X", address=Addr(street="1st", city="NY"))
-        msg2 = b.build("test.Person", name="Y", address=Addr(street="2nd", city="LA"))
+        addr_cls = b.get_message_class("test.Address")
+        msg1 = b.build("test.Person", name="X", address=addr_cls(street="1st", city="NY"))
+        msg2 = b.build("test.Person", name="Y", address=addr_cls(street="2nd", city="LA"))
 
         differ = MessageDifferencer()
         differ.max_depth = 1

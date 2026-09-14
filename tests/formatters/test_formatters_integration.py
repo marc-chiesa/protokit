@@ -21,13 +21,11 @@ import jsonschema
 import pytest
 import xmlschema
 from click.testing import CliRunner
-
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.formatters import clear_user_formatters
 from protokit.message.cli import main as diff_main
 from protokit.schema.cli import main as compat_main
-
 
 _JUNIT_XSD = Path(__file__).parent.parent / "fixtures" / "junit-xml" / "JUnit.xsd"
 _SARIF_SCHEMA = Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"

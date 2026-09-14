@@ -6,10 +6,12 @@ scope CI gates and fails closed on any regression. Running pytest
 against a specific file (e.g. ``pytest tests/schema/...``) skips
 this gate, so focused TDD loops stay fast.
 
-Scope today is the protokit-lint Delivery 1 surface. Future
-deliveries that clean up a pre-existing file should add it to
-``_LINT_PATHS`` and/or ``_TYPE_CHECK_PATHS`` so the gate ratchets
-forward and prevents regressions in newly-clean files.
+All of ``tests/`` is gated as a single directory entry, so a new test
+file is linted the moment it is added — no registration edit, and no
+way for a file to sit outside the gate unnoticed. ``src/`` still
+ratchets per path: a source module that has become clean under both
+tools should be added to ``_LINT_PATHS`` and/or ``_TYPE_CHECK_PATHS``
+so the gate prevents it from regressing.
 """
 
 from __future__ import annotations
@@ -26,9 +28,17 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Paths gated by ``ruff check``. Tests are linted but not strict-typed
-# in this codebase — the test files appear here but not in
+# in this codebase — ``tests`` appears here but not in
 # ``_TYPE_CHECK_PATHS``. When adding a SOURCE module that is now clean
 # under both tools, add it to BOTH lists.
+#
+# ``tests`` is ONE directory entry on purpose. It used to be 24 entries —
+# a few directories plus a long tail of per-file registrations — and that
+# shape leaks: a file added to a per-file bucket is simply not gated until
+# someone remembers to register it, which is silent and indistinguishable
+# from being clean. 46 of 246 test files had drifted outside the gate that
+# way, one of them carrying a real lint error for three months. A directory
+# entry cannot drift, so prefer promoting a bucket over appending to it.
 _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/formatters/_builtin_lint.py",
@@ -42,30 +52,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/storage",
-    "tests/_buf_helpers.py",
-    "tests/forensics",
-    "tests/parity",
-    "tests/schema/lint",
-    "tests/storage",
-    "tests/meta",
-    "tests/formatters/test_builtin_lint_formatter.py",
-    "tests/formatters/test_builtin_lint_runtime_warnings.py",
-    "tests/core/test_cli_utils.py",
-    "tests/message/test_field_selector.py",
-    "tests/formatters/test_formatters_cli.py",
-    "tests/message/test_hamcrest_adapter.py",
-    "tests/message/test_hamcrest_extra.py",
-    "tests/message/test_ignore_predicate.py",
-    "tests/message/test_match_partial.py",
-    "tests/message/test_message_public_surface.py",
-    "tests/message/test_per_field_tolerance.py",
-    "tests/message/test_presence_mode.py",
-    "tests/message/test_proto_match.py",
-    "tests/message/test_set_comparison.py",
-    "tests/_pure_python_inventory.py",
-    "tests/conftest.py",
-    "tests/proto_builder.py",
-    "tests/schema/helpers.py",
+    "tests",
     "scripts/check_docs_test_refs.py",
 )
 

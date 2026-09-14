@@ -9,7 +9,6 @@ proto schema (sometimes across multiple revisions), and exercises
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 

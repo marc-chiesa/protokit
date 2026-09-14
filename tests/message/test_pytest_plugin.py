@@ -93,14 +93,13 @@ class TestPytestPlugin:
         with patch(
             "protokit.message.pytest_plugin.MessageDifferencer.compare",
             side_effect=RuntimeError("boom"),
-        ):
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                result = pytest_assertrepr_compare(None, "==", msg1, msg2)
-                assert result is None
-                assert len(w) == 1
-                assert "protokit plugin failed" in str(w[0].message)
-                assert "RuntimeError" in str(w[0].message)
+        ), warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = pytest_assertrepr_compare(None, "==", msg1, msg2)
+            assert result is None
+            assert len(w) == 1
+            assert "protokit plugin failed" in str(w[0].message)
+            assert "RuntimeError" in str(w[0].message)
 
 
 class TestFormatValue:

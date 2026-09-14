@@ -38,7 +38,6 @@ from protokit.schema.model import (
     Severity,
 )
 
-
 _SARIF_SCHEMA = Path(__file__).parent.parent / "fixtures" / "sarif" / "sarif-2.1.0.json"
 
 

@@ -8,9 +8,9 @@ session that imports the plugin — same pattern as
 from __future__ import annotations
 
 import pytest
-
 from google.protobuf import descriptor_pool
 
+from protokit.message.model import Diagnostic, FieldPath
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.model import (
     CompatibilityLevel,
@@ -25,7 +25,6 @@ from protokit.schema.pytest_plugin import (
     schema_checker,
     schema_policy,
 )
-from protokit.message.model import Diagnostic, FieldPath, Warning  # Warning kept as deprecated alias
 from tests.schema.helpers import T, build_message
 
 

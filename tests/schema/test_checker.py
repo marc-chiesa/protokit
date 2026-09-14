@@ -18,7 +18,6 @@ from protokit.schema import (
 from tests.proto_builder import ProtoBuilder, wire_dependencies
 from tests.schema.helpers import T, build_enum, build_message
 
-
 # ---------------------------------------------------------------------------
 # Basic top-level traversal
 # ---------------------------------------------------------------------------
@@ -846,7 +845,9 @@ class TestEndToEndProfileBehavior:
     enum_value_added) in addition to removals.
     """
 
-    def _build_user_pair(self) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]:
+    def _build_user_pair(
+        self,
+    ) -> tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]:
         old = descriptor_pool.DescriptorPool()
         new = descriptor_pool.DescriptorPool()
         build_enum(old, "acme.PhoneType", {"MOBILE": 0, "HOME": 1, "WORK": 2})
@@ -886,10 +887,10 @@ class TestEndToEndProfileBehavior:
             level=CompatibilityLevel.CONSUMER_SAFE,
         )
         ids = {f.rule_id for f in report.findings}
-        assert "field_type_semantic_change" in ids   # email string -> bytes
-        assert "field_removed" in ids                # internal_notes (BACKWARD)
-        assert "field_added" in ids                  # nickname (BACKWARD — old consumer sees unknown)
-        assert "enum_value_added" in ids             # FAX (BACKWARD — old consumer unknown value)
+        assert "field_type_semantic_change" in ids  # email string -> bytes
+        assert "field_removed" in ids  # internal_notes (BACKWARD)
+        assert "field_added" in ids  # nickname (BACKWARD — old consumer sees unknown)
+        assert "enum_value_added" in ids  # FAX (BACKWARD — old consumer unknown value)
         assert not report.is_compatible
 
     def test_producer_safe_surfaces_risks_to_new_consumers(self) -> None:

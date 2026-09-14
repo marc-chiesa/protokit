@@ -16,7 +16,7 @@ What counts as an edge — the load-bearing rules:
   is deferred, and in this codebase deferred imports exist precisely to break
   a load-time cycle (``schema/profiles.py`` imports ``schema.checker`` inside
   a method; ``message/pytest_plugin.py`` imports ``message.matchers`` inside a
-  method, ``_ProtoMatcherFactory.__call__``), so counting them would report
+  method, ``ProtoMatcherFactory.__call__``), so counting them would report
   the cycles they prevent. An import under ``if TYPE_CHECKING:`` never
   executes and is excluded; that block's ``else`` branch, a ``try``/``except``
   arm, a plain ``if``, and a class body all run at import time and count. The

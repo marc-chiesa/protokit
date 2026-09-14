@@ -119,9 +119,9 @@ class TestRepeatedMessage:
             {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
             repeated_fields={"items"},
         )
-        Item = builder.get_message_class("test.Item")
-        msg1 = builder.build("test.Container", items=[Item(name="a", value=1)])
-        msg2 = builder.build("test.Container", items=[Item(name="a", value=2)])
+        item_cls = builder.get_message_class("test.Item")
+        msg1 = builder.build("test.Container", items=[item_cls(name="a", value=1)])
+        msg2 = builder.build("test.Container", items=[item_cls(name="a", value=2)])
         result = diff_messages(msg1, msg2)
         assert len(result) == 1
         assert result.differences[0].change_type == ChangeType.MODIFIED
@@ -134,9 +134,9 @@ class TestRepeatedMessage:
             {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
             repeated_fields={"items"},
         )
-        Item = builder.get_message_class("test.Item")
-        msg1 = builder.build("test.Container", items=[Item(name="a")])
-        msg2 = builder.build("test.Container", items=[Item(name="a"), Item(name="b")])
+        item_cls = builder.get_message_class("test.Item")
+        msg1 = builder.build("test.Container", items=[item_cls(name="a")])
+        msg2 = builder.build("test.Container", items=[item_cls(name="a"), item_cls(name="b")])
         result = diff_messages(msg1, msg2)
         added = [d for d in result if d.change_type == ChangeType.ADDED]
         assert len(added) >= 1

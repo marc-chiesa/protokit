@@ -20,7 +20,6 @@ from protokit.schema import (
 from protokit.schema.plugins import iter_rule_pack, make_emit
 from tests.schema.helpers import T, build_message
 
-
 ROOT = FieldPath(segments=())
 
 
@@ -509,8 +508,11 @@ class TestAsyncPluginRejection:
             try:
                 import asyncio
                 await asyncio.sleep(0)
-            except GeneratorExit:
-                raise RuntimeError("close exploded")
+            except GeneratorExit as exc:
+                # ``from exc``: the RuntimeError is raised *because* the
+                # engine closed the coroutine, so keep the GeneratorExit
+                # as the explicit cause.
+                raise RuntimeError("close exploded") from exc
 
         def plugin(ctx: FieldRuleContext):
             coro = nasty_coro()
@@ -533,7 +535,6 @@ class TestReentrancy:
         Pre-fix the checker stored pools on self and a recursive check()
         call would null them out for the outer run's remaining plugins.
         """
-        from protokit.schema.model import Direction, Severity
         old, new = _identical_pair()
         other_old, other_new = _identical_pair()
 

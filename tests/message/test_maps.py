@@ -190,9 +190,9 @@ class TestMapMessageValues:
     def test_message_value_modified(self) -> None:
         """map<string, Inner> where the Inner value differs."""
         b = _make_message_value_map_builder()
-        Inner = b.get_message_class("test.Inner")
-        msg1 = b.build("test.Outer", data={"a": Inner(x=1, y="hello")})
-        msg2 = b.build("test.Outer", data={"a": Inner(x=2, y="hello")})
+        inner_cls = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", data={"a": inner_cls(x=1, y="hello")})
+        msg2 = b.build("test.Outer", data={"a": inner_cls(x=2, y="hello")})
         result = diff_messages(msg1, msg2)
         assert len(result) == 1
         d = result.differences[0]
@@ -203,9 +203,9 @@ class TestMapMessageValues:
     def test_message_value_added(self) -> None:
         """map<string, Inner> with a new key."""
         b = _make_message_value_map_builder()
-        Inner = b.get_message_class("test.Inner")
-        msg1 = b.build("test.Outer", data={"a": Inner(x=1)})
-        msg2 = b.build("test.Outer", data={"a": Inner(x=1), "b": Inner(x=2, y="new")})
+        inner_cls = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", data={"a": inner_cls(x=1)})
+        msg2 = b.build("test.Outer", data={"a": inner_cls(x=1), "b": inner_cls(x=2, y="new")})
         result = diff_messages(msg1, msg2)
         added = [d for d in result if d.change_type == ChangeType.ADDED]
         assert len(added) >= 1
@@ -215,9 +215,9 @@ class TestMapMessageValues:
     def test_message_value_removed(self) -> None:
         """map<string, Inner> with a removed key."""
         b = _make_message_value_map_builder()
-        Inner = b.get_message_class("test.Inner")
-        msg1 = b.build("test.Outer", data={"a": Inner(x=1), "b": Inner(x=2)})
-        msg2 = b.build("test.Outer", data={"a": Inner(x=1)})
+        inner_cls = b.get_message_class("test.Inner")
+        msg1 = b.build("test.Outer", data={"a": inner_cls(x=1), "b": inner_cls(x=2)})
+        msg2 = b.build("test.Outer", data={"a": inner_cls(x=1)})
         result = diff_messages(msg1, msg2)
         removed = [d for d in result if d.change_type == ChangeType.REMOVED]
         assert len(removed) >= 1
@@ -396,33 +396,33 @@ class TestStrictSchemaMapValueTypeName:
         return d
 
     def test_empty_maps_still_report_value_type_drift(self) -> None:
-        Left, Right = _make_map_value_msg_rename_pools()
-        result = self._differ().compare(Left(), Right())
+        left_cls, right_cls = _make_map_value_msg_rename_pools()
+        result = self._differ().compare(left_cls(), right_cls())
         assert result.warnings, "empty map hid declared value-type drift"
         assert "t.OldValue" in str(result.warnings[0])
         assert "t.NewValue" in str(result.warnings[0])
 
     def test_populated_maps_report_it_exactly_once(self) -> None:
         """The declared and per-entry checks must dedupe, not double-report."""
-        Left, Right = _make_map_value_msg_rename_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_value_msg_rename_pools()
+        left = left_cls()
         left.labels["a"].q = "x"
-        right = Right()
+        right = right_cls()
         right.labels["a"].q = "x"
         result = self._differ().compare(left, right)
         drift = [w for w in result.warnings if "type name" in str(w).lower()]
         assert len(drift) == 1, [str(w) for w in drift]
 
     def test_one_sided_population_reports_drift(self) -> None:
-        Left, Right = _make_map_value_msg_rename_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_value_msg_rename_pools()
+        left = left_cls()
         left.labels["only_left"].q = "x"
-        result = self._differ().compare(left, Right())
+        result = self._differ().compare(left, right_cls())
         assert result.warnings
 
     def test_no_warning_when_strict_schema_is_off(self) -> None:
-        Left, Right = _make_map_value_msg_rename_pools()
-        result = MessageDifferencer().compare(Left(), Right())
+        left_cls, right_cls = _make_map_value_msg_rename_pools()
+        result = MessageDifferencer().compare(left_cls(), right_cls())
         assert not [w for w in result.warnings if "type name" in str(w).lower()]
 
 
@@ -438,8 +438,8 @@ class TestMapKeyTypeChange:
     """
 
     def test_empty_maps_are_not_reported_equal(self) -> None:
-        Left, Right = _make_map_key_type_change_pools()
-        result = MessageDifferencer().compare(Left(), Right())
+        left_cls, right_cls = _make_map_key_type_change_pools()
+        result = MessageDifferencer().compare(left_cls(), right_cls())
         assert result.has_changes(), "map key type change reported as equality"
         assert [d.change_type for d in result.differences] == [
             ChangeType.TYPE_CHANGED,
@@ -447,10 +447,10 @@ class TestMapKeyTypeChange:
         assert "map key type" in str(result.warnings[0]).lower()
 
     def test_populated_maps_do_not_crash(self) -> None:
-        Left, Right = _make_map_key_type_change_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_key_type_change_pools()
+        left = left_cls()
         left.labels["a"] = "x"
-        right = Right()
+        right = right_cls()
         right.labels[1] = "x"
 
         result = MessageDifferencer().compare(left, right)  # must not raise
@@ -459,11 +459,11 @@ class TestMapKeyTypeChange:
         assert ChangeType.TYPE_CHANGED in [d.change_type for d in result.differences]
 
     def test_one_sided_population_does_not_crash(self) -> None:
-        Left, Right = _make_map_key_type_change_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_key_type_change_pools()
+        left = left_cls()
         left.labels["only_left"] = "x"
 
-        result = MessageDifferencer().compare(left, Right())
+        result = MessageDifferencer().compare(left, right_cls())
 
         assert result.has_changes()
         assert ChangeType.TYPE_CHANGED in [d.change_type for d in result.differences]
@@ -497,10 +497,10 @@ class TestMapKeyTypeChange:
                 pool.FindMessageTypeByName("t.M"),
             )
 
-        Left = build(left_pool, "both_a.proto", T.TYPE_STRING, T.TYPE_STRING)
-        Right = build(right_pool, "both_b.proto", T.TYPE_INT32, T.TYPE_BOOL)
+        left_cls = build(left_pool, "both_a.proto", T.TYPE_STRING, T.TYPE_STRING)
+        right_cls = build(right_pool, "both_b.proto", T.TYPE_INT32, T.TYPE_BOOL)
 
-        result = MessageDifferencer().compare(Left(), Right())
+        result = MessageDifferencer().compare(left_cls(), right_cls())
         assert [d.change_type for d in result.differences] == [
             ChangeType.TYPE_CHANGED,
             ChangeType.TYPE_CHANGED,
@@ -529,10 +529,10 @@ class TestMapValueTypeChange:
         skipped. The map value type is invisible to that check (both sides are
         the synthetic MapEntry message), so this branch must report it itself.
         """
-        Left, Right = _make_map_value_type_change_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_value_type_change_pools()
+        left = left_cls()
         left.labels["a"].x = 5
-        right = Right(labels={"a": "COMPLETELY DIFFERENT"})
+        right = right_cls(labels={"a": "COMPLETELY DIFFERENT"})
 
         result = MessageDifferencer().compare(left, right)
 
@@ -584,21 +584,21 @@ class TestMapValueTypeChange:
             pool.Add(fp)
             return message_factory.GetMessageClass(pool.FindMessageTypeByName("c.M"))
 
-        LeftCls = build(left_pool, as_map=True)
-        RightCls = build(right_pool, as_map=False)
-        left = LeftCls()
+        left_cls = build(left_pool, as_map=True)
+        right_cls = build(right_pool, as_map=False)
+        left = left_cls()
         left.tags["a"] = "x"
-        right = RightCls(tags=["x"])
+        right = right_cls(tags=["x"])
 
         result = MessageDifferencer().compare(left, right)
         assert result.has_changes(), "map <-> repeated must record a difference"
 
     def test_shared_key_diagnoses_instead_of_crashing(self) -> None:
         """Both sides holding the key must not push a raw scalar as work."""
-        Left, Right = _make_map_value_type_change_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_value_type_change_pools()
+        left = left_cls()
         left.labels["a"].x = 5
-        right = Right(labels={"a": "hello"})
+        right = right_cls(labels={"a": "hello"})
 
         result = MessageDifferencer().compare(left, right)
 
@@ -614,10 +614,10 @@ class TestMapValueTypeChange:
 
     def test_left_only_key_diagnoses_instead_of_crashing(self) -> None:
         """The left-only key branch reads left_value_fd.type independently."""
-        Left, Right = _make_map_value_type_change_pools()
-        left = Left()
+        left_cls, right_cls = _make_map_value_type_change_pools()
+        left = left_cls()
         left.labels["only_left"].x = 5
-        right = Right()
+        right = right_cls()
 
         result = MessageDifferencer().compare(left, right)
 
@@ -629,9 +629,9 @@ class TestMapValueTypeChange:
 
     def test_right_only_key_diagnoses_instead_of_crashing(self) -> None:
         """The right-only key branch reads right_value_fd.type independently."""
-        Left, Right = _make_map_value_type_change_pools()
-        left = Left()
-        right = Right(labels={"only_right": "hello"})
+        left_cls, right_cls = _make_map_value_type_change_pools()
+        left = left_cls()
+        right = right_cls(labels={"only_right": "hello"})
 
         result = MessageDifferencer().compare(left, right)
 
