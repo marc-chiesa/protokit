@@ -33,11 +33,18 @@ alongside the compat ones.
 exception into ``exit_code == 1`` and an unrestricted strict xfail
 accepts the resulting assertion failure -- so an unrelated crash in a
 subcommand, or a broken fixture, would keep a pin "green" for the wrong
-reason. With them, the three pins whose defect *is* an escaping
-exception (U15-2's iteration failure, U15-4's missing git, U15-6's
-differ ``ValueError``) see that exact exception propagate out of the
-runner and are narrowed to it; everything else is narrowed to the
+reason. With them, the pins whose defect *is* an escaping exception
+(U15-2's iteration failure, U15-4's missing git; U15-6's differ
+``ValueError`` until it closed) see that exact exception propagate out
+of the runner and are narrowed to it; everything else is narrowed to the
 assertion (or ``pytest.fail``) on its named line. Anything else is red.
+
+**Flipped — U15-6.** The U3 review follow-up wrapped the differ's
+selector configuration in the CLI's ``ValueError`` handler (a P0 there:
+the documented ``--ignore`` mitigation for extension diffs crashed with
+exit 1), which closed U15-6 ahead of U8, in the same 0.16.0 row. Its pin
+XPASSed under strict mode and is un-marked below; the test stays as a
+plain regression test.
 
 **Deliberately not pinned — closed by 0.15.1.** The original U15-1
 claim also covered a malformed ``--ignore`` on ``history`` / ``bisect``
@@ -723,30 +730,19 @@ def test_u15_5_history_does_not_attribute_a_siblings_change_to_a_commit(
         ),
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason=(
-        "U15-6: message/cli.py configures the differ "
-        "(differ.ignore_fields / differ.treat_as_map) BEFORE the "
-        "`try: differ.compare(...) except ValueError: _error(...)` "
-        "block, so a malformed --ignore path or an ignore/treat-as-map "
-        "conflict raises ValueError past every handler — traceback and "
-        "exit 1, the code reserved for 'messages differ'."
-    ),
-)
 def test_u15_6_diff_flag_validation_errors_exit_2_not_1(
     order_proto: Path, flat_pair: tuple[Path, Path],
     extra: list[str], expected_error: str,
 ) -> None:
     """A bad ``--ignore`` is a usage error, not a "messages differ" verdict.
 
-    Mechanism: in ``message/cli.py`` the ``if ignore:
-    differ.ignore_fields(*ignore)`` and ``for field, key in
-    treat_as_map: differ.treat_as_map(...)`` statements sit above the
-    ``try`` that guards ``differ.compare``. ``FieldPath.parse``
-    (message/model.py) raises ``ValueError("Trailing '.' in ...")``
-    from there, outside any handler.
+    **Closed** (U3 review follow-up, ahead of U8): the differ configuration
+    is now wrapped in its own ``ValueError`` handler, so this pin flipped to
+    XPASS and is un-marked; it stays as the regression test for the exit
+    code. The mechanism it pinned, for the record: ``differ.ignore_fields``
+    and ``differ.treat_as_map`` sat above the ``try`` that guards
+    ``differ.compare``, so ``FieldPath.parse``'s ``ValueError("Trailing '.'
+    in ...")`` escaped every handler.
 
     Observed on 0.15.1: exit 1, empty stdout, raw traceback on stderr.
     The sibling errors that *are* raised inside the guarded block —

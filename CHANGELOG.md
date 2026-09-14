@@ -35,8 +35,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ### Fixed — `protokit diff` exit codes
 
-- **A malformed selector now exits 2, not 1.** `--ignore`, `--treat-as-map`
-  and `--filter` values the path grammar rejects raised a `ValueError` that
+- **A malformed selector now exits 2, not 1** (audit finding U15-6). `--ignore`,
+  `--treat-as-map` and `--filter` values the path grammar rejects raised a `ValueError` that
   escaped as a traceback with exit code 1 — the code documented for "messages
   differ", which a CI gate would read as a genuine difference. They are usage
   errors and exit 2 with an `Error:` line like every other bad flag.
