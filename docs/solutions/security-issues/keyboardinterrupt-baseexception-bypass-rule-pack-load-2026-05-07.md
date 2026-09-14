@@ -130,7 +130,7 @@ except KeyboardInterrupt:
         f"kind=import: pack {module_name!r} raised KeyboardInterrupt "
         f"at module-body load time",
     )
-except Exception as exc:  # noqa: BLE001 -- intentional broad fallback; SystemExit and KeyboardInterrupt handled above
+except Exception as exc:  # noqa: BLE001 -- mirrors compat's load_formatter_packs broad catch
     error_exit_with_code(
         "rule-pack-load",
         f"kind=import: failed to import pack {module_name!r}: "
@@ -248,8 +248,22 @@ assert the literal substring `"KeyboardInterrupt"` in stderr — that
 would couple the test to the exact wording of the message body and
 break for no behavioural reason if the message is later rephrased.
 
-(As of commit `6c28e63`, the fixture and test do not yet exist —
-covered in U4a or U5 hardening pass.)
+**Status (2026-09-14): the fixture and test now exist.** They did
+not land in the U4a/U5 hardening pass this section originally
+promised — the `except KeyboardInterrupt` arm shipped in May 2026 and
+sat untested for four months. Now covered by
+`tests/schema/lint/cli/user_packs/pack_raises_keyboard_interrupt.py`
+and
+`TestRulePackLoadErrors::test_module_body_keyboard_interrupt_routes_to_rule_pack_load_import`
+in `tests/schema/lint/cli/test_cli_rule_loading.py`.
+
+The landed test diverges from the sketch above on one point: it *does*
+assert the message discriminator (`"raised KeyboardInterrupt"`),
+matching its `pack_sys_exits` sibling in the same class, which asserts
+`"sys.exit(0)"`. Consistency with the neighbouring test won over the
+wording-coupling concern — and `exit_code == 2` alone already carries
+the non-vacuity, as a mutation check confirms (removing the guard
+drops the exit code to 1).
 
 ### General Python pattern
 
