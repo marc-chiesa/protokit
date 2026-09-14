@@ -337,6 +337,13 @@ def _populate_pool_with_capture(
         every emitted fd's ``source_code_info`` intact. ``emitted``
         is the set of fd.name strings that appeared in
         ``expected_names``.
+
+    Raises:
+        protokit._pools.DescriptorPoolError: When a file cannot be resolved
+            into the pool — an unresolvable symbol or a duplicate
+            registration. Raised on both backends, from the explicit
+            ``FindFileByName`` probe rather than from whichever exception the
+            active runtime happens to throw.
     """
     captured: dict[str, descriptor_pb2.FileDescriptorProto] | None = (
         {} if capture else None
@@ -345,7 +352,19 @@ def _populate_pool_with_capture(
     for fd in fds_file:
         if captured is not None:
             captured[fd.name] = fd
-        pool.Add(fd)
+        try:
+            pool.Add(fd)
+            # Resolution asserted, not inferred (KTD6, V10). upb resolves
+            # eagerly and raises TypeError from Add; the pure-Python pool
+            # resolves lazily, so Add returns cleanly for a file whose symbols
+            # cannot be resolved and both compile backends would hand their
+            # caller a pool that merely looks populated. FindFileByName forces
+            # resolution here, raising KeyError(<unresolvable symbol>).
+            pool.FindFileByName(fd.name)
+        except (TypeError, KeyError) as exc:
+            raise _pools.DescriptorPoolError(
+                f"could not build file {fd.name!r} into the descriptor pool: {exc}"
+            ) from exc
         if fd.name in expected_names:
             emitted.add(fd.name)
     return captured, emitted

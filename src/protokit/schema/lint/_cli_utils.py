@@ -387,7 +387,19 @@ def _load_descriptor_sets_to_result(
             source_info_descriptors[fd.name] = fd
             try:
                 pool.Add(fd)
-            except (TypeError, ValueError) as exc:
+                # Resolution asserted, not inferred (KTD6, V10). upb resolves
+                # eagerly and raises from Add itself; the pure-Python pool
+                # resolves LAZILY, so Add() returns cleanly for a descriptor
+                # set with missing imports and lint exited 0 on an analysis it
+                # never performed — the fail-open this release exists to close.
+                # FindFileByName forces resolution here. Measured on protobuf
+                # 5.27.5 under the pure-Python runtime: a missing import raises
+                # KeyError(<dependency name>), a duplicate symbol raises
+                # TypeError("Conflict register for file ..."). The RuntimeWarning
+                # Add emits first is a side effect, not the signal — do not
+                # build a warnings-capture path on it.
+                pool.FindFileByName(fd.name)
+            except (TypeError, ValueError, KeyError) as exc:
                 # protobuf-python's C++ runtime raises TypeError for
                 # the documented failure shapes (missing-imports,
                 # duplicate-symbol). The (TypeError, ValueError) catch
@@ -396,9 +408,17 @@ def _load_descriptor_sets_to_result(
                 # exception type, lint's stable-prefix path stays
                 # intact rather than letting ValueError escape to
                 # click as exit 1 + traceback (no error[lint-...]
-                # prefix).
+                # prefix). KeyError joins them for the pure-Python
+                # resolution probe above.
                 msg = str(exc)
-                if any(marker in msg for marker in _MISSING_IMPORT_MARKERS):
+                # A KeyError from the probe IS the missing-import signal on the
+                # pure-Python backend, and it carries the unresolvable symbol
+                # rather than any of upb's prose markers — so route on the
+                # exception type, not on message text. Marker matching stays
+                # for upb, whose TypeError text is the only signal it gives.
+                if isinstance(exc, KeyError) or any(
+                    marker in msg for marker in _MISSING_IMPORT_MARKERS
+                ):
                     error_exit_with_code(
                         "missing-imports",
                         (

@@ -21,8 +21,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from google.protobuf import descriptor_pb2, descriptor_pool
 
-from protokit import _cli_utils
+from protokit import _cli_utils, _pools
 
 _DEMO_PROTO = """
 syntax = "proto3";
@@ -659,3 +660,66 @@ class TestProtocTimeoutEnvOverride:
             _cli_utils._protoc_timeout_seconds()
             == _cli_utils._PROTOC_TIMEOUT_SECONDS_DEFAULT
         )
+
+
+class TestPopulatePoolResolutionIsAsserted:
+    """``_populate_pool_with_capture`` must not return a populated-looking pool (U3, V10).
+
+    Both compile backends funnel through this helper, so a file whose
+    declared dependency is absent has to fail here rather than downstream.
+    Backend-neutral by construction: upb raises ``TypeError`` from ``Add``
+    itself (eager resolution) while the pure-Python pool accepts the file and
+    only surfaces ``KeyError`` when resolution is forced, so the assertion is
+    on the typed error the helper raises, not on either runtime's exception.
+
+    Function-level: no compiler, no descriptor set on disk.
+    """
+
+    @staticmethod
+    def _orphan() -> descriptor_pb2.FileDescriptorProto:
+        """A file whose field references a symbol nothing in the pool defines."""
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="orphan.proto", package="orphan", syntax="proto3",
+        )
+        msg = fdp.message_type.add(name="M")
+        msg.field.add(
+            name="ref", number=1,
+            type=descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+            type_name=".nowhere.Missing",
+        )
+        return fdp
+
+    def test_unresolvable_symbol_raises_the_typed_error(self) -> None:
+        pool = descriptor_pool.DescriptorPool()
+        with pytest.raises(_pools.DescriptorPoolError) as excinfo:
+            _cli_utils._populate_pool_with_capture(
+                [self._orphan()], pool, {"orphan.proto"}, capture=False,
+            )
+        assert "orphan.proto" in str(excinfo.value)
+
+    def test_capture_mode_fails_the_same_way(self) -> None:
+        """The capture path must not diverge — it is the lint-facing one."""
+        pool = descriptor_pool.DescriptorPool()
+        with pytest.raises(_pools.DescriptorPoolError):
+            _cli_utils._populate_pool_with_capture(
+                [self._orphan()], pool, {"orphan.proto"}, capture=True,
+            )
+
+    def test_a_resolvable_file_still_populates_and_reports_emitted(self) -> None:
+        """Adjacent behaviour: the happy path is unchanged."""
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="fine.proto", package="fine", syntax="proto3",
+        )
+        fdp.message_type.add(name="M").field.add(
+            name="a", number=1,
+            type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        captured, emitted = _cli_utils._populate_pool_with_capture(
+            [fdp], pool, {"fine.proto"}, capture=True,
+        )
+        assert emitted == {"fine.proto"}
+        assert captured is not None and set(captured) == {"fine.proto"}
+        assert pool.FindFileByName("fine.proto").name == "fine.proto"

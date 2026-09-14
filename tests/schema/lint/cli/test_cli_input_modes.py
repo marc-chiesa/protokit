@@ -40,6 +40,7 @@ from protokit.cli import main as protokit_main
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 from protokit.schema.lint import _cli_utils as lint_cli_utils
 from protokit.schema.lint.cli import main as lint_main
+from tests._pure_python_inventory import skip_under_pure_python
 
 # ---------------------------------------------------------------------------
 # Happy paths
@@ -201,9 +202,31 @@ class TestErrorCodes:
         )
         assert result.exit_code == 2
         assert "error[lint-pool-conflict]:" in result.stderr
-        # Pin against actual descriptor_pool wording so a future
-        # protobuf release that changes "duplicate symbol" surfaces
-        # as a CI failure (not a silent misroute).
+
+    @skip_under_pure_python(
+        'pins upb\'s "duplicate symbol" wording; the pure-Python pool reports '
+        'a duplicate as TypeError("Conflict register for file ...") instead'
+    )
+    def test_cross_set_symbol_collision_pins_upb_wording(
+        self,
+        pool_conflict_a_descriptor_set: Path,
+        pool_conflict_b_descriptor_set: Path,
+    ) -> None:
+        """The wording half of the split (U3, V10).
+
+        Kept as a upb-only pin so a future protobuf release that changes
+        "duplicate symbol" still surfaces as a CI failure rather than a silent
+        misroute. It cannot be backend-neutral: the two runtimes word this
+        condition differently, which is exactly why routing no longer depends
+        on the text.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                str(pool_conflict_a_descriptor_set),
+                str(pool_conflict_b_descriptor_set),
+            ],
+        )
         assert "duplicate symbol" in result.stderr.lower()
 
     def test_missing_imports_routes_to_missing_imports_loaded_marker(
@@ -217,9 +240,21 @@ class TestErrorCodes:
         )
         assert result.exit_code == 2
         assert "error[lint-missing-imports]:" in result.stderr
-        # User-actionable hint appears in the message body.
+        # User-actionable hint appears in the message body. Backend-neutral:
+        # protokit writes this sentence, not the protobuf runtime.
         assert "include_imports" in result.stderr
-        # Pin the protobuf-runtime substring that drove dispatch:
+
+    @skip_under_pure_python(
+        'pins upb\'s "has not been loaded" wording; the pure-Python pool '
+        "surfaces a missing import as KeyError(<dependency name>) instead"
+    )
+    def test_missing_imports_loaded_marker_pins_upb_wording(
+        self, missing_imports_descriptor_set: Path,
+    ) -> None:
+        """The wording half of the split (U3, V10)."""
+        result = CliRunner().invoke(
+            lint_main, [str(missing_imports_descriptor_set)],
+        )
         assert "has not been loaded" in result.stderr.lower()
 
     def test_missing_imports_routes_to_missing_imports_resolve_name_marker(
@@ -263,7 +298,40 @@ class TestErrorCodes:
         result = CliRunner().invoke(lint_main, [str(bad)])
         assert result.exit_code == 2
         assert "error[lint-missing-imports]:" in result.stderr
-        # Pin the protobuf-runtime substring that drove dispatch:
+
+    @skip_under_pure_python(
+        'pins upb\'s "couldn\'t resolve name" wording; the pure-Python pool '
+        "surfaces a dangling symbol as KeyError(<symbol>) from the resolution "
+        "probe instead"
+    )
+    def test_dangling_symbol_resolve_name_marker_pins_upb_wording(
+        self, tmp_path: Path,
+    ) -> None:
+        """The wording half of the split (U3, V10).
+
+        Rebuilds the same hand-made dangling descriptor set as the
+        backend-neutral test above; duplicated rather than shared via a
+        fixture so the upb-only pin can be deleted wholesale when the wording
+        stops being worth pinning.
+        """
+        fd = descriptor_pb2.FileDescriptorProto()
+        fd.name = "dangling/dangling.proto"
+        fd.package = "dangling"
+        fd.syntax = "proto3"
+        msg = fd.message_type.add()
+        msg.name = "Holder"
+        field = msg.field.add()
+        field.name = "ref"
+        field.number = 1
+        field.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
+        field.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+        field.type_name = ".unknown.MissingType"
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.add().CopyFrom(fd)
+        bad = tmp_path / "dangling_upb.descriptor_set"
+        bad.write_bytes(fds.SerializeToString())
+
+        result = CliRunner().invoke(lint_main, [str(bad)])
         assert "couldn't resolve name" in result.stderr.lower()
 
     def test_unmatched_typeerror_falls_through_to_pool_conflict(

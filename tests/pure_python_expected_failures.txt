@@ -17,7 +17,6 @@
 # Counts: 166 V34 (122 direct descriptor.Error, 44 CLI-downstream; 10 on U1 pins), 5 V10, 2 V1.
 protobuf: 5.27.5
 python: 3.12.14
-tests/core/test_pools.py::TestBuildPool::test_dangling_symbol_raises_typed_error_not_raw_typeerror V10 pytest.fail.Exception
 tests/forensics/cli/test_drift.py::test_drift_clean_message V34 google.protobuf.descriptor.Error
 tests/forensics/cli/test_drift.py::test_drift_writes_grep_able_stderr_summary V34 google.protobuf.descriptor.Error
 tests/forensics/cli/test_drift.py::test_drift_reports_undeclared V34 google.protobuf.descriptor.Error
@@ -49,10 +48,6 @@ tests/formatters/test_formatters_integration.py::TestCompatCheckIntegration::tes
 tests/formatters/test_formatters_integration.py::TestCompatCheckIntegration::test_sarif_output_validates_via_cli V34 json.decoder.JSONDecodeError
 tests/formatters/test_formatters_integration.py::TestCompatCheckIntegration::test_human_format_no_xml_or_json_artifacts V34 AssertionError
 tests/formatters/test_formatters_integration.py::TestExampleFormatterPack::test_examples_custom_formatter_works V34 AssertionError
-tests/schema/lint/cli/test_cli_descriptor_set_source_info.py::TestLoaderPoolAddFailure::test_missing_imports_raises_system_exit V10 pytest.fail.Exception
-tests/schema/lint/cli/test_cli_input_modes.py::TestErrorCodes::test_cross_set_symbol_collision_routes_to_pool_conflict V10 AssertionError
-tests/schema/lint/cli/test_cli_input_modes.py::TestErrorCodes::test_missing_imports_routes_to_missing_imports_loaded_marker V10 AssertionError
-tests/schema/lint/cli/test_cli_input_modes.py::TestErrorCodes::test_missing_imports_routes_to_missing_imports_resolve_name_marker V10 AssertionError
 tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_3_rule_pack_print_does_not_corrupt_json_stdout V34,U15-3 google.protobuf.descriptor.Error
 tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_3_rule_pack_print_does_not_leak_under_quiet V34,U15-3 google.protobuf.descriptor.Error
 tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_5_history_does_not_attribute_a_siblings_change_to_a_commit V34,U15-5 google.protobuf.descriptor.Error

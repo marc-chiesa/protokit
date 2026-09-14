@@ -150,13 +150,24 @@ def build_pool(
     for fd in sort_files_by_dependency(list(fds.file)):
         try:
             pool.Add(fd)
-        except TypeError as exc:
+            # Resolution is asserted, never inferred from Add() raising (KTD6,
+            # V10). upb resolves eagerly and raises TypeError from Add itself;
+            # the pure-Python pool resolves LAZILY, so Add() returns cleanly for
+            # a file whose symbols cannot be resolved and the caller walks away
+            # with a pool that looks populated. FindFileByName forces resolution
+            # now, raising KeyError(<unresolvable symbol>) there. Files are added
+            # in dependency order above, so a forward reference within this set
+            # is already satisfied by the time its referrer is added.
+            pool.FindFileByName(fd.name)
+        except (TypeError, KeyError) as exc:
             # upb raises a bare TypeError when a descriptor cannot be built into
             # the pool — e.g. a field referencing a symbol no file in the set
             # defines (a dangling symbol with no *missing-file* dependency, which
-            # the topo-sort cannot detect). Re-raise as the typed family so the
-            # documented "typed library exceptions, never raw" contract holds for
-            # every caller, including the storage register boundary.
+            # the topo-sort cannot detect). The pure-Python pool surfaces the
+            # same condition as KeyError from the FindFileByName above. Re-raise
+            # both as the typed family so the documented "typed library
+            # exceptions, never raw" contract holds for every caller, including
+            # the storage register boundary, on either backend.
             raise DescriptorPoolError(
                 f"could not build file {fd.name!r} into the descriptor pool: {exc}"
             ) from exc
