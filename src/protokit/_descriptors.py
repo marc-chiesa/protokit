@@ -12,6 +12,8 @@ from typing import Any
 
 from google.protobuf import descriptor as proto_descriptor
 
+from protokit import _fieldview
+
 _FD = proto_descriptor.FieldDescriptor
 
 _TYPE_NAMES: dict[int, str] = {
@@ -82,6 +84,11 @@ def label_name(field_desc: proto_descriptor.FieldDescriptor) -> str:
 def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     """Check if a field is a protobuf map field.
 
+    Delegates to :func:`protokit._fieldview.is_map_field`, which owns the
+    map-entry question alongside the enumeration question (U3). Kept here
+    as a re-export so existing call sites keep resolving it from this
+    module; the two cannot drift apart because there is only one body.
+
     Args:
         field_desc: A protobuf FieldDescriptor.
 
@@ -89,26 +96,7 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
         True if the field is a repeated message whose message type has
         the ``map_entry`` option set.
     """
-    return (
-        is_repeated(field_desc)
-        and field_desc.type == proto_descriptor.FieldDescriptor.TYPE_MESSAGE
-        and field_desc.message_type.GetOptions().map_entry
-    )
-
-
-def get_field_map(
-    descriptor: proto_descriptor.Descriptor,
-) -> dict[str, proto_descriptor.FieldDescriptor]:
-    """Get a name -> field descriptor map, excluding extensions.
-
-    Args:
-        descriptor: A protobuf message Descriptor.
-
-    Returns:
-        A dict mapping field name to FieldDescriptor for all non-extension
-        fields.
-    """
-    return {f.name: f for f in descriptor.fields if not f.is_extension}
+    return _fieldview.is_map_field(field_desc)
 
 
 def has_presence(fd: proto_descriptor.FieldDescriptor) -> bool:

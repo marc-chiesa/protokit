@@ -15,13 +15,13 @@ from google.protobuf.message import Message
 
 from protokit._descriptors import (
     format_key,
-    get_field_map,
     has_presence,
     is_map_field,
     is_repeated,
     label_name,
     type_name,
 )
+from protokit._fieldview import FieldView
 from protokit.message._presence import PresenceVerdict, presence_verdict
 from protokit.message._selector import FieldSelector, SelectorSpec
 from protokit.message._setmatch import greedy_multiset_pairing
@@ -989,8 +989,8 @@ class MessageDifferencer:
                         item.path, warnings, reported_type_names,
                     )
 
-                left_fields = get_field_map(item.left_msg.DESCRIPTOR)
-                right_fields = get_field_map(item.right_msg.DESCRIPTOR)
+                left_fields = FieldView.of(item.left_msg.DESCRIPTOR).by_name
+                right_fields = FieldView.of(item.right_msg.DESCRIPTOR).by_name
 
                 all_names = left_fields.keys() | right_fields.keys()
 

@@ -10,7 +10,6 @@ from google.protobuf import descriptor_pb2
 
 from protokit._descriptors import (
     format_key,
-    get_field_map,
     has_presence,
     is_map_field,
     is_repeated,
@@ -18,6 +17,7 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
+from protokit._fieldview import FieldView
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -62,7 +62,14 @@ class TestIsMapField:
         assert is_map_field(desc.fields_by_name["name"]) is False
 
 
-class TestGetFieldMap:
+class TestFieldViewByName:
+    """Enumeration moved to the ``_fieldview`` seam in U3.
+
+    These stay at the unit level against ``ProtoBuilder``; the seam's full
+    completeness contract (extensions, map entries, namespace separation)
+    lives in ``tests/meta/test_fieldview_contract.py``.
+    """
+
     def test_maps_each_field_by_name(self) -> None:
         builder = ProtoBuilder()
         builder.message(
@@ -73,7 +80,7 @@ class TestGetFieldMap:
             },
         )
         desc = builder.pool.FindMessageTypeByName("test.Msg")
-        fmap = get_field_map(desc)
+        fmap = FieldView.of(desc).by_name
         assert set(fmap) == {"name", "age"}
         assert fmap["name"].number == 1
         assert fmap["age"].number == 2
@@ -82,7 +89,7 @@ class TestGetFieldMap:
         builder = ProtoBuilder()
         builder.message("test.Empty", {})
         desc = builder.pool.FindMessageTypeByName("test.Empty")
-        assert get_field_map(desc) == {}
+        assert dict(FieldView.of(desc).by_name) == {}
 
 
 class TestHasPresence:
