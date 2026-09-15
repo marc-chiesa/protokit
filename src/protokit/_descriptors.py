@@ -10,11 +10,12 @@ immutable serialized file protos and never affects what any helper returns.
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from typing import Any
 
 from google.protobuf import descriptor as proto_descriptor
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit import _fieldview
 
@@ -121,24 +122,43 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
 # object — the failure mode a bare ``id()`` cache would have. A file already in
 # a pool is immutable, so a cached proto cannot go stale.
 #
-# Bounded, because `protokit compat history` / `bisect` build a fresh pool per
-# commit; an unbounded cache would pin one pool per commit walked. Bounded is
-# not small: the checker traverses by message reference, not grouped by file,
-# so a schema with more live files than the cap evicts on every miss. Measured
-# at 60 files visited round-robin, a cap of 32 took 3.7 ms against 0.4 ms at
-# 256 — 9x slower, and slower than not caching at all. The cap therefore sits
-# well above any single descriptor set's file count; what it bounds is the
-# number of POOLS a long history walk can keep alive, and 256 files is a
-# handful of commits' worth, not one pool per commit.
-_FILE_PROTO_CACHE_MAX = 256
+# Bounded by POOLS, not files. A FileDescriptor pins its pool, so what a
+# `protokit compat history` / `bisect` walk (one fresh pool per commit) keeps
+# alive is the number of distinct pools the cache references. A file cap
+# cannot express that: 32 files thrashed on any schema larger than 32 files
+# (measured 9x slower than uncached), and 256 files let a walk over ten-file
+# schemas pin 26 old pools (3x the memory of the cap it replaced). So the
+# live pool is always fully cached whatever its size — no thrash — and only
+# the newest ``_FILE_PROTO_CACHE_MAX_POOLS`` pools stay alive; a whole pool's
+# entries go when it ages out. The file backstop guards the cache's own size
+# against one pathological pool and is never the operative bound in practice.
+#
+# One lock: entries are evicted while another caller may be between its
+# ``get`` and ``move_to_end`` (two ``SchemaChecker`` runs on different threads
+# raised ``KeyError`` there under contention).
+_FILE_PROTO_CACHE_MAX_POOLS = 4
+_FILE_PROTO_CACHE_MAX_FILES = 2048
 _FILE_PROTO_CACHE: OrderedDict[
     int,
     tuple[
         proto_descriptor.FileDescriptor,
         descriptor_pb2.FileDescriptorProto,
         dict[str, descriptor_pb2.DescriptorProto],
+        int,  # id() of the owning pool: the key into _FILE_PROTO_POOLS
     ],
 ] = OrderedDict()
+# Pools with cached files, least recently used first: ``{id(pool): (pool, {file keys})}``.
+_FILE_PROTO_POOLS: OrderedDict[
+    int, tuple[descriptor_pool.DescriptorPool, set[int]],
+] = OrderedDict()
+_FILE_PROTO_LOCK = threading.Lock()
+
+
+def _clear_file_proto_cache() -> None:
+    """Drop every cached file and pool (tests; nothing in the product needs it)."""
+    with _FILE_PROTO_LOCK:
+        _FILE_PROTO_CACHE.clear()
+        _FILE_PROTO_POOLS.clear()
 
 
 def _index_messages(
@@ -168,18 +188,35 @@ def _file_message_index(
 ) -> dict[str, descriptor_pb2.DescriptorProto]:
     """``{package-relative dotted name: DescriptorProto}`` for a file, memoized."""
     key = id(file_descriptor)
-    hit = _FILE_PROTO_CACHE.get(key)
-    if hit is not None and hit[0] is file_descriptor:
+    with _FILE_PROTO_LOCK:
+        hit = _FILE_PROTO_CACHE.get(key)
+        if hit is not None and hit[0] is file_descriptor:
+            _FILE_PROTO_CACHE.move_to_end(key)
+            _FILE_PROTO_POOLS.move_to_end(hit[3])
+            return hit[2]
+        proto = descriptor_pb2.FileDescriptorProto()
+        file_descriptor.CopyToProto(proto)
+        index = _index_messages(proto)
+        pool = file_descriptor.pool
+        pool_key = id(pool)
+        pool_entry = _FILE_PROTO_POOLS.get(pool_key)
+        if pool_entry is None or pool_entry[0] is not pool:
+            pool_entry = (pool, set())
+            _FILE_PROTO_POOLS[pool_key] = pool_entry
+        _FILE_PROTO_POOLS.move_to_end(pool_key)
+        pool_entry[1].add(key)
+        _FILE_PROTO_CACHE[key] = (file_descriptor, proto, index, pool_key)
         _FILE_PROTO_CACHE.move_to_end(key)
-        return hit[2]
-    proto = descriptor_pb2.FileDescriptorProto()
-    file_descriptor.CopyToProto(proto)
-    index = _index_messages(proto)
-    _FILE_PROTO_CACHE[key] = (file_descriptor, proto, index)
-    _FILE_PROTO_CACHE.move_to_end(key)
-    while len(_FILE_PROTO_CACHE) > _FILE_PROTO_CACHE_MAX:
-        _FILE_PROTO_CACHE.popitem(last=False)
-    return index
+        while len(_FILE_PROTO_POOLS) > _FILE_PROTO_CACHE_MAX_POOLS:
+            _, (_, evicted_keys) = _FILE_PROTO_POOLS.popitem(last=False)
+            for evicted in evicted_keys:
+                _FILE_PROTO_CACHE.pop(evicted, None)
+        while len(_FILE_PROTO_CACHE) > _FILE_PROTO_CACHE_MAX_FILES:
+            evicted, (_, _, _, evicted_pool) = _FILE_PROTO_CACHE.popitem(last=False)
+            owner = _FILE_PROTO_POOLS.get(evicted_pool)
+            if owner is not None:
+                owner[1].discard(evicted)
+        return index
 
 
 def message_proto(

@@ -249,23 +249,31 @@ class TestLabelName:
 
 
 class TestFileProtoCache:
-    """``message_proto``'s per-file cache must hold a realistic schema without thrashing.
+    """``message_proto``'s per-file cache: no thrash within a schema, bounded across pools.
 
     The cache exists because reading the owning file to get one message turns
     a per-message read into a per-message whole-file serialization, and the
-    compat checker calls it once per message pair. It is bounded so
-    ``compat history`` / ``bisect``, which build a pool per commit, cannot pin
-    a pool per commit walked — bounded, not small. At 32 entries a schema of
-    a few dozen files visited in reference order (the checker's traversal is
-    by message reference, not grouped by file) evicted on every miss: measured
-    9x slower than a larger cap and slower than no cache at all.
+    compat checker calls it once per message pair. Two invariants, each with
+    its own history of being wrong:
+
+    * A schema's live pool must be fully cached whatever its file count. At
+      32 entries a schema of a few dozen files visited in reference order
+      (the checker's traversal is by message reference, not grouped by file)
+      evicted on every miss: 9x slower than a larger cap and slower than no
+      cache at all.
+    * What a ``compat history`` / ``bisect`` walk keeps alive is bounded by
+      POOLS, not files. Every entry holds a strong reference to its
+      ``FileDescriptor`` and therefore to its pool, so a file cap of 256 let a
+      walk over ten-file schemas pin 26 old pools (measured: 3x the memory of
+      the cap it replaced). The bound is now a count of distinct pools, with
+      a large file backstop only against a single pathological pool.
     """
 
     @pytest.fixture(autouse=True)
     def _fresh_cache(self) -> Iterator[None]:
-        _descriptors._FILE_PROTO_CACHE.clear()
+        _descriptors._clear_file_proto_cache()
         yield
-        _descriptors._FILE_PROTO_CACHE.clear()
+        _descriptors._clear_file_proto_cache()
 
     @staticmethod
     def _pool_of_files(n: int) -> tuple[ProtoBuilder, list[Descriptor]]:
@@ -311,17 +319,36 @@ class TestFileProtoCache:
             "cannot hold a 64-file schema and is thrashing"
         )
 
-    def test_cache_stays_bounded_and_correct_past_the_cap(self) -> None:
-        """Past the cap: entries are evicted, lookups stay right, keys stay pinned."""
-        cap = _descriptors._FILE_PROTO_CACHE_MAX
-        _builder, descs = self._pool_of_files(cap + 16)
-        for i, desc in enumerate(descs):
-            assert message_proto(desc).name == f"M{i}"
-        assert len(_descriptors._FILE_PROTO_CACHE) <= cap
-        # The first entries were evicted; re-reading them must still be correct.
-        for i, desc in enumerate(descs[:8]):
+    def test_a_history_walk_pins_at_most_the_pool_cap(self) -> None:
+        """One pool per 'commit', many commits: only the newest pools stay alive.
+
+        Every cached entry pins its pool, so the number of DISTINCT pools the
+        cache references is what bounds a long walk's memory. Evicted pools'
+        descriptors are re-read correctly when touched again (the walk moved
+        on; correctness must not depend on the eviction).
+        """
+        cap = _descriptors._FILE_PROTO_CACHE_MAX_POOLS
+        walk = [self._pool_of_files(3) for _ in range(cap + 6)]
+        for _builder, descs in walk:
+            for i, desc in enumerate(descs):
+                assert message_proto(desc).name == f"M{i}"
+        pinned = {id(fd.pool) for fd, _p, _i, _k in _descriptors._FILE_PROTO_CACHE.values()}
+        assert len(pinned) == cap, len(pinned)
+        newest = {id(builder.pool) for builder, _ in walk[-cap:]}
+        assert pinned == newest
+        # The oldest pool was evicted; its descriptors still read correctly.
+        for i, desc in enumerate(walk[0][1]):
             assert message_proto(desc).name == f"M{i}"
         # Every live entry holds the FileDescriptor whose id() keys it, so that
         # id cannot be reused by another object while the entry lives.
-        for key, (file_desc, _proto, _index) in _descriptors._FILE_PROTO_CACHE.items():
+        for key, (file_desc, _proto, _index, _pool_key) in _descriptors._FILE_PROTO_CACHE.items():
             assert id(file_desc) == key
+
+    def test_file_backstop_bounds_a_single_pathological_pool(self) -> None:
+        cap = _descriptors._FILE_PROTO_CACHE_MAX_FILES
+        _builder, descs = self._pool_of_files(cap + 8)
+        for i, desc in enumerate(descs):
+            assert message_proto(desc).name == f"M{i}"
+        assert len(_descriptors._FILE_PROTO_CACHE) <= cap
+        for i, desc in enumerate(descs[:8]):
+            assert message_proto(desc).name == f"M{i}"
