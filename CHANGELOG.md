@@ -26,9 +26,10 @@ All notable changes to `protokit` are documented here. Format loosely follows
   custom options, so an extension can never be confused with a declared
   field of the same short name. An extension follows the same presence
   mode as a declared field (set to its default on one side and unset on
-  the other collapses under the default EQUIVALENT mode), and `treat_as_map`
-  accepts the parenthesised selector with the same global-name / scoped-path
-  rule as `--ignore`.
+  the other collapses under the default EQUIVALENT mode), also when the two
+  messages come from different descriptor pools that both declare it, and
+  `treat_as_map` accepts the parenthesised selector with the same
+  global-name / scoped-path rule as `--ignore`.
 
   *Upgrade impact:* a pipeline gating on `protokit diff` over proto2 messages
   that carry extensions may start reporting differences it previously passed

@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import pytest
 from google.protobuf import descriptor as d
-from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from google.protobuf import descriptor_database, descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.message import Message
 
-from protokit.message import MessageDifferencer, diff_messages
+from protokit.message import DuplicateKeyError, MessageDifferencer, diff_messages
 from protokit.message.comparators import MessageFieldComparison
 
 _FD = d.FieldDescriptor
@@ -731,3 +731,164 @@ class TestFloatOverlayOnMapExtension:
         assert list(differ.compare(left, right)) == []
         assert seen == ["t.tags"], seen
 
+
+def _msg_class_declaring_xitems_on(extendee: str | None) -> type[Message]:
+    """``x.Msg`` from a pool that declares ``x.xitems`` on ``extendee``, or not at all."""
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="k2.proto", package="x", syntax="proto2")
+    item = fdp.message_type.add(name="Item")
+    item.field.add(name="id", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    item.field.add(name="v", number=2, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    for msg_name in ("Msg", "Other"):
+        msg = fdp.message_type.add(name=msg_name)
+        msg.field.add(name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+        msg.field.add(
+            name="items", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+            type_name=".x.Item",
+        )
+        msg.extension_range.add(start=100, end=300)
+    if extendee is not None:
+        fdp.extension.add(
+            name="xitems", number=101, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+            extendee=f".x.{extendee}", type_name=".x.Item",
+        )
+    pool.Add(fdp)
+    message_factory.GetMessageClass(pool.FindMessageTypeByName("x.Item"))
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("x.Msg"))
+
+
+class TestCrossPoolExtensions:
+    """An extension both pools declare compares two-sided, as a declared field does.
+
+    Extensions are discovered per side from ``ListFields``, so one set only
+    on the right looked schema-absent on the left and took the one-sided
+    route — which enumerates by index, never consults ``treat_as_map``, and
+    skips its duplicate-key check. The shared-descriptor fold-in closed that
+    for one class only; two pools declaring the same extension now resolve it
+    each from their own pool by full name. A pool that does not declare it on
+    this message keeps the one-sided route, as for any schema-absent field.
+    """
+
+    def test_keyed_across_pools_validates_duplicate_keys(self) -> None:
+        left_cls, _o, _x, _i = _keyed_classes()
+        right_cls, _o2, xitems, _i2 = _keyed_classes()
+        left, right = left_cls(), right_cls()
+        right.Extensions[xitems].add(id="a", v=1)
+        right.Extensions[xitems].add(id="a", v=2)
+        differ = MessageDifferencer()
+        differ.treat_as_map("(x.xitems)", key="id")
+        with pytest.raises(DuplicateKeyError):
+            differ.compare(left, right)
+
+    def test_keyed_across_pools_matches_the_shared_descriptor_output(self) -> None:
+        def run(left: Message, right: Message, xitems: d.FieldDescriptor) -> list[tuple[str, str]]:
+            right.Extensions[xitems].add(id="a", v=1)
+            differ = MessageDifferencer()
+            differ.treat_as_map("(x.xitems)", key="id")
+            return [(str(x.path), x.change_type.name) for x in differ.compare(left, right)]
+
+        one_cls, _o, xitems, _i = _keyed_classes()
+        shared = run(one_cls(), one_cls(), xitems)
+        left_cls, _o1, _x1, _i1 = _keyed_classes()
+        right_cls, _o2, xitems2, _i2 = _keyed_classes()
+        assert run(left_cls(), right_cls(), xitems2) == shared == [
+            ('(x.xitems)[id="a"].id', "ADDED"), ('(x.xitems)[id="a"].v', "ADDED"),
+        ]
+
+    def test_presence_mode_applies_across_pools(self) -> None:
+        left_cls, _o, _t, _r = _classes()
+        right_cls, _o2, tag, _r2 = _classes()
+        left, right = left_cls(), right_cls()
+        right.Extensions[tag] = ""
+        assert list(diff_messages(left, right)) == []
+        differ = MessageDifferencer()
+        differ.set_message_field_comparison(MessageFieldComparison.EQUAL)
+        assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
+            ("(x.tag)", "ADDED"),
+        ]
+
+    def test_hook_context_is_both_sided_across_pools(self) -> None:
+        left_cls, _o, tag, _r = _classes()
+        right_cls, _o2, _t2, _r2 = _classes()
+        left, right = left_cls(), right_cls()
+        left.Extensions[tag] = "alpha"
+        seen = []
+        differ = MessageDifferencer()
+        differ.register_report_hook(
+            lambda ctx: seen.append((
+                str(ctx.path),
+                ctx.left_fd is not None, ctx.right_fd is not None,
+                ctx.left_msg is not None, ctx.right_msg is not None,
+            )),
+        )
+        differ.compare(left, right)
+        assert seen == [("(x.tag)", True, True, True, True)], seen
+
+    def test_extension_the_other_pool_does_not_declare_stays_one_sided(self) -> None:
+        left_cls = _msg_class_declaring_xitems_on(None)
+        right_cls, _o, xitems, _i = _keyed_classes()
+        left, right = left_cls(), right_cls()
+        right.Extensions[xitems].add(id="a", v=1)
+        differ = MessageDifferencer()
+        differ.treat_as_map("(x.xitems)", key="id")
+        assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
+            ("(x.xitems)[0].id", "ADDED"), ("(x.xitems)[0].v", "ADDED"),
+        ]
+
+    def test_extension_declared_on_another_message_stays_one_sided(self) -> None:
+        """Same full name, different extendee: not this message's extension."""
+        left_cls = _msg_class_declaring_xitems_on("Other")
+        right_cls, _o, xitems, _i = _keyed_classes()
+        left, right = left_cls(), right_cls()
+        right.Extensions[xitems].add(id="a", v=1)
+        differ = MessageDifferencer()
+        differ.treat_as_map("(x.xitems)", key="id")
+        assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
+            ("(x.xitems)[0].id", "ADDED"), ("(x.xitems)[0].v", "ADDED"),
+        ]
+
+    def test_extension_the_other_pool_cannot_build_stays_one_sided(self) -> None:
+        """A lazy lookup that fails to build is "not declared", on both backends.
+
+        A pool backed by a descriptor database loads a file at lookup time.
+        When that file does not build, pure-Python raises ``KeyError`` and
+        upb raises ``TypeError`` from the same call; either way the pool
+        does not declare the extension, and the comparison must keep the
+        one-sided route it took before the fold-in existed.
+        """
+        def base(name: str) -> descriptor_pb2.FileDescriptorProto:
+            fdp = descriptor_pb2.FileDescriptorProto(name=name, package="x", syntax="proto2")
+            msg = fdp.message_type.add(name="Msg")
+            msg.field.add(name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+            msg.extension_range.add(start=100, end=300)
+            return fdp
+
+        left_pool = descriptor_pool.DescriptorPool()
+        fdp = base("l.proto")
+        fdp.extension.add(
+            name="xtag", number=102, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+            extendee=".x.Msg",
+        )
+        left_pool.Add(fdp)
+        left_cls = message_factory.GetMessageClass(left_pool.FindMessageTypeByName("x.Msg"))
+        xtag = left_pool.FindExtensionByName("x.xtag")
+
+        db = descriptor_database.DescriptorDatabase()
+        db.Add(base("r.proto"))
+        broken = descriptor_pb2.FileDescriptorProto(name="rext.proto", package="x", syntax="proto2")
+        broken.dependency.append("r.proto")
+        broken.extension.add(
+            name="xtag", number=102, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+            extendee=".x.Missing",
+        )
+        db.Add(broken)
+        right_pool = descriptor_pool.DescriptorPool(db)
+        right_cls = message_factory.GetMessageClass(right_pool.FindMessageTypeByName("x.Msg"))
+        with pytest.raises((KeyError, TypeError)):
+            right_pool.FindExtensionByName("x.xtag")
+
+        left, right = left_cls(), right_cls()
+        left.Extensions[xtag] = "a"
+        assert [(str(x.path), x.change_type.name) for x in diff_messages(left, right)] == [
+            ("(x.xtag)", "REMOVED"),
+        ]

@@ -93,6 +93,42 @@ def _extension_key(fd: proto_descriptor.FieldDescriptor) -> str:
     return f"({fd.full_name})"
 
 
+def _fold_in_extensions(
+    source: dict[str, proto_descriptor.FieldDescriptor],
+    target: dict[str, proto_descriptor.FieldDescriptor],
+    target_desc: proto_descriptor.Descriptor,
+) -> None:
+    """File each extension in ``source`` under ``target`` when its pool declares it.
+
+    The cross-pool counterpart of the shared-descriptor fold-in: ``target``
+    describes a message of another pool, so its side is read with an
+    extension descriptor resolved from *that* pool by full name — never with
+    ``source``'s (V19). An extension the other pool does not declare, or
+    declares on a different extendee, is left one-sided, exactly as a
+    declared field missing from one schema is.
+
+    Args:
+        source: One side's name map, holding the extensions set on it.
+        target: The other side's name map, extended in place.
+        target_desc: The other side's message descriptor.
+    """
+    pool = target_desc.file.pool
+    for name, efd in source.items():
+        if not efd.is_extension or name in target:
+            continue
+        try:
+            other = pool.FindExtensionByName(efd.full_name)
+        except (KeyError, TypeError):
+            # Not declared there. A pool backed by a descriptor database
+            # loads the file lazily at lookup, and a file it cannot build
+            # is spelled ``KeyError`` by pure-Python but ``TypeError`` by
+            # upb (measured 2026-09-15, protobuf 5.27.5) — the same pair
+            # ``_pools.add_and_resolve`` guards.
+            continue
+        if other.containing_type.full_name == target_desc.full_name:
+            target[name] = other
+
+
 def _is_global_selector(selector: str) -> bool:
     """Whether a string selector names a field globally or scopes it to a path.
 
@@ -1066,19 +1102,27 @@ class MessageDifferencer:
                 # Only SET extensions can be discovered, so one set on a
                 # single side would look schema-absent on the other and take
                 # the one-sided route — bypassing presence reconciliation
-                # (EQUIVALENT: a default-valued field equals an unset one) and
-                # handing hooks a one-sided context. When both sides share a
-                # descriptor the same extension descriptor reads on either
-                # message, so file it under both names and compare two-sided.
-                # Cross-pool comparisons keep the one-sided route: the other
-                # pool's message cannot be read with this pool's descriptor.
-                if item.left_msg.DESCRIPTOR is item.right_msg.DESCRIPTOR:
-                    for name, efd in list(left_fields.items()):
-                        if efd.is_extension and name not in right_fields:
-                            right_fields[name] = efd
-                    for name, efd in list(right_fields.items()):
-                        if efd.is_extension and name not in left_fields:
-                            left_fields[name] = efd
+                # (EQUIVALENT: a default-valued field equals an unset one),
+                # ``treat_as_map`` keying and its duplicate-key check, and
+                # handing hooks a one-sided context. A declared field never
+                # takes that route while both descriptors carry it, so an
+                # extension is filed under both names whenever both schemas
+                # declare it. Sides sharing a descriptor share the extension
+                # descriptor too; across pools each side resolves it from its
+                # OWN pool by full name (V19: never borrow the other side's),
+                # and a pool that does not declare it on this message keeps
+                # the one-sided route, as a genuinely schema-absent field.
+                if left_view.has_extension_ranges or right_view.has_extension_ranges:
+                    if item.left_msg.DESCRIPTOR is item.right_msg.DESCRIPTOR:
+                        for name, efd in left_fields.items():
+                            if efd.is_extension and name not in right_fields:
+                                right_fields[name] = efd
+                        for name, efd in right_fields.items():
+                            if efd.is_extension and name not in left_fields:
+                                left_fields[name] = efd
+                    else:
+                        _fold_in_extensions(left_fields, right_fields, item.right_msg.DESCRIPTOR)
+                        _fold_in_extensions(right_fields, left_fields, item.left_msg.DESCRIPTOR)
 
                 all_names = left_fields.keys() | right_fields.keys()
 
@@ -1801,7 +1845,11 @@ class MessageDifferencer:
             # the lookup goes through the entry's file, never its parent.
             try:
                 return entry.file.pool.FindExtensionByName(name[1:-1])
-            except KeyError:
+            except (KeyError, TypeError):
+                # ``TypeError`` is upb's spelling of a lazy build failure;
+                # see ``_fold_in_extensions``. The entry came from this
+                # extension, so its pool has it loaded and neither should
+                # occur here; the guard costs nothing.
                 return left_fd
         parent = entry.containing_type
         if parent is None:
