@@ -693,3 +693,41 @@ class TestFloatOverlayOnMapExtension:
         )
         assert list(differ.compare(left, right)) == []
         assert seen == ["f.tags"], seen
+
+    def test_predicate_overlay_sees_the_extension_for_a_top_level_entry(self) -> None:
+        """The entry of a map extension need not be nested under any message.
+
+        Only a hand-built descriptor can declare a map extension, so its entry
+        may sit at file scope, with no parent message to look through. The
+        lookup used to give up there and hand the predicate the entry's
+        ``value`` field instead of the extension.
+        """
+        from protokit.message.comparators import FloatComparison
+
+        pool = descriptor_pool.DescriptorPool()
+        fdp = descriptor_pb2.FileDescriptorProto(name="t.proto", package="t", syntax="proto2")
+        msg = fdp.message_type.add(name="Msg")
+        msg.extension_range.add(start=100, end=200)
+        entry = fdp.message_type.add(name="TagsEntry")
+        entry.options.map_entry = True
+        entry.field.add(name="key", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+        entry.field.add(name="value", number=2, type=_FD.TYPE_FLOAT, label=_FD.LABEL_OPTIONAL)
+        fdp.extension.add(
+            name="tags", number=100, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+            extendee=".t.Msg", type_name=".t.TagsEntry",
+        )
+        pool.Add(fdp)
+        msg_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("t.Msg"))
+        tags = pool.FindExtensionByName("t.tags")
+        left, right = msg_cls(), msg_cls()
+        left.Extensions[tags]["k"] = 1.0
+        right.Extensions[tags]["k"] = 1.01
+        seen = []
+        differ = MessageDifferencer()
+        differ.set_float_comparison(
+            FloatComparison.APPROXIMATE, margin=0.1,
+            selector=lambda fd, path: seen.append(fd.full_name) or fd.is_extension,
+        )
+        assert list(differ.compare(left, right)) == []
+        assert seen == ["t.tags"], seen
+

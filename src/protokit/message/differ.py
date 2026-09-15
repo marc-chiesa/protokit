@@ -1790,19 +1790,22 @@ class MessageDifferencer:
             The container field descriptor for a map value, else ``left_fd``.
         """
         entry = left_fd.containing_type
-        if entry is None or not entry.GetOptions().map_entry:
-            return left_fd
-        parent = entry.containing_type
-        if parent is None or not path.segments:
+        if entry is None or not entry.GetOptions().map_entry or not path.segments:
             return left_fd
         name = path.segments[-1].name
         if name.startswith("("):
             # A map-typed extension is filed under its parenthesised full
-            # name, which is not in ``fields_by_name``; the pool owns it.
+            # name, which is in no ``fields_by_name``; the pool owns it. Its
+            # entry message may be nested anywhere, or top-level (only a
+            # hand-built descriptor can declare a map extension at all), so
+            # the lookup goes through the entry's file, never its parent.
             try:
-                return parent.file.pool.FindExtensionByName(name[1:-1])
+                return entry.file.pool.FindExtensionByName(name[1:-1])
             except KeyError:
                 return left_fd
+        parent = entry.containing_type
+        if parent is None:
+            return left_fd
         container = parent.fields_by_name.get(name)
         return container if container is not None else left_fd
 
