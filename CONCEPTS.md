@@ -80,6 +80,8 @@ An inventory is harvested from the cell's own run, never from a local measuremen
 ### Sibling blindness
 The failure mode where a fix lands at the call site that reported the defect while structurally identical sites elsewhere stay broken, and review does not notice because the reported case is now green. The defence is to derive the set of sites from the code (grep the ingredient, not the symptom) rather than from the list someone wrote down, and to fix every site in one change.
 
+A site the derivation finds and then excuses on a written claim that some input kind cannot reach it counts as unfixed until the claim is tested: the claim is an assumption wherever it is written, and the test either builds the excluded input and proves the site handles it or the site is migrated with its siblings.
+
 ### Mutation proof
 A check that a specific test is not vacuous: one anchor in the code the test guards is replaced with a plausible wrong version, the test is run, and the test must fail — a test that stays green with its guarded code broken proves nothing. Distinct from a Regression pin, which asserts correct behaviour for a defect not yet fixed; a mutation proof interrogates an already-passing test's power to catch a defect that does not yet exist.
 *Avoid:* vacuity check, vacuity gate, mutation test (the last is too broad: this is one anchor and one target, not a mutation-testing campaign)
