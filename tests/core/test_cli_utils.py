@@ -18,6 +18,8 @@ from __future__ import annotations
 import functools
 import importlib.util
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -742,11 +744,25 @@ class TestCompileProtoTypedPoolErrors:
         self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        """The protoxy arm is faked whole, so this runs where protoxy is absent.
+
+        ``compile_proto`` imports ``protoxy`` to name ``ProtoxyError`` in its
+        catch tuple before it calls the (faked) backend, so on the CI cells
+        that install without the compiler extra the real import raised
+        ``ModuleNotFoundError`` ahead of the assertion. A stand-in module
+        carrying only that attribute keeps the test honest on every cell.
+        """
+        class FakeProtoxyError(Exception):
+            pass
+
         def fake_protoxy(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
             raise _pools.DescriptorPoolError(
                 "could not build file 'orphan.proto' into the descriptor pool",
             )
 
+        monkeypatch.setitem(
+            sys.modules, "protoxy", types.SimpleNamespace(ProtoxyError=FakeProtoxyError),
+        )
         monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: True)
         monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
         monkeypatch.setattr(
