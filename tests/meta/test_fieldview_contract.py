@@ -58,7 +58,14 @@ def _corpus_pool() -> descriptor_pool.DescriptorPool:
         name="ext_nested", number=101, type=_FD.TYPE_BOOL,
         label=_FD.LABEL_OPTIONAL, extendee=".c2.Msg",
     )
-    # a TOP-LEVEL extension that also extends Msg (declared elsewhere in the file)
+    # TOP-LEVEL extensions that also extend Msg, declared HIGHEST NUMBER
+    # FIRST: ``FindAllExtensions`` returns declaration order, so the corpus
+    # must not already be in number order or the ordering pin below passes
+    # with the sort removed.
+    p2.extension.add(
+        name="ext_hi", number=102, type=_FD.TYPE_INT32,
+        label=_FD.LABEL_OPTIONAL, extendee=".c2.Msg",
+    )
     p2.extension.add(
         name="ext_top", number=100, type=_FD.TYPE_STRING,
         label=_FD.LABEL_OPTIONAL, extendee=".c2.Msg",
@@ -142,7 +149,9 @@ class TestEnumerationCompleteness:
         must surface them.
         """
         view = FieldView.of(pool.FindMessageTypeByName("c2.Msg"))
-        assert [e.full_name for e in view.extensions] == ["c2.ext_top", "c2.Msg.ext_nested"]
+        assert [e.full_name for e in view.extensions] == [
+            "c2.ext_top", "c2.Msg.ext_nested", "c2.ext_hi",
+        ]
 
     def test_extensions_means_extending_this_message_not_declared_inside_it(
         self, pool: descriptor_pool.DescriptorPool,
@@ -170,8 +179,14 @@ class TestEnumerationCompleteness:
     def test_extensions_are_ordered_by_field_number(
         self, pool: descriptor_pool.DescriptorPool,
     ) -> None:
-        """Deterministic output without the caller re-sorting."""
+        """Deterministic output without the caller re-sorting.
+
+        The corpus declares ``ext_hi`` (102) before ``ext_top`` (100), so the
+        pool's raw order is not number order and this fails if the sort goes.
+        """
         view = FieldView.of(pool.FindMessageTypeByName("c2.Msg"))
+        raw = [e.number for e in pool.FindAllExtensions(view.descriptor)]
+        assert raw != sorted(raw), "corpus no longer exercises the sort"
         numbers = [e.number for e in view.extensions]
         assert numbers == sorted(numbers)
 
@@ -301,6 +316,17 @@ class TestViewIsImmutable:
 # walker finds: a module migrated to ``FieldView`` is removed from it (the
 # ratchet), and a module that starts enumerating directly must be added to
 # it on purpose, in a diff a reviewer sees.
+#
+# The walker's second draft matched only ``for x in <expr>.fields`` and the
+# comprehension form, and so missed ``schema/lint/engine.py``, which
+# enumerates through a sorting wrapper (``self._sorted_by_name(msg.fields)``)
+# — a real V19-shaped blind spot: FIELD lint rules are dispatched over
+# ``message.fields`` only, so no lint rule ever sees an extension (U17).
+# It now matches ``.fields`` anywhere inside an iterator expression, as an
+# argument to a builtin that consumes an iterable, and under a subscript.
+# That over-approximates on purpose (KTD2): it also catches counting, like
+# ``forensics/_match.py``'s ``len(descriptor.fields)``, which is
+# extension-blind in the same way even though it never iterates.
 _MIGRATED = (
     "message/differ.py",
     "schema/checker.py",
@@ -310,6 +336,8 @@ _MIGRATED = (
 )
 _UNMIGRATED = frozenset({
     "forensics/_drift.py",
+    "forensics/_match.py",
+    "schema/lint/engine.py",
     "schema/lint/rules/imports.py",
     "schema/rules.py",
     "storage/_columnar.py",
@@ -318,21 +346,48 @@ _UNMIGRATED = frozenset({
 _OWNER = "_fieldview.py"
 
 
-def _direct_enumeration_lines(path: Path) -> list[int]:
-    """Lines where the module iterates ``<expr>.fields`` directly."""
-    tree = ast.parse(path.read_text())
-    hits: list[int] = []
+# Builtins that consume an iterable: ``.fields`` handed to any of these is an
+# enumeration even when no ``for`` is in sight.
+_ITERABLE_CONSUMERS = frozenset({
+    "list", "tuple", "set", "frozenset", "dict", "sorted", "reversed", "enumerate",
+    "len", "map", "filter", "zip", "any", "all", "sum", "min", "max", "iter", "next",
+})
 
-    def _is_dot_fields(node: ast.expr) -> bool:
-        return isinstance(node, ast.Attribute) and node.attr == "fields"
+
+def _direct_enumeration_lines(path: Path) -> list[int]:
+    """Lines where the module enumerates ``<expr>.fields`` directly.
+
+    A hit is a ``.fields`` attribute anywhere inside a ``for`` / comprehension
+    iterator expression (which covers wrappers such as ``sorted(x.fields)`` or
+    ``self._sorted_by_name(x.fields)``), as an argument to a builtin that
+    consumes an iterable, or under a subscript.
+    """
+    tree = ast.parse(path.read_text())
+    hits: set[int] = set()
+
+    def _mentions_fields(node: ast.AST) -> bool:
+        return any(
+            isinstance(sub, ast.Attribute) and sub.attr == "fields" for sub in ast.walk(node)
+        )
+
+    def _enumerates(node: ast.AST) -> bool:
+        if isinstance(node, ast.For):
+            return _mentions_fields(node.iter)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            return any(_mentions_fields(gen.iter) for gen in node.generators)
+        if isinstance(node, ast.Call):
+            return (
+                isinstance(node.func, ast.Name)
+                and node.func.id in _ITERABLE_CONSUMERS
+                and any(_mentions_fields(arg) for arg in node.args)
+            )
+        if isinstance(node, ast.Subscript):
+            return _mentions_fields(node.value)
+        return False
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.For) and _is_dot_fields(node.iter):
-            hits.append(node.lineno)
-        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            for gen in node.generators:
-                if _is_dot_fields(gen.iter):
-                    hits.append(node.lineno)
+        if _enumerates(node):
+            hits.add(node.lineno)
     return sorted(hits)
 
 
@@ -393,6 +448,22 @@ def test_guard_detects_an_injected_violation() -> None:
         comp.write_text("def g(desc):\n    return [f for f in desc.fields]\n")
         assert _direct_enumeration_lines(comp) == [2]
 
+        # The shapes the second draft missed: a wrapper call in the iterator,
+        # a consuming builtin, and a subscript.
+        wrapped = Path(tmp) / "probe3.py"
+        wrapped.write_text(
+            "def w(self, message):\n"
+            "    for field in self._sorted_by_name(message.fields):\n"
+            "        yield field\n"
+            "    for field in sorted(message.fields, key=lambda f: f.name):\n"
+            "        yield field\n"
+            "    return len(message.fields), message.fields[0]\n"
+        )
+        assert _direct_enumeration_lines(wrapped) == [2, 4, 6]
+
         clean = Path(tmp) / "clean.py"
-        clean.write_text("def h(view):\n    return list(view.by_name.values())\n")
+        clean.write_text(
+            "def h(view):\n"
+            "    return list(view.by_name.values()), view.fields_by_name['x']\n"
+        )
         assert _direct_enumeration_lines(clean) == []
