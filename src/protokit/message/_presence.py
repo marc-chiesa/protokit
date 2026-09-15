@@ -42,6 +42,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from protokit._fieldview import field_present, field_value
+
 if TYPE_CHECKING:  # pragma: no cover — typing-only imports
     from google.protobuf import descriptor as proto_descriptor
     from google.protobuf.message import Message
@@ -75,7 +77,8 @@ class PresenceVerdict(Enum):
 def is_set(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
     """Whether a presence-bearing singular field is set on ``msg``.
 
-    Reads presence via ``HasField`` on the field directly. For a proto3
+    Reads presence via ``HasField`` on the field directly (``HasExtension``
+    for an extension descriptor — the seam's accessor picks). For a proto3
     ``optional`` field this consults its compiler-synthesized ``_<field>``
     oneof under the hood, but the synthetic oneof is never iterated or named
     here — presence is always read field-first, so the synthetic oneof cannot
@@ -91,7 +94,7 @@ def is_set(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
     Returns:
         True if the field is set on ``msg``.
     """
-    return bool(msg.HasField(fd.name))
+    return field_present(msg, fd)
 
 
 def _is_default_value(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
@@ -109,7 +112,7 @@ def _is_default_value(msg: Message, fd: proto_descriptor.FieldDescriptor) -> boo
     Returns:
         True if the field value equals its declared default.
     """
-    return bool(getattr(msg, fd.name) == fd.default_value)
+    return bool(field_value(msg, fd) == fd.default_value)
 
 
 def presence_verdict(

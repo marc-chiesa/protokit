@@ -21,7 +21,11 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
-from protokit._fieldview import FieldView
+from protokit._fieldview import (
+    FieldView,
+    field_present as _fieldview_field_present,
+    field_value as _fieldview_field_value,
+)
 from protokit.message._presence import PresenceVerdict, presence_verdict
 from protokit.message._selector import FieldSelector, SelectorSpec
 from protokit.message._setmatch import greedy_multiset_pairing
@@ -71,29 +75,11 @@ def _hook_name(hook: object) -> str:
     )
 
 
-def _field_value(msg: Message, fd: proto_descriptor.FieldDescriptor) -> object:
-    """Read a field's value, whether it is declared or an extension.
-
-    A declared field is an attribute (``msg.name``); a declared *extension*
-    is not — it lives in ``msg.Extensions[fd]``, keyed by descriptor. Every
-    value read in the comparison machinery goes through here so extensions
-    traverse the same leaf/message/repeated paths as declared fields rather
-    than getting a parallel comparison implementation beside them (KTD1).
-    """
-    if fd.is_extension:
-        return msg.Extensions[fd]
-    return getattr(msg, fd.name)
-
-
-def _field_present(msg: Message, fd: proto_descriptor.FieldDescriptor) -> bool:
-    """Presence for a declared field or an extension.
-
-    ``HasField`` raises on an extension descriptor; ``HasExtension`` is the
-    corresponding call. Both answer the same proto2 question.
-    """
-    if fd.is_extension:
-        return bool(msg.HasExtension(fd))
-    return bool(msg.HasField(fd.name))
+# The value and presence accessors live beside the enumeration seam so every
+# reader an extension descriptor can reach — here and in ``_presence`` — has
+# one owner (KTD1). Local aliases keep the call sites unchanged.
+_field_value = _fieldview_field_value
+_field_present = _fieldview_field_present
 
 
 def _extension_key(fd: proto_descriptor.FieldDescriptor) -> str:
@@ -600,7 +586,12 @@ class MessageDifferencer:
                 # callable; it rejects anything else with a clear TypeError.
                 selector_forms.append(FieldSelector.of(spec))
 
-        # Validate all string selectors before mutating state
+        # Validate and classify every string selector before mutating state.
+        # Classification parses the dotted ones, so a malformed selector
+        # raises here — before anything is recorded — rather than after the
+        # raw list was already extended, which left a selector behind that
+        # every later registration re-parsed and tripped over.
+        classified: list[tuple[str, bool]] = []
         for sel in string_selectors:
             if "[" in sel:
                 raise ValueError(
@@ -611,18 +602,19 @@ class MessageDifferencer:
                 raise ValueError(
                     f"Cannot ignore field '{sel}' that is configured as treat_as_map"
                 )
+            classified.append((sel, _is_global_selector(sel)))
 
         # Check for conflicts with treat_as_map key fields
         for map_sel, key_name in self._treat_as_map.items():
-            for ign in string_selectors:
+            for ign, is_global in classified:
                 # Bare name that matches the key
-                if _is_global_selector(ign) and ign == key_name:
+                if is_global and ign == key_name:
                     raise ValueError(
                         f"Cannot ignore '{ign}' globally because it's the key field "
                         f"for treat_as_map('{map_sel}', key='{key_name}')"
                     )
                 # Path-scoped that targets the key inside the map field
-                if not _is_global_selector(ign) and ign == f"{map_sel}.{key_name}":
+                if not is_global and ign == f"{map_sel}.{key_name}":
                     raise ValueError(
                         f"Cannot ignore '{ign}' because it's the key field "
                         f"for treat_as_map('{map_sel}', key='{key_name}')"
@@ -630,8 +622,8 @@ class MessageDifferencer:
 
         # All validation passed — safe to mutate
         self._ignore_fields_raw.extend(string_selectors)
-        for sel in string_selectors:
-            if _is_global_selector(sel):
+        for sel, is_global in classified:
+            if is_global:
                 # Includes ``(pkg.ext)``: the extension's whole name is the
                 # key the differ files it under, so it is stored verbatim.
                 self._ignore_names.add(sel)
@@ -709,7 +701,7 @@ class MessageDifferencer:
             return
 
         self._treat_as_map[field_selector] = key
-        if "." in field_selector:
+        if not _is_global_selector(field_selector):
             self._treat_as_map_paths.append((FieldPath.parse(field_selector), key))
 
     def treat_as_set(self, selector: SelectorSpec) -> None:
@@ -1070,6 +1062,22 @@ class MessageDifferencer:
                     for efd, _ in item.right_msg.ListFields():
                         if efd.is_extension:
                             right_fields[_extension_key(efd)] = efd
+                # Only SET extensions can be discovered, so one set on a
+                # single side would look schema-absent on the other and take
+                # the one-sided route — bypassing presence reconciliation
+                # (EQUIVALENT: a default-valued field equals an unset one) and
+                # handing hooks a one-sided context. When both sides share a
+                # descriptor the same extension descriptor reads on either
+                # message, so file it under both names and compare two-sided.
+                # Cross-pool comparisons keep the one-sided route: the other
+                # pool's message cannot be read with this pool's descriptor.
+                if item.left_msg.DESCRIPTOR is item.right_msg.DESCRIPTOR:
+                    for name, efd in list(left_fields.items()):
+                        if efd.is_extension and name not in right_fields:
+                            right_fields[name] = efd
+                    for name, efd in list(right_fields.items()):
+                        if efd.is_extension and name not in left_fields:
+                            left_fields[name] = efd
 
                 all_names = left_fields.keys() | right_fields.keys()
 
@@ -1786,7 +1794,15 @@ class MessageDifferencer:
         parent = entry.containing_type
         if parent is None or not path.segments:
             return left_fd
-        container = parent.fields_by_name.get(path.segments[-1].name)
+        name = path.segments[-1].name
+        if name.startswith("("):
+            # A map-typed extension is filed under its parenthesised full
+            # name, which is not in ``fields_by_name``; the pool owns it.
+            try:
+                return parent.file.pool.FindExtensionByName(name[1:-1])
+            except KeyError:
+                return left_fd
+        container = parent.fields_by_name.get(name)
         return container if container is not None else left_fd
 
     def _float_config_for(
@@ -2012,7 +2028,9 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        field_name = left_fd.name
+        # The name the field is filed under — an extension's parenthesised
+        # key, never its short name, which may collide with a declared field.
+        field_name = _extension_key(left_fd) if left_fd.is_extension else left_fd.name
 
         # Check if treat_as_map is configured for this field
         key_field = self._get_treat_as_map_key(field_name, path)
@@ -2657,7 +2675,7 @@ class MessageDifferencer:
                 elif is_repeated(fd):
                     # Check treat_as_map for key-based path formatting
                     tam_key = (
-                        self._get_treat_as_map_key(fd.name, field_path)
+                        self._get_treat_as_map_key(field_name, field_path)
                         if fd.type == TYPE_MESSAGE
                         else None
                     )

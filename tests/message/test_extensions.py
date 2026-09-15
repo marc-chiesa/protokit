@@ -428,3 +428,268 @@ class TestIgnoreAndFilterRoundTrip:
         assert [str(d.path) for d in result.filter(path="name")] == ["name"]
         assert [str(d.path) for d in result.filter(path="(x.tag)")] == ["(x.tag)"]
         assert [str(d.path) for d in result.filter(path="(x.tag)", exact=True)] == ["(x.tag)"]
+
+
+def _keyed_pool(package: str = "x") -> descriptor_pool.DescriptorPool:
+    """``Msg`` with a declared repeated ``items`` and two repeated-message extensions.
+
+    ``xitems`` elements carry the key field ``id``; ``items`` (an extension
+    whose SHORT name collides with the declared field, the collision the
+    namespace decision exists to survive) elements do not.
+    """
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="k.proto", syntax="proto2")
+    if package:
+        fdp.package = package
+    prefix = f".{package}." if package else "."
+    item = fdp.message_type.add(name="Item")
+    item.field.add(name="id", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    item.field.add(name="v", number=2, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    noid = fdp.message_type.add(name="NoId")
+    noid.field.add(name="v", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    msg = fdp.message_type.add(name="Msg")
+    msg.field.add(name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    msg.field.add(
+        name="items", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=f"{prefix}Item",
+    )
+    msg.extension_range.add(start=100, end=300)
+    fdp.extension.add(
+        name="xitems", number=101, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        extendee=f"{prefix}Msg", type_name=f"{prefix}Item",
+    )
+    fdp.extension.add(
+        name="items", number=102, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        extendee=f"{prefix}Msg", type_name=f"{prefix}NoId",
+    )
+    outer = fdp.message_type.add(name="Outer")
+    outer.field.add(
+        name="inner", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=f"{prefix}Msg",
+    )
+    pool.Add(fdp)
+    return pool
+
+
+def _keyed_classes(package: str = "x") -> tuple[
+    type[Message], type[Message], d.FieldDescriptor, d.FieldDescriptor,
+]:
+    pool = _keyed_pool(package)
+    dot = f"{package}." if package else ""
+    # Pure-Python needs the element classes materialised before an extension
+    # container can ``add()``; harmless under upb.
+    message_factory.GetMessageClass(pool.FindMessageTypeByName(f"{dot}Item"))
+    message_factory.GetMessageClass(pool.FindMessageTypeByName(f"{dot}NoId"))
+    msg_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName(f"{dot}Msg"))
+    outer_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName(f"{dot}Outer"))
+    return (
+        msg_cls, outer_cls,
+        pool.FindExtensionByName(f"{dot}xitems"), pool.FindExtensionByName(f"{dot}items"),
+    )
+
+
+def _reordered_pair(cls: type[Message], get_list):  # type: ignore[no-untyped-def]
+    left, right = cls(), cls()
+    for elem in (get_list(left).add(), get_list(right).add()):
+        elem.id, elem.v = "a", 1
+    for elem in (get_list(left).add(), get_list(right).add()):
+        elem.id, elem.v = "b", 2
+    get_list(right)[0].id, get_list(right)[1].id = "b", "a"
+    get_list(right)[0].v, get_list(right)[1].v = 2, 1
+    return left, right
+
+
+class TestTreatAsMapOnExtensions:
+    """``treat_as_map`` follows the same selector rules as ``ignore_fields``.
+
+    The global-vs-scoped rule and the parenthesised extension key must hold
+    at every site that classifies or looks up a selector. Before this was
+    pinned, the partition used the dot heuristic (so ``(pkg.ext)`` was a
+    root-only path) and both lookups used the descriptor's short name (so a
+    bare ``items`` selected an extension named ``items`` — and raised when
+    its element type lacked the key).
+    """
+
+    def test_global_selector_keys_at_root_and_nested(self) -> None:
+        msg_cls, outer_cls, xitems, _items = _keyed_classes()
+        differ = MessageDifferencer()
+        differ.treat_as_map("(x.xitems)", key="id")
+        # One segment is a NAME: it lives in the global table only, never in
+        # the path-scoped list (the same partition ``ignore_fields`` applies).
+        assert differ._treat_as_map_paths == []
+        left, right = _reordered_pair(msg_cls, lambda m: m.Extensions[xitems])
+        assert list(differ.compare(left, right)) == []
+        ol, orr = _reordered_pair(outer_cls, lambda o: o.inner.Extensions[xitems])
+        assert list(differ.compare(ol, orr)) == []
+
+    def test_scoped_selector_applies_only_at_its_location(self) -> None:
+        msg_cls, outer_cls, xitems, _items = _keyed_classes()
+        differ = MessageDifferencer()
+        differ.treat_as_map("inner.(x.xitems)", key="id")
+        ol, orr = _reordered_pair(outer_cls, lambda o: o.inner.Extensions[xitems])
+        assert list(differ.compare(ol, orr)) == []
+        left, right = _reordered_pair(msg_cls, lambda m: m.Extensions[xitems])
+        assert len(list(differ.compare(left, right))) == 4
+
+    def test_short_name_never_selects_an_extension(self) -> None:
+        """The collision case: a declared ``items`` keyed on ``id`` and an
+        extension ``items`` whose elements have no ``id``. The selector must
+        apply to the declared field only, so the compare cannot raise."""
+        msg_cls, _outer, _xitems, items = _keyed_classes()
+        differ = MessageDifferencer()
+        differ.treat_as_map("items", key="id")
+        left, right = msg_cls(name="n"), msg_cls(name="n")
+        left.Extensions[items].add().v = 1
+        right.Extensions[items].add().v = 2
+        diffs = [(str(x.path), x.change_type.name) for x in differ.compare(left, right)]
+        assert diffs == [("(x.items)[0].v", "MODIFIED")], diffs
+
+    def test_package_less_extension_selector(self) -> None:
+        msg_cls, _outer, xitems, _items = _keyed_classes(package="")
+        differ = MessageDifferencer()
+        differ.treat_as_map("(xitems)", key="id")
+        left, right = _reordered_pair(msg_cls, lambda m: m.Extensions[xitems])
+        assert list(differ.compare(left, right)) == []
+
+    def test_one_sided_emission_honors_the_global_selector(self) -> None:
+        """An added submessage renders keyed brackets, not indices."""
+        _msg, outer_cls, xitems, _items = _keyed_classes()
+        differ = MessageDifferencer()
+        differ.treat_as_map("(x.xitems)", key="id")
+        added = outer_cls()
+        elem = added.inner.Extensions[xitems].add()
+        elem.id, elem.v = "a", 1
+        paths = sorted(str(x.path) for x in differ.compare(outer_cls(), added))
+        assert paths == ['inner.(x.xitems)[id="a"].id', 'inner.(x.xitems)[id="a"].v'], paths
+
+
+class TestIgnoreFieldsAtomicity:
+    def test_failed_registration_leaves_no_partial_state(self) -> None:
+        """A rejected call must not poison later configuration.
+
+        The raw-selector list was extended before the dotted selectors were
+        parsed, so a malformed selector stayed behind and every later
+        ``treat_as_map`` re-parsed it and raised.
+        """
+        differ = MessageDifferencer()
+        with pytest.raises(ValueError):
+            differ.ignore_fields("good", "a..b")
+        assert differ._ignore_fields_raw == []
+        assert differ._ignore_names == set()
+        differ.treat_as_map("items", key="id")
+
+
+class TestExtensionPresenceSemantics:
+    """Extensions get the same presence reconciliation as declared fields.
+
+    Only SET extensions can be discovered (``ListFields``), so an extension
+    set on one side used to look schema-absent on the other and took the
+    one-sided route, which bypasses the EQUIVALENT rule ("a field set to its
+    default equals an unset field") and hands hooks a one-sided context.
+    When both sides share a descriptor the extension descriptor reads on
+    either message, so it is filed under both names and compared two-sided.
+    """
+
+    def test_default_valued_extension_equals_unset_under_equivalent(self) -> None:
+        msg_cls, _outer, tag, _rank = _classes()
+        left, right = msg_cls(), msg_cls()
+        right.Extensions[tag] = ""
+        assert list(diff_messages(left, right)) == []
+
+    def test_default_valued_extension_is_added_under_equal(self) -> None:
+        msg_cls, _outer, tag, _rank = _classes()
+        left, right = msg_cls(), msg_cls()
+        right.Extensions[tag] = ""
+        differ = MessageDifferencer()
+        differ.set_message_field_comparison(MessageFieldComparison.EQUAL)
+        assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
+            ("(x.tag)", "ADDED"),
+        ]
+
+    def test_empty_but_present_message_extension_follows_presence_mode(self) -> None:
+        msg_cls, _b, subext, _r, _s, _rr = _rich_classes()
+        left, right = msg_cls(), msg_cls()
+        right.Extensions[subext].SetInParent()
+        assert list(diff_messages(left, right)) == []
+        differ = MessageDifferencer()
+        differ.set_message_field_comparison(MessageFieldComparison.EQUAL)
+        assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
+            ("(b.subext)", "ADDED"),
+        ]
+
+    def test_non_default_extension_on_one_side_is_still_reported(self) -> None:
+        """Adjacent-behavior gate: the set-vs-unset case keeps its verdict."""
+        msg_cls, _outer, tag, _rank = _classes()
+        left, right = msg_cls(), msg_cls()
+        left.Extensions[tag] = "alpha"
+        assert [(str(x.path), x.change_type.name) for x in diff_messages(left, right)] == [
+            ("(x.tag)", "REMOVED"),
+        ]
+
+    def test_presence_helper_reads_extensions_directly(self) -> None:
+        """``_presence`` reads through the seam's accessors, not by name.
+
+        The differ hands ``presence_verdict`` precomputed booleans, so this
+        is the only route that exercises the helper's own reads with an
+        extension descriptor — and ``HasField(fd.name)`` raises for one.
+        """
+        from protokit.message._presence import PresenceVerdict, is_set, presence_verdict
+
+        msg_cls, _outer, tag, _rank = _classes()
+        left, right = msg_cls(), msg_cls()
+        left.Extensions[tag] = ""
+        assert is_set(left, tag) is True
+        assert is_set(right, tag) is False
+        assert presence_verdict(left, right, tag, tag, equal_mode=False) is PresenceVerdict.COLLAPSE
+        assert presence_verdict(left, right, tag, tag, equal_mode=True) is PresenceVerdict.REMOVED
+        left.Extensions[tag] = "alpha"
+        assert presence_verdict(left, right, tag, tag, equal_mode=False) is PresenceVerdict.REMOVED
+
+    def test_hook_context_is_both_sided_for_a_shared_descriptor(self) -> None:
+        msg_cls, _outer, tag, _rank = _classes()
+        left, right = msg_cls(), msg_cls()
+        left.Extensions[tag] = "alpha"
+        seen = []
+        differ = MessageDifferencer()
+        differ.register_report_hook(
+            lambda ctx: seen.append((
+                str(ctx.path),
+                ctx.left_fd is not None, ctx.right_fd is not None,
+                ctx.left_msg is not None, ctx.right_msg is not None,
+            )),
+        )
+        differ.compare(left, right)
+        assert seen == [("(x.tag)", True, True, True, True)], seen
+
+
+class TestFloatOverlayOnMapExtension:
+    def test_predicate_overlay_sees_the_extension_descriptor(self) -> None:
+        """The container lookup for a map value must resolve a parenthesised segment."""
+        from protokit.message.comparators import FloatComparison
+
+        pool = descriptor_pool.DescriptorPool()
+        fdp = descriptor_pb2.FileDescriptorProto(name="f.proto", package="f", syntax="proto2")
+        msg = fdp.message_type.add(name="Msg")
+        msg.extension_range.add(start=100, end=200)
+        entry = msg.nested_type.add(name="TagsEntry")
+        entry.options.map_entry = True
+        entry.field.add(name="key", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+        entry.field.add(name="value", number=2, type=_FD.TYPE_FLOAT, label=_FD.LABEL_OPTIONAL)
+        fdp.extension.add(
+            name="tags", number=100, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+            extendee=".f.Msg", type_name=".f.Msg.TagsEntry",
+        )
+        pool.Add(fdp)
+        msg_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("f.Msg"))
+        tags = pool.FindExtensionByName("f.tags")
+        left, right = msg_cls(), msg_cls()
+        left.Extensions[tags]["k"] = 1.0
+        right.Extensions[tags]["k"] = 1.01
+        seen = []
+        differ = MessageDifferencer()
+        differ.set_float_comparison(
+            FloatComparison.APPROXIMATE, margin=0.1,
+            selector=lambda fd, path: seen.append(fd.full_name) or fd.is_extension,
+        )
+        assert list(differ.compare(left, right)) == []
+        assert seen == ["f.tags"], seen

@@ -46,10 +46,42 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from google.protobuf import descriptor as _d
 
+if TYPE_CHECKING:  # pragma: no cover — typing-only import
+    from google.protobuf.message import Message
+
 _FD = _d.FieldDescriptor
+
+
+def field_value(msg: Message, fd: _d.FieldDescriptor) -> object:
+    """Read a field's value, whether it is declared or an extension.
+
+    A declared field is an attribute (``msg.name``); a declared *extension*
+    is not — it lives in ``msg.Extensions[fd]``, keyed by descriptor, and its
+    short name may even collide with a declared field's. Every value read
+    that an extension descriptor can reach must go through here (KTD1): the
+    differ and the presence helper both do, so extensions traverse the same
+    leaf/message/repeated/presence paths as declared fields rather than a
+    parallel implementation beside them.
+    """
+    if fd.is_extension:
+        return msg.Extensions[fd]
+    return getattr(msg, fd.name)
+
+
+def field_present(msg: Message, fd: _d.FieldDescriptor) -> bool:
+    """Presence for a declared field or an extension.
+
+    ``HasField`` raises on an extension descriptor; ``HasExtension`` is the
+    corresponding call. Both answer the same proto2 question. The caller
+    owns the precondition that ``fd`` is presence-bearing.
+    """
+    if fd.is_extension:
+        return bool(msg.HasExtension(fd))
+    return bool(msg.HasField(fd.name))
 
 
 def is_map_field(field_desc: _d.FieldDescriptor) -> bool:
