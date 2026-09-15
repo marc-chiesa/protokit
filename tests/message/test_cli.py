@@ -46,13 +46,19 @@ def _make_descriptor_set(
     return fds.SerializeToString()
 
 
-def _build_message(desc_set_bytes: bytes, full_name: str, **kwargs: Any) -> bytes:
-    """Parse a descriptor set, build a message, and serialize to binary."""
+def _pool_from_descriptor_set(desc_set_bytes: bytes) -> descriptor_pool.DescriptorPool:
+    """Parse serialized ``FileDescriptorSet`` bytes into a fresh pool."""
     fds = descriptor_pb2.FileDescriptorSet()
     fds.ParseFromString(desc_set_bytes)
     pool = descriptor_pool.DescriptorPool()
     for fd in fds.file:
         pool.Add(fd)
+    return pool
+
+
+def _build_message(desc_set_bytes: bytes, full_name: str, **kwargs: Any) -> bytes:
+    """Parse a descriptor set, build a message, and serialize to binary."""
+    pool = _pool_from_descriptor_set(desc_set_bytes)
     desc = pool.FindMessageTypeByName(full_name)
     cls = message_factory.GetMessageClass(desc)
     return cls(**kwargs).SerializeToString()
@@ -671,11 +677,7 @@ def _make_extension_descriptor_set() -> bytes:
 
 
 def _build_extended_message(desc_set_bytes: bytes, *, name: str, tag: str) -> bytes:
-    fds = descriptor_pb2.FileDescriptorSet()
-    fds.ParseFromString(desc_set_bytes)
-    pool = descriptor_pool.DescriptorPool()
-    for fd in fds.file:
-        pool.Add(fd)
+    pool = _pool_from_descriptor_set(desc_set_bytes)
     cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("x.Msg"))
     msg = cls(name=name)
     msg.Extensions[pool.FindExtensionByName("x.tag")] = tag

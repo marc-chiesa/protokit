@@ -20,6 +20,7 @@ declared field of the same short name.
 
 from __future__ import annotations
 
+import pytest
 from google.protobuf import descriptor as d
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.message import Message
@@ -398,6 +399,24 @@ class TestIgnoreAndFilterRoundTrip:
         left.Extensions[tag] = "alpha"
         right.Extensions[tag] = "beta"
         assert [str(d.path) for d in differ.compare(left, right)] == ["(x.tag)"]
+
+    def test_conflict_checks_classify_a_parenthesised_name_as_global(self) -> None:
+        """The registration-time conflict checks use the same global/scoped rule.
+
+        A parenthesised name contains dots but is one segment, so every site
+        that decides "bare name or dotted path" must agree with the partition
+        that files it under ``_ignore_names`` — or a conflict the docstrings
+        promise to catch slips through for extensions.
+        """
+        differ = MessageDifferencer()
+        differ.ignore_fields("(x.tag)")
+        with pytest.raises(ValueError, match="globally ignored"):
+            differ.treat_as_map("items", key="(x.tag)")
+
+        differ = MessageDifferencer()
+        differ.treat_as_map("items", key="(x.tag)")
+        with pytest.raises(ValueError, match="globally"):
+            differ.ignore_fields("(x.tag)")
 
     def test_filter_over_a_result_containing_an_extension(self) -> None:
         msg_cls, _outer, tag, _rank = _classes()

@@ -106,6 +106,23 @@ def _extension_key(fd: proto_descriptor.FieldDescriptor) -> str:
     return f"({fd.full_name})"
 
 
+def _is_global_selector(selector: str) -> bool:
+    """Whether a string selector names a field globally or scopes it to a path.
+
+    A bare name (``"timestamp"``) applies everywhere; a dotted path
+    (``"header.timestamp"``) applies at one location. The dots inside a
+    parenthesised extension name belong to the name, not the path, so
+    ``"(pkg.ext)"`` is one segment and therefore global — which is why this
+    cannot be ``"." not in selector``. A bare name is not parsed, so a name
+    the grammar would reject keeps its historical silent-no-match behavior.
+
+    Raises:
+        ValueError: If a dotted selector is malformed (from
+            :meth:`FieldPath.parse`).
+    """
+    return "." not in selector or len(FieldPath.parse(selector).segments) == 1
+
+
 def _replace_bracket(path: FieldPath, bracket: str) -> FieldPath:
     """Return a new FieldPath with the last segment's bracket replaced.
 
@@ -599,13 +616,13 @@ class MessageDifferencer:
         for map_sel, key_name in self._treat_as_map.items():
             for ign in string_selectors:
                 # Bare name that matches the key
-                if "." not in ign and ign == key_name:
+                if _is_global_selector(ign) and ign == key_name:
                     raise ValueError(
                         f"Cannot ignore '{ign}' globally because it's the key field "
                         f"for treat_as_map('{map_sel}', key='{key_name}')"
                     )
                 # Path-scoped that targets the key inside the map field
-                if "." in ign and ign == f"{map_sel}.{key_name}":
+                if not _is_global_selector(ign) and ign == f"{map_sel}.{key_name}":
                     raise ValueError(
                         f"Cannot ignore '{ign}' because it's the key field "
                         f"for treat_as_map('{map_sel}', key='{key_name}')"
@@ -614,17 +631,12 @@ class MessageDifferencer:
         # All validation passed — safe to mutate
         self._ignore_fields_raw.extend(string_selectors)
         for sel in string_selectors:
-            if "." not in sel:
+            if _is_global_selector(sel):
+                # Includes ``(pkg.ext)``: the extension's whole name is the
+                # key the differ files it under, so it is stored verbatim.
                 self._ignore_names.add(sel)
-                continue
-            path = FieldPath.parse(sel)
-            if len(path.segments) == 1:
-                # ``(pkg.ext)``: dots inside the parentheses belong to the
-                # extension's name, so this is a bare name — global — and it
-                # must match the key the differ files the extension under.
-                self._ignore_names.add(path.segments[0].name)
             else:
-                self._ignore_paths.append(path)
+                self._ignore_paths.append(FieldPath.parse(sel))
         self._ignore_selectors.extend(selector_forms)
 
     def treat_as_map(self, field_selector: str, *, key: str) -> None:
@@ -659,13 +671,13 @@ class MessageDifferencer:
                     f"already ignored"
                 )
             # Bare name that matches the key
-            if "." not in ign and ign == key:
+            if _is_global_selector(ign) and ign == key:
                 raise ValueError(
                     f"Cannot use key '{key}' for treat_as_map('{field_selector}') "
                     f"because '{ign}' is globally ignored"
                 )
             # Path-scoped that targets the key inside the map field
-            if "." in ign and ign == f"{field_selector}.{key}":
+            if not _is_global_selector(ign) and ign == f"{field_selector}.{key}":
                 raise ValueError(
                     f"Cannot use key '{key}' for treat_as_map('{field_selector}') "
                     f"because '{ign}' is ignored"

@@ -9,7 +9,7 @@ elsewhere.
 from collections.abc import Iterator
 
 import pytest
-from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf import descriptor_pb2
 from google.protobuf.descriptor import Descriptor
 
 from protokit import _descriptors
@@ -268,22 +268,18 @@ class TestFileProtoCache:
         _descriptors._FILE_PROTO_CACHE.clear()
 
     @staticmethod
-    def _pool_of_files(n: int) -> tuple[descriptor_pool.DescriptorPool, list[Descriptor]]:
-        """``n`` single-message files; the pool is returned so its descriptors stay alive."""
-        pool = descriptor_pool.DescriptorPool()
+    def _pool_of_files(n: int) -> tuple[ProtoBuilder, list[Descriptor]]:
+        """``n`` single-message files (one per ``ProtoBuilder.message`` call).
+
+        The builder is returned so its pool, and therefore every descriptor,
+        stays alive for the test's duration.
+        """
+        builder = ProtoBuilder()
         descs = []
         for i in range(n):
-            fdp = descriptor_pb2.FileDescriptorProto(
-                name=f"f{i}.proto", package=f"p{i}", syntax="proto3",
-            )
-            fdp.message_type.add(name=f"M{i}").field.add(
-                name="x", number=1,
-                type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
-                label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
-            )
-            pool.Add(fdp)
-            descs.append(pool.FindMessageTypeByName(f"p{i}.M{i}"))
-        return pool, descs
+            builder.message(f"p{i}.M{i}", {"x": (T.TYPE_INT32, 1)})
+            descs.append(builder.pool.FindMessageTypeByName(f"p{i}.M{i}"))
+        return builder, descs
 
     def test_a_multi_file_schema_is_serialized_once_per_file(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -294,7 +290,7 @@ class TestFileProtoCache:
         per whole-file read. A cap below the working set makes every access a
         miss on the second pass, which is the thrash this pins against.
         """
-        _pool, descs = self._pool_of_files(64)
+        _builder, descs = self._pool_of_files(64)
         reads: list[str] = []
         real_index = _descriptors._index_messages
 
@@ -318,7 +314,7 @@ class TestFileProtoCache:
     def test_cache_stays_bounded_and_correct_past_the_cap(self) -> None:
         """Past the cap: entries are evicted, lookups stay right, keys stay pinned."""
         cap = _descriptors._FILE_PROTO_CACHE_MAX
-        _pool, descs = self._pool_of_files(cap + 16)
+        _builder, descs = self._pool_of_files(cap + 16)
         for i, desc in enumerate(descs):
             assert message_proto(desc).name == f"M{i}"
         assert len(_descriptors._FILE_PROTO_CACHE) <= cap
