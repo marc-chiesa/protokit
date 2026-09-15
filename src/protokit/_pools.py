@@ -27,6 +27,9 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
+from google.protobuf.descriptor_database import (
+    DescriptorDatabaseConflictingDefinitionError,
+)
 from google.protobuf.message import DecodeError
 
 
@@ -153,9 +156,12 @@ def add_and_resolve(
       cannot detect).
     * **pure-Python** resolves lazily, so ``Add()`` returns cleanly and the
       caller walks away with a pool that merely looks populated. The failure
-      only surfaces when something forces resolution, as ``KeyError``.
+      only surfaces when something forces resolution, as ``KeyError``. A
+      second file under an already-registered name with different content is
+      its own shape again: ``DescriptorDatabaseConflictingDefinitionError``
+      from ``Add`` itself, where upb raises ``TypeError``.
 
-    ``FindFileByName`` forces it here on both. Both exception shapes are
+    ``FindFileByName`` forces it here on both. Every exception shape is
     re-raised as :class:`DescriptorPoolError` so the documented "typed library
     exceptions, never raw" contract holds for every caller on either backend.
 
@@ -175,7 +181,7 @@ def add_and_resolve(
     try:
         pool.Add(fd)
         pool.FindFileByName(fd.name)
-    except (TypeError, KeyError) as exc:
+    except (TypeError, KeyError, DescriptorDatabaseConflictingDefinitionError) as exc:
         raise DescriptorPoolError(
             f"could not build file {fd.name!r} into the descriptor pool: {exc}"
         ) from exc

@@ -547,8 +547,11 @@ def compile_protos_to_result(
        ``root_files``, and no diagnostics. Semantically: "compiled
        nothing"; not an error.
     3. **Backend dispatch:** if ``protoxy`` is importable, attempt
-       it first. On ``ProtoxyError`` / ``ValueError``, append an
-       info diagnostic (FIRST in the tuple, per the A2-2 ordering
+       it first. On any exception in the fallback tuple of the
+       ``except`` clause below — ``ProtoxyError`` / ``ValueError``
+       from the compiler, ``TypeError`` / ``DescriptorPoolError``
+       from the pool rejecting its output — append an info
+       diagnostic (FIRST in the tuple, per the A2-2 ordering
        invariant) and fall back to ``protoc``. Without ``protoxy``,
        call ``protoc`` directly.
     4. **Failure categorization:** five distinct ``except`` clauses

@@ -723,3 +723,73 @@ class TestPopulatePoolResolutionIsAsserted:
         assert emitted == {"fine.proto"}
         assert captured is not None and set(captured) == {"fine.proto"}
         assert pool.FindFileByName("fine.proto").name == "fine.proto"
+
+
+class TestCompileProtoTypedPoolErrors:
+    """``compile_proto`` maps the typed pool error to exit 2 on both arms.
+
+    Both compile backends funnel through ``_populate_pool_with_capture``,
+    which asserts resolution and raises ``DescriptorPoolError`` on both
+    runtimes (V10). ``compile_proto``'s catch tuple named only the parse
+    errors, so the typed error escaped: ``protokit diff --proto`` on a
+    ``.proto`` the runtime rejects exited 1 with a traceback — and under
+    pure-Python that was a regression from exit 2, because the lazy pool
+    used to let ``compile_proto`` return and the failure surfaced later as
+    a clean "message type not found".
+    """
+
+    def test_protoxy_arm_exits_2_with_its_prefix(
+        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def fake_protoxy(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
+            raise _pools.DescriptorPoolError(
+                "could not build file 'orphan.proto' into the descriptor pool",
+            )
+
+        monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: True)
+        monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
+        monkeypatch.setattr(
+            _cli_utils, "_compile_with_protoc",
+            lambda *a, **k: pytest.fail("protoc must not run"),
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            _cli_utils.compile_proto(demo_proto_file, ())
+        assert excinfo.value.code == 2
+        assert "protoxy compile failed: could not build file" in capsys.readouterr().err
+
+    def test_protoc_arm_exits_2_with_its_prefix(
+        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
+            raise _pools.DescriptorPoolError(
+                "could not build file 'orphan.proto' into the descriptor pool",
+            )
+
+        monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: False)
+        monkeypatch.setattr(_cli_utils, "_compile_with_protoc", fake_protoc)
+        with pytest.raises(SystemExit) as excinfo:
+            _cli_utils.compile_proto(demo_proto_file, ())
+        assert excinfo.value.code == 2
+        assert "protoc compile failed: could not build file" in capsys.readouterr().err
+
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason="drives the real protoxy arm through the real pool populator",
+    )
+    def test_real_populator_path_exits_2(
+        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Only ``protoxy.compile`` is faked: the pool population is real."""
+        import protoxy
+
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.add().CopyFrom(TestPopulatePoolResolutionIsAsserted._orphan())
+        monkeypatch.setattr(protoxy, "compile", lambda *a, **k: fds)
+        with pytest.raises(SystemExit) as excinfo:
+            _cli_utils.compile_proto(demo_proto_file, ())
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "protoxy compile failed: could not build file 'orphan.proto'" in err
