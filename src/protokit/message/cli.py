@@ -24,6 +24,7 @@ from google.protobuf import (
 from google.protobuf.message import DecodeError, Message
 
 from protokit._cli_utils import (
+    _safe_for_stderr,
     compile_proto as _compile_proto,
     error_exit as _error,
     load_descriptor_pool as _load_descriptor_pool,
@@ -284,9 +285,9 @@ def _diff_exit_code(result: DiffResult) -> int:
 @click.option("--quiet", is_flag=True, help="Suppress output, exit code only.")
 @click.option("--verbose", is_flag=True, help="Show warnings even when messages are equal.")
 # Diff options
-@click.option("--filter", "filter_path", help="Filter diffs by path prefix.")
-@click.option("--ignore", multiple=True, help="Ignore field (bare name or dotted path). Repeatable.")
-@click.option("--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY", help="Treat repeated field as map with KEY.")
+@click.option("--filter", "filter_path", help="Filter diffs by path prefix; a proto2 extension segment is written (pkg.ext).")
+@click.option("--ignore", multiple=True, help="Ignore field: bare name, dotted path, or (pkg.ext) for a proto2 extension. Repeatable.")
+@click.option("--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY", help="Treat repeated field FIELD (bare name, dotted path, or (pkg.ext)) as map with KEY.")
 @click.option("--float-mode", type=click.Choice(["exact", "approximate"]), default="exact", help="Float comparison mode.")
 # IntRange(min=0) matches every other numeric option in the CLI surface, and
 # here it also protects the exit-code contract: a negative depth truncates the
@@ -373,7 +374,9 @@ def main(
         for field, key in treat_as_map:
             differ.treat_as_map(field, key=key)
     except ValueError as e:
-        _error(str(e))
+        # The message echoes the selector; a control character in it would
+        # otherwise forge a second stderr line (the compat CLI sanitizes).
+        _error(_safe_for_stderr(str(e)))
 
     if float_mode == "approximate":
         from protokit.message.comparators import FloatComparison
@@ -391,7 +394,7 @@ def main(
         if filter_path:
             result = result.filter(path=filter_path)
     except ValueError as e:
-        _error(str(e))
+        _error(_safe_for_stderr(str(e)))
 
     # Output
     if quiet:

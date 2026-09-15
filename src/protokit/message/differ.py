@@ -85,9 +85,10 @@ _field_present = _fieldview_field_present
 def _extension_key(fd: proto_descriptor.FieldDescriptor) -> str:
     """Display key for an extension: ``(pkg.ext)``.
 
-    Parenthesised and fully qualified, mirroring proto text format, so an
-    extension can never be confused with — or shadowed by — a declared field
-    of the same short name.
+    Parenthesised and fully qualified — the spelling proto uses for custom
+    options (text format spells an extension ``[pkg.ext]``, but brackets are
+    the path grammar's index syntax) — so an extension can never be confused
+    with, or shadowed by, a declared field of the same short name.
     """
     return f"({fd.full_name})"
 

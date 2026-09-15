@@ -13,9 +13,9 @@ alone leaves the defect live:
   ``if fd.is_extension: continue``. An added or removed message reported
   none of the extensions it carried.
 
-Extensions are emitted under a parenthesized path segment — ``(pkg.ext)`` —
-mirroring the proto text format, so an extension is never confusable with a
-declared field of the same short name.
+Extensions are emitted under a parenthesized path segment — ``(pkg.ext)``,
+the spelling proto uses for custom options — so an extension is never
+confusable with a declared field of the same short name.
 """
 
 from __future__ import annotations

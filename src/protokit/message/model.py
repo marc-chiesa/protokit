@@ -852,9 +852,11 @@ class FieldHookContext:
     unset because the other side has no presence to match. In
     that case both ``left_value`` and ``right_value`` reflect the
     actual protobuf values (defaults when unset). Hooks that need
-    strict presence should read
-    ``ctx.left_msg.HasField(ctx.left_fd.name)`` (or the right-side
-    equivalent) themselves.
+    strict presence should read it themselves:
+    ``ctx.left_msg.HasField(ctx.left_fd.name)`` for a declared field,
+    ``ctx.left_msg.HasExtension(ctx.left_fd)`` when
+    ``ctx.left_fd.is_extension`` (``HasField`` raises on an extension
+    descriptor), or the right-side equivalents.
 
     Attributes:
         path: ``FieldPath`` to the field being compared.

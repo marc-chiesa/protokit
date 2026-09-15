@@ -713,7 +713,7 @@ class TestSelectorGrammarExitCode:
             str(simple_setup["left"]), str(simple_setup["right_same"]),
             "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
             "--ignore", "items[0]",
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 2, result.output
         assert "Error:" in result.output
         assert "Bracket syntax is not supported" in result.output
@@ -725,7 +725,7 @@ class TestSelectorGrammarExitCode:
             str(simple_setup["left"]), str(simple_setup["right_same"]),
             "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
             "--treat-as-map", "a..b", "id",
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 2, result.output
         assert "Error:" in result.output
 
@@ -736,7 +736,7 @@ class TestSelectorGrammarExitCode:
             str(simple_setup["left"]), str(simple_setup["right_diff"]),
             "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
             "--filter", ".bad",
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 2, result.output
         assert "Error:" in result.output
 
@@ -751,7 +751,7 @@ class TestExtensionPathRoundTrip:
             str(extension_setup["left"]), str(extension_setup["right"]),
             "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
             "--format", "json",
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 1, result.output
         data = json.loads(result.output)
         assert [d["path"] for d in data["differences"]] == ["(x.tag)"]
@@ -763,7 +763,7 @@ class TestExtensionPathRoundTrip:
             str(extension_setup["left"]), str(extension_setup["right"]),
             "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
             "--ignore", "(x.tag)",
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 0, result.output
 
     def test_filter_on_the_emitted_path_selects_it(
@@ -773,7 +773,20 @@ class TestExtensionPathRoundTrip:
             str(extension_setup["left"]), str(extension_setup["right"]),
             "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
             "--filter", "(x.tag)", "--format", "json",
-        ])
+        ], catch_exceptions=False)
         assert result.exit_code == 1, result.output
         data = json.loads(result.output)
         assert [d["path"] for d in data["differences"]] == ["(x.tag)"]
+
+    def test_selector_text_cannot_forge_a_second_error_line(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        """The usage error echoes the selector; control characters are escaped."""
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--ignore", "x.y\nError: forged line",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        error_lines = [line for line in result.output.splitlines() if line.startswith("Error:")]
+        assert len(error_lines) == 1, result.output

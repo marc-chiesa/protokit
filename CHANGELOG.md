@@ -22,7 +22,13 @@ All notable changes to `protokit` are documented here. Format loosely follows
   messages differing only in an extension value compared **equal**, and an
   added or removed message reported none of the extensions it carried
   (audit finding V19). Extensions appear under a parenthesised,
-  fully-qualified path segment — `(pkg.ext)` — mirroring proto text format.
+  fully-qualified path segment — `(pkg.ext)` — the spelling proto uses for
+  custom options, so an extension can never be confused with a declared
+  field of the same short name. An extension follows the same presence
+  mode as a declared field (set to its default on one side and unset on
+  the other collapses under the default EQUIVALENT mode), and `treat_as_map`
+  accepts the parenthesised selector with the same global-name / scoped-path
+  rule as `--ignore`.
 
   *Upgrade impact:* a pipeline gating on `protokit diff` over proto2 messages
   that carry extensions may start reporting differences it previously passed
@@ -30,16 +36,19 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `--ignore` on the parenthesised path to suppress a specific extension:
   `--ignore '(pkg.ext)'` suppresses it everywhere, `--ignore 'parent.(pkg.ext)'`
   at one location. `FieldPath.parse` accepts the parenthesised segment, so
-  `ignore_fields`, `treat_as_set`, `--filter` and `DiffResult.filter` all take
-  the path exactly as the differ reports it.
+  `ignore_fields`, `treat_as_map`, `treat_as_set`, `--filter` and
+  `DiffResult.filter` accept it too (ignore selectors still take no bracket
+  suffix, as before).
 
 ### Fixed — `protokit diff` exit codes
 
 - **A malformed selector now exits 2, not 1** (audit finding U15-6). `--ignore`,
-  `--treat-as-map` and `--filter` values the path grammar rejects raised a `ValueError` that
-  escaped as a traceback with exit code 1 — the code documented for "messages
-  differ", which a CI gate would read as a genuine difference. They are usage
-  errors and exit 2 with an `Error:` line like every other bad flag.
+  `--treat-as-map` and `--filter` values the path grammar rejects — a dotted or
+  parenthesised value it cannot parse, or a registration conflict — raised a
+  `ValueError` that escaped as a traceback with exit code 1, the code documented
+  for "messages differ", which a CI gate would read as a genuine difference.
+  They are usage errors and exit 2 with an `Error:` line like every other bad
+  flag. A bare name is not validated and matches nothing, as before.
 
 ### Fixed — pure-Python protobuf runtime
 
