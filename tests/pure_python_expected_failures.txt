@@ -18,4 +18,7 @@
 # findings and was deleted; the inventory is EMPTY and the cell is a required
 # check (U23). An empty inventory carries no header. A new entry needs the
 # `protobuf:` / `python:` header above it, copied from the cell's harvest
-# output, and turns the required check red until the entry's fix lands.
+# output. Note what an entry does: it makes the required check TOLERATE that
+# one failure (strict xfail), so adding one is a reviewable decision to ship
+# with a known pure-Python defect, and the release gate requires this file
+# to be empty again before a release is cut.

@@ -22,7 +22,7 @@ Asserted properties of exactly one job:
   ``tests/storage``-scoped cell misses every V34 and most V10 failures;
 * a sanity step asserts ``api_implementation.Type()`` is ``python`` so a
   runtime that silently fell back to upb fails the job instead of passing it;
-* no ``continue-on-error`` at job level or on the pytest step, and the
+* no ``continue-on-error`` at job level or on any step, and the
   required-check banner rather than the advisory one — U2 landed the cell
   advisory (job-level ``continue-on-error: true``, a DO-NOT-ADD-TO-REQUIRED-
   CHECKS banner) while the known-failure inventory was non-empty; U23 emptied
@@ -88,6 +88,7 @@ _NARROWING_PREFIXES = (
     "-k", "-m", "--deselect", "--ignore", "--ignore-glob", "--lf", "--last-failed",
     "--sw", "--stepwise", "--runxfail", "-p", "--co", "--collect-only", "-x",
     "--maxfail", "--pure-python-inventory=", "--pure-python-inventory-ignore-version",
+    "--version", "--help", "-h",
 )
 
 
@@ -170,10 +171,17 @@ def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
             violations.append(
                 f"{job_id}'s pytest step must not override {BACKEND_ENV} at step level"
             )
+    # Every step, not only the pytest one: a tolerated sanity-step failure
+    # would let a silent upb fallback pass the suite with the inventory hook
+    # inert, and the ratchet cannot tell which step really runs the tests
+    # once the command is spelled unusually.
+    for step in steps:
         if "continue-on-error" in step:
+            label = step.get("name") or step.get("uses") or "<unnamed>"
             violations.append(
-                f"{job_id}'s pytest step must not carry step-level continue-on-error; "
-                f"a required check whose test step cannot fail gates nothing"
+                f"{job_id}'s step {label!r} must not carry step-level "
+                f"continue-on-error; a required check whose steps cannot fail gates "
+                f"nothing"
             )
 
     if not any(_asserts_pure_python(s.get("run") or "") for s in steps):
@@ -269,7 +277,16 @@ class TestPurePythonCellPresenceRatchetSelfCheck:
             "      - name: Run test suite\n        continue-on-error: true\n",
         )
         (violation,) = _violations(mutated)
-        assert "step-level continue-on-error" in violation
+        assert "step-level continue-on-error" in violation and "Run test suite" in violation
+
+    def test_step_level_continue_on_error_on_the_sanity_step_is_named(self) -> None:
+        # A tolerated sanity failure is the silent-upb-fallback shape: the
+        # suite then runs green on the wrong backend with the hook inert.
+        mutated = _SYNTHETIC.replace(
+            "      - name: Sanity\n", "      - name: Sanity\n        continue-on-error: true\n",
+        )
+        (violation,) = _violations(mutated)
+        assert "step-level continue-on-error" in violation and "Sanity" in violation
 
     def test_missing_backend_env_is_named(self) -> None:
         mutated = _SYNTHETIC.replace(f"      {BACKEND_ENV}: python\n", "")
@@ -338,7 +355,8 @@ class TestPurePythonCellPresenceRatchetSelfCheck:
         "flag",
         ["-k test_x", "-m slow", "--deselect tests/x.py::t", "--ignore=tests/schema",
          "--lf", "--sw", "--runxfail", "-p no:tests._pure_python_inventory", "-x",
-         "--pure-python-inventory=/tmp/other.txt", "--pure-python-inventory-ignore-version"],
+         "--pure-python-inventory=/tmp/other.txt", "--pure-python-inventory-ignore-version",
+         "--version", "--help", "-h"],
     )
     def test_a_narrowing_or_escaping_option_is_named(self, flag: str) -> None:
         mutated = _SYNTHETIC.replace("pytest tests/ -q", f"pytest tests/ -q {flag}")

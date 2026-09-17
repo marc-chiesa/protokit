@@ -204,9 +204,9 @@ jobs:
   # the same way a upb failure does. The job was advisory (job-level
   # continue-on-error, kept out of the required checks) from U2 until
   # U3 emptied the known-failure inventory; U23 promoted it. Do NOT
-  # reintroduce continue-on-error at job or step level — a required
-  # check whose job cannot fail gates nothing — and the presence
-  # ratchet names either as a violation.
+  # reintroduce continue-on-error at job level or on any step — a
+  # required check whose job cannot fail gates nothing — and the
+  # presence ratchet names either as a violation.
   test-pure-python:
     runs-on: ubuntu-latest
     timeout-minutes: 30
