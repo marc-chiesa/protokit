@@ -11,8 +11,6 @@ pin live in ``test_columnar.py``.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.storage._columnar import _dropped_declared_extensions
