@@ -11,16 +11,12 @@ pin live in ``test_columnar.py``.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.storage._columnar import _dropped_declared_extensions
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 F = descriptor_pb2.FieldDescriptorProto
 
 
