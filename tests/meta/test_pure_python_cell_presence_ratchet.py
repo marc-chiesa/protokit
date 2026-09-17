@@ -1,4 +1,4 @@
-"""Presence ratchet for the pure-Python protobuf CI cell (U2, KTD6 / KTD10).
+"""Presence ratchet for the pure-Python protobuf CI cell (U2 / U23, KTD6 / KTD10).
 
 Three audit defects (V1, V10, the V9 swallow) rely on an exception only the
 upb backend raises; under the pure-Python runtime each degrades silently to a
@@ -8,7 +8,9 @@ the systemic guard: the full suite under
 the committed known-failure inventory. A future edit that narrows the run to
 one subtree, drops the backend variable, or removes the job would leave the
 guard looking present while guarding nothing — the shape this ratchet exists
-to catch. ``yaml.safe_load`` in the ``_ci_mypy_paths`` shape
+to catch. So would a ``continue-on-error`` that let the job report green on a
+failure: the job is a required check, and a required check that cannot fail
+gates nothing. ``yaml.safe_load`` in the ``_ci_mypy_paths`` shape
 (``tests/meta/test_static_analysis.py``); never ``yaml.load``.
 
 Asserted properties of exactly one job:
@@ -20,9 +22,12 @@ Asserted properties of exactly one job:
   ``tests/storage``-scoped cell misses every V34 and most V10 failures;
 * a sanity step asserts ``api_implementation.Type()`` is ``python`` so a
   runtime that silently fell back to upb fails the job instead of passing it;
-* job-level ``continue-on-error: true`` and the advisory banner, **during the
-  advisory phase only** — U23 flips both assertions when the inventory is
-  empty and the cell becomes a required check.
+* no ``continue-on-error`` at job level or on the pytest step, and the
+  required-check banner rather than the advisory one — U2 landed the cell
+  advisory (job-level ``continue-on-error: true``, a DO-NOT-ADD-TO-REQUIRED-
+  CHECKS banner) while the known-failure inventory was non-empty; U23 emptied
+  it, promoted the job to a required check on ``main``, and flipped both
+  assertions here. Either coming back would contradict branch protection.
 
 KTD3 proof: the injected-violation self-tests below run the same check over a
 synthetic workflow with one property removed each and assert the message
@@ -43,9 +48,12 @@ _CI_YAML = ".github/workflows/ci.yml"
 JOB_ID = "test-pure-python"
 BACKEND_ENV = "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"
 PYTHON_VERSION = "3.12"
-# Shortest uniquely-identifying ASCII run of the advisory banner, on one source
-# line (presence-ratchet pattern rule 5). The parity job carries the generic
-# "DO NOT add to required-checks" line too, so the pin names this job.
+# Shortest uniquely-identifying ASCII run of the required-check banner, on one
+# source line (presence-ratchet pattern rule 5). The parity job carries the
+# opposite posture ("DO NOT add to required-checks"), so the pin names this job.
+REQUIRED_BANNER = "`test-pure-python` is a REQUIRED CHECK"
+# The advisory-phase banner (U2 until U23). Its return would restate a posture
+# branch protection no longer has, so the ratchet names it as a violation.
 ADVISORY_BANNER = "`test-pure-python` is INTENTIONALLY ADVISORY"
 SANITY_FRAGMENT = "api_implementation.Type()"
 
@@ -102,11 +110,12 @@ def _asserts_pure_python(script: str) -> bool:
 
 
 def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
-    """Every way the workflow fails to carry the advisory pure-Python cell.
+    """Every way the workflow fails to carry the pure-Python cell as a
+    required check.
 
     Each message names the missing property so a red ratchet reads as a
-    checklist, not a puzzle. Empty means the cell is present in the shape U2
-    landed.
+    checklist, not a puzzle. Empty means the cell is present in the shape U23
+    landed (U2's shape, minus the advisory posture).
     """
     violations: list[str] = []
     jobs = workflow.get("jobs") or {}
@@ -161,36 +170,46 @@ def cell_violations(workflow: dict[str, Any], raw_text: str) -> list[str]:
             violations.append(
                 f"{job_id}'s pytest step must not override {BACKEND_ENV} at step level"
             )
+        if "continue-on-error" in step:
+            violations.append(
+                f"{job_id}'s pytest step must not carry step-level continue-on-error; "
+                f"a required check whose test step cannot fail gates nothing"
+            )
 
     if not any(_asserts_pure_python(s.get("run") or "") for s in steps):
         violations.append(
             f"{job_id} has no backend sanity step asserting {SANITY_FRAGMENT} == 'python'"
         )
 
-    if job.get("continue-on-error") is not True:
+    if "continue-on-error" in job:
         violations.append(
-            f"{job_id} must carry job-level continue-on-error: true during the "
-            f"advisory phase (U23 owns the flip to a required check)"
+            f"{job_id} must not carry job-level continue-on-error (found "
+            f"{job['continue-on-error']!r}); it is a required check since U23, "
+            f"and a job that cannot fail gates nothing"
         )
-    if ADVISORY_BANNER not in raw_text:
+    if REQUIRED_BANNER not in raw_text:
         violations.append(
-            f"{_CI_YAML} no longer carries the advisory banner "
-            f"({ADVISORY_BANNER!r}); the DO-NOT-ADD-TO-REQUIRED-CHECKS posture "
-            f"was deleted or reworded"
+            f"{_CI_YAML} no longer carries the required-check banner "
+            f"({REQUIRED_BANNER!r}); the posture comment was deleted or reworded"
+        )
+    if ADVISORY_BANNER in raw_text:
+        violations.append(
+            f"{_CI_YAML} carries the advisory-phase banner ({ADVISORY_BANNER!r}) "
+            f"again; the cell has been a required check since U23"
         )
     return violations
 
 
 class TestPurePythonCellPresenceRatchet:
-    def test_ci_workflow_carries_the_advisory_pure_python_cell(self) -> None:
+    def test_ci_workflow_carries_the_required_pure_python_cell(self) -> None:
         workflow, text = load_workflow()
         violations = cell_violations(workflow, text)
         assert not violations, (
             f"{_CI_YAML} no longer carries the pure-Python protobuf cell in the "
-            f"shape U2 landed (KTD10):\n  " + "\n  ".join(violations)
-            + "\nIf you are promoting the cell to a required check, that is U23: "
-            "flip the continue-on-error and banner assertions in this ratchet in "
-            "the same PR."
+            f"shape U23 landed (KTD10's tighten step):\n  " + "\n  ".join(violations)
+            + "\nThe job is a required check in main's branch protection; do not "
+            "demote it here without removing it from the required checks and "
+            "saying why in the PR."
         )
 
 
@@ -204,7 +223,6 @@ jobs:
       - run: pytest tests/ -v
   {JOB_ID}:
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       {BACKEND_ENV}: python
     steps:
@@ -218,7 +236,8 @@ jobs:
       - name: Run test suite
         run: pytest tests/ -q -rfE --tb=short
 """
-_SYNTHETIC_BANNER = f"# {ADVISORY_BANNER} until U23 promotes it.\n"
+_SYNTHETIC_BANNER = f"# {REQUIRED_BANNER} since U23.\n"
+_SYNTHETIC_ADVISORY_BANNER = f"# {ADVISORY_BANNER} until U23 promotes it.\n"
 
 
 def _violations(yaml_text: str, banner: str = _SYNTHETIC_BANNER) -> list[str]:
@@ -234,10 +253,23 @@ class TestPurePythonCellPresenceRatchetSelfCheck:
         (violation,) = _violations(mutated)
         assert "full suite" in violation and "tests/storage" in violation
 
-    def test_missing_continue_on_error_is_named(self) -> None:
-        mutated = _SYNTHETIC.replace("    continue-on-error: true\n", "")
+    def test_reintroduced_job_level_continue_on_error_is_named(self) -> None:
+        # The advisory-phase shape (U2): the job reports green on a failure.
+        mutated = _SYNTHETIC.replace(
+            f"  {JOB_ID}:\n    runs-on: ubuntu-latest\n",
+            f"  {JOB_ID}:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n",
+        )
         (violation,) = _violations(mutated)
-        assert "continue-on-error" in violation
+        assert "job-level continue-on-error" in violation and "True" in violation
+
+    def test_step_level_continue_on_error_on_the_pytest_step_is_named(self) -> None:
+        # The job-level key is absent, but the test step itself cannot fail.
+        mutated = _SYNTHETIC.replace(
+            "      - name: Run test suite\n",
+            "      - name: Run test suite\n        continue-on-error: true\n",
+        )
+        (violation,) = _violations(mutated)
+        assert "step-level continue-on-error" in violation
 
     def test_missing_backend_env_is_named(self) -> None:
         mutated = _SYNTHETIC.replace(f"      {BACKEND_ENV}: python\n", "")
@@ -261,7 +293,15 @@ class TestPurePythonCellPresenceRatchetSelfCheck:
 
     def test_missing_banner_is_named(self) -> None:
         (violation,) = _violations(_SYNTHETIC, banner="")
-        assert "banner" in violation
+        assert "required-check banner" in violation
+
+    def test_returned_advisory_banner_is_named(self) -> None:
+        # Both banners present: the required-check pin passes, the stale
+        # advisory posture is still a violation of its own.
+        (violation,) = _violations(
+            _SYNTHETIC, banner=_SYNTHETIC_BANNER + _SYNTHETIC_ADVISORY_BANNER,
+        )
+        assert "advisory-phase banner" in violation
 
     def test_job_with_no_pytest_step_is_named(self) -> None:
         mutated = _SYNTHETIC.replace(

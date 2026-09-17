@@ -25,7 +25,7 @@ The full test suite runs under `pytest`:
 ### The pure-Python protobuf backend
 
 CI also runs the full suite under protobuf's pure-Python runtime
-(`test-pure-python`, advisory until its known-failure inventory is empty).
+(`test-pure-python`, a required check on `main`).
 Several audit defects only show up there, because they rely on an exception
 that only the default upb backend raises. To reproduce locally:
 
