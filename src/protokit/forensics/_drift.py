@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from google.protobuf import descriptor_pb2
 from google.protobuf.descriptor import Descriptor, FieldDescriptor
 
+from protokit import _descriptors
 from protokit.forensics._wire import WIRETYPE_LEN, WireObservation, walk_top_level
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
 
@@ -84,8 +84,7 @@ def _reserved_ranges(descriptor: Descriptor) -> tuple[tuple[int, int], ...]:
     ``end = 536_870_912``, so ``set(range(...))`` would allocate ~5e8 ints and OOM.
     Membership is the only use — see :func:`_is_reserved`.
     """
-    proto = descriptor_pb2.DescriptorProto()
-    descriptor.CopyToProto(proto)
+    proto = _descriptors.message_proto(descriptor)
     return tuple((rng.start, rng.end) for rng in proto.reserved_range)
 
 

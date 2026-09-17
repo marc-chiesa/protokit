@@ -1,16 +1,23 @@
 """Shared descriptor traversal helpers.
 
 Small, backend-agnostic utilities for walking protobuf descriptors. These
-are intentionally leaf-level primitives — no comparison logic, no state —
-so both the differ engine and the schema compatibility checker can import
-them without coupling to either.
+are intentionally leaf-level primitives — no comparison logic — so both the
+differ engine and the schema compatibility checker can import them without
+coupling to either. The one piece of state is the bounded, module-level
+cache behind :func:`message_proto`, documented at its definition; it holds
+immutable serialized file protos and never affects what any helper returns.
 """
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from typing import Any
 
 from google.protobuf import descriptor as proto_descriptor
+from google.protobuf import descriptor_pb2, descriptor_pool
+
+from protokit import _fieldview
 
 _FD = proto_descriptor.FieldDescriptor
 
@@ -82,6 +89,11 @@ def label_name(field_desc: proto_descriptor.FieldDescriptor) -> str:
 def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     """Check if a field is a protobuf map field.
 
+    Delegates to :func:`protokit._fieldview.is_map_field`, which owns the
+    map-entry question alongside the enumeration question (U3). Kept here
+    as a re-export so existing call sites keep resolving it from this
+    module; the two cannot drift apart because there is only one body.
+
     Args:
         field_desc: A protobuf FieldDescriptor.
 
@@ -89,26 +101,166 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
         True if the field is a repeated message whose message type has
         the ``map_entry`` option set.
     """
-    return (
-        is_repeated(field_desc)
-        and field_desc.type == proto_descriptor.FieldDescriptor.TYPE_MESSAGE
-        and field_desc.message_type.GetOptions().map_entry
-    )
+    return _fieldview.is_map_field(field_desc)
 
 
-def get_field_map(
+# Serialized FileDescriptorProtos, keyed by ``id(FileDescriptor)``.
+#
+# ``message_proto`` below reads the whole FILE to get one message, because that
+# is the only route that works on both backends. Without a cache that turns a
+# per-message read into a per-message whole-file serialization: the compat
+# checker calls it once per message pair, so a file with N messages costs
+# O(N * filesize) where the old per-message ``CopyToProto`` cost O(filesize)
+# in total. Measured before caching: a 400-message schema took 10x longer
+# through ``SchemaChecker.check()``.
+#
+# Keyed by ``id()`` because upb's FileDescriptor is NOT weak-referenceable
+# (``weakref.WeakKeyDictionary`` raises TypeError on it), so the obvious
+# identity-safe container is unavailable. The entry therefore holds a STRONG
+# reference to the FileDescriptor alongside its proto: while an entry lives its
+# key object cannot be collected, so that id cannot be reused by a different
+# object — the failure mode a bare ``id()`` cache would have. A file already in
+# a pool is immutable, so a cached proto cannot go stale.
+#
+# Bounded by POOLS, not files. A FileDescriptor pins its pool, so what a
+# `protokit compat history` / `bisect` walk (one fresh pool per commit) keeps
+# alive is the number of distinct pools the cache references. A file cap
+# cannot express that: 32 files thrashed on any schema larger than 32 files
+# (measured 9x slower than uncached), and 256 files let a walk over ten-file
+# schemas pin 26 old pools (3x the memory of the cap it replaced). So the
+# live pool is always fully cached whatever its size — no thrash — and only
+# the newest ``_FILE_PROTO_CACHE_MAX_POOLS`` pools stay alive; a whole pool's
+# entries go when it ages out. The file backstop guards the cache's own size
+# against one pathological pool and is never the operative bound in practice.
+#
+# One lock: entries are evicted while another caller may be between its
+# ``get`` and ``move_to_end`` (two ``SchemaChecker`` runs on different threads
+# raised ``KeyError`` there under contention).
+_FILE_PROTO_CACHE_MAX_POOLS = 4
+_FILE_PROTO_CACHE_MAX_FILES = 2048
+_FILE_PROTO_CACHE: OrderedDict[
+    int,
+    tuple[
+        proto_descriptor.FileDescriptor,
+        descriptor_pb2.FileDescriptorProto,
+        dict[str, descriptor_pb2.DescriptorProto],
+        int,  # id() of the owning pool: the key into _FILE_PROTO_POOLS
+    ],
+] = OrderedDict()
+# Pools with cached files, least recently used first: ``{id(pool): (pool, {file keys})}``.
+_FILE_PROTO_POOLS: OrderedDict[
+    int, tuple[descriptor_pool.DescriptorPool, set[int]],
+] = OrderedDict()
+_FILE_PROTO_LOCK = threading.Lock()
+
+
+def _clear_file_proto_cache() -> None:
+    """Drop every cached file and pool (tests; nothing in the product needs it)."""
+    with _FILE_PROTO_LOCK:
+        _FILE_PROTO_CACHE.clear()
+        _FILE_PROTO_POOLS.clear()
+
+
+def _index_messages(
+    file_proto: descriptor_pb2.FileDescriptorProto,
+) -> dict[str, descriptor_pb2.DescriptorProto]:
+    """Map every message in ``file_proto`` to its package-relative dotted name.
+
+    Built once per file so :func:`message_proto` is a dict hit rather than a
+    scan. Without it the whole-file read is still O(N) *per lookup* — a linear
+    walk over N message_type entries — which leaves the compat checker
+    quadratic in message count even with the file proto itself cached.
+    """
+    index: dict[str, descriptor_pb2.DescriptorProto] = {}
+
+    def _walk(nodes: object, prefix: str) -> None:
+        for node in nodes:  # type: ignore[attr-defined]
+            name = f"{prefix}.{node.name}" if prefix else node.name
+            index[name] = node
+            _walk(node.nested_type, name)
+
+    _walk(file_proto.message_type, "")
+    return index
+
+
+def _file_message_index(
+    file_descriptor: proto_descriptor.FileDescriptor,
+) -> dict[str, descriptor_pb2.DescriptorProto]:
+    """``{package-relative dotted name: DescriptorProto}`` for a file, memoized."""
+    key = id(file_descriptor)
+    with _FILE_PROTO_LOCK:
+        hit = _FILE_PROTO_CACHE.get(key)
+        if hit is not None and hit[0] is file_descriptor:
+            _FILE_PROTO_CACHE.move_to_end(key)
+            _FILE_PROTO_POOLS.move_to_end(hit[3])
+            return hit[2]
+        proto = descriptor_pb2.FileDescriptorProto()
+        file_descriptor.CopyToProto(proto)
+        index = _index_messages(proto)
+        pool = file_descriptor.pool
+        pool_key = id(pool)
+        pool_entry = _FILE_PROTO_POOLS.get(pool_key)
+        if pool_entry is None or pool_entry[0] is not pool:
+            pool_entry = (pool, set())
+            _FILE_PROTO_POOLS[pool_key] = pool_entry
+        _FILE_PROTO_POOLS.move_to_end(pool_key)
+        pool_entry[1].add(key)
+        _FILE_PROTO_CACHE[key] = (file_descriptor, proto, index, pool_key)
+        _FILE_PROTO_CACHE.move_to_end(key)
+        while len(_FILE_PROTO_POOLS) > _FILE_PROTO_CACHE_MAX_POOLS:
+            _, (_, evicted_keys) = _FILE_PROTO_POOLS.popitem(last=False)
+            for evicted in evicted_keys:
+                _FILE_PROTO_CACHE.pop(evicted, None)
+        while len(_FILE_PROTO_CACHE) > _FILE_PROTO_CACHE_MAX_FILES:
+            evicted, (_, _, _, evicted_pool) = _FILE_PROTO_CACHE.popitem(last=False)
+            owner = _FILE_PROTO_POOLS.get(evicted_pool)
+            if owner is not None:
+                owner[1].discard(evicted)
+        return index
+
+
+def message_proto(
     descriptor: proto_descriptor.Descriptor,
-) -> dict[str, proto_descriptor.FieldDescriptor]:
-    """Get a name -> field descriptor map, excluding extensions.
+) -> descriptor_pb2.DescriptorProto:
+    """Return the ``DescriptorProto`` for ``descriptor``, on either backend.
+
+    The obvious call, ``descriptor.CopyToProto(DescriptorProto())``, is upb-only
+    (V34). Measured on protobuf 5.27.5, for a descriptor built by adding a
+    ``FileDescriptorProto`` to a pool — which is every descriptor protokit
+    handles — the pure-Python runtime raises
+    ``descriptor.Error("Descriptor does not contain serialization.")``, because
+    it only retains a serialized form for descriptors it generated. upb returns
+    the proto. That asymmetry crashed ``protokit compat`` and the drift walker
+    outright under the pure-Python backend.
+
+    The owning FILE always retains its serialization on both runtimes, so this
+    reads ``descriptor.file`` and locates the message inside it by name,
+    walking ``nested_type`` for a nested message. One owner for the three
+    readers that need this (KTD1): the two in ``schema.rules`` and the one in
+    ``forensics._drift``.
 
     Args:
-        descriptor: A protobuf message Descriptor.
+        descriptor: A protobuf message ``Descriptor``.
 
     Returns:
-        A dict mapping field name to FieldDescriptor for all non-extension
-        fields.
+        The ``DescriptorProto`` declaring this message.
+
+    Raises:
+        KeyError: If the message cannot be located in its own file's proto,
+            which would mean the descriptor and its file disagree.
     """
-    return {f.name: f for f in descriptor.fields if not f.is_extension}
+    package = descriptor.file.package
+    relative = descriptor.full_name
+    if package and relative.startswith(f"{package}."):
+        relative = relative[len(package) + 1 :]
+
+    node = _file_message_index(descriptor.file).get(relative)
+    if node is None:
+        raise KeyError(
+            f"{descriptor.full_name!r} not found in its own file "
+            f"{descriptor.file.name!r}"
+        )
+    return node
 
 
 def has_presence(fd: proto_descriptor.FieldDescriptor) -> bool:

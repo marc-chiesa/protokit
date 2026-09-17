@@ -58,7 +58,8 @@ from typing import Iterable
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
-from protokit._descriptors import get_field_map, is_map_field
+from protokit._descriptors import is_map_field
+from protokit._fieldview import FieldView
 from protokit.message.model import Diagnostic, FieldPath
 from protokit.schema.model import (
     CompatibilityLevel,
@@ -623,8 +624,8 @@ class SchemaChecker:
         warnings_sink: list[Diagnostic],
         stack: list,
     ) -> None:
-        old_fields = get_field_map(old_m)
-        new_fields = get_field_map(new_m)
+        old_fields = FieldView.of(old_m).by_name
+        new_fields = FieldView.of(new_m).by_name
         names = sorted(set(old_fields) | set(new_fields))
         for name in names:
             old_fd = old_fields.get(name)

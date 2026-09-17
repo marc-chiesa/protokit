@@ -159,6 +159,65 @@ class TestCompileProtoxyFallback:
         # without breaking this regression gate.
         assert "fall" in diag.message
 
+    def test_pool_rejection_after_protoxy_success_falls_back_to_protoc(
+        self,
+        demo_proto_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Category #1's second arm: protoxy compiles, the runtime rejects the result.
+
+        ``_populate_pool_with_capture`` asserts resolution after every
+        ``pool.Add`` and raises the typed ``DescriptorPoolError`` on both
+        backends (V10). The fallback's ``except`` tuple named ``TypeError`` —
+        upb's raw shape — so the typed error fell through to the category #5
+        catch-all and protoc was never tried: a ``.proto`` that protoxy
+        accepts but the Python runtime rejects hard-failed instead of
+        compiling through protoc.
+
+        The fake protoxy result is a real ``FileDescriptorSet`` whose one
+        field references a symbol nothing defines, so the real
+        pool-population path runs unmocked; only the two backend entry
+        points are replaced, as in the parse-error test above.
+        """
+        from google.protobuf import descriptor_pb2, descriptor_pool
+
+        dangling = descriptor_pb2.FileDescriptorSet()
+        bad = dangling.file.add(name="demo.proto", package="demo", syntax="proto3")
+        ref = bad.message_type.add(name="User").field.add(name="ref", number=1)
+        ref.type = descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE
+        ref.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+        ref.type_name = ".nowhere.Missing"
+
+        def fake_protoxy_compile(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return dangling
+
+        good = descriptor_pb2.FileDescriptorProto(
+            name="demo.proto", package="demo", syntax="proto3",
+        )
+        name = good.message_type.add(name="User").field.add(name="name", number=1)
+        name.type = descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+        name.label = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+        protoc_calls: list[object] = []
+
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
+            protoc_calls.append(paths)
+            pool = descriptor_pool.DescriptorPool()
+            pool.Add(good)
+            return pool, ("demo.proto",), None, ("demo.proto",)
+
+        monkeypatch.setattr(protoxy, "compile", fake_protoxy_compile)
+        monkeypatch.setattr(compile_module, "_compile_with_protoc", fake_protoc)
+
+        result = compile_protos_to_result([demo_proto_file])
+
+        assert protoc_calls, "protoc fallback was never attempted"
+        assert result.pool.FindMessageTypeByName("demo.User").full_name == "demo.User"
+        assert result.root_files == ("demo.proto",)
+        assert [(d.level, d.category) for d in result.diagnostics] == [
+            ("info", "protoxy_fallback"),
+        ]
+        assert result.diagnostics[0].exception_type == "DescriptorPoolError"
+
     @pytest.mark.parametrize(
         ("label", "exc", "expected_exception_type"),
         [

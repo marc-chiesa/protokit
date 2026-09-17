@@ -27,6 +27,9 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
+from google.protobuf.descriptor_database import (
+    DescriptorDatabaseConflictingDefinitionError,
+)
 from google.protobuf.message import DecodeError
 
 
@@ -137,6 +140,53 @@ def sort_files_by_dependency(
     return ordered
 
 
+def add_and_resolve(
+    pool: descriptor_pool.DescriptorPool,
+    fd: descriptor_pb2.FileDescriptorProto,
+) -> None:
+    """``pool.Add(fd)``, then force resolution and raise the typed error family.
+
+    Resolution is asserted, never inferred from ``Add()`` raising (KTD6, V10).
+    The two protobuf backends disagree about when a file with unresolvable
+    symbols fails, measured on 5.27.5:
+
+    * **upb** resolves eagerly and raises ``TypeError`` from ``Add`` itself —
+      e.g. a field referencing a symbol no file in the set defines (a dangling
+      symbol with no *missing-file* dependency, which a topological sort
+      cannot detect).
+    * **pure-Python** resolves lazily, so ``Add()`` returns cleanly and the
+      caller walks away with a pool that merely looks populated. The failure
+      only surfaces when something forces resolution, as ``KeyError``. A
+      second file under an already-registered name with different content is
+      its own shape again: ``DescriptorDatabaseConflictingDefinitionError``
+      from ``Add`` itself, where upb raises ``TypeError``.
+
+    ``FindFileByName`` forces it here on both. Every exception shape is
+    re-raised as :class:`DescriptorPoolError` so the documented "typed library
+    exceptions, never raw" contract holds for every caller on either backend.
+
+    One product site does not use this helper on purpose: the lint
+    descriptor-set loader (``schema/lint/_cli_utils.py``) repeats the
+    Add-then-probe sequence inline because it must route on the raw exception
+    to choose a stable ``error[lint-...]`` code, and collapsing both shapes
+    here would hide that. The comment at that site names the U17 follow-up.
+
+    Args:
+        pool: The pool to populate.
+        fd: The ``FileDescriptorProto`` to add.
+
+    Raises:
+        DescriptorPoolError: If the file cannot be resolved into the pool.
+    """
+    try:
+        pool.Add(fd)
+        pool.FindFileByName(fd.name)
+    except (TypeError, KeyError, DescriptorDatabaseConflictingDefinitionError) as exc:
+        raise DescriptorPoolError(
+            f"could not build file {fd.name!r} into the descriptor pool: {exc}"
+        ) from exc
+
+
 def build_pool(
     fds: descriptor_pb2.FileDescriptorSet,
 ) -> descriptor_pool.DescriptorPool:
@@ -148,18 +198,10 @@ def build_pool(
     """
     pool = descriptor_pool.DescriptorPool()
     for fd in sort_files_by_dependency(list(fds.file)):
-        try:
-            pool.Add(fd)
-        except TypeError as exc:
-            # upb raises a bare TypeError when a descriptor cannot be built into
-            # the pool — e.g. a field referencing a symbol no file in the set
-            # defines (a dangling symbol with no *missing-file* dependency, which
-            # the topo-sort cannot detect). Re-raise as the typed family so the
-            # documented "typed library exceptions, never raw" contract holds for
-            # every caller, including the storage register boundary.
-            raise DescriptorPoolError(
-                f"could not build file {fd.name!r} into the descriptor pool: {exc}"
-            ) from exc
+        # Files are added in dependency order above, so a forward reference
+        # within this set is already satisfied by the time its referrer is
+        # added and the eager resolution below cannot false-positive.
+        add_and_resolve(pool, fd)
     return pool
 
 

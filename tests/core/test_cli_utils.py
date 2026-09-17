@@ -18,11 +18,14 @@ from __future__ import annotations
 import functools
 import importlib.util
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
+from google.protobuf import descriptor_pb2, descriptor_pool
 
-from protokit import _cli_utils
+from protokit import _cli_utils, _pools
 
 _DEMO_PROTO = """
 syntax = "proto3";
@@ -659,3 +662,150 @@ class TestProtocTimeoutEnvOverride:
             _cli_utils._protoc_timeout_seconds()
             == _cli_utils._PROTOC_TIMEOUT_SECONDS_DEFAULT
         )
+
+
+class TestPopulatePoolResolutionIsAsserted:
+    """``_populate_pool_with_capture`` must not return a populated-looking pool (U3, V10).
+
+    Both compile backends funnel through this helper, so a file whose
+    declared dependency is absent has to fail here rather than downstream.
+    Backend-neutral by construction: upb raises ``TypeError`` from ``Add``
+    itself (eager resolution) while the pure-Python pool accepts the file and
+    only surfaces ``KeyError`` when resolution is forced, so the assertion is
+    on the typed error the helper raises, not on either runtime's exception.
+
+    Function-level: no compiler, no descriptor set on disk.
+    """
+
+    @staticmethod
+    def _orphan() -> descriptor_pb2.FileDescriptorProto:
+        """A file whose field references a symbol nothing in the pool defines."""
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="orphan.proto", package="orphan", syntax="proto3",
+        )
+        msg = fdp.message_type.add(name="M")
+        msg.field.add(
+            name="ref", number=1,
+            type=descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+            type_name=".nowhere.Missing",
+        )
+        return fdp
+
+    def test_unresolvable_symbol_raises_the_typed_error(self) -> None:
+        pool = descriptor_pool.DescriptorPool()
+        with pytest.raises(_pools.DescriptorPoolError) as excinfo:
+            _cli_utils._populate_pool_with_capture(
+                [self._orphan()], pool, {"orphan.proto"}, capture=False,
+            )
+        assert "orphan.proto" in str(excinfo.value)
+
+    def test_capture_mode_fails_the_same_way(self) -> None:
+        """The capture path must not diverge — it is the lint-facing one."""
+        pool = descriptor_pool.DescriptorPool()
+        with pytest.raises(_pools.DescriptorPoolError):
+            _cli_utils._populate_pool_with_capture(
+                [self._orphan()], pool, {"orphan.proto"}, capture=True,
+            )
+
+    def test_a_resolvable_file_still_populates_and_reports_emitted(self) -> None:
+        """Adjacent behaviour: the happy path is unchanged."""
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="fine.proto", package="fine", syntax="proto3",
+        )
+        fdp.message_type.add(name="M").field.add(
+            name="a", number=1,
+            type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        captured, emitted = _cli_utils._populate_pool_with_capture(
+            [fdp], pool, {"fine.proto"}, capture=True,
+        )
+        assert emitted == {"fine.proto"}
+        assert captured is not None and set(captured) == {"fine.proto"}
+        assert pool.FindFileByName("fine.proto").name == "fine.proto"
+
+
+class TestCompileProtoTypedPoolErrors:
+    """``compile_proto`` maps the typed pool error to exit 2 on both arms.
+
+    Both compile backends funnel through ``_populate_pool_with_capture``,
+    which asserts resolution and raises ``DescriptorPoolError`` on both
+    runtimes (V10). ``compile_proto``'s catch tuple named only the parse
+    errors, so the typed error escaped: ``protokit diff --proto`` on a
+    ``.proto`` the runtime rejects exited 1 with a traceback — and under
+    pure-Python that was a regression from exit 2, because the lazy pool
+    used to let ``compile_proto`` return and the failure surfaced later as
+    a clean "message type not found".
+    """
+
+    def test_protoxy_arm_exits_2_with_its_prefix(
+        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The protoxy arm is faked whole, so this runs where protoxy is absent.
+
+        ``compile_proto`` imports ``protoxy`` to name ``ProtoxyError`` in its
+        catch tuple before it calls the (faked) backend, so on the CI cells
+        that install without the compiler extra the real import raised
+        ``ModuleNotFoundError`` ahead of the assertion. A stand-in module
+        carrying only that attribute keeps the test honest on every cell.
+        """
+        class FakeProtoxyError(Exception):
+            pass
+
+        def fake_protoxy(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
+            raise _pools.DescriptorPoolError(
+                "could not build file 'orphan.proto' into the descriptor pool",
+            )
+
+        monkeypatch.setitem(
+            sys.modules, "protoxy", types.SimpleNamespace(ProtoxyError=FakeProtoxyError),
+        )
+        monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: True)
+        monkeypatch.setattr(_cli_utils, "_compile_with_protoxy", fake_protoxy)
+        monkeypatch.setattr(
+            _cli_utils, "_compile_with_protoc",
+            lambda *a, **k: pytest.fail("protoc must not run"),
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            _cli_utils.compile_proto(demo_proto_file, ())
+        assert excinfo.value.code == 2
+        assert "protoxy compile failed: could not build file" in capsys.readouterr().err
+
+    def test_protoc_arm_exits_2_with_its_prefix(
+        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def fake_protoc(paths, ip, *, include_source_info=False):  # type: ignore[no-untyped-def]
+            raise _pools.DescriptorPoolError(
+                "could not build file 'orphan.proto' into the descriptor pool",
+            )
+
+        monkeypatch.setattr(_cli_utils, "_has_protoxy", lambda: False)
+        monkeypatch.setattr(_cli_utils, "_compile_with_protoc", fake_protoc)
+        with pytest.raises(SystemExit) as excinfo:
+            _cli_utils.compile_proto(demo_proto_file, ())
+        assert excinfo.value.code == 2
+        assert "protoc compile failed: could not build file" in capsys.readouterr().err
+
+    @pytest.mark.skipif(
+        not _cli_utils._has_protoxy(),
+        reason="drives the real protoxy arm through the real pool populator",
+    )
+    def test_real_populator_path_exits_2(
+        self, demo_proto_file: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Only ``protoxy.compile`` is faked: the pool population is real."""
+        import protoxy
+
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.add().CopyFrom(TestPopulatePoolResolutionIsAsserted._orphan())
+        monkeypatch.setattr(protoxy, "compile", lambda *a, **k: fds)
+        with pytest.raises(SystemExit) as excinfo:
+            _cli_utils.compile_proto(demo_proto_file, ())
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "protoxy compile failed: could not build file 'orphan.proto'" in err

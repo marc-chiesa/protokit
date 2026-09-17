@@ -198,3 +198,19 @@ class TestGetMessageClass:
         assert exc.value.type_name == "a.Nope"
         # Preserves the exact wording diff/compat CLIs print.
         assert "not found in descriptor pool" in str(exc.value)
+
+
+class TestAddAndResolveDuplicateFile:
+    def test_duplicate_file_name_raises_the_typed_error_on_both_backends(self) -> None:
+        """A second file with the same name but different content.
+
+        upb rejects it from ``Add`` with ``TypeError``; the pure-Python pool
+        raises its own ``DescriptorDatabaseConflictingDefinitionError``, which
+        is neither a ``TypeError`` nor a ``KeyError`` and escaped raw.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        first = _file("d.proto", "d", message="A")
+        second = _file("d.proto", "d", message="B")
+        _pools.add_and_resolve(pool, first)
+        with pytest.raises(_pools.DescriptorPoolError):
+            _pools.add_and_resolve(pool, second)

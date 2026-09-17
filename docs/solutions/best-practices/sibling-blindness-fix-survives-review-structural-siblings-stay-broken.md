@@ -1,7 +1,7 @@
 ---
 title: "Sibling blindness: a fix at one call site survives the review built to catch it while structural siblings stay broken"
 date: 2026-08-30
-last_updated: 2026-08-30
+last_updated: 2026-09-15
 category: docs/solutions/best-practices
 module: protokit.schema
 problem_type: best_practice
@@ -273,12 +273,16 @@ file** (it refuses with `SETUP FAILED` otherwise), which forces per-site
 anchors — exactly the constraint this defect class needs. It also re-reads the
 file from disk to prove the mutation landed, and always restores it.
 
-One harness caveat, recorded in both sibling learnings and worth repeating
-here because it produces a *false proof from the tool whose job is preventing
-false proofs*: `mutation_check.py` infers failure from a non-zero exit code,
-with no collected-test-count check. A wrong pytest node id therefore prints
-`NON-VACUOUS` on a run that collected **zero** tests. Read the printed pytest
-tail, not just the verdict line.
+One harness caveat, recorded in both sibling learnings at the time and
+**resolved since (2026-09-15)**: `mutation_check.py` used to infer failure from
+any non-zero exit code, with no collected-test-count check, so a wrong pytest
+node id printed `NON-VACUOUS` on a run that collected **zero** tests — a
+*false proof from the tool whose job is preventing false proofs*. The harness
+now runs the target on the unmutated source first, treats only pytest exit 1
+as a verdict, and refuses everything else (exit 5, "no tests collected",
+included); the account, with the stale-bytecode hazard found alongside it, is
+[mutation-check-harness-stale-bytecode-and-nonverdict-exit-codes-produce-false-verdicts](../logic-errors/mutation-check-harness-stale-bytecode-and-nonverdict-exit-codes-produce-false-verdicts.md).
+Reading the printed pytest tail is still worth the two seconds.
 
 ### 3. A guard at a chokepoint is not sufficient on its own
 
@@ -406,6 +410,41 @@ list someone maintains is a reminder, not a guard. The same applies to parity
 tests: the literal `invocations` list in this release's instance-3 regression
 test is the weaker form, and deriving it from the click group's registered
 commands is the shape to reach for.
+
+### 7. A reachability claim written down is still an assumption
+
+Shape B has a quieter cousin: the owner *is* reached, but a site inside it is
+declared unreachable for some descriptor kind — in a comment, a docstring, or
+the reasoning that let one `getattr` stay behind while every sibling read
+moved to an accessor. The claim reads like a fact because it is written where
+facts go, and the step-2 enumeration duly finds the site and then excuses it.
+
+The 0.16.0 U3 follow-ups (branch `fix/u3-fieldview-seam`, 2026-09-14/15)
+produced three of these in one unit, all at sites the enumeration had already
+listed:
+
+- *A map cannot be an extension*, in effect, left two map reads on
+  `getattr(msg, fd.name)` while every sibling branch moved to `_field_value`.
+  `protoc` refuses to compile the shape, but a pool built from a hand-written
+  `FileDescriptorProto` accepts it, and both reads raised `AttributeError`.
+- *A dotted extension name can never be a path segment* let the differ emit
+  `(pkg.ext)` paths its own `FieldPath` grammar rejected — so the documented
+  `--ignore` mitigation raised on exactly the paths it was documented for, and
+  the CLI turned a usage error into exit 1.
+- *The presence helper only ever sees declared fields* kept a by-name
+  `HasField` read in `src/protokit/message/_presence.py` after the differ
+  started handing it extension descriptors. The differ pre-computes the
+  booleans it passes in, so no engine-level test could reach the helper's own
+  reads; the proof needed a direct test of the helper.
+
+The rule that follows: **a claim that a descriptor kind cannot reach a site is
+a test to write, not a reason to skip the site.** Either build the descriptor
+the claim excludes and prove the site rejects or handles it, or migrate the
+site with its siblings and let the claim go. If the shape is constructible only
+in memory (the map extension is — the Python runtime cannot serialize one, and
+upb crashes trying), the test builds it in memory. A claim that survives only
+because nothing in the corpus exercises it is the step-4 vacuity problem again,
+one level down.
 
 ## Why This Matters
 
@@ -609,7 +648,11 @@ for* instance 1. Treat "I already thought about siblings" as **no evidence at
 all**, and route the check to someone (or something) that did not write the
 patch.
 
-**Mutation proof has its own failure mode.** `scripts/mutation_check.py`
-reports `NON-VACUOUS` from a non-zero exit code, so a wrong pytest node id —
-which collects zero tests — yields a false proof. Verify the collected count in
-the printed tail before trusting the verdict.
+**Mutation proof has its own failure modes — resolved 2026-09-15.**
+`scripts/mutation_check.py` reported `NON-VACUOUS` from any non-zero exit code,
+so a wrong pytest node id — which collects zero tests — yielded a false proof;
+a same-length mutation applied and restored within one second was worse,
+because CPython's `.pyc` check could run the wrong bytecode in *either*
+direction. Both are closed in the harness (baseline run, exit 1 as the only
+verdict, bytecode dropped around every run); the full account is
+[mutation-check-harness-stale-bytecode-and-nonverdict-exit-codes-produce-false-verdicts](../logic-errors/mutation-check-harness-stale-bytecode-and-nonverdict-exit-codes-produce-false-verdicts.md).

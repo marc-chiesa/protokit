@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import bisect
 import contextvars
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 from google.protobuf import descriptor as proto_descriptor
-from google.protobuf import descriptor_pb2
 
+from protokit import _descriptors
 from protokit._descriptors import (
     has_presence,
     is_map_field,
@@ -114,8 +114,16 @@ def _wire_compatible(old_type: int, new_type: int) -> bool:
 #: The value (when set) is a dict keyed by ``id(descriptor)``. Valid
 #: for the lifetime of the surrounding ``check()`` — descriptors are
 #: held alive by the caller's pool, so ids stay stable.
+# Keyed by ``id(desc)`` and pinning the descriptor in the value. Under upb a
+# ``Descriptor`` is a Python wrapper created on demand and released when
+# nothing references it, so within one check() run a collected wrapper's id
+# can be handed to a DIFFERENT message's wrapper; a bare id() cache then
+# answers for the wrong message (measured: 111 oneof_membership_changed
+# findings on a 200-message chain with exactly 100). Holding the descriptor
+# keeps its id unreusable while the entry lives — the same pin
+# ``_descriptors``' file-proto cache uses — and the hit path checks identity.
 _PROTO3_OPTIONAL_CACHE: contextvars.ContextVar[
-    dict[int, frozenset[str]] | None
+    dict[int, tuple[proto_descriptor.Descriptor, frozenset[str]]] | None
 ] = contextvars.ContextVar("_proto3_optional_cache", default=None)
 
 
@@ -156,17 +164,15 @@ def _proto3_optional_fields(
     """
     cache = _PROTO3_OPTIONAL_CACHE.get()
     if cache is not None:
-        key = id(desc)
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
+        cached = cache.get(id(desc))
+        if cached is not None and cached[0] is desc:
+            return cached[1]
+    dp = _descriptors.message_proto(desc)
     result = frozenset(
         f.name for f in dp.field if f.proto3_optional
     )
     if cache is not None:
-        cache[id(desc)] = result
+        cache[id(desc)] = (desc, result)
     return result
 
 
@@ -987,8 +993,7 @@ def _reserved(
     the expensive part -- doing it once per message pair instead of
     twice halves the serialization cost of this rule.
     """
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
+    dp = _descriptors.message_proto(desc)
     ranges = _normalize_ranges((rng.start, rng.end) for rng in dp.reserved_range)
     return ranges, set(dp.reserved_name)
 

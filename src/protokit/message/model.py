@@ -160,7 +160,8 @@ class MissingKeyError(ValueError):
 # Grammar:
 #   path     := segment ('.' segment)*
 #   segment  := name bracket?
-#   name     := [a-zA-Z_][a-zA-Z0-9_]*
+#   name     := ident | '(' ident ('.' ident)* ')'
+#   ident    := [a-zA-Z_][a-zA-Z0-9_]*
 #   bracket  := '[' key ']'
 #   key      := signed_int | bool_lit | quoted_string | key_eq
 #   signed_int := '-'? [0-9]+
@@ -168,7 +169,13 @@ class MissingKeyError(ValueError):
 #   quoted_string := '"' escaped_chars '"'
 #   key_eq   := name '=' (signed_int | bool_lit | quoted_string)
 
-_NAME_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
+# A parenthesised name is a proto2 extension, written the way proto text format
+# writes it: its fully-qualified name in parentheses, ``(pkg.ext)``. The differ
+# emits that form, so the grammar must read it back or ``--ignore`` / ``--filter``
+# cannot target an extension the differ just reported. The dots inside the
+# parentheses belong to the name, not to the path: ``(pkg.ext)`` is ONE segment.
+_IDENT = r"[a-zA-Z_][a-zA-Z0-9_]*"
+_NAME_RE = re.compile(rf"\({_IDENT}(?:\.{_IDENT})*\)|{_IDENT}")
 
 
 @dataclass(frozen=True)
@@ -180,7 +187,9 @@ class PathSegment:
     Plain field names have ``bracket == None``.
 
     Attributes:
-        name: The field's identifier (matches ``[a-zA-Z_][a-zA-Z0-9_]*``).
+        name: The field's identifier (``[a-zA-Z_][a-zA-Z0-9_]*``), or a
+            proto2 extension's parenthesised fully-qualified name
+            (``(pkg.ext)``), which is a single segment despite its dots.
         bracket: Raw bracket content as it appeared in the source
             string. Examples: ``"2"`` (repeated index), ``'"env"'``
             (quoted string map key), ``"true"`` (bool map key),
@@ -843,9 +852,11 @@ class FieldHookContext:
     unset because the other side has no presence to match. In
     that case both ``left_value`` and ``right_value`` reflect the
     actual protobuf values (defaults when unset). Hooks that need
-    strict presence should read
-    ``ctx.left_msg.HasField(ctx.left_fd.name)`` (or the right-side
-    equivalent) themselves.
+    strict presence should read it themselves:
+    ``ctx.left_msg.HasField(ctx.left_fd.name)`` for a declared field,
+    ``ctx.left_msg.HasExtension(ctx.left_fd)`` when
+    ``ctx.left_fd.is_extension`` (``HasField`` raises on an extension
+    descriptor), or the right-side equivalents.
 
     Attributes:
         path: ``FieldPath`` to the field being compared.

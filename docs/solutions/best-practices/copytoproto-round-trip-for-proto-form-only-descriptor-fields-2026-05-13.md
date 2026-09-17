@@ -1,6 +1,7 @@
 ---
 title: "Use descriptor.CopyToProto(target) to read proto-form-only fields the runtime descriptor doesn't expose"
 date: 2026-05-13
+last_updated: 2026-09-15
 category: best-practices
 module: protokit.schema
 problem_type: best_practice
@@ -99,16 +100,25 @@ consults `_is_proto3_optional()` would re-serialize the parent — a
 quadratic hot path on field-heavy schemas. The fix is a
 `contextvars.ContextVar`-keyed cache by `id(descriptor)`, set up
 once per `SchemaChecker.check()` invocation and torn down at the
-end. Two details matter for correctness: the ContextVar is declared
+end. Three details matter for correctness: the ContextVar is declared
 with `default=None` so callers outside a `check()` scope get a
-`None` sentinel (not a `LookupError`), and the cached values are
+`None` sentinel (not a `LookupError`); the cached values are
 `frozenset` (immutable) so callers cannot accidentally mutate the
-cache. The helper handles the `cache is None` branch by serializing
+cache; and — the detail this doc originally got wrong — each entry
+stores the descriptor alongside its result and the hit path checks
+identity. On upb, descriptor wrappers are created on demand and are
+not weak-referenceable, so a plain `id(desc) -> result` map answers
+for whichever later wrapper reuses a collected wrapper's id: measured
+2026-09-15 as 111 `oneof_membership_changed` findings where exactly
+100 exist, on upb only. The full account, and why pinning a
+descriptor pins its pool, is in
+[id-keyed-descriptor-cache-must-pin-the-object-and-bound-by-pool-under-upb](id-keyed-descriptor-cache-must-pin-the-object-and-bound-by-pool-under-upb.md).
+The helper handles the `cache is None` branch by serializing
 without storing the result:
 
 ```python
 _PROTO3_OPTIONAL_CACHE: contextvars.ContextVar[
-    dict[int, frozenset[str]] | None
+    dict[int, tuple[Descriptor, frozenset[str]]] | None
 ] = contextvars.ContextVar("_proto3_optional_cache", default=None)
 
 
@@ -124,15 +134,15 @@ def _proto3_optional_fields(desc):
     cache = _PROTO3_OPTIONAL_CACHE.get()
     if cache is not None:
         cached = cache.get(id(desc))
-        if cached is not None:
-            return cached
+        if cached is not None and cached[0] is desc:
+            return cached[1]
     dp = descriptor_pb2.DescriptorProto()
     desc.CopyToProto(dp)
     result = frozenset(
         f.name for f in dp.field if f.proto3_optional
     )
     if cache is not None:
-        cache[id(desc)] = result
+        cache[id(desc)] = (desc, result)
     return result
 ```
 
@@ -230,7 +240,7 @@ Skip CopyToProto when:
 ## Examples
 
 **D1 — synthetic-oneof field detection in the schema checker
-(`schema/rules.py:135-169`):**
+(`schema/rules.py:144-176`):**
 
 ```python
 def _proto3_optional_fields(
@@ -246,19 +256,24 @@ def _proto3_optional_fields(
     """
     cache = _PROTO3_OPTIONAL_CACHE.get()
     if cache is not None:
-        key = id(desc)
-        cached = cache.get(key)
-        if cached is not None:
-            return cached
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
+        cached = cache.get(id(desc))
+        if cached is not None and cached[0] is desc:
+            return cached[1]
+    dp = _descriptors.message_proto(desc)  # the file-level CopyToProto, cached
     result = frozenset(
         f.name for f in dp.field if f.proto3_optional
     )
     if cache is not None:
-        cache[id(desc)] = result
+        cache[id(desc)] = (desc, result)
     return result
 ```
+
+The entry is `(desc, result)` and the hit path checks `cached[0] is desc`
+(corrected 2026-09-15; the earlier revision of this example stored the bare
+result and aliased on upb). The round-trip itself now goes through
+`_descriptors.message_proto`, which runs `CopyToProto` once per *file* and
+indexes its messages — the same pin-the-object rule applies there, with the
+extra consequence that a pinned `FileDescriptor` keeps its whole pool alive.
 
 **D1 — reserved-name detection in the schema checker
 (`schema/rules.py:911-918`):**
@@ -313,6 +328,7 @@ rules deferred to D6b will need this same pattern for
 
 ## Related
 
+- [[id-keyed-descriptor-cache-must-pin-the-object-and-bound-by-pool-under-upb]] — the correction to this doc's cache example. An `id(desc)`-keyed memo without a strong reference aliases under upb (wrappers are on-demand and not weak-referenceable); the entry must pin the descriptor and the hit path must check identity — and because a pinned descriptor pins its pool, a per-pool bound is the only bound that holds across a history walk.
 - [[proto3-optional-synthetic-oneof-false-positive-lint-rule-2026-05-12]] — the canonical *rejection* of CopyToProto in favor of a lighter discriminator. The two docs together establish the decision boundary: use CopyToProto when there is no alternative; prefer a name-based or structurally-derived discriminator when one exists.
 - [[pureposixpath-for-proto-descriptor-file-stem-2026-05-13]] — descriptor-introspection sibling for FILE-element rules; covers the `fd.name` POSIX-separator convention. The two docs together cover the descriptor-introspection landscape for FILE-element work.
 - [[matcher-backend-path-resolution-skew-silently-empties-output-2026-05-02]] — established the `fd.name` POSIX-separator convention empirically across protoc and protoxy. The CopyToProto round-trip preserves the `dependency` array values verbatim (POSIX-separator strings the user wrote in their .proto file), so the comparison `used_files.discard(ctx.file.name)` in `imports/unused` is safe.

@@ -47,6 +47,7 @@ from google.protobuf import descriptor as _d
 from google.protobuf.message import Message
 
 from protokit import _descriptors
+from protokit._fieldview import FieldView
 from protokit.storage.source import StorageError
 
 _FD = _d.FieldDescriptor
@@ -257,7 +258,7 @@ def _walk_path(
             raise WhereError(expr, f"empty path segment in {path_str!r}")
         if not seg.isidentifier():
             raise WhereError(expr, f"invalid field-path segment {seg!r}")
-        field_map = _descriptors.get_field_map(current)
+        field_map = FieldView.of(current).by_name
         fd = field_map.get(seg)
         if fd is None:
             available = ", ".join(sorted(field_map)) or "(none)"

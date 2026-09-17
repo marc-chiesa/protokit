@@ -245,16 +245,26 @@ def compile_proto(
             Exits with code 2. Stderr text is prefixed by category
             per the post-refactor contract:
 
-            - ``"protoxy compile failed: "`` for ``ProtoxyError`` or ``ValueError``
-            - ``"protoc compile failed: "`` for ``CalledProcessError``
+            - ``"protoxy compile failed: "`` for ``ProtoxyError``, ``ValueError``,
+              or the typed ``DescriptorPoolError`` the pool populator raises when
+              the runtime rejects a descriptor the compiler accepted
+            - ``"protoc compile failed: "`` for ``CalledProcessError``, or that
+              same ``DescriptorPoolError`` on the protoc arm
             - ``"compile backend missing: "`` for ``FileNotFoundError``
             - ``"compile infrastructure error: "`` for ``OSError`` / ``TimeoutExpired``
     """
+    # Both backends funnel through ``_populate_pool_with_capture``, which
+    # asserts resolution and raises the typed ``DescriptorPoolError`` on both
+    # runtimes (V10). It must be in BOTH arms: left out, it escaped as a raw
+    # traceback with click's exit 1 — and under pure-Python that was a
+    # regression from exit 2, because the lazy pool used to let this
+    # function return and the failure surfaced later as a clean
+    # "message type not found".
     has_protoxy = _has_protoxy()
     if has_protoxy:
         import protoxy
         protoxy_caught: tuple[type[BaseException], ...] = (
-            protoxy.ProtoxyError, ValueError,
+            protoxy.ProtoxyError, ValueError, _pools.DescriptorPoolError,
         )
     else:
         # protoxy is absent — _compile_with_protoxy is unreachable, but
@@ -262,7 +272,7 @@ def compile_proto(
         # from _compile_with_protoc surfaces through error_exit instead
         # of escaping uncaught. The prefix below switches on has_protoxy
         # so the label is honest about which backend ran.
-        protoxy_caught = (ValueError,)
+        protoxy_caught = (ValueError, _pools.DescriptorPoolError)
 
     pool: descriptor_pool.DescriptorPool | None = None
     try:
@@ -337,6 +347,13 @@ def _populate_pool_with_capture(
         every emitted fd's ``source_code_info`` intact. ``emitted``
         is the set of fd.name strings that appeared in
         ``expected_names``.
+
+    Raises:
+        protokit._pools.DescriptorPoolError: When a file cannot be resolved
+            into the pool — an unresolvable symbol or a duplicate
+            registration. Raised on both backends, from the explicit
+            ``FindFileByName`` probe rather than from whichever exception the
+            active runtime happens to throw.
     """
     captured: dict[str, descriptor_pb2.FileDescriptorProto] | None = (
         {} if capture else None
@@ -345,7 +362,9 @@ def _populate_pool_with_capture(
     for fd in fds_file:
         if captured is not None:
             captured[fd.name] = fd
-        pool.Add(fd)
+        # Both compile backends funnel through here, so the resolution
+        # assertion lives at this one site rather than in each backend.
+        _pools.add_and_resolve(pool, fd)
         if fd.name in expected_names:
             emitted.add(fd.name)
     return captured, emitted

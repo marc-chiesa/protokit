@@ -46,13 +46,19 @@ def _make_descriptor_set(
     return fds.SerializeToString()
 
 
-def _build_message(desc_set_bytes: bytes, full_name: str, **kwargs: Any) -> bytes:
-    """Parse a descriptor set, build a message, and serialize to binary."""
+def _pool_from_descriptor_set(desc_set_bytes: bytes) -> descriptor_pool.DescriptorPool:
+    """Parse serialized ``FileDescriptorSet`` bytes into a fresh pool."""
     fds = descriptor_pb2.FileDescriptorSet()
     fds.ParseFromString(desc_set_bytes)
     pool = descriptor_pool.DescriptorPool()
     for fd in fds.file:
         pool.Add(fd)
+    return pool
+
+
+def _build_message(desc_set_bytes: bytes, full_name: str, **kwargs: Any) -> bytes:
+    """Parse a descriptor set, build a message, and serialize to binary."""
+    pool = _pool_from_descriptor_set(desc_set_bytes)
     desc = pool.FindMessageTypeByName(full_name)
     cls = message_factory.GetMessageClass(desc)
     return cls(**kwargs).SerializeToString()
@@ -649,3 +655,138 @@ class TestErrorDiagnosticExitCode:
         self._patch_compare(monkeypatch, level="warning", differing=False)
         result = self._run(runner, simple_setup, right, "--quiet")
         assert result.exit_code == expected
+
+
+# ---------------------------------------------------------------------------
+# Selector grammar errors and the extension path round-trip
+# ---------------------------------------------------------------------------
+
+
+def _make_extension_descriptor_set() -> bytes:
+    """proto2 ``x.Msg`` with one declared field and one declared extension."""
+    file_proto = descriptor_pb2.FileDescriptorProto(name="x.proto", package="x", syntax="proto2")
+    msg = file_proto.message_type.add(name="Msg")
+    msg.field.add(name="name", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    msg.extension_range.add(start=100, end=200)
+    file_proto.extension.add(
+        name="tag", number=100, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL, extendee=".x.Msg",
+    )
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.file.append(file_proto)
+    return fds.SerializeToString()
+
+
+def _build_extended_message(desc_set_bytes: bytes, *, name: str, tag: str) -> bytes:
+    pool = _pool_from_descriptor_set(desc_set_bytes)
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("x.Msg"))
+    msg = cls(name=name)
+    msg.Extensions[pool.FindExtensionByName("x.tag")] = tag
+    return msg.SerializeToString()
+
+
+@pytest.fixture()
+def extension_setup(tmp_path: Path) -> dict[str, Path]:
+    desc_bytes = _make_extension_descriptor_set()
+    desc_file = tmp_path / "x.descriptor_set"
+    desc_file.write_bytes(desc_bytes)
+    left = tmp_path / "left.pb"
+    left.write_bytes(_build_extended_message(desc_bytes, name="same", tag="alpha"))
+    right = tmp_path / "right.pb"
+    right.write_bytes(_build_extended_message(desc_bytes, name="same", tag="beta"))
+    return {"desc": desc_file, "left": left, "right": right}
+
+
+class TestSelectorGrammarExitCode:
+    """A malformed selector is a usage error (exit 2), never "messages differ" (exit 1).
+
+    ``ignore_fields``, ``treat_as_map`` and ``DiffResult.filter`` all raise
+    ``ValueError`` on a selector the grammar rejects. Only ``compare()`` was
+    wrapped, so those three escaped as a traceback with click's exit 1 — the
+    code the module docstring reserves for a genuine difference, which a CI
+    gate would misread.
+    """
+
+    def test_ignore_grammar_error_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--ignore", "items[0]",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+        assert "Bracket syntax is not supported" in result.output
+
+    def test_treat_as_map_grammar_error_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--treat-as-map", "a..b", "id",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+
+    def test_filter_grammar_error_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--filter", ".bad",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+
+
+class TestExtensionPathRoundTrip:
+    """The CHANGELOG's mitigation, end to end: ``--ignore`` on the emitted path."""
+
+    def test_extension_difference_is_reported_on_its_parenthesised_path(
+        self, runner: CliRunner, extension_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(extension_setup["left"]), str(extension_setup["right"]),
+            "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
+            "--format", "json",
+        ], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.output)
+        assert [d["path"] for d in data["differences"]] == ["(x.tag)"]
+
+    def test_ignore_on_the_emitted_path_suppresses_it(
+        self, runner: CliRunner, extension_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(extension_setup["left"]), str(extension_setup["right"]),
+            "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
+            "--ignore", "(x.tag)",
+        ], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+
+    def test_filter_on_the_emitted_path_selects_it(
+        self, runner: CliRunner, extension_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(extension_setup["left"]), str(extension_setup["right"]),
+            "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
+            "--filter", "(x.tag)", "--format", "json",
+        ], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        data = json.loads(result.output)
+        assert [d["path"] for d in data["differences"]] == ["(x.tag)"]
+
+    def test_selector_text_cannot_forge_a_second_error_line(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        """The usage error echoes the selector; control characters are escaped."""
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--ignore", "x.y\nError: forged line",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        error_lines = [line for line in result.output.splitlines() if line.startswith("Error:")]
+        assert len(error_lines) == 1, result.output
