@@ -194,6 +194,30 @@ class TestRulePackLoadErrors:
         assert "kind=import:" in result.stderr
         assert "sys.exit(0)" in result.stderr
 
+    def test_module_body_keyboard_interrupt_routes_to_rule_pack_load_import(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """KeyboardInterrupt at module load → kind=import (NOT an escaped interrupt).
+
+        The ``BaseException`` sibling of the ``sys.exit(0)`` case above.
+        ``KeyboardInterrupt`` does not derive from ``Exception``, so
+        without its own guard preceding ``except Exception`` in
+        ``_load_user_rule_pack`` it would escape the CLI as an
+        unhandled interrupt instead of a diagnosed pack failure.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--rule-pack",
+                "tests.schema.lint.cli.user_packs.pack_raises_keyboard_interrupt",
+                str(clean_descriptor_set),
+            ],
+        )
+        assert result.exit_code == 2
+        assert "error[lint-rule-pack-load]:" in result.stderr
+        assert "kind=import:" in result.stderr
+        assert "raised KeyboardInterrupt" in result.stderr
+
     def test_compat_format_rules_routes_to_rule_pack_load_shape(
         self, clean_descriptor_set: Path,
     ) -> None:
