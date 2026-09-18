@@ -136,6 +136,24 @@ class TestEveryHumanFormatterAsksTheSeam:
         assert _render_human(kind, untrusted) != _render_human(kind, trusted)
 
     @pytest.mark.parametrize("kind", list(FormatterKind), ids=lambda k: k.name)
+    def test_the_success_verdict_is_withheld(self, kind: FormatterKind) -> None:
+        """Showing the reasons *beside* a pass is still a pass.
+
+        No per-kind table of verdict words: the trusted rendering of a report
+        with nothing to report *is* the success verdict, so none of its lines
+        that state it may survive into the untrustworthy rendering. A kind
+        whose clean rendering is empty (``lint``) states no verdict to withhold.
+        """
+        untrusted, trusted = _FIXTURES[kind]
+        verdict_lines = [
+            line for line in _render_human(kind, trusted).splitlines() if line.strip()
+        ]
+        if not verdict_lines:
+            return
+        untrusted_lines = _render_human(kind, untrusted).splitlines()
+        assert verdict_lines[-1] not in untrusted_lines, (kind.name, verdict_lines[-1])
+
+    @pytest.mark.parametrize("kind", list(FormatterKind), ids=lambda k: k.name)
     def test_every_reason_is_rendered(self, kind: FormatterKind) -> None:
         untrusted, _ = _FIXTURES[kind]
         out = _render_human(kind, untrusted)
