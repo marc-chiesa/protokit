@@ -108,11 +108,15 @@ def bisect_junit(report: BisectReport, ctx: FormatterContext) -> str:
     Empty walks (no commits in range) emit a single passing
     testcase named ``"no-commits"`` so the suite isn't empty.
     """
+    # Local import — see ``_builtin_history.history_junit`` for the cycle.
+    from protokit.formatters._builtin_compat import _reasons_not_shown
+
     del ctx  # range/sha info comes from the report itself
     failures = 1 if report.breaking_commit is not None else 0
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
-    errors = len(error_diags)
+    not_shown = _reasons_not_shown(report, error_diags)
+    errors = len(error_diags) + len(not_shown)
 
     cases: list[ET.Element] = []
     if report.breaking_commit is not None:
@@ -135,6 +139,11 @@ def bisect_junit(report: BisectReport, ctx: FormatterContext) -> str:
             name=d.path or "(global)",
         )
         junit.append_error(case, message=d.message, type_="error", body=d.message)
+        cases.append(case)
+
+    for reason in not_shown:
+        case = junit.make_testcase(classname="diagnostic", name="(untrusted)")
+        junit.append_error(case, message=reason, type_="error", body=reason)
         cases.append(case)
 
     if not cases:
@@ -177,7 +186,10 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
     commits_walked) flows into ``run.properties`` for
     downstream consumption.
     """
-    from protokit.formatters._builtin_compat import _protokit_version
+    from protokit.formatters._builtin_compat import (
+        _protokit_version,
+        _reasons_not_shown,
+    )
 
     findings_with_context: list[
         tuple[Finding, str | None, dict[str, str] | None]
@@ -195,6 +207,9 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))
 
+    error_messages.extend(
+        (None, reason) for reason in _reasons_not_shown(report, error_messages)
+    )
     run = sarif.build_run(
         findings_with_context=findings_with_context,
         error_messages=error_messages,

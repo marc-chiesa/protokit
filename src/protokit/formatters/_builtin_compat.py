@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from collections.abc import Sized
 from typing import Any
 
 import click
@@ -150,6 +151,22 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
     return json.dumps(payload, indent=2)
 
 
+def _reasons_not_shown(report: object, shown: Sized) -> tuple[str, ...]:
+    """The seam's reasons, when this format has rendered no error of its own.
+
+    The JUnit and SARIF renderers turn each error diagnostic into a structured
+    case (its path, its commit), which a flat reason string cannot replace. But
+    the *verdict* is ``protokit._trust``'s: if the seam distrusts a report for a
+    reason these renderers do not derive for themselves, they would pass it.
+
+    Today the two always agree, so this returns ``()`` whenever ``shown`` is
+    non-empty. It exists so that the day the seam learns a new reason, every
+    format fails closed on it instead of drifting — and so the bypass guard in
+    ``tests/meta/test_formatter_trust.py`` can hold these formats to the owner.
+    """
+    return () if shown else _trust.reasons(report)
+
+
 def _suite_name_for(ctx: FormatterContext) -> str:
     """Build the testsuite name from FormatterContext type fields.
 
@@ -183,8 +200,9 @@ def _build_compat_testsuite(
     """
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
+    not_shown = _reasons_not_shown(report, error_diags)
     findings_count = len(report.findings)
-    errors_count = len(error_diags)
+    errors_count = len(error_diags) + len(not_shown)
 
     has_real_cases = findings_count > 0 or errors_count > 0
     tests_count = findings_count + errors_count if has_real_cases else 1
@@ -216,6 +234,11 @@ def _build_compat_testsuite(
             name=d.path or "(global)",
         )
         junit.append_error(case, message=d.message, type_="error", body=d.message)
+        junit.add_testcase(suite, case)
+
+    for reason in not_shown:
+        case = junit.make_testcase(classname="diagnostic", name="(untrusted)")
+        junit.append_error(case, message=reason, type_="error", body=reason)
         junit.add_testcase(suite, case)
 
     if not has_real_cases:
@@ -271,6 +294,7 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
     when ``ctx.proto_file`` is set.
     """
     errors, warnings = sarif.collect_diagnostics_from_report(report)
+    errors.extend((None, reason) for reason in _reasons_not_shown(report, errors))
     findings_with_context = [
         (f, ctx.proto_file, None) for f in report.findings
     ]

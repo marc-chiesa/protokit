@@ -191,7 +191,10 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     ``HistoryReport.diagnostics`` are also surfaced under their
     commit key, minus any that merely restate a per-entry one.
     """
-    from protokit.formatters._builtin_compat import _protokit_version
+    from protokit.formatters._builtin_compat import (
+        _protokit_version,
+        _reasons_not_shown,
+    )
 
     findings_with_context: list[
         tuple[Finding, str | None, dict[str, str] | None]
@@ -231,6 +234,9 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))
 
+    error_messages.extend(
+        (None, reason) for reason in _reasons_not_shown(report, error_messages)
+    )
     run = sarif.build_run(
         findings_with_context=findings_with_context,
         error_messages=error_messages,

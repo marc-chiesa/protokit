@@ -22,6 +22,13 @@ trustworthy one. ``_MACHINE_VERDICTS`` is compared for **equality** with the
 registry, so a new format is either given a verdict reader or declared
 verdict-free with a reason; it cannot land unclassified.
 
+Running a renderer on a report that really is untrustworthy cannot tell one
+that *asks the seam* from one that re-derives the answer from
+``report.diagnostics`` and happens to agree — and the second is the drift
+itself. So ``TestNoRendererDecidesTrustForItself`` patches the seam to distrust
+a report with nothing wrong, and requires every verdict, human and machine, to
+follow the seam rather than the report.
+
 **Guard 2 — the root Click group. Predicate: decidable, by AST; and
 necessary, not sufficient.** Guard 1 cannot see ``forensics``, whose
 renderers are module-local and unregistered, nor any exit path. So this
@@ -116,6 +123,22 @@ def _render_human(kind: FormatterKind, report: object) -> str:
     return click.unstyle(fn(report, FormatterContext(subcommand="guard")))  # type: ignore[arg-type]
 
 
+def _verdict_line(kind: FormatterKind) -> str | None:
+    """The line that states success: the last one of a clean report's rendering.
+
+    No per-kind table of verdict words — the rendering of a trustworthy report
+    with nothing to report *is* the success verdict. ``None`` for a kind whose
+    clean rendering is empty (``lint``): it states no verdict to withhold.
+    """
+    _, trusted = _FIXTURES[kind]
+    lines = [ln for ln in _render_human(kind, trusted).splitlines() if ln.strip()]
+    return lines[-1] if lines else None
+
+
+#: Captured at import, with the real seam, before any test patches it.
+_VERDICT_LINES = {kind: _verdict_line(kind) for kind in FormatterKind}
+
+
 class TestEveryHumanFormatterAsksTheSeam:
     def test_every_formatter_kind_has_a_fixture(self) -> None:
         """A sixth report kind cannot land without deciding how it is vouched for."""
@@ -137,21 +160,11 @@ class TestEveryHumanFormatterAsksTheSeam:
 
     @pytest.mark.parametrize("kind", list(FormatterKind), ids=lambda k: k.name)
     def test_the_success_verdict_is_withheld(self, kind: FormatterKind) -> None:
-        """Showing the reasons *beside* a pass is still a pass.
-
-        No per-kind table of verdict words: the trusted rendering of a report
-        with nothing to report *is* the success verdict, so none of its lines
-        that state it may survive into the untrustworthy rendering. A kind
-        whose clean rendering is empty (``lint``) states no verdict to withhold.
-        """
-        untrusted, trusted = _FIXTURES[kind]
-        verdict_lines = [
-            line for line in _render_human(kind, trusted).splitlines() if line.strip()
-        ]
-        if not verdict_lines:
-            return
-        untrusted_lines = _render_human(kind, untrusted).splitlines()
-        assert verdict_lines[-1] not in untrusted_lines, (kind.name, verdict_lines[-1])
+        """Showing the reasons *beside* a pass is still a pass."""
+        untrusted, _ = _FIXTURES[kind]
+        verdict = _VERDICT_LINES[kind]
+        if verdict is not None:
+            assert verdict not in _render_human(kind, untrusted).splitlines(), kind.name
 
     @pytest.mark.parametrize("kind", list(FormatterKind), ids=lambda k: k.name)
     def test_every_reason_is_rendered(self, kind: FormatterKind) -> None:
@@ -256,6 +269,60 @@ class TestEveryMachineVerdictAsksTheSeam:
         ctx = FormatterContext(subcommand="guard")
         assert reader(fn(trusted, ctx)) is True  # type: ignore[arg-type]
         assert reader(fn(untrusted, ctx)) is False  # type: ignore[arg-type]
+
+
+_SENTINEL = "the-seam-said-so"
+
+
+@pytest.fixture
+def distrusting_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the seam distrust every report, including ones with nothing wrong."""
+    monkeypatch.setattr(_trust, "reasons", lambda report: (_SENTINEL,))
+    monkeypatch.setattr(_trust, "walk_level_reasons", lambda report: (_SENTINEL,))
+
+
+@pytest.mark.usefixtures("distrusting_seam")
+class TestNoRendererDecidesTrustForItself:
+    """Bypass drift, caught by making the seam disagree with the report.
+
+    The guards above run each renderer on a report that really is
+    untrustworthy, so they cannot tell a renderer that *asks the seam* from
+    one that re-derives the answer from ``report.diagnostics`` and happens to
+    agree — and the second is the drift KTD1 names: a correct owner, and a
+    call site going around it. It would stay green until the day the seam
+    learned a new reason, and then silently disagree with it.
+
+    So here the seam distrusts a report that carries nothing wrong. A renderer
+    that follows the owner withholds its verdict and shows the seam's reason;
+    one that decides for itself still says success.
+    """
+
+    def test_the_patch_reaches_is_trustworthy(self) -> None:
+        """Premise: ``is_trustworthy`` is defined in terms of ``reasons``."""
+        _, trusted = _FIXTURES[FormatterKind.COMPAT]
+        assert _trust.is_trustworthy(trusted) is False
+
+    @pytest.mark.parametrize("kind", list(FormatterKind), ids=lambda k: k.name)
+    def test_human_renderers_follow_the_seam(self, kind: FormatterKind) -> None:
+        _, trusted = _FIXTURES[kind]
+        out = _render_human(kind, trusted)
+        assert _SENTINEL in out, (kind.name, out)
+        verdict = _VERDICT_LINES[kind]
+        if verdict is not None:
+            assert verdict not in out.splitlines(), (kind.name, out)
+
+    @pytest.mark.parametrize(
+        "key", _VERDICT_FORMATS, ids=lambda k: f"{k[0].name}-{k[1]}",
+    )
+    def test_machine_verdicts_follow_the_seam(
+        self, key: tuple[FormatterKind, str],
+    ) -> None:
+        kind, name = key
+        reader = _MACHINE_VERDICTS[key]
+        assert reader is not None
+        _, trusted = _FIXTURES[kind]
+        out = get_formatter(name, kind)(trusted, FormatterContext(subcommand="guard"))  # type: ignore[arg-type]
+        assert reader(out) is False, (kind.name, name)
 
 
 class TestTheFailurePathCannotCrashALegacyConsole:
