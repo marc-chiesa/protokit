@@ -9,7 +9,7 @@ severity: high
 applies_when:
   - "Adding CI coverage for a second protobuf runtime backend (pure-Python) after the suite has only run under the default upb backend"
   - "Triaging a batch of new-backend failures where CLI-downstream call sites raise heterogeneous exception types no single per-test marker could name precisely"
-  - "A new CI job must stay advisory (continue-on-error) until the failure count reaches zero, and its own configuration needs a guard nobody can quietly narrow"
+  - "A new CI job must stay advisory (continue-on-error) until the failure count reaches zero, then be promoted to a required check, and its own configuration needs a guard nobody can quietly narrow"
   - "Deciding whether to harvest the known-failure baseline from CI's own run or from a local reproduction that differs in Python version, OS, or dependency resolution"
   - "Writing a presence-ratchet test over a CI workflow file (yaml.safe_load) to guard job-level configuration such as env vars, step commands, and narrowing flags"
 symptoms:
@@ -43,10 +43,10 @@ The protobuf Python package ships two runtime backends, upb (C, the default)
 and pure-Python (`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`), and until
 PR #59 this suite's CI had only ever expressed upb's opinion: the `test` matrix
 in `.github/workflows/ci.yml` resolves protobuf's default backend on every cell
-(`.github/workflows/ci.yml:173-174`). Three audit defects (V1, V10, the V9
+(`.github/workflows/ci.yml:174-175`). Three audit defects (V1, V10, the V9
 swallow) rely on an exception only upb raises; under pure-Python each degrades
 silently to a wrong value, and nothing exercised that runtime
-(`.github/workflows/ci.yml:174-177`). Plan decision KTD6 — backend behaviour is
+(`.github/workflows/ci.yml:175-178`). Plan decision KTD6 — backend behaviour is
 asserted, never inferred from an exception — needed a second cell that runs the
 whole suite under the other backend.
 
@@ -84,13 +84,24 @@ KTD10 is the third way: the known failures are **data**, a committed inventory
 file the cell applies as strict, exception-specific `xfail` markers under the
 pure-Python backend only, so the cell is red only on a new failure, on an XPASS
 (a fix landed), on a failure whose exception changed, or on a stale entry
-(`tests/_pure_python_inventory.py:6-10`). The cell stays advisory
-(`continue-on-error: true`, `.github/workflows/ci.yml:211`) until U3 empties the
-inventory and U23 promotes it (`.github/workflows/ci.yml:199-207`).
+(`tests/_pure_python_inventory.py:6-10`). The cell landed advisory — job-level
+`continue-on-error: true` under a DO-NOT-ADD-TO-REQUIRED-CHECKS banner — for as
+long as the inventory had entries (provenance — PR #59, 2026-09-12, through
+PR #69). U3 (#69) emptied the inventory and U23 (#70, 2026-09-18) promoted the
+job: `test-pure-python` now carries a required-check banner and no
+`continue-on-error` at job level or on any step (current-state — re-verified by
+`tests/meta/test_pure_python_cell_presence_ratchet.py` on every run;
+`.github/workflows/ci.yml:200-209`), and `main`'s branch protection lists it as
+a required context with `parity` removed (provenance — measured 2026-09-18 and
+pasted into PR #70's description; branch protection lives outside the repo, so
+nothing in-tree re-verifies that list). The promotion was proven the way the
+cell was landed: a throwaway draft PR (#71) that reintroduced `fd =
+pool.Add(fdp)` in one storage test and deleted its upb-side guard was blocked by
+the required check alone.
 
 **Harvest run versus merge run.** The inventory's entries are not measured
 locally. The cell is Python 3.12 on Linux with apt `protoc` and `.[compiler,dev]`
-only (`.github/workflows/ci.yml:219-233`, restated at `CONTRIBUTING.md:44-47`),
+only (`.github/workflows/ci.yml:220-234`, restated at `CONTRIBUTING.md:45-48`),
 and a developer venv differs from it on five axes at once: the Python minor,
 the operating system, which optional extras are installed (a local venv may carry
 the parquet and hamcrest extras the cell does not), whether a system `protoc`
@@ -147,7 +158,13 @@ is the child-session scenario).
 
 **Entry format: node id, finding, exception, under a version header.** One
 entry per line, whitespace-separated, node id first
-(`tests/_pure_python_inventory.py:14-21`, `tests/pure_python_expected_failures.txt:9-20`):
+(`tests/_pure_python_inventory.py:14-21`, `tests/pure_python_expected_failures.txt:9-13`).
+The committed file has been empty and header-less since U3 (current-state — the
+hook requires the header only once entries exist, and
+`test_committed_inventory_parses_under_every_backend`,
+`tests/meta/test_pure_python_inventory.py:522`, parses the committed file under
+both backends on every run); the two header lines below show what a new entry
+needs above it:
 
 ```text
 protobuf: 5.27.5
@@ -195,7 +212,7 @@ whose header differs from the installed runtime on `major.minor` is one
 `tests/_pure_python_inventory.py:248-259`, raised at `:346-348`); a patch bump
 passes. `--pure-python-inventory-ignore-version` is the exploratory local
 opt-out and is never the verification of record
-(`tests/_pure_python_inventory.py:29-32`; `CONTRIBUTING.md:39-43`). A runtime
+(`tests/_pure_python_inventory.py:29-32`; `CONTRIBUTING.md:39-44`). A runtime
 bump therefore forces a loud re-harvest instead of a mis-diagnosed XPASS.
 
 **Key "full suite" on the configured `testpaths`, not on the inventory's
@@ -238,8 +255,8 @@ says explicitly when the session ended with a usage error so an empty harvest
 never reads as a clean run (`:455-461`), and writes nothing at all under upb
 (`pytest_configure`, `:439-441`). The cell passes
 `--pure-python-inventory-harvest=pure-python-harvest.txt`
-(`.github/workflows/ci.yml:252`) and an `if: always()` step prints the file and
-appends it to the step summary (`.github/workflows/ci.yml:254-273`).
+(`.github/workflows/ci.yml:253`) and an `if: always()` step prints the file and
+appends it to the step summary (`.github/workflows/ci.yml:255-274`).
 
 **One spelling for the backend-skip predicate.** A test whose premise is a upb
 runtime fact rather than a protokit defect is not an inventory entry; it gets
@@ -258,34 +275,45 @@ locally with no runner headroom; pre-emptive).
 **Assert the cell's shape with a presence ratchet, and model every way the step
 can run something other than the full suite.**
 `tests/meta/test_pure_python_cell_presence_ratchet.py` loads `ci.yml` with
-`yaml.safe_load` and `cell_violations` (`:104-181`) returns a checklist. A
+`yaml.safe_load` and `cell_violations` (`:113-208`) returns a checklist. A
 ratchet over a CI job must reject all of:
 
 - [ ] more or fewer than exactly one job whose **job-level** `env` sets the
-      backend variable (`:113-122`);
-- [ ] a renamed job id — the required-checks list names the context (`:124-125`);
-- [ ] a different `setup-python` version (`:128-136`);
+      backend variable (`:123-132`);
+- [ ] a renamed job id — the required-checks list names the context (`:134-135`);
+- [ ] a different `setup-python` version (`:137-146`);
 - [ ] no run step whose command **starts with** `pytest` or `python -m pytest`
-      (`_pytest_commands`, `:58-73`; `:138-140`) — a message mentioning pytest
+      (`_pytest_commands`, `:66-81`; `:148-150`) — a message mentioning pytest
       is not an invocation;
-- [ ] a pytest command without `tests/`, or with any `tests/<subpath>` (`:142-148`);
+- [ ] a pytest command without `tests/`, or with any `tests/<subpath>` (`:152-158`);
 - [ ] any narrowing or escape flag: `-k`, `-m`, `--deselect`, `--ignore`,
       `--ignore-glob`, `--lf`, `--sw`, `--runxfail`, `-p`, `--co`, `-x`,
       `--maxfail`, `--pure-python-inventory=`,
-      `--pure-python-inventory-ignore-version`, including attached short forms
-      such as `-pno:plugin` (`_NARROWING_PREFIXES`, `:79-91`; `:149-154`);
-- [ ] an `if:` or `working-directory:` on the pytest step (`:155-159`);
-- [ ] a step-level `env` that re-sets the backend variable (`:160-163`);
+      `--pure-python-inventory-ignore-version`, and `--version` / `--help` /
+      `-h` (a `pytest tests/ --version` step runs nothing yet reads as a suite
+      run), including attached short forms such as `-pno:plugin`
+      (`_NARROWING_PREFIXES`, `:87-100`; `:159-164`);
+- [ ] an `if:` or `working-directory:` on the pytest step (`:165-169`);
+- [ ] a step-level `env` that re-sets the backend variable (`:170-173`);
 - [ ] a sanity step that reads `api_implementation.Type()` but does not
-      `assert` it `== 'python'` on some line (`_asserts_pure_python`, `:94-101`;
-      `:165-168`);
-- [ ] during the advisory phase, a missing `continue-on-error: true` or a
-      missing advisory banner (`:170-180`; both flip in U23).
+      `assert` it `== 'python'` on some line (`_asserts_pure_python`, `:103-110`;
+      `:187-190`);
+- [ ] a `continue-on-error` at job level (`:192-197`) or on **any** step, not
+      only the pytest one (`:178-186`) — a tolerated sanity-step failure is the
+      silent-upb-fallback shape, and a step whose command is spelled unusually
+      (a quoted `"pytest"` executable) is not the step the ratchet identified
+      as "the pytest step";
+- [ ] a missing required-check banner or a returned advisory banner
+      (`:198-207`). Until U23 these two assertions ran inverted — the advisory
+      phase required `continue-on-error: true` and the advisory banner
+      (provenance — PR #59 through #69) — and the flip was proven by flipping
+      their injected-violation self-tests in the same PR (#70).
 
 Each property has an injected-violation self-test that mutates a synthetic
-workflow and asserts the message names it (`:228-345`; 18 self-test methods,
-one parametrised over eleven flags, 28 collected cases as of PR #59), so the
-ratchet is proven to fire, not assumed to.
+workflow and asserts the message names it (`:255-403`; 18 self-test methods,
+one parametrised over eleven flags, 28 collected cases as of PR #59; 21 methods,
+fourteen flags, 34 cases as of PR #70, 2026-09-18), so the ratchet is proven to
+fire, not assumed to.
 
 ## Why This Matters
 
@@ -309,27 +337,37 @@ generalist brief had stalled. Stated as "guard X passes while Y is true":
   `--runxfail`, or `-p no:tests._pure_python_inventory`.** A check that only
   looked for a `tests/` token with no subpath accepted every flag that narrows
   collection or disables the xfail machinery. `_narrows`
-  (`tests/meta/test_pure_python_cell_presence_ratchet.py:86-91`) now rejects
-  the list above; the parametrised self-test covers eleven of them (`:297-306`).
+  (`tests/meta/test_pure_python_cell_presence_ratchet.py:95-100`) now rejects
+  the list above; the parametrised self-test covers fourteen of them (`:354-364`).
 - **The ratchet passes while the step has `if: 'false'` or
   `working-directory: tests/core`.** Both leave the command text
   `pytest tests/` intact while the step runs nothing, or runs a subtree
-  relative to another directory. Rejected at `:155-159`; self-test `:315-321`.
+  relative to another directory. Rejected at `:165-169`; self-test `:373-379`.
 - **The ratchet passes while a step-level `env` sets the backend back to upb.**
-  The job-level env check at `:113-122` is satisfied; the step's own env wins
-  at run time. Rejected at `:160-163`; self-test `:323-329`.
+  The job-level env check at `:123-132` is satisfied; the step's own env wins
+  at run time. Rejected at `:170-173`; self-test `:381-387`.
 - **The ratchet passes while the sanity step merely prints the backend.**
   `print(api_implementation.Type())` contains the fragment the ratchet looks
   for. A runtime that silently fell back to upb would pass the whole suite with
-  the inventory unapplied (`.github/workflows/ci.yml:236-240`).
+  the inventory unapplied (`.github/workflows/ci.yml:236-241`).
   `_asserts_pure_python` requires an `assert` and `'python'` on one line
-  (`:94-101`); self-test `:331-336`; the real step asserts at
-  `.github/workflows/ci.yml:247`.
+  (`:103-110`); self-test `:389-394`; the real step asserts at
+  `.github/workflows/ci.yml:248`.
 - **The ratchet reads the harvest step's `echo` as a pytest invocation.** A
   token-anywhere detection matched the message at
   `.github/workflows/ci.yml:264` ("pytest did not reach session finish") and
   then flagged it for lacking `tests/`. `_pytest_commands` keys on commands
-  that start with `pytest` or `python -m pytest` (`:67-72`); self-test `:280-288`.
+  that start with `pytest` or `python -m pytest` (`:75-80`); self-test `:337-345`.
+- **The ratchet passes while a decoy `pytest tests/ --version` step satisfies
+  the full-suite property and the real step carries `continue-on-error`.**
+  Found by the falsification pass on PR #70 (2026-09-18): `--version` was not a
+  narrowing flag, so a step that runs nothing read as the suite run, and the
+  step-level `continue-on-error` check lived inside the pytest-step loop, so a
+  quoted `"pytest"` executable put the real step out of its reach. Now
+  `--version` / `--help` / `-h` narrow (`:87-92`) and every step is checked for
+  `continue-on-error` (`:178-186`); self-tests `:273-289` and `:354-364`. The
+  lesson is the one this whole list teaches: a check that identifies "the
+  step" by its text guards only steps spelled the way it expects.
 - **The source-marker ratchet passes while a pin says
   `raises=builtins.Exception`.** The bare-spelling comparison missed the
   qualified name; `_CATCH_ALL_RAISES` now lists both forms
@@ -418,7 +456,7 @@ token anywhere in the script, versus by the command's first tokens:
 # before (falsified: matched the harvest step's echo at ci.yml:264)
 pytest_steps = [s for s in steps if "pytest" in (s.get("run") or "")]
 
-# after: tests/meta/test_pure_python_cell_presence_ratchet.py:67-72
+# after: tests/meta/test_pure_python_cell_presence_ratchet.py:75-80
 for line in run.replace("\\\n", " ").splitlines():
     tokens = line.split()
     if tokens[:1] == ["pytest"]:
@@ -438,7 +476,7 @@ if not any(t in ("tests", "tests/") for t in tokens) or any(
 ):
     violations.append(...)
 
-# after: the same check, plus tests/meta/test_pure_python_cell_presence_ratchet.py:149-163
+# after: the same check, plus tests/meta/test_pure_python_cell_presence_ratchet.py:159-173
 narrowing = [t for t in tokens if _narrows(t)]
 if narrowing: violations.append(f"... must not narrow or escape the run; it passes {narrowing!r}")
 if "if" in step or "working-directory" in step: violations.append("... unconditionally from the checkout root")
@@ -487,7 +525,7 @@ and no version header (`tests/_pure_python_inventory.py:455-461`).
   was reported.
 - `docs/solutions/best-practices/presence-ratchet-test-pattern-for-prose-substrings-2026-05-14.md`
   — the presence-ratchet pattern and its banner-pin rule that
-  `ADVISORY_BANNER` follows.
+  `REQUIRED_BANNER` and `ADVISORY_BANNER` follow.
 - `docs/solutions/best-practices/presence-ratchet-pin-canonical-not-local-form-2026-05-23.md`
   — pin the canonical form; here the canonical form of "runs the full suite" is
   a command that starts with `pytest` over `tests/` with nothing narrowing it.
