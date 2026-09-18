@@ -78,8 +78,8 @@ backend-neutral rather than merely fixed (KTD6).
   depends on the `EncodeError` only upb raises (V1).
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
-under the pure-Python runtime with no known-failure list. The advisory
-`test-pure-python` CI cell becomes a required check in a following unit.
+under the pure-Python runtime with no known-failure list, and the
+`test-pure-python` CI cell is a required check (see Internal).
 
 ### Internal
 
@@ -89,6 +89,14 @@ under the pure-Python runtime with no known-failure list. The advisory
   could not — its `is_extension` filter was vestigial, because
   `Descriptor.fields` never contains extensions in the first place. Both are
   private APIs; no supported surface changes.
+- The `test-pure-python` CI cell is a required check on `main` (U23, the
+  tighten step the cell was landed with in U2). Its job-level
+  `continue-on-error` and advisory banner are gone, the presence ratchet
+  (`tests/meta/test_pure_python_cell_presence_ratchet.py`) now fails if
+  either returns at job or step level, and branch protection lists
+  `test-pure-python` while no longer listing `parity`, which ci.yml has
+  always said must not be required. A pure-Python-only failure now blocks a
+  merge the same way a upb failure does.
 
 ## 0.15.1 — 2026-08-30
 

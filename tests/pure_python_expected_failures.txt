@@ -15,7 +15,10 @@
 # First harvested from the cell's first run on PR #59:
 #   https://github.com/marc-chiesa/protokit/actions/runs/34425343201/job/102709277970
 # (173 entries: 166 V34, 5 V10, 2 V1). Every entry flipped when U3 closed those
-# findings and was deleted; the inventory is EMPTY, which is the precondition
-# for promoting the cell to a required check (U23).
-protobuf: 5.27.5
-python: 3.12.14
+# findings and was deleted; the inventory is EMPTY and the cell is a required
+# check (U23). An empty inventory carries no header. A new entry needs the
+# `protobuf:` / `python:` header above it, copied from the cell's harvest
+# output. Note what an entry does: it makes the required check TOLERATE that
+# one failure (strict xfail), so adding one is a reviewable decision to ship
+# with a known pure-Python defect, and the release gate requires this file
+# to be empty again before a release is cut.

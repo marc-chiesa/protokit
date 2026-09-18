@@ -197,19 +197,19 @@ jobs:
   # tests/meta/test_pure_python_cell_presence_ratchet.py asserts this
   # job's shape.
   #
-  # ----- Advisory posture (DO NOT add to required-checks) -----
+  # ----- Required check (U23, KTD10's tighten step) -----
   #
-  # `test-pure-python` is INTENTIONALLY ADVISORY until U23 promotes it:
-  # job-level continue-on-error keeps the workflow run green while the
-  # job's own check still reports its failure in the PR checks list.
-  # U23 (after U3 empties the inventory) deletes continue-on-error and
-  # this banner, flips the presence ratchet, and adds the job to the
-  # required checks by hand. Until then, do NOT include it in any
-  # required-checks rule.
+  # `test-pure-python` is a REQUIRED CHECK: branch protection on `main`
+  # lists this job's context, so a pure-Python failure blocks a merge
+  # the same way a upb failure does. The job was advisory (job-level
+  # continue-on-error, kept out of the required checks) from U2 until
+  # U3 emptied the known-failure inventory; U23 promoted it. Do NOT
+  # reintroduce continue-on-error at job level or on any step — a
+  # required check whose job cannot fail gates nothing — and the
+  # presence ratchet names either as a violation.
   test-pure-python:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     env:
       PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
 
