@@ -95,7 +95,6 @@ class TestDiffTruncation:
         result = DiffResult(differences=(), diagnostics=(error_diagnostic(),))
         payload = json.loads(_render("json", FormatterKind.DIFF, result))
         assert payload["equal"] is False
-        assert payload["complete"] is True
 
     def test_human_truncated_with_differences_still_lists_them(self) -> None:
         """Adjacent behavior: a found difference is definitive even when truncated."""
@@ -271,3 +270,142 @@ class TestLintTrust:
             category="min_severity_relaxed", rule_id=None, message="fyi",
         ),))
         assert _render("human", FormatterKind.LINT_REPORT, report) == ""
+
+
+# ---------------------------------------------------------------------------
+# Machine formats — R4 names the machine counterpart too
+# ---------------------------------------------------------------------------
+#
+# V23 described the human renderers as the ones that did not look. For the
+# lint kind (the one the plan's first draft omitted) the machine renderers did
+# not look either, and two JSON verdict booleans never had.
+
+
+def _lint_with_a_rule_that_raised() -> LintReport:
+    return LintReport(runtime_warnings=(LintRuntimeWarning(
+        category="rule_exception", rule_id="x/y", message="rule blew up",
+    ),))
+
+
+class TestLintMachineFormats:
+    def test_junit_does_not_report_a_clean_pass(self) -> None:
+        out = _render("junit", FormatterKind.LINT_REPORT, _lint_with_a_rule_that_raised())
+        root = ET.fromstring(out)
+        assert int(root.get("errors") or 0) == 1
+        assert int(root.get("tests") or 0) == 1
+        names = {case.get("name") for case in root.iter("testcase")}
+        assert "clean" not in names
+        error = root.find("./testcase/error")
+        assert error is not None
+        assert "rule blew up" in (error.get("message") or "")
+
+    def test_junit_counts_stay_consistent_beside_a_finding_free_error(self) -> None:
+        """``tests - failures - errors`` never goes negative (GitLab derives passes so)."""
+        root = ET.fromstring(_render(
+            "junit", FormatterKind.LINT_REPORT, _lint_with_a_rule_that_raised(),
+        ))
+        tests, failures, errors = (
+            int(root.get(k) or 0) for k in ("tests", "failures", "errors")
+        )
+        assert tests - failures - errors >= 0
+
+    def test_junit_clean_run_still_passes(self) -> None:
+        """Adjacent behavior: the empty-suite fallback survives for a real clean run."""
+        root = ET.fromstring(_render("junit", FormatterKind.LINT_REPORT, LintReport()))
+        assert int(root.get("errors") or 0) == 0
+        assert {case.get("name") for case in root.iter("testcase")} == {"clean"}
+
+    def test_junit_advisory_warning_still_passes(self) -> None:
+        report = LintReport(runtime_warnings=(LintRuntimeWarning(
+            category="min_severity_relaxed", rule_id=None, message="fyi",
+        ),))
+        root = ET.fromstring(_render("junit", FormatterKind.LINT_REPORT, report))
+        assert int(root.get("errors") or 0) == 0
+
+    def test_sarif_execution_is_not_successful(self) -> None:
+        doc = json.loads(_render(
+            "sarif", FormatterKind.LINT_REPORT, _lint_with_a_rule_that_raised(),
+        ))
+        run = doc["runs"][0]
+        assert run["invocations"][0]["executionSuccessful"] is False
+        # The detail stays in the runtime-warnings channel; notifications are
+        # compile-stage only by design, so the seam moves the boolean alone.
+        assert "toolExecutionNotifications" not in run["invocations"][0]
+        assert [
+            w["properties"]["category"] for w in run["properties"]["runtime_warnings"]
+        ] == ["rule_exception"]
+
+    def test_sarif_clean_run_is_successful(self) -> None:
+        doc = json.loads(_render("sarif", FormatterKind.LINT_REPORT, LintReport()))
+        assert doc["runs"][0]["invocations"][0]["executionSuccessful"] is True
+
+
+class TestCompatFamilyJson:
+    def test_compat_json_is_not_compatible_over_a_check_that_broke(self) -> None:
+        payload = json.loads(_render(
+            "json", FormatterKind.COMPAT, compat_report(error_diagnostic()),
+        ))
+        assert payload["compatible"] is False
+        assert payload["complete"] is False
+
+    def test_compat_json_clean(self) -> None:
+        payload = json.loads(_render("json", FormatterKind.COMPAT, compat_report()))
+        assert payload["compatible"] is True
+        assert payload["complete"] is True
+
+    def test_compat_json_a_warning_costs_nothing(self) -> None:
+        payload = json.loads(_render(
+            "json", FormatterKind.COMPAT, compat_report(warning_diagnostic()),
+        ))
+        assert payload["compatible"] is True
+        assert payload["complete"] is True
+
+    def test_compat_json_findings_are_incompatible_and_complete(self) -> None:
+        payload = json.loads(_render(
+            "json", FormatterKind.COMPAT, compat_report(findings=(_finding(),)),
+        ))
+        assert payload["compatible"] is False
+        assert payload["complete"] is True
+
+    def test_history_json_entry_is_not_compatible_over_a_check_that_broke(self) -> None:
+        payload = json.loads(_render(
+            "json", FormatterKind.COMPAT_HISTORY,
+            history_report(entry_diags=(error_diagnostic(),)),
+        ))
+        assert payload["complete"] is False
+        assert payload["entries"][0]["compatible"] is False
+        assert payload["entries"][0]["complete"] is False
+
+    def test_history_json_aggregate_only_error_is_incomplete(self) -> None:
+        payload = json.loads(_render("json", FormatterKind.COMPAT_HISTORY, history_report(
+            aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
+        )))
+        assert payload["complete"] is False
+        # The entry itself checked cleanly; only the walk is in doubt.
+        assert payload["entries"][0]["compatible"] is True
+        assert payload["entries"][0]["complete"] is True
+
+    def test_history_json_clean(self) -> None:
+        payload = json.loads(_render("json", FormatterKind.COMPAT_HISTORY, history_report()))
+        assert payload["complete"] is True
+        assert payload["entries"][0]["compatible"] is True
+
+    def test_bisect_json_says_when_no_break_is_not_a_verdict(self) -> None:
+        payload = json.loads(_render("json", FormatterKind.COMPAT_BISECT, bisect_report(
+            CommitDiagnostic("abc123", "error", None, "plugin crashed"),
+        )))
+        assert payload["breaking_commit"] is None
+        assert payload["complete"] is False
+
+    def test_bisect_json_clean(self) -> None:
+        payload = json.loads(_render("json", FormatterKind.COMPAT_BISECT, bisect_report()))
+        assert payload["complete"] is True
+
+
+class TestDiffJsonCompleteMeansTheSeamVouches:
+    def test_an_errored_comparison_is_not_complete(self) -> None:
+        """One meaning for ``complete`` in every JSON format: the seam vouches."""
+        result = DiffResult(differences=(), diagnostics=(error_diagnostic(),))
+        payload = json.loads(_render("json", FormatterKind.DIFF, result))
+        assert payload["complete"] is False
+        assert payload["truncated_paths"] == []

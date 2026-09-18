@@ -112,9 +112,11 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 > `UserWarning`.
 >
 > `equal` is `true` only when no difference was found **and** the comparison
-> can be trusted. A `--max-depth` cut that hid part of the messages gives
+> is `complete`. A `--max-depth` cut that hid part of the messages gives
 > `"equal": false, "complete": false` with the uncompared subtrees listed in
-> `truncated_paths`; an error-level diagnostic also gives `"equal": false`.
+> `truncated_paths`; an error-level diagnostic gives the same two values with
+> an empty `truncated_paths`. `complete` means the same in `protokit compat
+> --format json`, where `compatible` likewise needs it.
 >
 > The JSON object is **open/additive** — ignore unknown keys rather than
 > validating a closed set. Gate on the top-level `schema_version` to detect the

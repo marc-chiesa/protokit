@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterator
 
+from protokit import _trust
 from protokit.message.model import Diagnostic, FieldPath
 
 
@@ -480,17 +481,28 @@ def history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
     ``HistoryEntry.commit_subject``) are intentionally omitted —
     the regression contract is structural equivalence with the
     pre-refactor output.
+
+    Since 0.16.0 the payload and each entry also carry ``complete``:
+    whether ``protokit._trust`` vouches for the walk / the entry's
+    check. An entry's ``compatible`` is a verdict and needs that
+    consent — zero findings from a check that broke is
+    ``"compatible": false, "complete": false``, not a pass (R4).
     """
     return {
         "range": report.range_spec,
         "old": report.old_sha,
         "new": report.new_sha,
         "commits_walked": report.commits_walked,
+        "complete": _trust.is_trustworthy(report),
         "entries": [
             {
                 "old": entry.parent_sha,
                 "new": entry.commit_sha,
-                "compatible": entry.report.is_compatible,
+                "compatible": (
+                    entry.report.is_compatible
+                    and _trust.is_trustworthy(entry.report)
+                ),
+                "complete": _trust.is_trustworthy(entry.report),
                 "findings": [
                     {
                         "path": str(f.path),
@@ -527,12 +539,19 @@ def bisect_report_to_dict(report: BisectReport) -> dict[str, Any]:
     Phase 2: ``range``, ``old``, ``new``, ``breaking_commit``,
     ``findings`` (for the breaking commit), ``commits_walked``,
     ``diagnostics``.
+
+    Since 0.16.0 it also carries ``complete``: whether
+    ``protokit._trust`` vouches for the walk. This payload has no
+    verdict boolean — ``"breaking_commit": null`` *is* the "no break"
+    answer — so ``complete`` is how a consumer tells that answer from
+    a walk in which a commit's check broke (R4).
     """
     return {
         "range": report.range_spec,
         "old": report.old_sha,
         "new": report.new_sha,
         "breaking_commit": report.breaking_commit,
+        "complete": _trust.is_trustworthy(report),
         "findings": [
             {
                 "path": str(f.path),

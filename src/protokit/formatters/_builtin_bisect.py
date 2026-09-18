@@ -59,7 +59,7 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
         lines = [f"# {report.range_spec}: no commits touch {proto_file}"]
     elif untrusted:
         lines = [
-            f"# {report.range_spec}: INCOMPLETE — walked "
+            f"# {report.range_spec}: INCOMPLETE: walked "
             f"{report.commits_walked} commit(s), but not every check finished"
         ]
         said_incomplete = True
@@ -71,9 +71,9 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
     if untrusted:
         if not said_incomplete:
             lines.append(
-                f"# {report.range_spec}: INCOMPLETE — the walk cannot be trusted:"
+                f"# {report.range_spec}: INCOMPLETE: the walk cannot be trusted:"
             )
-        lines.extend(f"    ✗ {reason}" for reason in untrusted)
+        lines.extend(f"    ! {reason}" for reason in untrusted)
     return "\n".join(lines)
 
 

@@ -85,13 +85,13 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
 
     untrusted = _trust.reasons(report)
     for reason in untrusted:
-        lines.append(click.style(f"  ✗ {reason}", fg="red"))
+        lines.append(click.style(f"  ! {reason}", fg="red"))
 
     if not report.is_compatible:
         verdict = click.style("INCOMPATIBLE", fg="red", bold=True)
     elif untrusted:
         verdict = click.style(
-            "INCOMPLETE — no findings, but the check did not finish",
+            "INCOMPLETE: no findings, but the check did not finish",
             fg="red", bold=True,
         )
     else:
@@ -104,10 +104,14 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
 def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
     """Render a CompatibilityReport as pretty-printed JSON.
 
-    Returns the same shape the schema CLI has emitted since
-    Phase 1: ``compatible`` (bool), ``level`` (string),
-    ``findings`` (list of dicts), ``diagnostics`` (list of dicts),
-    ``summary`` (severity-bucket counts).
+    Returns the shape the schema CLI has emitted since Phase 1:
+    ``compatible`` (bool), ``level`` (string), ``findings`` (list of
+    dicts), ``diagnostics`` (list of dicts), ``summary``
+    (severity-bucket counts) — plus, since 0.16.0, ``complete``
+    (bool): whether ``protokit._trust`` vouches for the report.
+    ``compatible`` is a verdict and needs that consent: zero findings
+    from a check that broke is ``"compatible": false, "complete":
+    false``, matching the human renderer's ``INCOMPLETE`` (R4).
 
     Args:
         report: The report to render.
@@ -117,8 +121,10 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
         A JSON string with two-space indentation.
     """
     del ctx
+    complete = _trust.is_trustworthy(report)
     payload: dict[str, Any] = {
-        "compatible": report.is_compatible,
+        "compatible": report.is_compatible and complete,
+        "complete": complete,
         "level": report.level.value,
         "findings": [
             {

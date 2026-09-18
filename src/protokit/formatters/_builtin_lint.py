@@ -529,12 +529,20 @@ def _build_lint_testsuite(
     the failure count. Empty-suite fallback emits a single passing
     ``<testcase classname="lint" name="clean"/>`` so CI consumers
     don't read "no tests ran."
+
+    Each reason ``protokit._trust`` gives for not trusting the report
+    (a selected rule raised or was never loaded) is an ``<error>``
+    testcase too. Such a run produces *zero* findings, so without
+    them it took the ``clean`` fallback and rendered as a green suite
+    beside a human report saying INCOMPLETE (R4). The runtime
+    warnings themselves still go to ``<system-out>``, all of them.
     """
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
+    untrusted = _trust.reasons(report)
     findings_count = len(report.findings)
-    errors_count = len(error_diags)
+    errors_count = len(error_diags) + len(untrusted)
 
     has_real_cases = findings_count > 0 or errors_count > 0
     tests_count = findings_count + errors_count if has_real_cases else 1
@@ -569,6 +577,15 @@ def _build_lint_testsuite(
         )
         junit.append_error(
             case, message=diag.message, type_="error", body=diag.message,
+        )
+        junit.add_testcase(suite, case)
+
+    for index, reason in enumerate(untrusted, start=1):
+        case = junit.make_testcase(
+            classname="analysis-incomplete", name=f"rule-did-not-run-{index}",
+        )
+        junit.append_error(
+            case, message=reason, type_="analysis-incomplete", body=reason,
         )
         junit.add_testcase(suite, case)
 
@@ -894,8 +911,16 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
             "properties": {"category": diag.category},
         })
 
+    # A selected rule that raised or never loaded means the run did not
+    # execute successfully, however clean ``results`` looks: a crashing rule
+    # contributes zero results (R4). Only the boolean moves. The warnings
+    # themselves stay in ``runs[].properties.runtime_warnings`` and out of
+    # ``toolExecutionNotifications``, which is compile-stage only by design
+    # so a consumer can filter the two channels apart.
     invocation: dict[str, Any] = {
-        "executionSuccessful": not error_diags,
+        "executionSuccessful": (
+            not error_diags and _trust.is_trustworthy(report)
+        ),
     }
     if notifications:
         invocation["toolExecutionNotifications"] = notifications

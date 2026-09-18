@@ -75,9 +75,9 @@ def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
     untrusted = _trust.reasons(report)
     if untrusted:
         lines.append(
-            f"# {report.range_spec}: INCOMPLETE — the walk cannot be trusted:"
+            f"# {report.range_spec}: INCOMPLETE: the walk cannot be trusted:"
         )
-        lines.extend(f"    ✗ {reason}" for reason in untrusted)
+        lines.extend(f"    ! {reason}" for reason in untrusted)
     return "\n".join(lines)
 
 

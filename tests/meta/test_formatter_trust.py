@@ -14,6 +14,14 @@ line. Nothing is inferred from names or source text: the renderer is run.
 A new kind fails until it has a fixture here, and a new kind's renderer
 fails until it asks the seam.
 
+R4 names the *machine* counterpart too, so the same fixtures go through every
+other registered built-in format, and each one's success verdict — JUnit's
+failure/error counts, SARIF's ``executionSuccessful``, a JSON verdict boolean
+— must say "not success" for the untrustworthy report and "success" for the
+trustworthy one. ``_MACHINE_VERDICTS`` is compared for **equality** with the
+registry, so a new format is either given a verdict reader or declared
+verdict-free with a reason; it cannot land unclassified.
+
 **Guard 2 — the root Click group. Predicate: decidable, by AST; and
 necessary, not sufficient.** Guard 1 cannot see ``forensics``, whose
 renderers are module-local and unregistered, nor any exit path. So this
@@ -41,7 +49,9 @@ import dataclasses
 import functools
 import importlib
 import inspect
-from collections.abc import Iterator
+import json
+import xml.etree.ElementTree as ET
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import click
@@ -49,7 +59,12 @@ import pytest
 
 from protokit import _trust
 from protokit.cli import main as root_group
-from protokit.formatters import FormatterContext, FormatterKind, get_formatter
+from protokit.formatters import (
+    FormatterContext,
+    FormatterKind,
+    _registry,
+    get_formatter,
+)
 from protokit.message.model import Diagnostic, DiffResult, FieldPath
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
 from protokit.schema.model import CommitDiagnostic
@@ -137,6 +152,113 @@ class TestEveryHumanFormatterAsksTheSeam:
             untrusted, _ = _FIXTURES[kind]
         for line in _render_human(kind, untrusted).splitlines():
             assert not line.startswith("error["), (kind.name, line)
+
+
+def _junit_passes(out: str) -> bool:
+    root = ET.fromstring(out)
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    return all(
+        int(suite.get("failures") or 0) == 0 and int(suite.get("errors") or 0) == 0
+        for suite in suites
+    )
+
+
+def _sarif_succeeded(out: str) -> bool:
+    return all(
+        invocation["executionSuccessful"]
+        for run in json.loads(out)["runs"]
+        for invocation in run["invocations"]
+    )
+
+
+def _json_key(*path: str) -> Callable[[str], bool]:
+    def read(out: str) -> bool:
+        value = json.loads(out)
+        for key in path:
+            value = value[key]
+        assert isinstance(value, bool), (path, value)
+        return value
+    return read
+
+
+def _history_json_succeeded(out: str) -> bool:
+    payload = json.loads(out)
+    return payload["complete"] and all(e["compatible"] for e in payload["entries"])
+
+
+#: ``(kind, format) -> reader of that format's success verdict``, or ``None``
+#: for a format that states no verdict — with the reason it may not state one.
+_MACHINE_VERDICTS: dict[tuple[FormatterKind, str], Callable[[str], bool] | None] = {
+    (FormatterKind.DIFF, "json"): _json_key("equal"),
+    (FormatterKind.DIFF, "junit"): _junit_passes,
+    (FormatterKind.COMPAT, "json"): _json_key("compatible"),
+    (FormatterKind.COMPAT, "junit"): _junit_passes,
+    (FormatterKind.COMPAT, "sarif"): _sarif_succeeded,
+    (FormatterKind.COMPAT_HISTORY, "json"): _history_json_succeeded,
+    (FormatterKind.COMPAT_HISTORY, "junit"): _junit_passes,
+    (FormatterKind.COMPAT_HISTORY, "sarif"): _sarif_succeeded,
+    (FormatterKind.COMPAT_BISECT, "json"): _json_key("complete"),
+    (FormatterKind.COMPAT_BISECT, "junit"): _junit_passes,
+    (FormatterKind.COMPAT_BISECT, "sarif"): _sarif_succeeded,
+    # Deliberately verdict-free. The seam's lint categories are KNOWN
+    # INCOMPLETE until U8 (three "rule did not run" categories are ungated),
+    # so an affirmative ``"complete": true`` would over-claim on exactly the
+    # runs it is ungated for. The payload carries every runtime warning with
+    # its category, and no success boolean that could be wrong.
+    (FormatterKind.LINT_REPORT, "json"): None,
+    (FormatterKind.LINT_REPORT, "junit"): _junit_passes,
+    (FormatterKind.LINT_REPORT, "sarif"): _sarif_succeeded,
+}
+
+_VERDICT_FORMATS = sorted(
+    (key for key, reader in _MACHINE_VERDICTS.items() if reader is not None),
+    key=lambda key: (key[0].name, key[1]),
+)
+
+
+class TestEveryMachineVerdictAsksTheSeam:
+    def test_every_registered_format_is_classified(self) -> None:
+        registered = {key for key in _registry._REGISTRY if key[1] != "human"}
+        assert registered == set(_MACHINE_VERDICTS), (
+            f"unclassified: {sorted(map(str, registered - set(_MACHINE_VERDICTS)))}; "
+            f"stale: {sorted(map(str, set(_MACHINE_VERDICTS) - registered))}"
+        )
+
+    @pytest.mark.parametrize(
+        "key", _VERDICT_FORMATS, ids=lambda k: f"{k[0].name}-{k[1]}",
+    )
+    def test_the_verdict_follows_the_seam(
+        self, key: tuple[FormatterKind, str],
+    ) -> None:
+        kind, name = key
+        reader = _MACHINE_VERDICTS[key]
+        assert reader is not None
+        fn = get_formatter(name, kind)
+        untrusted, trusted = _FIXTURES[kind]
+        ctx = FormatterContext(subcommand="guard")
+        assert reader(fn(trusted, ctx)) is True  # type: ignore[arg-type]
+        assert reader(fn(untrusted, ctx)) is False  # type: ignore[arg-type]
+
+
+class TestTheFailurePathCannotCrashALegacyConsole:
+    """The INCOMPLETE text is printed exactly when a run went wrong.
+
+    ``history`` / ``bisect`` / ``lint`` human output is ASCII and ``compat``'s
+    stays within cp1252, so a Windows console or a CI log piped under a legacy
+    code page can always encode it. A glyph outside that set would raise
+    ``UnicodeEncodeError`` on the one path where losing the output is worst.
+    ``diff`` is exempt: its arrows and marks predate the seam.
+    """
+
+    @pytest.mark.parametrize("kind", [
+        FormatterKind.COMPAT, FormatterKind.COMPAT_HISTORY,
+        FormatterKind.COMPAT_BISECT, FormatterKind.LINT_REPORT,
+    ], ids=lambda k: k.name)
+    def test_untrustworthy_output_encodes_under_cp1252(
+        self, kind: FormatterKind,
+    ) -> None:
+        untrusted, _ = _FIXTURES[kind]
+        _render_human(kind, untrusted).encode("cp1252")
 
 
 # ---------------------------------------------------------------------------

@@ -281,10 +281,12 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
     Top-level keys: ``schema_version`` (str), ``equal`` (bool), ``complete``
     (bool), ``truncated_paths`` (list of str), ``differences`` (list of dicts
     whose shape depends on ``change_type``), ``diagnostics`` (list of dicts).
-    ``equal`` is true only when no difference was found **and** the comparison
-    can be trusted: a ``max_depth``-truncated result (``complete`` false, the
-    cut subtrees in ``truncated_paths``) or one carrying an error diagnostic is
-    never ``equal``. The object is open/additive -- consumers should ignore
+    ``complete`` is ``protokit._trust``'s verdict, the same meaning it has in
+    every protokit JSON format: false for a ``max_depth``-truncated result (the
+    cut subtrees are in ``truncated_paths``) and for one carrying an error
+    diagnostic. It is wider than ``DiffResult.is_complete``, which is about
+    truncation alone. ``equal`` is true only when no difference was found
+    **and** the result is ``complete``. The object is open/additive -- consumers should ignore
     unknown keys. Each entry carries canonical ``left_value`` / ``right_value``
     plus deprecated ``old_value`` / ``new_value`` (removed at 1.0; gate on
     ``schema_version`` to detect the change), and ``annotations`` (list of str,
@@ -338,12 +340,13 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
         {"level": d.level, "path": d.path, "message": d.message}
         for d in result.diagnostics
     ]
+    complete = _trust.is_trustworthy(result)
     output = {
         "schema_version": _DIFF_JSON_SCHEMA_VERSION,
         # ``equal`` is a verdict, so it needs the seam's consent: a truncated
         # or errored comparison that found nothing has not shown equality.
-        "equal": _trust.is_trustworthy(result) and not result.has_changes(),
-        "complete": result.is_complete,
+        "equal": complete and not result.has_changes(),
+        "complete": complete,
         "truncated_paths": [str(p) for p in result.truncated_paths],
         "differences": diffs,
         "diagnostics": diagnostics,

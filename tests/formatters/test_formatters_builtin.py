@@ -410,6 +410,7 @@ class TestHistoryFormatters:
             "old": "aaa",
             "new": "bbb",
             "commits_walked": 0,
+            "complete": True,
             "entries": [],
             "diagnostics": [],
         }
