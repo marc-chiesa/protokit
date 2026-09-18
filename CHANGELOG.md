@@ -41,6 +41,58 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `DiffResult.filter` accept it too (ignore selectors still take no bracket
   suffix, as before).
 
+### Fixed — BREAKING (U7: human and machine output agree on success)
+
+Every report type already recorded when it had come back empty for the wrong
+reason — a plugin crashed, `--max-depth` cut the walk short, a lint rule raised.
+The JUnit and SARIF renderers looked; the human renderers did not, so one report
+could print a pass on the terminal and an error in CI. A new internal module,
+`protokit._trust`, now owns that question for all five report kinds, and every
+built-in renderer asks it before printing a success verdict.
+
+- **`protokit compat` no longer prints a pass over a check that broke** (audit
+  finding V23). With zero findings and an error-level diagnostic, `check` / `ci`
+  print `INCOMPLETE` instead of `COMPATIBLE`; a `history` entry prints
+  `INCOMPLETE` instead of `OK`; `bisect` prints `INCOMPLETE` instead of
+  `no break found`. Each lists the reasons. `INCOMPATIBLE` / `BROKEN` / a found
+  breaking commit are unchanged — a finding is definitive — but are now
+  followed by the reasons too. `history --format junit` gains a trailing
+  `…-walk` suite for an error no commit entry carries, which it used to drop.
+  Exit codes are unchanged: these runs already exited 2.
+- **A `--max-depth`-truncated `protokit diff` is no longer reported as equal**
+  (audit finding V24). When the cut hides every difference, the human output
+  says `INCOMPLETE` and names the subtrees that were not compared, instead of
+  a green `Messages are equal.`; `--format junit` reports an error testcase
+  instead of a passing suite. **The exit code is still 0 in this case** — a
+  known issue, fixed with the rest of the exit-code contract later in this
+  release (U8); gate on the JSON `equal` key or the JUnit result until then.
+- **`protokit diff --format json`: `schema_version` is now `"0.2"`.** `equal` is
+  `true` only when no difference was found *and* the comparison can be trusted:
+  it is `false` for a truncated comparison, and for one carrying an error-level
+  diagnostic (previously `true` in both cases). New top-level keys `complete`
+  (bool) and `truncated_paths` (list of paths) say which. Each difference entry
+  gains `annotations` (list of strings, empty when there are none).
+- **REPORT-hook annotations are rendered** (audit finding V25). Text attached
+  with `ctx.annotate(...)` was dropped by every built-in diff format; it now
+  appears as a trailing `[a; b]` in human and JUnit output and as the
+  `annotations` list in JSON.
+- **`protokit lint` human output names rules that did not run.** When a selected
+  rule raised or was never loaded (`rule_exception` / `unloaded_rule`), stdout
+  ends with an `INCOMPLETE:` block listing each one, so an empty findings list
+  cannot read as a clean run. The stderr warnings and the exit-2
+  `analysis-incomplete` gate are unchanged; both now read `protokit._trust`, so
+  the rendered report and the exit code cannot disagree.
+- The `protokit diff` human output with differences replaces its separate
+  `Errors:` block and truncation footer with one `Not trustworthy` block.
+  Diagnostic text shown as a reason has control characters replaced by spaces,
+  so a rule pack's message cannot forge an `error[…]:` line in the report.
+
+*Upgrade impact:* anything parsing the human output for `COMPATIBLE`, `OK`,
+`no break found` or `Messages are equal.` sees those strings only on runs that
+completed. A consumer of `diff --format json` that reads `equal` gets `false`
+where it used to get a misleading `true`; one that validates a closed key set
+must accept `complete`, `truncated_paths` and per-entry `annotations`.
+
 ### Fixed — `protokit diff` exit codes
 
 - **A malformed selector now exits 2, not 1** (audit finding U15-6). `--ignore`,

@@ -39,6 +39,7 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import assert_never
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -173,6 +174,11 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     string — the CLI is responsible for any "no findings" sentinel
     or the ``--statistics`` footer (see Unit 4 in the D3 plan).
 
+    A run is clean only if ``protokit._trust`` vouches for it. When a
+    selected rule did not run (``rule_exception`` / ``unloaded_rule``
+    runtime warnings), a trailing ``INCOMPLETE:`` block lists each
+    reason, so an empty findings list cannot read as a pass.
+
     Findings render as::
 
         SEVERITY location [rule_id] interpolated message
@@ -221,6 +227,17 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     for finding in report.findings:
         spec = report.specs.get(finding.rule_id)
         lines.append(_render_finding_line(finding, spec))
+
+    # This renderer prints no success verdict -- a clean run is the empty
+    # string -- which is exactly why it must say so when that emptiness is
+    # not a verdict: a rule that raised produces zero findings.
+    untrusted = _trust.reasons(report)
+    if untrusted:
+        lines.append(
+            f"INCOMPLETE: {len(untrusted)} selected rule(s) did not run; "
+            "the findings above are a lower bound"
+        )
+        lines.extend(f"  {reason}" for reason in untrusted)
 
     return "\n".join(lines)
 

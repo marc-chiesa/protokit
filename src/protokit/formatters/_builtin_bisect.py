@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import xml.etree.ElementTree as ET
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -32,7 +33,13 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
       {proto_file}``. ``proto_file`` comes from ``ctx`` when
       available.
     - **Clean walk**: emit ``# {range}: no break found across
-      N commit(s)``.
+      N commit(s)`` -- only when ``protokit._trust`` vouches for the
+      report. A walk in which a commit's check broke has not shown
+      there is no break, so it renders ``INCOMPLETE`` instead (V23).
+
+    Every state is followed by the seam's reasons when there are any:
+    a break found *after* a commit whose check broke may not be the
+    first one.
 
     Args:
         report: The bisect report to render.
@@ -41,18 +48,31 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
     Returns:
         A multi-line string.
     """
+    untrusted = _trust.reasons(report)
     if report.breaking_commit is not None:
         lines = [f"first breaking commit: {report.breaking_commit}"]
         for f in report.breaking_findings:
             lines.append(f"  {f}")
-        return "\n".join(lines)
-    if report.commits_walked == 0:
+    elif report.commits_walked == 0:
         proto_file = ctx.proto_file or "<unknown>"
-        return f"# {report.range_spec}: no commits touch {proto_file}"
-    return (
-        f"# {report.range_spec}: no break found across "
-        f"{report.commits_walked} commit(s)"
-    )
+        lines = [f"# {report.range_spec}: no commits touch {proto_file}"]
+    elif untrusted:
+        lines = [
+            f"# {report.range_spec}: INCOMPLETE — walked "
+            f"{report.commits_walked} commit(s), but not every check finished"
+        ]
+    else:
+        lines = [
+            f"# {report.range_spec}: no break found across "
+            f"{report.commits_walked} commit(s)"
+        ]
+    if untrusted:
+        if report.breaking_commit is not None or report.commits_walked == 0:
+            lines.append(
+                f"# {report.range_spec}: INCOMPLETE — the walk cannot be trusted:"
+            )
+        lines.extend(f"    ✗ {reason}" for reason in untrusted)
+    return "\n".join(lines)
 
 
 def bisect_json(report: BisectReport, ctx: FormatterContext) -> str:

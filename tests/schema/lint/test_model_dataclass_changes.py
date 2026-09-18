@@ -142,7 +142,9 @@ class TestIncompleteAnalysisCategoryClassification:
     """
 
     #: Categories that mean a rule DID NOT RUN but are deliberately not
-    #: gated yet, for blast radius. Owned by U7/U8 (the ``_trust`` seam).
+    #: gated yet, for blast radius. Owned by U8, which would widen
+    #: ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` (the gate's set
+    #: has lived in the ``_trust`` seam since U7).
     #: Moving one of these into the gate is a deliberate breaking change.
     DEFERRED_INCOMPLETE: tuple[str, ...] = (
         "extension_unresolved",

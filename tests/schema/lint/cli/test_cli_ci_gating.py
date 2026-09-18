@@ -1391,7 +1391,8 @@ class TestAnalysisIncompleteExitGate:
         deliberately NOT gated in 0.15.1: excluding everything is an
         explicit user instruction, and a per-directory CI matrix where
         some directories legitimately match nothing would start failing.
-        U7/U8 own the decision when the `_trust` seam lands.
+        U8 owns the decision: the `_trust` seam (U7) moved the gate's
+        owner without widening its reach.
 
         This test exists so that flipping the behavior is a deliberate
         act with a visible diff, not an accident — and so the carve-out

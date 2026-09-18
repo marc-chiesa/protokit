@@ -80,8 +80,10 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 
 ```json
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "equal": false,
+  "complete": true,
+  "truncated_paths": [],
   "differences": [
     {
       "path": "user.name",
@@ -90,7 +92,8 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
       "right_value": "Bob",
       "old_value": "Alice",
       "new_value": "Bob",
-      "field_type": "TYPE_STRING"
+      "field_type": "TYPE_STRING",
+      "annotations": []
     }
   ],
   "diagnostics": []
@@ -107,6 +110,11 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 > Python attributes and the JSON keys) remain as deprecated aliases until
 > protokit 1.0; reading `diff.old_value`/`diff.new_value` emits a
 > `UserWarning`.
+>
+> `equal` is `true` only when no difference was found **and** the comparison
+> can be trusted. A `--max-depth` cut that hid part of the messages gives
+> `"equal": false, "complete": false` with the uncompared subtrees listed in
+> `truncated_paths`; an error-level diagnostic also gives `"equal": false`.
 >
 > The JSON object is **open/additive** — ignore unknown keys rather than
 > validating a closed set. Gate on the top-level `schema_version` to detect the

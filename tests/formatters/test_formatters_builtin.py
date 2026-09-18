@@ -295,8 +295,10 @@ class TestDiffFormatters:
         fn = get_formatter("json", FormatterKind.DIFF)
         payload = json.loads(fn(result, FormatterContext(subcommand="diff")))
         assert payload == {
-            "schema_version": "0.1",
+            "schema_version": "0.2",
             "equal": True,
+            "complete": True,
+            "truncated_paths": [],
             "differences": [],
             "diagnostics": [],
         }

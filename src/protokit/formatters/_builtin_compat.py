@@ -15,6 +15,7 @@ from typing import Any
 
 import click
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -63,8 +64,13 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
 
     Returns:
         A multi-line string. Header names the profile; body lists
-        each finding; trailer shows the verdict (COMPATIBLE or
-        INCOMPATIBLE in color).
+        each finding, then every reason ``protokit._trust`` gives for
+        not trusting the report; trailer shows the verdict in color.
+        ``COMPATIBLE`` is printed only when the seam vouches for the
+        report: zero findings from a check that broke part-way is
+        ``INCOMPLETE``, not a pass (V23). ``INCOMPATIBLE`` needs no
+        such consent -- a finding is definitive however the rest of
+        the check went.
     """
     del ctx  # unused; level is on the report itself
     lines = []
@@ -77,10 +83,19 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
     for finding in report:
         lines.append(_format_finding_human(finding))
 
-    if report.is_compatible:
-        verdict = click.style("COMPATIBLE", fg="green", bold=True)
-    else:
+    untrusted = _trust.reasons(report)
+    for reason in untrusted:
+        lines.append(click.style(f"  ✗ {reason}", fg="red"))
+
+    if not report.is_compatible:
         verdict = click.style("INCOMPATIBLE", fg="red", bold=True)
+    elif untrusted:
+        verdict = click.style(
+            "INCOMPLETE — no findings, but the check did not finish",
+            fg="red", bold=True,
+        )
+    else:
+        verdict = click.style("COMPATIBLE", fg="green", bold=True)
     lines.append("")
     lines.append(verdict)
     return "\n".join(lines)

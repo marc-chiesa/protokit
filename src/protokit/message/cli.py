@@ -23,6 +23,7 @@ from google.protobuf import (
 )
 from google.protobuf.message import DecodeError, Message
 
+from protokit import _trust
 from protokit._cli_utils import (
     _safe_for_stderr,
     compile_proto as _compile_proto,
@@ -241,6 +242,12 @@ def _diff_exit_code(result: DiffResult) -> int:
     NOTE: the diff CLI registers no hooks, so ``result.errors`` is unreachable
     through it today; this closes the contract for Python API callers and wires
     the CLI correctly for when a hook surface lands.
+
+    This reads ``result.errors`` rather than ``_trust.is_trustworthy`` on
+    purpose. The seam also refuses a ``--max-depth``-truncated result, and what
+    that should exit with (it prints INCOMPLETE and emits ``"equal": false``,
+    and still exits 0) is the exit-code contract U8 owns. The strict-xfail pin
+    ``test_u15_7_truncated_comparison_does_not_exit_0`` holds the gap open.
     """
     if result.errors:
         return 2
@@ -404,12 +411,14 @@ def main(
     # legacy "Messages are equal." stub that doesn't echo
     # diagnostics. The formatters always render diagnostics
     # when present, so short-circuit before invoking them.
-    # An error-level diagnostic is never eligible: "Messages are equal." would
-    # be asserting a verdict the engine just said it cannot vouch for.
+    # Only a comparison ``_trust`` vouches for is eligible: on an error-level
+    # diagnostic, or a ``--max-depth`` cut (V24), "Messages are equal." would
+    # be asserting a verdict the engine just said it cannot give. Those fall
+    # through to the formatter, which says why instead.
     if (
         output_format.lower() == "human"
         and not result.has_changes()
-        and not result.errors
+        and _trust.is_trustworthy(result)
         and not verbose
     ):
         click.echo(click.style("Messages are equal.", fg="green"))

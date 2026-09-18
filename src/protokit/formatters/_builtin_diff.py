@@ -22,6 +22,7 @@ from typing import Any
 
 import click
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters._registry import (
     FormatterContext,
@@ -30,7 +31,6 @@ from protokit.formatters._registry import (
 )
 from protokit.message.model import (
     ChangeType,
-    Diagnostic,
     Difference,
     DiffResult,
     EnumValue,
@@ -46,8 +46,28 @@ _CHANGE_SYMBOLS = {
 }
 
 
+def _annotation_suffix(diff: Difference) -> str:
+    """REPORT-hook annotations as a trailing `` [a; b]``, matching ``str(diff)``.
+
+    A hook calling ``ctx.annotate(...)`` attaches an explanation to a
+    difference; before V25 closed, no built-in format emitted it, so the
+    feature was write-only.
+    """
+    if not diff.annotations:
+        return ""
+    return f" [{'; '.join(diff.annotations)}]"
+
+
 def _format_diff_human(diff: Difference) -> str:
-    """Format a single Difference as a colored single-line string.
+    """Format a single Difference as a colored line, annotations included."""
+    line = _format_change_human(diff)
+    if diff.annotations:
+        line += click.style(_annotation_suffix(diff), dim=True)
+    return line
+
+
+def _format_change_human(diff: Difference) -> str:
+    """Format the change itself as a colored single-line string.
 
     Imported lazily to avoid a circular import — the value
     formatter lives in ``protokit.message.formatting`` which
@@ -101,11 +121,26 @@ def _format_diff_human(diff: Difference) -> str:
     raise AssertionError(f"Unhandled change type: {diff.change_type}")  # unreachable
 
 
-def _format_diagnostic_line(d: Diagnostic) -> str:
-    """Render a Diagnostic as a single colored line."""
-    if d.level == "error":
-        return click.style(f"  ✗ {d}", fg="red")
-    return click.style(f"  ⚠ {d}", fg="yellow")
+def _advisory_lines(result: DiffResult) -> list[str]:
+    """Every non-error diagnostic, one yellow line each."""
+    return [
+        click.style(f"  ⚠ {d}", fg="yellow")
+        for d in result.diagnostics if d.level != "error"
+    ]
+
+
+def _untrusted_lines(result: DiffResult) -> list[str]:
+    """``protokit._trust``'s reasons, one red line each.
+
+    Error diagnostics and the ``max_depth`` truncation both arrive this way,
+    in the seam's words: the renderer shows why the verdict was withheld
+    exactly as the seam decided it, rather than re-deriving it from
+    ``result.errors`` and ``result.is_complete`` side by side.
+    """
+    return [
+        click.style(f"  ✗ {reason}", fg="red")
+        for reason in _trust.reasons(result)
+    ]
 
 
 def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
@@ -121,19 +156,22 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
         ctx: Formatter context (unused).
 
     Returns:
-        A multi-line string. Empty equal results return the
-        single line ``"Messages are equal."`` — or, when the result
-        carries an error diagnostic, a line saying the comparison is
-        not trustworthy, since there is no equality to assert;
-        otherwise a
-        header, body of diff lines, and trailing diagnostic /
-        truncation blocks.
+        A multi-line string. A result with no differences returns the
+        single line ``"Messages are equal."`` only when
+        ``protokit._trust`` vouches for it. Otherwise there is no
+        equality to assert, and the first line says why instead: the
+        comparison is not trustworthy (an error diagnostic), or it is
+        INCOMPLETE (``max_depth`` truncated it). A result with
+        differences returns a header, body of diff lines, and trailing
+        diagnostic / truncation blocks.
     """
     del ctx
     lines: list[str] = []
 
     if not result.has_changes():
-        if result.errors:
+        if _trust.is_trustworthy(result):
+            lines.append(click.style("Messages are equal.", fg="green"))
+        elif result.errors:
             # Never claim equality the engine cannot vouch for. An error means
             # the comparison itself broke, so "no differences" is the absence
             # of a finding, not a verdict — and a green success line above a
@@ -143,10 +181,16 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
                 fg="red", bold=True,
             ))
         else:
-            lines.append(click.style("Messages are equal.", fg="green"))
-        if result.diagnostics:
-            for d in result.diagnostics:
-                lines.append(_format_diagnostic_line(d))
+            # V24: ``max_depth`` stopped the walk above some subtrees, so "no
+            # differences" covers only what was looked at. The model has
+            # always known (``is_complete``); this renderer did not ask.
+            lines.append(click.style(
+                "INCOMPLETE: no differences found above the max-depth cut, "
+                "but the comparison did not finish:",
+                fg="red", bold=True,
+            ))
+        lines.extend(_advisory_lines(result))
+        lines.extend(_untrusted_lines(result))
         return "\n".join(lines)
 
     plural = "s" if len(result) != 1 else ""
@@ -157,24 +201,21 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
     for diff in result:
         lines.append(_format_diff_human(diff))
 
-    if result.diagnostics:
-        lines.append("")
-        if result.errors:
-            lines.append(click.style("Errors:", fg="red", bold=True))
-            for d in result.errors:
-                lines.append(click.style(f"  ✗ {d}", fg="red"))
-        if result.warnings:
-            lines.append(click.style("Warnings:", fg="yellow", bold=True))
-            for d in result.warnings:
-                lines.append(click.style(f"  ⚠ {d}", fg="yellow"))
-
-    if not result.is_complete:
+    # A found difference is definitive, so the header above needs no consent
+    # from the seam -- but the list may still be partial, and says so.
+    untrusted = _untrusted_lines(result)
+    if untrusted:
         lines.append("")
         lines.append(click.style(
-            f"  ⚠ Comparison truncated at max depth. "
-            f"{len(result.truncated_paths)} subtree(s) not fully compared.",
-            fg="yellow",
+            "Not trustworthy — there may be more differences:",
+            fg="red", bold=True,
         ))
+        lines.extend(untrusted)
+    advisory = _advisory_lines(result)
+    if advisory:
+        lines.append("")
+        lines.append(click.style("Warnings:", fg="yellow", bold=True))
+        lines.extend(advisory)
 
     return "\n".join(lines)
 
@@ -208,13 +249,16 @@ def _serialize_value(val: object) -> Any:
 #:
 #: Bump on any output-shape change: a new or removed top-level key, or a changed
 #: key meaning. Open-ended additions a forward-compatible consumer can ignore do
-#: not bump. The next bump is at protokit 1.0, when the deprecated ``old_value``
-#: / ``new_value`` entry keys are removed.
+#: not bump. ``"0.1"`` -> ``"0.2"`` (0.16.0): ``equal`` changed meaning -- it is
+#: now false for a truncated or errored comparison that found no differences --
+#: alongside the new ``complete`` / ``truncated_paths`` top-level keys and the
+#: per-entry ``annotations`` key. The next bump is at protokit 1.0, when the
+#: deprecated ``old_value`` / ``new_value`` entry keys are removed.
 #:
 #: Absence semantic: output from protokit versions before this field existed
 #: carries no ``schema_version`` key. Consumers must treat a missing key as a
 #: known-older format (pre-this-release), not as a malformed response.
-_DIFF_JSON_SCHEMA_VERSION = "0.1"  # PROTO_1_0_REMOVE: bump when old/new keys drop
+_DIFF_JSON_SCHEMA_VERSION = "0.2"  # PROTO_1_0_REMOVE: bump when old/new keys drop
 
 
 def _set_value_keys(entry: dict[str, Any], left: Any, right: Any) -> None:
@@ -234,12 +278,17 @@ def _set_value_keys(entry: dict[str, Any], left: Any, right: Any) -> None:
 def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
     """Render a DiffResult as pretty-printed JSON.
 
-    Top-level keys: ``schema_version`` (str), ``equal`` (bool),
-    ``differences`` (list of dicts whose shape depends on ``change_type``),
-    ``diagnostics`` (list of dicts). The object is open/additive -- consumers
-    should ignore unknown keys. Each entry carries canonical ``left_value`` /
-    ``right_value`` plus deprecated ``old_value`` / ``new_value`` (removed at
-    1.0; gate on ``schema_version`` to detect the change).
+    Top-level keys: ``schema_version`` (str), ``equal`` (bool), ``complete``
+    (bool), ``truncated_paths`` (list of str), ``differences`` (list of dicts
+    whose shape depends on ``change_type``), ``diagnostics`` (list of dicts).
+    ``equal`` is true only when no difference was found **and** the comparison
+    can be trusted: a ``max_depth``-truncated result (``complete`` false, the
+    cut subtrees in ``truncated_paths``) or one carrying an error diagnostic is
+    never ``equal``. The object is open/additive -- consumers should ignore
+    unknown keys. Each entry carries canonical ``left_value`` / ``right_value``
+    plus deprecated ``old_value`` / ``new_value`` (removed at 1.0; gate on
+    ``schema_version`` to detect the change), and ``annotations`` (list of str,
+    empty when no REPORT hook annotated the difference).
 
     Args:
         result: The DiffResult to render.
@@ -282,6 +331,7 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
                 entry["field_type"] = d.field_type
                 entry["left_label"] = d.left_label
                 entry["right_label"] = d.right_label
+        entry["annotations"] = list(d.annotations)
         diffs.append(entry)
 
     diagnostics = [
@@ -290,7 +340,11 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
     ]
     output = {
         "schema_version": _DIFF_JSON_SCHEMA_VERSION,
-        "equal": not result.has_changes(),
+        # ``equal`` is a verdict, so it needs the seam's consent: a truncated
+        # or errored comparison that found nothing has not shown equality.
+        "equal": _trust.is_trustworthy(result) and not result.has_changes(),
+        "complete": result.is_complete,
+        "truncated_paths": [str(p) for p in result.truncated_paths],
         "differences": diffs,
         "diagnostics": diagnostics,
     }
@@ -304,6 +358,11 @@ def _difference_line(diff: Difference) -> str:
     body parseable by CI consumers that surface failure text
     in HTML or terminal-unaware contexts.
     """
+    return _change_line(diff) + _annotation_suffix(diff)
+
+
+def _change_line(diff: Difference) -> str:
+    """The change-type-specific part of :func:`_difference_line`."""
     path = str(diff.path) if diff.path else "(root)"
     match diff.change_type:
         case ChangeType.ADDED:
@@ -354,8 +413,11 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
     # An error-level diagnostic means the tool itself broke (plugin crash,
     # hook exception), and Diagnostic's contract is that CI must treat it as
     # fail-closed EVEN WHEN no differences were found. Counting it here is
-    # what stops an equal-but-broken comparison rendering as a green job.
-    errors = 1 if result.errors else 0
+    # what stops an equal-but-broken comparison rendering as a green job. A
+    # ``max_depth`` truncation is the same shape (V24) -- "found nothing" over
+    # a walk that did not finish -- so the seam, not ``result.errors``, decides.
+    untrusted = _trust.reasons(result)
+    errors = 1 if untrusted else 0
     # One testcase for the comparison verdict, plus one for the integrity
     # diagnostics when present. ``tests`` counts CASES, not conditions, so
     # ``tests - failures - errors`` never goes negative for an aggregator
@@ -381,7 +443,7 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
             body=body,
         )
     junit.add_testcase(suite, case)
-    if result.errors:
+    if untrusted:
         # A failure is "the messages differ" (a real verdict); an error is
         # "the comparison itself is untrustworthy". They can co-occur, but
         # they must NOT share a testcase: the JUnit schema models
@@ -396,9 +458,9 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
         )
         junit.append_error(
             error_case,
-            message=f"{len(result.errors)} error-level diagnostic(s)",
+            message=f"{len(untrusted)} reason(s) the comparison cannot be trusted",
             type_="diagnostic",
-            body="\n".join(str(d) for d in result.errors),
+            body="\n".join(untrusted),
         )
         junit.add_testcase(suite, error_case)
     if result.warnings:
