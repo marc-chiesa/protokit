@@ -130,7 +130,7 @@ def _advisory_lines(result: DiffResult) -> list[str]:
 
 
 def _untrusted_lines(result: DiffResult) -> list[str]:
-    """``protokit._trust``'s reasons, one red line each.
+    """``protokit._trust``'s reasons, one red line each; empty when trustworthy.
 
     Error diagnostics and the ``max_depth`` truncation both arrive this way,
     in the seam's words: the renderer shows why the verdict was withheld
@@ -167,9 +167,10 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
     """
     del ctx
     lines: list[str] = []
+    untrusted = _untrusted_lines(result)
 
     if not result.has_changes():
-        if _trust.is_trustworthy(result):
+        if not untrusted:
             lines.append(click.style("Messages are equal.", fg="green"))
         elif result.errors:
             # Never claim equality the engine cannot vouch for. An error means
@@ -190,7 +191,7 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
                 fg="red", bold=True,
             ))
         lines.extend(_advisory_lines(result))
-        lines.extend(_untrusted_lines(result))
+        lines.extend(untrusted)
         return "\n".join(lines)
 
     plural = "s" if len(result) != 1 else ""
@@ -203,7 +204,6 @@ def diff_human(result: DiffResult, ctx: FormatterContext) -> str:
 
     # A found difference is definitive, so the header above needs no consent
     # from the seam -- but the list may still be partial, and says so.
-    untrusted = _untrusted_lines(result)
     if untrusted:
         lines.append("")
         lines.append(click.style(

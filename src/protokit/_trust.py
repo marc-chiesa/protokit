@@ -76,6 +76,8 @@ def _one_line(text: str) -> str:
     hand-kept list, so it needs nothing from ``protokit._cli_utils`` (which
     this layer-0 module may not import).
     """
+    if text.isprintable():
+        return text
     return "".join(ch if ch.isprintable() else " " for ch in text)
 
 
@@ -134,6 +136,13 @@ def _history_entry_errors(report: Any) -> list[tuple[str, Any]]:
     ]
 
 
+def _walk_level(report: Any, entry_errors: list[tuple[str, Any]]) -> list[str]:
+    seen: Counter[tuple[str | None, str]] = Counter(
+        (sha, d.message) for sha, d in entry_errors
+    )
+    return _aggregate_reasons(report.diagnostics, seen)
+
+
 def walk_level_reasons(report: Any) -> tuple[str, ...]:
     """A ``HistoryReport``'s reasons that no entry carries.
 
@@ -141,21 +150,20 @@ def walk_level_reasons(report: Any) -> tuple[str, ...]:
     each entry's own errors where the entry is; this is the remainder -- an
     aggregate error attributed to a commit with no entry, or to none -- which
     they would otherwise drop (V23's fourth site).
+
+    Sanitized here, not only in :func:`reasons`: ``history_junit`` calls this
+    directly, so it is a second way text leaves this module.
     """
-    seen: Counter[tuple[str | None, str]] = Counter(
-        (sha, d.message) for sha, d in _history_entry_errors(report)
-    )
     return tuple(
         _one_line(reason)
-        for reason in _aggregate_reasons(report.diagnostics, seen)
+        for reason in _walk_level(report, _history_entry_errors(report))
     )
 
 
 def _history_reasons(report: Any) -> list[str]:
-    per_entry = [
-        _commit_error(sha, str(d)) for sha, d in _history_entry_errors(report)
-    ]
-    return per_entry + list(walk_level_reasons(report))
+    entry_errors = _history_entry_errors(report)
+    per_entry = [_commit_error(sha, str(d)) for sha, d in entry_errors]
+    return per_entry + _walk_level(report, entry_errors)
 
 
 def _bisect_reasons(report: Any) -> list[str]:
@@ -202,9 +210,10 @@ def reasons(report: object) -> tuple[str, ...]:
         TypeError: ``report`` is not one of the five kinds. Never defaults
             to trustworthy.
     """
-    for attribute, fn in _KINDS:
-        if hasattr(report, attribute) and hasattr(report, "diagnostics"):
-            return tuple(_one_line(reason) for reason in fn(report))
+    if hasattr(report, "diagnostics"):
+        for attribute, fn in _KINDS:
+            if hasattr(report, attribute):
+                return tuple(_one_line(reason) for reason in fn(report))
     raise TypeError(
         f"protokit._trust does not know how to vouch for "
         f"{type(report).__name__!r}: it carries none of the attributes a "

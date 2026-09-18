@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import functools
 import importlib
 import inspect
 from collections.abc import Iterator
@@ -51,13 +52,12 @@ from protokit.cli import main as root_group
 from protokit.formatters import FormatterContext, FormatterKind, get_formatter
 from protokit.message.model import Diagnostic, DiffResult, FieldPath
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
-from protokit.schema.model import (
-    BisectReport,
-    CommitDiagnostic,
-    CompatibilityLevel,
-    CompatibilityReport,
-    HistoryEntry,
-    HistoryReport,
+from protokit.schema.model import CommitDiagnostic
+from tests._trust_reports import (
+    bisect_report,
+    compat_report,
+    error_diagnostic,
+    history_report,
 )
 
 # A reason's text is written by a rule pack or plugin. This one tries to
@@ -67,34 +67,11 @@ _HOSTILE = f"plugin crashed\n{_FORGED}"
 
 
 def _error() -> Diagnostic:
-    return Diagnostic(level="error", path=None, message=_HOSTILE)
+    return error_diagnostic(_HOSTILE)
 
 
 def _commit_error() -> CommitDiagnostic:
     return CommitDiagnostic("a" * 40, "error", None, _HOSTILE)
-
-
-def _compat(*diagnostics: Diagnostic) -> CompatibilityReport:
-    return CompatibilityReport(
-        level=CompatibilityLevel.STRICT, diagnostics=tuple(diagnostics),
-    )
-
-
-def _history(report: CompatibilityReport) -> HistoryReport:
-    return HistoryReport(
-        range_spec="A..B", old_sha="a", new_sha="b", commits_walked=2,
-        entries=(HistoryEntry(
-            commit_sha="c" * 40, parent_sha="p" * 40, commit_subject="s",
-            report=report,
-        ),),
-    )
-
-
-def _bisect(*diagnostics: CommitDiagnostic) -> BisectReport:
-    return BisectReport(
-        range_spec="A..B", old_sha="a", new_sha="b", breaking_commit=None,
-        commits_walked=3, diagnostics=tuple(diagnostics),
-    )
 
 
 #: ``kind -> (untrustworthy report, the same report made trustworthy)``.
@@ -105,9 +82,11 @@ _FIXTURES: dict[FormatterKind, tuple[object, object]] = {
         DiffResult(differences=(), truncated_paths=(FieldPath.parse("inner"),)),
         DiffResult(differences=()),
     ),
-    FormatterKind.COMPAT: (_compat(_error()), _compat()),
-    FormatterKind.COMPAT_HISTORY: (_history(_compat(_error())), _history(_compat())),
-    FormatterKind.COMPAT_BISECT: (_bisect(_commit_error()), _bisect()),
+    FormatterKind.COMPAT: (compat_report(_error()), compat_report()),
+    FormatterKind.COMPAT_HISTORY: (
+        history_report(entry_diags=(_error(),)), history_report(),
+    ),
+    FormatterKind.COMPAT_BISECT: (bisect_report(_commit_error()), bisect_report()),
     FormatterKind.LINT_REPORT: (
         LintReport(runtime_warnings=(LintRuntimeWarning(
             category="rule_exception", rule_id="x/y", message=_HOSTILE,
@@ -213,15 +192,26 @@ def _seam_aliases(tree: ast.Module) -> set[str]:
     return names
 
 
-def _reaches_seam(module_name: str, function_name: str) -> bool:
-    """Does ``function_name``'s module-local call closure reference the seam?"""
+@functools.cache
+def _module_functions(
+    module_name: str,
+) -> tuple[frozenset[str], dict[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    """``(seam aliases, top-level functions)`` of a module, parsed once.
+
+    Several commands share a module (``compat`` has four in one file).
+    """
     module = importlib.import_module(module_name)
     tree = ast.parse(Path(inspect.getsourcefile(module) or "").read_text())
-    aliases = _seam_aliases(tree)
     functions = {
         node.name: node for node in tree.body
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     }
+    return frozenset(_seam_aliases(tree)), functions
+
+
+def _reaches_seam(module_name: str, function_name: str) -> bool:
+    """Does ``function_name``'s module-local call closure reference the seam?"""
+    aliases, functions = _module_functions(module_name)
     assert function_name in functions, (module_name, function_name)
 
     seen: set[str] = set()

@@ -49,6 +49,7 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
         A multi-line string.
     """
     untrusted = _trust.reasons(report)
+    said_incomplete = False
     if report.breaking_commit is not None:
         lines = [f"first breaking commit: {report.breaking_commit}"]
         for f in report.breaking_findings:
@@ -61,13 +62,14 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
             f"# {report.range_spec}: INCOMPLETE — walked "
             f"{report.commits_walked} commit(s), but not every check finished"
         ]
+        said_incomplete = True
     else:
         lines = [
             f"# {report.range_spec}: no break found across "
             f"{report.commits_walked} commit(s)"
         ]
     if untrusted:
-        if report.breaking_commit is not None or report.commits_walked == 0:
+        if not said_incomplete:
             lines.append(
                 f"# {report.range_spec}: INCOMPLETE — the walk cannot be trusted:"
             )

@@ -26,34 +26,31 @@ import protokit.formatters._builtin_lint  # noqa: F401
 from protokit.formatters import FormatterContext, FormatterKind, get_formatter
 from protokit.message.model import (
     ChangeType,
-    Diagnostic,
     Difference,
     DiffResult,
     FieldPath,
 )
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
 from protokit.schema.model import (
-    BisectReport,
     CommitDiagnostic,
-    CompatibilityLevel,
-    CompatibilityReport,
     Direction,
     Finding,
-    HistoryEntry,
-    HistoryReport,
     Severity,
 )
-from tests.core.test_trust import _truncated_result
+from tests._trust_reports import (
+    bisect_report,
+    compat_report,
+    error_diagnostic,
+    history_report,
+    truncated_diff_result,
+    warning_diagnostic,
+)
 
 
 def _render(name: str, kind: FormatterKind, report: object, **ctx: str) -> str:
     fn = get_formatter(name, kind)
     out = fn(report, FormatterContext(subcommand="test", **ctx))  # type: ignore[arg-type]
     return click.unstyle(out)
-
-
-def _error() -> Diagnostic:
-    return Diagnostic(level="error", path=None, message="plugin crashed")
 
 
 def _finding() -> Finding:
@@ -64,13 +61,6 @@ def _finding() -> Finding:
     )
 
 
-def _compat(*, findings: tuple[Finding, ...] = (),
-            diagnostics: tuple[Diagnostic, ...] = ()) -> CompatibilityReport:
-    return CompatibilityReport(
-        level=CompatibilityLevel.STRICT, findings=findings, diagnostics=diagnostics,
-    )
-
-
 # ---------------------------------------------------------------------------
 # DIFF — V24
 # ---------------------------------------------------------------------------
@@ -78,13 +68,13 @@ def _compat(*, findings: tuple[Finding, ...] = (),
 
 class TestDiffTruncation:
     def test_human_prints_incomplete_not_equal(self) -> None:
-        out = _render("human", FormatterKind.DIFF, _truncated_result())
+        out = _render("human", FormatterKind.DIFF, truncated_diff_result())
         assert "Messages are equal." not in out
         assert "INCOMPLETE" in out
         assert "inner" in out  # names where the comparison stopped
 
     def test_json_reports_not_equal_and_says_why(self) -> None:
-        payload = json.loads(_render("json", FormatterKind.DIFF, _truncated_result()))
+        payload = json.loads(_render("json", FormatterKind.DIFF, truncated_diff_result()))
         assert payload["equal"] is False
         assert payload["complete"] is False
         assert payload["truncated_paths"] == ["inner"]
@@ -102,7 +92,7 @@ class TestDiffTruncation:
 
     def test_json_error_without_differences_is_not_equal(self) -> None:
         """R4: the human line says "not trustworthy"; ``equal`` must not say true."""
-        result = DiffResult(differences=(), diagnostics=(_error(),))
+        result = DiffResult(differences=(), diagnostics=(error_diagnostic(),))
         payload = json.loads(_render("json", FormatterKind.DIFF, result))
         assert payload["equal"] is False
         assert payload["complete"] is True
@@ -113,7 +103,7 @@ class TestDiffTruncation:
             path=FieldPath.parse("name"), change_type=ChangeType.MODIFIED,
             left_value="A", right_value="B",
         )
-        result = dataclasses.replace(_truncated_result(), differences=(diff,))
+        result = dataclasses.replace(truncated_diff_result(), differences=(diff,))
         out = _render("human", FormatterKind.DIFF, result)
         assert "Found 1 difference" in out
         assert "truncated" in out
@@ -168,7 +158,7 @@ class TestDiffAnnotations:
 class TestCompatTrust:
     def test_zero_findings_plus_an_error_is_not_compatible(self) -> None:
         out = _render(
-            "human", FormatterKind.COMPAT, _compat(diagnostics=(_error(),)),
+            "human", FormatterKind.COMPAT, compat_report(error_diagnostic()),
         )
         assert "COMPATIBLE" not in out  # also excludes INCOMPATIBLE
         assert "INCOMPLETE" in out
@@ -178,58 +168,43 @@ class TestCompatTrust:
         self,
     ) -> None:
         """Reasons render unconditionally, not only on the success path."""
-        out = _render("human", FormatterKind.COMPAT, _compat(
-            findings=(_finding(),), diagnostics=(_error(),),
+        out = _render("human", FormatterKind.COMPAT, compat_report(
+            error_diagnostic(), findings=(_finding(),),
         ))
         assert "INCOMPATIBLE" in out
         assert "plugin crashed" in out
 
     def test_a_warning_still_prints_compatible(self) -> None:
         """Adjacent behavior: warnings do not cost the verdict."""
-        report = _compat(diagnostics=(
-            Diagnostic(level="warning", path=None, message="heads up"),
-        ))
+        report = compat_report(warning_diagnostic())
         out = _render("human", FormatterKind.COMPAT, report)
         assert out.rstrip().endswith("COMPATIBLE")
         assert "INCOMPATIBLE" not in out
 
 
 class TestHistoryTrust:
-    @staticmethod
-    def _report(*, entry_diags: tuple[Diagnostic, ...] = (),
-                aggregate: tuple[CommitDiagnostic, ...] = (),
-                entries: bool = True) -> HistoryReport:
-        entry = HistoryEntry(
-            commit_sha="c" * 40, parent_sha="p" * 40, commit_subject="s",
-            report=_compat(diagnostics=entry_diags),
-        )
-        return HistoryReport(
-            range_spec="A..B", old_sha="a", new_sha="b", commits_walked=2,
-            entries=(entry,) if entries else (), diagnostics=aggregate,
-        )
-
     def test_an_entry_carrying_an_error_is_not_ok(self) -> None:
         out = _render(
             "human", FormatterKind.COMPAT_HISTORY,
-            self._report(entry_diags=(_error(),)),
+            history_report(entry_diags=(error_diagnostic(),)),
         )
         assert "cccccccccccc OK" not in out
         assert "cccccccccccc INCOMPLETE" in out
         assert "plugin crashed" in out
 
     def test_a_clean_entry_is_still_ok(self) -> None:
-        out = _render("human", FormatterKind.COMPAT_HISTORY, self._report())
+        out = _render("human", FormatterKind.COMPAT_HISTORY, history_report())
         assert out == "cccccccccccc OK (0 finding(s))"
 
     def test_an_aggregate_only_error_is_rendered(self) -> None:
-        out = _render("human", FormatterKind.COMPAT_HISTORY, self._report(
+        out = _render("human", FormatterKind.COMPAT_HISTORY, history_report(
             aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
         ))
         assert "walk broke" in out
         assert "INCOMPLETE" in out
 
     def test_an_empty_walk_with_an_error_says_so(self) -> None:
-        out = _render("human", FormatterKind.COMPAT_HISTORY, self._report(
+        out = _render("human", FormatterKind.COMPAT_HISTORY, history_report(
             entries=False,
             aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
         ), proto_file="a.proto")
@@ -238,7 +213,7 @@ class TestHistoryTrust:
 
     def test_junit_counts_an_aggregate_only_error(self) -> None:
         """V23's fourth site: the history JUnit ignored aggregate errors."""
-        out = _render("junit", FormatterKind.COMPAT_HISTORY, self._report(
+        out = _render("junit", FormatterKind.COMPAT_HISTORY, history_report(
             aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
         ))
         root = ET.fromstring(out)
@@ -248,8 +223,8 @@ class TestHistoryTrust:
 
     def test_junit_does_not_double_count_a_restated_entry_error(self) -> None:
         """Adjacent behavior: the CLI copies entry diagnostics into the aggregate."""
-        out = _render("junit", FormatterKind.COMPAT_HISTORY, self._report(
-            entry_diags=(_error(),),
+        out = _render("junit", FormatterKind.COMPAT_HISTORY, history_report(
+            entry_diags=(error_diagnostic(),),
             aggregate=(CommitDiagnostic("c" * 40, "error", None, "plugin crashed"),),
         ))
         root = ET.fromstring(out)
@@ -258,17 +233,8 @@ class TestHistoryTrust:
 
 
 class TestBisectTrust:
-    @staticmethod
-    def _report(*diagnostics: CommitDiagnostic,
-                breaking: str | None = None) -> BisectReport:
-        return BisectReport(
-            range_spec="A..B", old_sha="a", new_sha="b", breaking_commit=breaking,
-            commits_walked=3, diagnostics=tuple(diagnostics),
-            breaking_findings=(_finding(),) if breaking else (),
-        )
-
     def test_an_error_withholds_no_break_found(self) -> None:
-        out = _render("human", FormatterKind.COMPAT_BISECT, self._report(
+        out = _render("human", FormatterKind.COMPAT_BISECT, bisect_report(
             CommitDiagnostic("abc123", "error", None, "plugin crashed"),
         ))
         assert "no break found" not in out
@@ -276,9 +242,9 @@ class TestBisectTrust:
         assert "plugin crashed" in out
 
     def test_a_break_plus_an_error_shows_both(self) -> None:
-        out = _render("human", FormatterKind.COMPAT_BISECT, self._report(
+        out = _render("human", FormatterKind.COMPAT_BISECT, bisect_report(
             CommitDiagnostic("abc123", "error", None, "plugin crashed"),
-            breaking="f" * 40,
+            breaking="f" * 40, findings=(_finding(),),
         ))
         assert "first breaking commit" in out
         assert "plugin crashed" in out

@@ -13,88 +13,19 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit import _trust
-from protokit.message import MessageDifferencer
 from protokit.message.model import Diagnostic, DiffResult
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
-from protokit.schema.model import (
-    BisectReport,
-    CommitDiagnostic,
-    CompatibilityLevel,
-    CompatibilityReport,
-    HistoryEntry,
-    HistoryReport,
+from protokit.schema.model import CommitDiagnostic
+from tests._trust_reports import (
+    bisect_report,
+    compat_report,
+    error_diagnostic,
+    history_report,
+    truncated_diff_result,
+    warning_diagnostic,
 )
-
-_T = descriptor_pb2.FieldDescriptorProto
-
-
-def _nested_pair() -> tuple[object, object]:
-    """Two ``Outer`` messages that differ only below ``inner``."""
-    pool = descriptor_pool.DescriptorPool()
-    fdp = descriptor_pb2.FileDescriptorProto(
-        name="trust_nested.proto", package="t", syntax="proto3",
-    )
-    inner = fdp.message_type.add(name="Inner")
-    inner.field.add(name="v", number=1, type=_T.TYPE_STRING, label=_T.LABEL_OPTIONAL)
-    outer = fdp.message_type.add(name="Outer")
-    outer.field.add(
-        name="inner", number=1, type=_T.TYPE_MESSAGE,
-        label=_T.LABEL_OPTIONAL, type_name=".t.Inner",
-    )
-    pool.Add(fdp)
-    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("t.Outer"))
-    left, right = cls(), cls()
-    left.inner.v = "AAA"
-    right.inner.v = "BBB"
-    return left, right
-
-
-def _truncated_result() -> DiffResult:
-    left, right = _nested_pair()
-    differ = MessageDifferencer()
-    differ.max_depth = 0
-    result = differ.compare(left, right)
-    # Premise of V24: the model knows the comparison was cut short, and the
-    # cut hid the only difference.
-    assert not result.has_changes()
-    assert not result.is_complete
-    return result
-
-
-def _error() -> Diagnostic:
-    return Diagnostic(level="error", path=None, message="plugin crashed")
-
-
-def _warning() -> Diagnostic:
-    return Diagnostic(level="warning", path=None, message="heads up")
-
-
-def _compat(*diagnostics: Diagnostic) -> CompatibilityReport:
-    return CompatibilityReport(
-        level=CompatibilityLevel.STRICT, diagnostics=tuple(diagnostics),
-    )
-
-
-def _history(*, entry_diags: tuple[Diagnostic, ...] = (),
-             aggregate: tuple[CommitDiagnostic, ...] = ()) -> HistoryReport:
-    entry = HistoryEntry(
-        commit_sha="c" * 40, parent_sha="p" * 40, commit_subject="subject",
-        report=_compat(*entry_diags),
-    )
-    return HistoryReport(
-        range_spec="A..B", old_sha="a", new_sha="b", commits_walked=2,
-        entries=(entry,), diagnostics=aggregate,
-    )
-
-
-def _bisect(*diagnostics: CommitDiagnostic) -> BisectReport:
-    return BisectReport(
-        range_spec="A..B", old_sha="a", new_sha="b", breaking_commit=None,
-        commits_walked=3, diagnostics=tuple(diagnostics),
-    )
 
 
 def _lint(*categories: str) -> LintReport:
@@ -109,9 +40,9 @@ class TestTrustworthyReports:
 
     @pytest.mark.parametrize("report", [
         pytest.param(DiffResult(differences=()), id="diff"),
-        pytest.param(_compat(), id="compat"),
-        pytest.param(_history(), id="history"),
-        pytest.param(_bisect(), id="bisect"),
+        pytest.param(compat_report(), id="compat"),
+        pytest.param(history_report(), id="history"),
+        pytest.param(bisect_report(), id="bisect"),
         pytest.param(_lint(), id="lint"),
     ])
     def test_clean_report_is_trustworthy(self, report: object) -> None:
@@ -119,11 +50,11 @@ class TestTrustworthyReports:
         assert _trust.reasons(report) == ()
 
     @pytest.mark.parametrize("report", [
-        pytest.param(DiffResult(differences=(), diagnostics=(_warning(),)), id="diff"),
-        pytest.param(_compat(_warning()), id="compat"),
-        pytest.param(_history(entry_diags=(_warning(),)), id="history"),
+        pytest.param(DiffResult(differences=(), diagnostics=(warning_diagnostic(),)), id="diff"),
+        pytest.param(compat_report(warning_diagnostic()), id="compat"),
+        pytest.param(history_report(entry_diags=(warning_diagnostic(),)), id="history"),
         pytest.param(
-            _bisect(CommitDiagnostic("abc", "warning", None, "heads up")),
+            bisect_report(CommitDiagnostic("abc", "warning", None, "heads up")),
             id="bisect",
         ),
     ])
@@ -134,31 +65,31 @@ class TestTrustworthyReports:
 
 class TestUntrustworthyReports:
     def test_diff_with_an_error_diagnostic(self) -> None:
-        result = DiffResult(differences=(), diagnostics=(_error(),))
+        result = DiffResult(differences=(), diagnostics=(error_diagnostic(),))
         assert _trust.is_trustworthy(result) is False
         assert any("plugin crashed" in r for r in _trust.reasons(result))
 
     def test_truncated_diff(self) -> None:
         """V24: ``is_complete`` exists to signal this; the seam consults it."""
-        result = _truncated_result()
+        result = truncated_diff_result()
         assert _trust.is_trustworthy(result) is False
         reasons = _trust.reasons(result)
         assert any("inner" in r for r in reasons), reasons
 
     def test_compat_with_an_error_diagnostic(self) -> None:
-        report = _compat(_error())
+        report = compat_report(error_diagnostic())
         assert _trust.is_trustworthy(report) is False
         assert any("plugin crashed" in r for r in _trust.reasons(report))
 
     def test_history_with_an_entry_error(self) -> None:
-        report = _history(entry_diags=(_error(),))
+        report = history_report(entry_diags=(error_diagnostic(),))
         assert _trust.is_trustworthy(report) is False
         reasons = _trust.reasons(report)
         assert any("plugin crashed" in r and "cccccccccccc" in r for r in reasons)
 
     def test_history_with_only_an_aggregate_error(self) -> None:
         """V23's fourth site: aggregate diagnostics count on their own."""
-        report = _history(
+        report = history_report(
             aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
         )
         assert _trust.is_trustworthy(report) is False
@@ -166,8 +97,8 @@ class TestUntrustworthyReports:
 
     def test_history_aggregate_restating_an_entry_error_is_one_reason(self) -> None:
         """``compat history`` copies entry diagnostics into the aggregate."""
-        report = _history(
-            entry_diags=(_error(),),
+        report = history_report(
+            entry_diags=(error_diagnostic(),),
             aggregate=(
                 CommitDiagnostic("c" * 40, "error", None, "plugin crashed"),
             ),
@@ -175,7 +106,7 @@ class TestUntrustworthyReports:
         assert len(_trust.reasons(report)) == 1
 
     def test_bisect_with_an_error_diagnostic(self) -> None:
-        report = _bisect(CommitDiagnostic("abc123", "error", None, "plugin crashed"))
+        report = bisect_report(CommitDiagnostic("abc123", "error", None, "plugin crashed"))
         assert _trust.is_trustworthy(report) is False
         assert any("plugin crashed" in r for r in _trust.reasons(report))
 
@@ -245,9 +176,9 @@ class TestReasonsAreOnePrintableLine:
             DiffResult(differences=(), diagnostics=(
                 Diagnostic(level="error", path=None, message=payload),
             )),
-            _compat(Diagnostic(level="error", path=None, message=payload)),
-            _history(aggregate=(CommitDiagnostic("abc", "error", None, payload),)),
-            _bisect(CommitDiagnostic("abc", "error", None, payload)),
+            compat_report(Diagnostic(level="error", path=None, message=payload)),
+            history_report(aggregate=(CommitDiagnostic("abc", "error", None, payload),)),
+            bisect_report(CommitDiagnostic("abc", "error", None, payload)),
             LintReport(runtime_warnings=(LintRuntimeWarning(
                 category="rule_exception", rule_id="x", message=payload,
             ),)),
