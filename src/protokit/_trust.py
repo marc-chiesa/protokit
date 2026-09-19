@@ -5,11 +5,13 @@ crashed mid-check, ``max_depth`` cut the comparison above the only
 difference, a lint rule raised before it looked at anything. Each report
 type already records that — ``DiffResult.truncated_paths``,
 ``CompatibilityReport.errors``, ``LintReport.runtime_warnings`` — but each
-renderer decided for itself whether to look. The machine renderers (JUnit,
-SARIF) looked; the human renderers did not, so the same object printed
-``COMPATIBLE`` on a terminal and an error in CI (V23), and a truncated diff
-printed ``Messages are equal.`` while the model knew it had not finished
-(V24).
+renderer decided for itself whether to look, and they disagreed. ``compat``'s
+JUnit and SARIF renderers looked where its human renderer did not, so one
+report printed ``COMPATIBLE`` on a terminal and an error in CI (V23). Others
+looked at part of it or at none: ``history``'s JUnit dropped an error no
+commit entry carried, ``lint``'s emitted a passing ``clean`` case for a run
+whose rule had raised, and ``diff``'s passed a comparison ``max_depth`` had
+cut short, which its human renderer called ``Messages are equal.`` (V24).
 
 This module is the single owner of that question (R5). A renderer or an
 exit path asks :func:`is_trustworthy` before it claims success, and renders
@@ -45,11 +47,14 @@ outside that guarantee unless the renderer calls :func:`one_line` itself,
 which is why the function is public.
 
 **Layer 0 (KTD8).** This module imports nothing from ``protokit`` at any
-scope, so the report types cannot be named here. Kinds are recognised by
-the attribute that carries their incompleteness signal — which is also what
-makes the recognition honest: an object without the signal attribute has
-nothing for this module to inspect, and is refused rather than waved
-through.
+scope, so the report types cannot be named here. A kind is recognised by one
+attribute only it has — ``truncated_paths``, ``entries``,
+``breaking_commit``, ``runtime_warnings``, or ``findings`` last, because a
+``LintReport`` has that one too. Some of those carry the incompleteness
+signal and some (``breaking_commit``, ``findings``) merely identify; what
+they have in common is being a name no other kind answers to. Alongside it
+this module requires ``diagnostics``, which every kind has, so an object
+answering to neither is refused rather than waved through.
 """
 
 from __future__ import annotations
@@ -272,8 +277,9 @@ def signals(report: object) -> tuple[Signal, ...]:
 
     Returns:
         Signals in emission order; empty when the report is trustworthy.
-        Every ``text`` is a single printable line. Warnings never appear —
-        they are advisory.
+        Every ``text`` is a single printable line. An advisory
+        warning-level diagnostic never appears; a lint *runtime* warning
+        does, when its category means a selected rule did not run.
 
     Raises:
         TypeError: ``report`` is not one of the five kinds. Never defaults
