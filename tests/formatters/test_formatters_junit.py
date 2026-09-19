@@ -535,6 +535,32 @@ class TestIllFormedCodePoints:
 
 
 class TestHistoryJunit:
+    @pytest.mark.parametrize("entries", [True, False], ids=["with-entry", "empty-walk"])
+    def test_the_walk_level_suite_is_xsd_valid(
+        self, junit_validator: xmlschema.XMLSchema, entries: bool,
+    ) -> None:
+        """The suite U7 adds for an error no entry carries must validate too.
+
+        It is built by hand rather than by ``_build_compat_testsuite``, so the
+        xsd-required ``package`` / ``id`` attributes are this renderer's own
+        responsibility — and an aggregator that rejects the document reads as
+        "no test results", the green-on-broken outcome the suite exists to
+        prevent.
+        """
+        from tests._trust_reports import history_report
+        report = history_report(
+            aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
+            entries=entries,
+        )
+        fn = get_formatter("junit", FormatterKind.COMPAT_HISTORY)
+        out = fn(report, FormatterContext(subcommand="compat-history"))
+        _validate(junit_validator, out)
+        root = ET.fromstring(out)
+        walk = [s for s in root.iter("testsuite") if s.get("name", "").endswith("-walk")]
+        assert len(walk) == 1, out
+        assert int(walk[0].get("errors") or 0) == 1
+        assert walk[0].get("package") and walk[0].get("id") is not None
+
     def test_empty_walk_emits_empty_testsuites(
         self, junit_validator: xmlschema.XMLSchema,
     ) -> None:

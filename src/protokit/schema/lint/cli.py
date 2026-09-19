@@ -62,6 +62,7 @@ from click.core import ParameterSource as _ParameterSource
 # body runs ``_register_builtin`` calls at import time. This MUST
 # happen at module top so registration runs at ``protokit.cli`` load
 # time, before click dispatches the subcommand callback.
+from protokit import _trust
 from protokit._cli_utils import _scrub_exc_message
 from protokit.formatters import (
     FormatterContext,
@@ -149,6 +150,10 @@ _BUF_PARITY_PIN: str = "v1.70.0"
 #: rather than a complete answer. Membership here drives the
 #: ``analysis-incomplete`` exit-2 gate (V33).
 #:
+#: Owned by ``protokit._trust`` since 0.16.0, so the exit gate below and
+#: every renderer read one set; this name is an alias kept for the gate's
+#: message and for the exhaustiveness test that classifies every category.
+#:
 #: Deliberately narrow, and KNOWN INCOMPLETE. Three further categories
 #: also mean a rule did not run, and this gate does not fire for them:
 #: ``extension_unresolved`` and ``custom_annotation_extension_unresolved``
@@ -159,15 +164,15 @@ _BUF_PARITY_PIN: str = "v1.70.0"
 #: every run whose inputs lack ``google/api/field_behavior.proto``, so
 #: gating it would exit 2 almost everywhere, and the honest fix is to
 #: make that rule warn only when the schema actually *uses* the
-#: extension. That is a redesign, not a patch. **U7/U8 own all three**;
+#: extension. That is a redesign, not a patch. **U8 owns all three** (it
+#: widens ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES``, not this alias);
 #: the triage ledger records the reproductions. The remaining
 #: categories (``severities_unloaded_rule``, ``min_severity_relaxed``,
 #: ``contradictory_disable_config``, ``unknown_rule_id``) are genuinely
 #: advisory: they describe ineffective overrides or nonexistent ids,
 #: not a selected rule that failed to execute.
-_INCOMPLETE_ANALYSIS_CATEGORIES: tuple[str, ...] = (
-    "rule_exception",
-    "unloaded_rule",
+_INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = (
+    _trust.INCOMPLETE_ANALYSIS_CATEGORIES
 )
 
 
@@ -1485,14 +1490,14 @@ def _main_impl(
     # gating. The report has already been rendered above; only the
     # verdict changes.
     #
-    # Deliberately narrow, and deliberately throwaway: the 0.16.0
-    # `_trust` seam replaces this with one predicate consulted by
-    # every renderer and every exit path. Do not grow it here.
-    blocking = [
-        w for w in report.runtime_warnings
-        if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES
-    ]
-    if blocking:
+    # The predicate is `_trust`'s, shared with every renderer, so the
+    # exit code and the rendered report cannot disagree about whether
+    # the run completed. Do not grow a second one here.
+    if not _trust.is_trustworthy(report):
+        blocking = [
+            w for w in report.runtime_warnings
+            if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES
+        ]
         # Sanitized per-slot like every other stderr interpolation in
         # this module. ``category`` is a closed Literal today, so this is
         # defense in depth rather than a live vector — but the whole

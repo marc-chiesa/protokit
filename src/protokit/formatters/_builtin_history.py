@@ -12,6 +12,7 @@ import json
 import xml.etree.ElementTree as ET
 from collections import Counter
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -41,16 +42,26 @@ def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
 
     Returns:
         A multi-line string. Each entry produces one summary
-        line plus indented finding lines for any breaks.
+        line plus indented finding lines for any breaks. An entry is
+        ``OK`` only when ``protokit._trust`` vouches for its report;
+        zero findings from a check that broke is ``INCOMPLETE`` (V23).
+        When the walk as a whole cannot be trusted, a trailing block
+        lists every reason, including aggregate-only ones no entry
+        carries.
     """
+    lines: list[str] = []
     if not report.entries:
         proto_file = ctx.proto_file or "<unknown>"
-        return f"# {report.range_spec}: no commits touch {proto_file}"
+        lines.append(f"# {report.range_spec}: no commits touch {proto_file}")
 
-    lines: list[str] = []
     for entry in report.entries:
         short = entry.commit_sha[:12]
-        verdict = "OK" if entry.report.is_compatible else "BROKEN"
+        if not entry.report.is_compatible:
+            verdict = "BROKEN"
+        elif _trust.is_trustworthy(entry.report):
+            verdict = "OK"
+        else:
+            verdict = "INCOMPLETE"
         lines.append(
             f"{short} {verdict} ({len(entry.report.findings)} finding(s))"
         )
@@ -60,6 +71,13 @@ def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
                 f"    [{f.severity.value}/{f.direction.value}] "
                 f"{path_str}: {f.message} ({f.rule_id})"
             )
+
+    untrusted = _trust.reasons(report)
+    if untrusted:
+        lines.append(
+            f"# {report.range_spec}: INCOMPLETE: the walk cannot be trusted:"
+        )
+        lines.extend(f"    ! {reason}" for reason in untrusted)
     return "\n".join(lines)
 
 
@@ -93,12 +111,18 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
     Empty walks emit an empty ``<testsuites/>`` document — the
     Apache Ant xsd allows zero ``<testsuite>`` children under
     ``<testsuites>``.
+
+    Reasons the walk cannot be trusted that no entry carries
+    (``protokit._trust.walk_level_reasons``) get a trailing suite of
+    their own, one ``<error>`` testcase each. Without it an aggregate
+    error rendered as a fully green document (V23).
     """
     # Local import — _builtin_compat owns _build_compat_testsuite,
     # and going through the package-level import would create a
     # cycle at module load time.
     from protokit.formatters._builtin_compat import (
         _build_compat_testsuite,
+        _reasons_not_shown,
         _suite_name_for,
     )
 
@@ -138,6 +162,22 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
         suite.set("package", junit.xml_safe_text(entry.commit_subject or ""))
         suite.set("id", str(index))
         root.append(suite)
+
+    walk_level = _reasons_not_shown(report, only_from_entries=True)
+    if walk_level:
+        suite = junit.make_testsuite(
+            name=f"{type_prefix}-walk",
+            tests=len(walk_level),
+            failures=0,
+            errors=len(walk_level),
+        )
+        suite.set("package", junit.xml_safe_text(report.range_spec))
+        suite.set("id", str(len(report.entries)))
+        for reason in walk_level:
+            case = junit.make_testcase(classname="diagnostic", name="(walk)")
+            junit.append_error(case, message=reason, type_="error", body=reason)
+            junit.add_testcase(suite, case)
+        root.append(suite)
     return junit.serialize(root)
 
 
@@ -152,7 +192,10 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     ``HistoryReport.diagnostics`` are also surfaced under their
     commit key, minus any that merely restate a per-entry one.
     """
-    from protokit.formatters._builtin_compat import _protokit_version
+    from protokit.formatters._builtin_compat import (
+        _protokit_version,
+        _reasons_not_shown,
+    )
 
     findings_with_context: list[
         tuple[Finding, str | None, dict[str, str] | None]
@@ -192,6 +235,10 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))
 
+    # Unlike ``history_junit``, this renderer already emits a notification for
+    # every aggregate diagnostic above, so it excludes entry-level AND
+    # walk-level error signals; what is left is any other kind the seam knows.
+    error_messages.extend((None, reason) for reason in _reasons_not_shown(report))
     run = sarif.build_run(
         findings_with_context=findings_with_context,
         error_messages=error_messages,

@@ -125,8 +125,10 @@ class TestIncompleteAnalysisCategoryClassification:
     """Every ``LintRuntimeWarning`` category must be *classified* with
     respect to the V33 ``analysis-incomplete`` exit gate.
 
-    ``_INCOMPLETE_ANALYSIS_CATEGORIES`` in ``schema/lint/cli.py`` is a
-    hand-maintained tuple. A future category that means "a rule did not
+    ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` is a
+    hand-maintained frozenset — the owner since U7, which
+    ``schema/lint/cli.py`` re-exports under its old name for this test and
+    for the gate's message. A future category that means "a rule did not
     run" would land outside it silently, and the CLI would go on
     reporting a clean exit for an analysis that never completed — the
     exact drift class the 0.16.0 release exists to close, reintroduced
@@ -142,7 +144,9 @@ class TestIncompleteAnalysisCategoryClassification:
     """
 
     #: Categories that mean a rule DID NOT RUN but are deliberately not
-    #: gated yet, for blast radius. Owned by U7/U8 (the ``_trust`` seam).
+    #: gated yet, for blast radius. Owned by U8, which would widen
+    #: ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` (the gate's set
+    #: has lived in the ``_trust`` seam since U7).
     #: Moving one of these into the gate is a deliberate breaking change.
     DEFERRED_INCOMPLETE: tuple[str, ...] = (
         "extension_unresolved",

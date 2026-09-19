@@ -51,6 +51,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/_fieldview.py",
+    "src/protokit/_trust.py",
     "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/message/_presence.py",
     "src/protokit/message/_selector.py",
@@ -73,6 +74,7 @@ _LINT_PATHS: tuple[str, ...] = (
 _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
     "src/protokit/_fieldview.py",
+    "src/protokit/_trust.py",
     "src/protokit/forensics",
     "src/protokit/formatters/_builtin_lint.py",
     "src/protokit/message/_presence.py",
