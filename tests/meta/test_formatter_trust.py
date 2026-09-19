@@ -139,10 +139,17 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "truncated-with-differences": dataclasses.replace(
             truncated_diff_result(), differences=(_difference(),),
         ),
+        # Two signals of different kinds at once: every renderer has to
+        # carry both, and a mode list of single-signal reports cannot say
+        # whether it does.
+        "error-and-truncated": dataclasses.replace(
+            truncated_diff_result(), diagnostics=(_error(),),
+        ),
     },
     FormatterKind.COMPAT: {
         "error": compat_report(_error()),
         "error-with-findings": compat_report(_error(), findings=(_finding(),)),
+        "two-errors": compat_report(_error(), error_diagnostic("second failure")),
     },
     FormatterKind.COMPAT_HISTORY: {
         "entry-error": history_report(entry_diags=(_error(),)),
@@ -151,12 +158,19 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
             aggregate=(_commit_error("d" * 40),), entries=False,
         ),
         "aggregate-uncommitted": history_report(aggregate=(_commit_error(None),)),
+        "entry-and-aggregate": history_report(
+            entry_diags=(_error(),),
+            aggregate=(CommitDiagnostic("d" * 40, "error", None, "walk broke"),),
+        ),
     },
     FormatterKind.COMPAT_BISECT: {
         "error": bisect_report(_commit_error()),
         "error-uncommitted": bisect_report(_commit_error(None)),
         "error-with-break": bisect_report(
             _commit_error(), breaking="f" * 40, findings=(_finding(),),
+        ),
+        "two-errors": bisect_report(
+            _commit_error(), CommitDiagnostic("b" * 40, "error", None, "second"),
         ),
     },
     FormatterKind.LINT_REPORT: {
@@ -169,6 +183,10 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "compile-error": lint_report(compile_error=_HOSTILE),
         "rule-exception-repeated": lint_report(
             categories=("rule_exception",), message=_HOSTILE, elements=9,
+        ),
+        "compile-error-and-rule": lint_report(
+            categories=("rule_exception",), message=_HOSTILE,
+            compile_error="protoc failed",
         ),
     },
 }
@@ -264,14 +282,15 @@ class TestEveryHumanFormatterAsksTheSeam:
         if success is None:
             return
         report = _UNTRUSTED[kind][mode]
+        out = _render_human(kind, report)
         if kind is FormatterKind.COMPAT_HISTORY and mode.startswith("aggregate"):
             # The walk is in doubt, but each entry's own check finished, so
-            # its OK line is the truth. The walk-level block is what must
-            # appear; ``test_every_reason_is_rendered`` covers that.
+            # its OK line is the truth. What must appear is the walk-level
+            # verdict — asserted here rather than described and skipped,
+            # which left the only modes that reach this branch unguarded.
+            assert "INCOMPLETE" in out, (kind.name, mode, out)
             return
-        assert not _states_success(_render_human(kind, report), success), (
-            kind.name, mode,
-        )
+        assert not _states_success(out, success), (kind.name, mode)
 
     @pytest.mark.parametrize(("kind", "mode"), _MODES)
     def test_every_reason_is_rendered(
@@ -695,3 +714,16 @@ def test_fixtures_are_frozen_report_types() -> None:
         assert dataclasses.is_dataclass(trusted)
         for mode, untrusted in _UNTRUSTED[kind].items():
             assert type(untrusted) is type(trusted), (kind.name, mode)
+
+
+def test_some_mode_carries_more_than_one_signal() -> None:
+    """The mode lists must reach the combinations, not only single signals.
+
+    Every mode yielding exactly one signal is how a renderer that handles
+    the first reason and drops the rest stays green: with one signal per
+    fixture, "showed every reason" and "showed the first reason" are the
+    same assertion.
+    """
+    for kind, modes in _UNTRUSTED.items():
+        counts = {m: len(_trust.signals(r)) for m, r in modes.items()}
+        assert max(counts.values()) > 1, (kind.name, counts)

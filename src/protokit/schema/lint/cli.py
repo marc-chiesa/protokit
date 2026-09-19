@@ -176,6 +176,43 @@ _INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = (
 )
 
 
+def _analysis_incomplete_detail(
+    report: LintReport, incomplete: tuple[_trust.Signal, ...],
+) -> str:
+    """Why the analysis-incomplete gate fired, in the gate's own words.
+
+    Built from ``incomplete`` — the same signals the gate's predicate saw.
+    They used to come from different places: the gate fired on the seam's
+    verdict while this sentence counted runtime warnings, so a report whose
+    only reason was a compile failure exited 2 saying "0 of 0 runtime
+    warning(s) mean a rule did not run ()" under a code CI greps for.
+
+    The runtime-warning wording is kept verbatim for the reachable case;
+    anything else names its reasons instead of counting the wrong thing.
+
+    Every interpolated slot is sanitized, as everywhere else in this
+    module: nothing downstream of a stable ``error[lint-CODE]:`` prefix may
+    forge another one.
+    """
+    blocking = [
+        w for w in report.runtime_warnings
+        if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES
+    ]
+    if blocking:
+        categories = ", ".join(
+            sorted({_safe_for_stderr(w.category) for w in blocking})
+        )
+        return (
+            f"{len(blocking)} of {len(report.runtime_warnings)} runtime "
+            f"warning(s) mean a rule did not run ({categories})"
+        )
+    reasons = "; ".join(_safe_for_stderr(s.text) for s in incomplete)
+    return (
+        f"{len(incomplete)} reason(s) mean the analysis did not complete "
+        f"({reasons})"
+    )
+
+
 def _print_lint_version(
     ctx: click.Context, _param: click.Parameter, value: bool,
 ) -> None:
@@ -1493,25 +1530,16 @@ def _main_impl(
     # The predicate is `_trust`'s, shared with every renderer, so the
     # exit code and the rendered report cannot disagree about whether
     # the run completed. Do not grow a second one here.
-    if not _trust.is_trustworthy(report):
-        blocking = [
-            w for w in report.runtime_warnings
-            if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES
-        ]
-        # Sanitized per-slot like every other stderr interpolation in
-        # this module. ``category`` is a closed Literal today, so this is
-        # defense in depth rather than a live vector — but the whole
-        # point of a stable ``error[lint-CODE]:`` prefix is that nothing
-        # downstream of it can forge another one.
-        categories = ", ".join(
-            sorted({_safe_for_stderr(w.category) for w in blocking})
-        )
+    incomplete = _trust.signals(report)
+    if incomplete:
+        # The sentence is built from these same signals, by
+        # ``_analysis_incomplete_detail``; the two used to be derived
+        # separately and could disagree.
         error_exit_with_code(
             "analysis-incomplete",
-            f"{len(blocking)} of {len(report.runtime_warnings)} runtime "
-            f"warning(s) mean a rule did not run ({categories}); the "
-            "findings this run produced are a lower bound, so a clean "
-            "result would not mean the schema is clean",
+            f"{_analysis_incomplete_detail(report, incomplete)}; the findings "
+            "this run produced are a lower bound, so a clean result would "
+            "not mean the schema is clean",
         )
 
     has_error = any(
