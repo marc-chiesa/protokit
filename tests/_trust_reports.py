@@ -17,6 +17,8 @@ from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.message import MessageDifferencer
 from protokit.message.model import Diagnostic, DiffResult
+from protokit.schema.compile import LintCompileDiagnostic
+from protokit.schema.lint.model import LintFinding, LintReport, LintRuntimeWarning
 from protokit.schema.model import (
     BisectReport,
     CommitDiagnostic,
@@ -72,10 +74,12 @@ def bisect_report(
     *diagnostics: CommitDiagnostic,
     breaking: str | None = None,
     findings: tuple[Finding, ...] = (),
+    walked: int = 3,
 ) -> BisectReport:
+    """``walked=0`` is the empty walk, which renders its own way."""
     return BisectReport(
         range_spec="A..B", old_sha="a", new_sha="b", breaking_commit=breaking,
-        commits_walked=3, breaking_findings=findings,
+        commits_walked=walked, breaking_findings=findings,
         diagnostics=tuple(diagnostics),
     )
 
@@ -112,3 +116,32 @@ def truncated_diff_result() -> DiffResult:
     assert not result.has_changes()
     assert not result.is_complete
     return result
+
+
+def lint_report(
+    *,
+    categories: tuple[str, ...] = (),
+    rule_id: str | None = "pack/rule",
+    message: str = "rule blew up",
+    compile_error: str | None = None,
+    findings: tuple[LintFinding, ...] = (),
+    elements: int = 1,
+) -> LintReport:
+    """A ``LintReport`` untrustworthy in each way the seam recognises.
+
+    ``categories`` names the runtime-warning categories to emit (the engine
+    emits one warning per dispatched element, which ``elements`` mimics);
+    ``compile_error`` adds an error-level compile diagnostic, the other way a
+    lint run can produce no findings for the wrong reason.
+    """
+    warnings = tuple(
+        LintRuntimeWarning(category=c, rule_id=rule_id, message=message)  # type: ignore[arg-type]
+        for c in categories for _ in range(elements)
+    )
+    diagnostics = (
+        (LintCompileDiagnostic(level="error", message=compile_error),)
+        if compile_error else ()
+    )
+    return LintReport(
+        findings=findings, runtime_warnings=warnings, diagnostics=diagnostics,
+    )

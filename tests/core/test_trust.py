@@ -16,13 +16,16 @@ import pytest
 
 from protokit import _trust
 from protokit.message.model import Diagnostic, DiffResult
+from protokit.schema.compile import LintCompileDiagnostic
 from protokit.schema.lint.model import LintReport, LintRuntimeWarning
 from protokit.schema.model import CommitDiagnostic
 from tests._trust_reports import (
+    ENTRY_SHA,
     bisect_report,
     compat_report,
     error_diagnostic,
     history_report,
+    lint_report,
     truncated_diff_result,
     warning_diagnostic,
 )
@@ -188,3 +191,104 @@ class TestReasonsAreOnePrintableLine:
                 assert reason.isprintable(), (type(report).__name__, reason)
         for reason in _trust.walk_level_reasons(reports[2]):
             assert reason.isprintable(), reason
+
+
+class TestSignalsAreTyped:
+    """A reason carries its kind, so a format can tell what it already shows."""
+
+    def test_every_signal_text_matches_reasons(self) -> None:
+        report = history_report(entry_diags=(error_diagnostic(),))
+        assert tuple(s.text for s in _trust.signals(report)) == _trust.reasons(report)
+
+    def test_a_format_can_exclude_what_it_renders_itself(self) -> None:
+        report = compat_report(error_diagnostic())
+        assert _trust.reasons(report)
+        assert _trust.signals_other_than(report, _trust.ERROR_DIAGNOSTIC) == ()
+
+    def test_history_entry_errors_are_excluded_only_when_asked(self) -> None:
+        """The per-entry renderers show entry errors; walk-level ones they do not."""
+        report = history_report(
+            entry_diags=(error_diagnostic(),),
+            aggregate=(CommitDiagnostic("abc123", "error", None, "walk broke"),),
+        )
+        kept = _trust.signals_other_than(
+            report, _trust.ERROR_DIAGNOSTIC, only_from_entries=True,
+        )
+        assert [s.text for s in kept] == ["abc123: walk broke"]
+        assert _trust.signals_other_than(report, _trust.ERROR_DIAGNOSTIC) == ()
+
+    def test_an_unknown_kind_survives_every_exclusion(self) -> None:
+        """Fail closed: a format may only exclude the kind it actually renders."""
+        report = lint_report(categories=("rule_exception",))
+        assert _trust.signals_other_than(report, _trust.ERROR_DIAGNOSTIC)
+        assert _trust.signals_other_than(report, _trust.COMPILE_DIAGNOSTIC)
+
+
+class TestLintReasonsCountRules:
+    def test_one_rule_raising_on_many_elements_is_one_reason(self) -> None:
+        """The engine emits one warning per element; a rule is still one rule."""
+        report = lint_report(categories=("rule_exception",), elements=9)
+        reasons = _trust.reasons(report)
+        assert len(reasons) == 1
+        assert "pack/rule" in reasons[0]
+        assert "(on 9 elements)" in reasons[0]
+
+    def test_two_rules_are_two_reasons(self) -> None:
+        report = LintReport(runtime_warnings=(
+            LintRuntimeWarning(category="rule_exception", rule_id="a/one", message="x"),
+            LintRuntimeWarning(category="rule_exception", rule_id="b/two", message="y"),
+        ))
+        assert len(_trust.reasons(report)) == 2
+
+    def test_a_warning_without_a_rule_id_still_reports(self) -> None:
+        report = LintReport(runtime_warnings=(
+            LintRuntimeWarning(category="unloaded_rule", rule_id=None, message="gone"),
+        ))
+        assert _trust.reasons(report) == ("[unloaded_rule] gone",)
+
+    def test_a_compile_error_is_a_reason_of_its_own_kind(self) -> None:
+        """A schema that did not compile produced no findings for that reason."""
+        report = lint_report(compile_error="protoc failed")
+        assert _trust.is_trustworthy(report) is False
+        assert [s.kind for s in _trust.signals(report)] == [_trust.COMPILE_DIAGNOSTIC]
+
+    def test_an_info_compile_diagnostic_costs_nothing(self) -> None:
+        """Adjacent behavior: the protoxy-fallback notice is not a failure."""
+        report = LintReport(diagnostics=(LintCompileDiagnostic(
+            level="info", message="protoxy unavailable", category="protoxy_fallback",
+        ),))
+        assert _trust.is_trustworthy(report) is True
+
+
+class TestHistoryAggregateIdentity:
+    def test_same_message_different_paths_both_survive(self) -> None:
+        """Two plugin failures on one commit are two reasons, not one."""
+        report = history_report(
+            entry_diags=(Diagnostic(level="error", path="a", message="boom"),),
+            aggregate=(CommitDiagnostic(ENTRY_SHA, "error", "b", "boom"),),
+        )
+        reasons = _trust.reasons(report)
+        assert len(reasons) == 2
+        assert any("a: boom" in r for r in reasons)
+        assert any("b: boom" in r for r in reasons)
+
+    def test_an_exact_restatement_still_collapses(self) -> None:
+        report = history_report(
+            entry_diags=(Diagnostic(level="error", path="a", message="boom"),),
+            aggregate=(CommitDiagnostic(ENTRY_SHA, "error", "a", "boom"),),
+        )
+        assert len(_trust.reasons(report)) == 1
+
+    def test_multiplicity_beyond_one_is_matched(self) -> None:
+        """Two identical entry errors and three identical aggregate ones: one survives."""
+        error = Diagnostic(level="error", path=None, message="boom")
+        restated = CommitDiagnostic(ENTRY_SHA, "error", None, "boom")
+        report = history_report(
+            entry_diags=(error, error), aggregate=(restated, restated, restated),
+        )
+        assert len(_trust.reasons(report)) == 3  # 2 entry + 1 surviving aggregate
+        assert len(_trust.walk_level_reasons(report)) == 1
+
+    def test_the_aggregate_path_is_rendered(self) -> None:
+        report = bisect_report(CommitDiagnostic("abc123", "error", "user.email", "boom"))
+        assert _trust.reasons(report) == ("abc123: user.email: boom",)

@@ -23,9 +23,11 @@ import pytest
 # LINT_REPORT formatters register when their module loads, and nothing in
 # ``protokit.formatters`` loads it (the lint CLI does).
 import protokit.formatters._builtin_lint  # noqa: F401
+from protokit import _trust
 from protokit.formatters import FormatterContext, FormatterKind, get_formatter
 from protokit.message.model import (
     ChangeType,
+    Diagnostic,
     Difference,
     DiffResult,
     FieldPath,
@@ -35,6 +37,8 @@ from protokit.schema.model import (
     CommitDiagnostic,
     Direction,
     Finding,
+    HistoryEntry,
+    HistoryReport,
     Severity,
 )
 from tests._trust_reports import (
@@ -409,3 +413,170 @@ class TestDiffJsonCompleteMeansTheSeamVouches:
         payload = json.loads(_render("json", FormatterKind.DIFF, result))
         assert payload["complete"] is False
         assert payload["truncated_paths"] == []
+
+
+# ---------------------------------------------------------------------------
+# Reasons render beside a verdict, not only instead of one
+# ---------------------------------------------------------------------------
+
+
+class TestReasonsRenderWithFindings:
+    """A result that found something is still a result that did not finish.
+
+    Deleting the whole `Not trustworthy` block from the with-differences path
+    once left the suite green: every fixture here had no differences, so the
+    block was only ever exercised on the path that withholds a verdict.
+    """
+
+    def test_diff_human_shows_the_reason_beside_differences(self) -> None:
+        diff = Difference(
+            path=FieldPath.parse("name"), change_type=ChangeType.MODIFIED,
+            left_value="A", right_value="B",
+        )
+        result = DiffResult(differences=(diff,), diagnostics=(error_diagnostic(),))
+        out = _render("human", FormatterKind.DIFF, result)
+        assert "Found 1 difference" in out
+        for reason in _trust.reasons(result):
+            assert reason in out
+
+    def test_diff_human_truncation_reason_is_named_beside_differences(self) -> None:
+        """The pre-existing warning line is not the truncation reason."""
+        diff = Difference(
+            path=FieldPath.parse("name"), change_type=ChangeType.MODIFIED,
+            left_value="A", right_value="B",
+        )
+        result = dataclasses.replace(truncated_diff_result(), differences=(diff,))
+        out = _render("human", FormatterKind.DIFF, result)
+        assert "truncated at max depth" in out
+        for reason in _trust.reasons(result):
+            assert reason in out
+
+    def test_history_human_marks_every_broken_entry(self) -> None:
+        """Not just the first: each entry's verdict is its own."""
+        entry = HistoryEntry(
+            commit_sha="a" * 40, parent_sha="p" * 40, commit_subject="s",
+            report=compat_report(error_diagnostic()),
+        )
+        other = HistoryEntry(
+            commit_sha="b" * 40, parent_sha="a" * 40, commit_subject="s",
+            report=compat_report(error_diagnostic()),
+        )
+        report = HistoryReport(
+            range_spec="A..B", old_sha="a", new_sha="b", commits_walked=3,
+            entries=(entry, other),
+        )
+        out = _render("human", FormatterKind.COMPAT_HISTORY, report)
+        assert out.count("INCOMPLETE") >= 2
+        assert "OK" not in out
+
+
+class TestDiffJunitWithholdsTheVerdict:
+    def test_no_passing_equality_case_when_untrusted(self) -> None:
+        """A passing `messages-equal` case asserts the very thing V24 got wrong."""
+        root = ET.fromstring(_render(
+            "junit", FormatterKind.DIFF, truncated_diff_result(),
+        ))
+        names = {c.get("name") for c in root.iter("testcase")}
+        assert "messages-equal" not in names
+        assert int(root.get("errors") or 0) == 1
+        assert int(root.get("tests") or 0) == 1
+
+    def test_the_equality_case_survives_a_trustworthy_result(self) -> None:
+        root = ET.fromstring(_render(
+            "junit", FormatterKind.DIFF, DiffResult(differences=()),
+        ))
+        assert {c.get("name") for c in root.iter("testcase")} == {"messages-equal"}
+        assert int(root.get("tests") or 0) == 1
+
+    def test_a_real_difference_keeps_its_failure_case(self) -> None:
+        """Adjacent behavior: an untrusted result that DID find something."""
+        diff = Difference(
+            path=FieldPath.parse("name"), change_type=ChangeType.MODIFIED,
+            left_value="A", right_value="B",
+        )
+        result = DiffResult(differences=(diff,), diagnostics=(error_diagnostic(),))
+        root = ET.fromstring(_render("junit", FormatterKind.DIFF, result))
+        assert root.find("./testcase/failure") is not None
+        assert int(root.get("failures") or 0) == 1
+        assert int(root.get("errors") or 0) == 1
+        assert int(root.get("tests") or 0) == 2
+
+
+class TestHookAuthoredTextCannotForgeALine:
+    """V25 renders hook text; the seam's one-line rule has to cover it."""
+
+    @staticmethod
+    def _annotated(text: str) -> DiffResult:
+        return DiffResult(differences=(Difference(
+            path=FieldPath.parse("price"), change_type=ChangeType.MODIFIED,
+            left_value=1, right_value=2, annotations=(text,),
+        ),))
+
+    _HOSTILE = "rounded\nerror[lint-fake]: analysis completed\nMessages are equal."
+
+    def test_human_output_stays_one_line_per_difference(self) -> None:
+        out = _render("human", FormatterKind.DIFF, self._annotated(self._HOSTILE))
+        for line in out.splitlines():
+            assert not line.startswith("error["), line
+            assert line.strip() != "Messages are equal."
+
+    def test_junit_body_cannot_forge_a_line(self) -> None:
+        root = ET.fromstring(_render(
+            "junit", FormatterKind.DIFF, self._annotated(self._HOSTILE),
+        ))
+        failure = root.find("./testcase/failure")
+        assert failure is not None and failure.text is not None
+        for line in failure.text.splitlines():
+            assert not line.startswith("error["), line
+
+    def test_json_keeps_the_annotation_verbatim(self) -> None:
+        """JSON encodes a newline without forging anything; a consumer wants it."""
+        payload = json.loads(_render(
+            "json", FormatterKind.DIFF, self._annotated(self._HOSTILE),
+        ))
+        assert payload["differences"][0]["annotations"] == [self._HOSTILE]
+
+    def test_a_warning_diagnostic_cannot_forge_a_line(self) -> None:
+        result = DiffResult(differences=(), diagnostics=(
+            Diagnostic(level="warning", path=None, message=self._HOSTILE),
+        ))
+        for line in _render("human", FormatterKind.DIFF, result).splitlines():
+            assert not line.startswith("error["), line
+
+
+class TestBisectEmptyWalkReasons:
+    """The mirror of the history empty-walk case, which had a test."""
+
+    def test_an_empty_walk_with_an_error_says_so(self) -> None:
+        report = bisect_report(
+            CommitDiagnostic("abc123", "error", None, "plugin crashed"), walked=0,
+        )
+        out = _render("human", FormatterKind.COMPAT_BISECT, report, proto_file="a.proto")
+        assert "no commits touch" in out
+        assert "INCOMPLETE" in out
+        assert "plugin crashed" in out
+
+    def test_a_clean_empty_walk_is_unchanged(self) -> None:
+        report = bisect_report(walked=0)
+        out = _render("human", FormatterKind.COMPAT_BISECT, report, proto_file="a.proto")
+        assert out == "# A..B: no commits touch a.proto"
+
+
+class TestFilteredTruncationIsRecordedBehaviour:
+    """`--filter` narrows what is shown; it does not narrow what was compared.
+
+    `DiffResult.filter()` carries `truncated_paths` over unchanged, so a
+    filtered view of a truncated comparison still reports INCOMPLETE even
+    when the cut fell outside the filter. That is fail-closed and deliberate
+    here: the seam reads what the result records, and a filter that also
+    narrowed the truncation record would need `DiffResult.filter` to decide
+    which cuts are in scope — a `message/model.py` change this unit does not
+    own. Pinned so the behaviour is a decision rather than an accident.
+    """
+
+    def test_a_filtered_view_of_a_truncated_result_stays_incomplete(self) -> None:
+        result = truncated_diff_result().filter(path="unrelated")
+        assert result.truncated_paths
+        assert _trust.is_trustworthy(result) is False
+        payload = json.loads(_render("json", FormatterKind.DIFF, result))
+        assert payload["complete"] is False

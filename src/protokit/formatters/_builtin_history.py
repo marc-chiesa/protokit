@@ -122,6 +122,7 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
     # cycle at module load time.
     from protokit.formatters._builtin_compat import (
         _build_compat_testsuite,
+        _reasons_not_shown,
         _suite_name_for,
     )
 
@@ -162,7 +163,7 @@ def history_junit(report: HistoryReport, ctx: FormatterContext) -> str:
         suite.set("id", str(index))
         root.append(suite)
 
-    walk_level = _trust.walk_level_reasons(report)
+    walk_level = _reasons_not_shown(report, only_from_entries=True)
     if walk_level:
         suite = junit.make_testsuite(
             name=f"{type_prefix}-walk",
@@ -234,9 +235,10 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))
 
-    error_messages.extend(
-        (None, reason) for reason in _reasons_not_shown(report, error_messages)
-    )
+    # Unlike ``history_junit``, this renderer already emits a notification for
+    # every aggregate diagnostic above, so it excludes entry-level AND
+    # walk-level error signals; what is left is any other kind the seam knows.
+    error_messages.extend((None, reason) for reason in _reasons_not_shown(report))
     run = sarif.build_run(
         findings_with_context=findings_with_context,
         error_messages=error_messages,

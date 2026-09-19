@@ -125,8 +125,10 @@ class TestIncompleteAnalysisCategoryClassification:
     """Every ``LintRuntimeWarning`` category must be *classified* with
     respect to the V33 ``analysis-incomplete`` exit gate.
 
-    ``_INCOMPLETE_ANALYSIS_CATEGORIES`` in ``schema/lint/cli.py`` is a
-    hand-maintained tuple. A future category that means "a rule did not
+    ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` is a
+    hand-maintained frozenset — the owner since U7, which
+    ``schema/lint/cli.py`` re-exports under its old name for this test and
+    for the gate's message. A future category that means "a rule did not
     run" would land outside it silently, and the CLI would go on
     reporting a clean exit for an analysis that never completed — the
     exact drift class the 0.16.0 release exists to close, reintroduced

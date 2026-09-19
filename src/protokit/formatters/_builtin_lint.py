@@ -166,6 +166,21 @@ def _render_finding_line(finding: LintFinding, spec: LintRuleSpec | None) -> str
     return f"{severity} {location} [{finding.rule_id}] {message}"
 
 
+def _reasons_not_shown(report: LintReport) -> tuple[str, ...]:
+    """The seam's reasons other than the compile failures already rendered.
+
+    Every lint format shows compile diagnostics in a channel of its own (the
+    ``diagnostic[category]:`` lines, an ``<error>`` testcase, a SARIF
+    notification), so the seam's ``COMPILE_DIAGNOSTIC`` signals for them would
+    be a second copy. What is left is one reason per *rule* that did not run.
+    """
+    return tuple(
+        s.text for s in _trust.signals_other_than(
+            report, _trust.COMPILE_DIAGNOSTIC,
+        )
+    )
+
+
 def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     """Render a LintReport as human-readable plaintext.
 
@@ -222,7 +237,13 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     # defensive fallbacks.
     diag: LintCompileDiagnostic
     for diag in report.diagnostics:
-        lines.append(f"diagnostic[{diag.category}]: {diag.message}")
+        # ``message`` can be a compiler's own words (a protoc dump is
+        # multi-line), and this line carries a stable ``diagnostic[...]:``
+        # prefix that agents grep for, so it is flattened like every other
+        # foreign text this renderer prints.
+        lines.append(
+            f"diagnostic[{diag.category}]: {_trust.one_line(str(diag.message))}"
+        )
 
     for finding in report.findings:
         spec = report.specs.get(finding.rule_id)
@@ -231,7 +252,7 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     # This renderer prints no success verdict -- a clean run is the empty
     # string -- which is exactly why it must say so when that emptiness is
     # not a verdict: a rule that raised produces zero findings.
-    untrusted = _trust.reasons(report)
+    untrusted = _reasons_not_shown(report)
     if untrusted:
         lines.append(
             f"INCOMPLETE: {len(untrusted)} selected rule(s) did not run; "
@@ -327,6 +348,17 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     mypy-strict narrowing pattern documented on
 #:     :class:`LintRuntimeWarning`) must extend their match
 #:     construct to handle BOTH new cases.
+#:   - **0.16.0 bump**: ``"0.6"`` → ``"0.7"`` under trigger (b), a change in
+#:     the meaning of an existing field. ``runs[].invocations[0]
+#:     .executionSuccessful`` was ``false`` only for an error-level compile
+#:     diagnostic; it is now ``false`` whenever ``protokit._trust`` distrusts
+#:     the report, which adds the runs where a selected rule raised or was
+#:     never loaded (``rule_exception`` / ``unloaded_rule``). A consumer
+#:     reading that boolean sees a run flip from success to failure without
+#:     the findings list changing, which is exactly what the field now means.
+#:     ``lint_json`` carries no verdict field and is unchanged in shape; it
+#:     shares the constant, so its version moves with SARIF's by the
+#:     same-value parity rule above.
 #:   - **0.7.0 bump**: ``"0.5"`` → ``"0.6"`` for the eighth and ninth
 #:     ``LintRuntimeWarning.category`` Literal values
 #:     (``"contradictory_disable_config"`` + ``"unknown_rule_id"``),
@@ -339,7 +371,7 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     bump (``0.6.0`` → ``0.7.0``) is a distinct surface that lands
 #:     with the CHANGELOG fold per the pre-1.0 version-bump
 #:     communication contract.
-_LINT_JSON_SCHEMA_VERSION: str = "0.6"
+_LINT_JSON_SCHEMA_VERSION: str = "0.7"
 
 
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
@@ -540,7 +572,7 @@ def _build_lint_testsuite(
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
-    untrusted = _trust.reasons(report)
+    untrusted = _reasons_not_shown(report)
     findings_count = len(report.findings)
     errors_count = len(error_diags) + len(untrusted)
 
@@ -918,9 +950,7 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     # ``toolExecutionNotifications``, which is compile-stage only by design
     # so a consumer can filter the two channels apart.
     invocation: dict[str, Any] = {
-        "executionSuccessful": (
-            not error_diags and _trust.is_trustworthy(report)
-        ),
+        "executionSuccessful": _trust.is_trustworthy(report),
     }
     if notifications:
         invocation["toolExecutionNotifications"] = notifications

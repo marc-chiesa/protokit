@@ -115,7 +115,7 @@ def bisect_junit(report: BisectReport, ctx: FormatterContext) -> str:
     failures = 1 if report.breaking_commit is not None else 0
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
-    not_shown = _reasons_not_shown(report, error_diags)
+    not_shown = _reasons_not_shown(report)
     errors = len(error_diags) + len(not_shown)
 
     cases: list[ET.Element] = []
@@ -208,7 +208,7 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
         target.append((d.commit, d.message))
 
     error_messages.extend(
-        (None, reason) for reason in _reasons_not_shown(report, error_messages)
+        (None, reason) for reason in _reasons_not_shown(report)
     )
     run = sarif.build_run(
         findings_with_context=findings_with_context,

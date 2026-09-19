@@ -114,8 +114,9 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 > `equal` is `true` only when no difference was found **and** the comparison
 > is `complete`. A `--max-depth` cut that hid part of the messages gives
 > `"equal": false, "complete": false` with the uncompared subtrees listed in
-> `truncated_paths`; an error-level diagnostic gives the same two values with
-> an empty `truncated_paths`. `complete` means the same in `protokit compat
+> `truncated_paths`; an error-level diagnostic on its own gives the same two
+> values with an empty `truncated_paths` — that list names what a depth cut
+> skipped, not every reason the result is incomplete. `complete` means the same in `protokit compat
 > --format json`, where `compatible` likewise needs it.
 >
 > The JSON object is **open/additive** — ignore unknown keys rather than
@@ -1120,7 +1121,7 @@ and agents. Top-level keys:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `schema_version` | string | Wire-format version (currently `"0.6"` as of 0.7.0; bumped from `"0.5"` for two new `LintRuntimeWarning.category` Literal values per the closed-Literal-discriminator bump policy). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
+| `schema_version` | string | Wire-format version (currently `"0.7"` as of 0.16.0; bumped from `"0.6"` because `executionSuccessful` changed meaning — see the SARIF row). Bumps any time JSON/SARIF wire shapes change in a consumer-detectable way. Absence of the key (output from `protokit < 0.2.0`) is the implicit `"0.1"`. The matching SARIF field is `runs[].properties.lint_schema_version`. |
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
 | `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"` / `"contradictory_disable_config"` (0.7.0+) / `"unknown_rule_id"` (0.7.0+)), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`, `contradictory_disable_config`, `unknown_rule_id` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
@@ -1225,10 +1226,10 @@ accumulation.
 | Python class | `LintEngine.run(compile_result, *, profile)` signature | IN |
 | Python helper | `LintProfile.compose(*profiles)`, `LintProfile.from_pack(module, profile_name)` | IN |
 | JSON wire | `lint_json` output shape (top-level keys + per-finding/per-warning shapes) | IN |
-| JSON wire | `lint_json["schema_version"]: "0.6"` (top-level wire-format version; absence → implicit "0.1"; bumped from `"0.5"` in 0.7.0 for two new `LintRuntimeWarning.category` Literal values) | IN |
+| JSON wire | `lint_json["schema_version"]: "0.7"` (top-level wire-format version; absence → implicit "0.1"; bumped from `"0.6"` in 0.16.0 with the SARIF meaning change below, which shares the constant) | IN |
 | SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory; 0.7.0 adds `properties.rule_id` for `contradictory_disable_config` + `unknown_rule_id` categories only — pre-existing rule-scoped categories (`rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`) do NOT carry `rule_id` in the SARIF propertyBag despite being rule-scoped; SARIF consumers needing complete rule_id attribution should use `--format=json` where `rule_id` is populated uniformly) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
-| SARIF wire | `runs[].properties.lint_schema_version: "0.6"` (parity with `lint_json["schema_version"]`) | IN |
+| SARIF wire | `runs[].properties.lint_schema_version: "0.7"` (parity with `lint_json["schema_version"]`). Since 0.16.0 `invocations[0].executionSuccessful` is false whenever the analysis did not complete — a rule that raised or was never loaded, as well as a compile error | IN |
 | SARIF wire | `tool.driver.rules[].defaultConfiguration.level` (added in 0.7.0; pre-flight rule severity for IDE consumers) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with the deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 — promoted from `warning`) + `options/field-behavior-consistent`) | IN |

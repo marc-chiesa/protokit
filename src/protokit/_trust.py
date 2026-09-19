@@ -15,12 +15,20 @@ This module is the single owner of that question (R5). A renderer or an
 exit path asks :func:`is_trustworthy` before it claims success, and renders
 :func:`reasons` whenever there are any, whatever the verdict.
 
+**A reason is typed, because some formats already render it.** ``compat
+--format junit`` turns each error diagnostic into its own ``<testcase>``,
+with the path and commit a flat sentence would lose. Such a format must add
+the reasons it does *not* already show, and only those, or it double-counts.
+It says which it renders structurally (:func:`signals_other_than`) instead
+of guessing from whether it happened to render anything — a guess that goes
+wrong the day this module learns a reason that format never derived.
+
 **Failure mode and guard (KTD1).** This is *bypass drift*: the facts were
 always on the report, and call sites went around them. The guards are
 therefore bypass guards — ``tests/meta/test_formatter_trust.py`` renders
-every registered human formatter with and without an untrustworthy report,
-and walks the root Click group for commands whose code never reaches this
-module.
+every registered formatter against a report that is untrustworthy in each
+way its kind can be, and walks the root Click group for commands whose code
+never reaches this module.
 
 **It fails closed.** A report type this module does not recognise raises
 ``TypeError``. Defaulting an unknown object to "trustworthy" would rebuild
@@ -30,9 +38,11 @@ would silently render as success until someone remembered to come here.
 **Every reason is one printable line.** A reason quotes diagnostic text a
 rule pack or plugin wrote, and renderers print it next to stable,
 grep-anchored prefixes (``error[lint-...]:``). A message carrying a newline
-or an escape sequence could forge such a line, so :func:`reasons` replaces
-every non-printable character with a space before anything leaves this
-module. It is enforced here, once, rather than remembered at each renderer.
+or an escape sequence could forge such a line, so every signal's text passes
+through :func:`one_line` before it leaves this module. Text a renderer takes
+from the report *directly* — a hook's annotation, a warning diagnostic — is
+outside that guarantee unless the renderer calls :func:`one_line` itself,
+which is why the function is public.
 
 **Layer 0 (KTD8).** This module imports nothing from ``protokit`` at any
 scope, so the report types cannot be named here. Kinds are recognised by
@@ -46,7 +56,41 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, NamedTuple
+
+#: A rule that was selected but did not run, or a plugin that raised: the
+#: findings are a lower bound on an unknown total.
+RULE_DID_NOT_RUN = "rule-did-not-run"
+#: An error-level ``Diagnostic`` / ``CommitDiagnostic`` on the report. The
+#: JUnit and SARIF renderers of compat, history and bisect already give each
+#: one its own structured entry.
+ERROR_DIAGNOSTIC = "error-diagnostic"
+#: An error-level ``LintCompileDiagnostic``: the schema did not compile, so
+#: no rule saw it. ``lint``'s own renderers show these separately.
+COMPILE_DIAGNOSTIC = "compile-diagnostic"
+#: ``max_depth`` cut the comparison above some subtrees.
+TRUNCATION = "truncation"
+
+
+class Signal(NamedTuple):
+    """One reason a report cannot be read as success.
+
+    Attributes:
+        kind: Which of the four reason kinds above this is, so a renderer
+            can tell the ones it already shows structurally from the ones
+            it must add.
+        text: One printable line, safe to print beside a stable prefix.
+        commit: The commit a history/bisect reason belongs to, or ``None``.
+        from_entry: True when a history reason came from an entry's own
+            report, so the per-entry renderers already show it where the
+            entry is.
+    """
+
+    kind: str
+    text: str
+    commit: str | None = None
+    from_entry: bool = False
+
 
 #: ``LintRuntimeWarning`` categories that mean a selected rule did not run,
 #: so the findings are a lower bound on an unknown total (V33).
@@ -57,16 +101,17 @@ from typing import Any
 #: ``custom_annotation_extension_unresolved``, ``all_files_excluded``) and are
 #: not gated, for blast radius — ``extension_unresolved`` fires on nearly every
 #: run whose inputs lack ``google/api/field_behavior.proto``. Widening this set
-#: is a breaking change that U8 owns; ``TestIncompleteAnalysisGateIsExhaustive``
-#: in ``tests/schema/lint/test_model_dataclass_changes.py`` makes every
-#: category's bucket an explicit decision.
+#: is a breaking change that U8 owns;
+#: ``TestIncompleteAnalysisCategoryClassification`` in
+#: ``tests/schema/lint/test_model_dataclass_changes.py`` makes every category's
+#: bucket an explicit decision.
 INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = frozenset({
     "rule_exception",
     "unloaded_rule",
 })
 
 
-def _one_line(text: str) -> str:
+def one_line(text: str) -> str:
     """``text`` with every non-printable character replaced by a space.
 
     ``str.isprintable`` is false for the Unicode "Other" and "Separator"
@@ -75,55 +120,77 @@ def _one_line(text: str) -> str:
     aggregators split records on. Defined by Unicode category rather than a
     hand-kept list, so it needs nothing from ``protokit._cli_utils`` (which
     this layer-0 module may not import).
+
+    Public because a renderer may print plugin-authored text this module
+    never saw — a REPORT hook's annotation, a warning diagnostic — onto a
+    line beside a stable prefix. One sanitizer, wherever such text lands.
     """
     if text.isprintable():
         return text
     return "".join(ch if ch.isprintable() else " " for ch in text)
 
 
-def _error_messages(diagnostics: Iterable[Any]) -> list[str]:
-    """``str()`` of every error-level diagnostic, in emission order."""
-    return [str(d) for d in diagnostics if d.level == "error"]
+def _diagnostic_text(d: Any) -> str:
+    """``path: message`` when the diagnostic carries a path, else ``message``.
+
+    Mirrors ``Diagnostic.__str__`` for the ``CommitDiagnostic`` shape, which
+    has no ``__str__`` of its own: two plugin failures on the same commit
+    differing only in path would otherwise read identically.
+    """
+    return f"{d.path}: {d.message}" if d.path else str(d.message)
 
 
-def _commit_error(commit: str | None, message: str) -> str:
-    return f"{commit[:12]}: {message}" if commit else message
+def _commit_prefixed(commit: str | None, text: str) -> str:
+    return f"{commit[:12]}: {text}" if commit else text
 
 
-def _diff_reasons(result: Any) -> list[str]:
-    out = _error_messages(result.diagnostics)
+def _error_signals(diagnostics: Iterable[Any]) -> list[Signal]:
+    """One ``ERROR_DIAGNOSTIC`` signal per error-level diagnostic, in order."""
+    return [
+        Signal(ERROR_DIAGNOSTIC, str(d))
+        for d in diagnostics if d.level == "error"
+    ]
+
+
+def _diff_signals(result: Any) -> list[Signal]:
+    out = _error_signals(result.diagnostics)
     if result.truncated_paths:
         paths = ", ".join(str(p) or "(root)" for p in result.truncated_paths)
-        out.append(
-            f"comparison truncated at max depth: {len(result.truncated_paths)} "
-            f"subtree(s) not compared ({paths})",
-        )
+        out.append(Signal(
+            TRUNCATION,
+            f"comparison truncated at max depth: "
+            f"{len(result.truncated_paths)} subtree(s) not compared ({paths})",
+        ))
     return out
 
 
-def _compat_reasons(report: Any) -> list[str]:
-    return _error_messages(report.diagnostics)
+def _compat_signals(report: Any) -> list[Signal]:
+    return _error_signals(report.diagnostics)
 
 
-def _aggregate_reasons(
-    diagnostics: Iterable[Any], already: Counter[tuple[str | None, str]],
-) -> list[str]:
+def _aggregate_signals(
+    diagnostics: Iterable[Any], already: Counter[tuple[str | None, str, str]],
+) -> list[Signal]:
     """Aggregate ``CommitDiagnostic`` errors, minus restated per-entry ones.
 
     ``compat history`` builds the aggregate list by copying each entry's
     diagnostics, so a CLI-produced report states every entry error twice.
-    Matched with multiplicity so a hand-built report's genuinely extra (or
-    deliberately repeated) aggregate errors all survive.
+    Matched with multiplicity on commit, path and message, so two genuinely
+    different failures on one commit both survive, and a deliberate repeat
+    survives too.
     """
-    out: list[str] = []
+    out: list[Signal] = []
     for d in diagnostics:
         if d.level != "error":
             continue
-        key = (d.commit, d.message)
+        text = _diagnostic_text(d)
+        key = (d.commit, d.path, d.message)
         if already[key]:
             already[key] -= 1
             continue
-        out.append(_commit_error(d.commit, d.message))
+        out.append(Signal(
+            ERROR_DIAGNOSTIC, _commit_prefixed(d.commit, text), commit=d.commit,
+        ))
     return out
 
 
@@ -136,75 +203,77 @@ def _history_entry_errors(report: Any) -> list[tuple[str, Any]]:
     ]
 
 
-def _walk_level(report: Any, entry_errors: list[tuple[str, Any]]) -> list[str]:
-    seen: Counter[tuple[str | None, str]] = Counter(
-        (sha, d.message) for sha, d in entry_errors
-    )
-    return _aggregate_reasons(report.diagnostics, seen)
-
-
-def walk_level_reasons(report: Any) -> tuple[str, ...]:
-    """A ``HistoryReport``'s reasons that no entry carries.
-
-    The per-commit renderers (``history_junit``'s one suite per entry) show
-    each entry's own errors where the entry is; this is the remainder -- an
-    aggregate error attributed to a commit with no entry, or to none -- which
-    they would otherwise drop (V23's fourth site).
-
-    Sanitized here, not only in :func:`reasons`: ``history_junit`` calls this
-    directly, so it is a second way text leaves this module.
-    """
-    return tuple(
-        _one_line(reason)
-        for reason in _walk_level(report, _history_entry_errors(report))
-    )
-
-
-def _history_reasons(report: Any) -> list[str]:
+def _history_signals(report: Any) -> list[Signal]:
     entry_errors = _history_entry_errors(report)
-    per_entry = [_commit_error(sha, str(d)) for sha, d in entry_errors]
-    return per_entry + _walk_level(report, entry_errors)
-
-
-def _bisect_reasons(report: Any) -> list[str]:
-    return _aggregate_reasons(report.diagnostics, Counter())
-
-
-def _lint_reasons(report: Any) -> list[str]:
-    return [
-        f"[{w.category}] {w.message}"
-        for w in report.runtime_warnings
-        if w.category in INCOMPLETE_ANALYSIS_CATEGORIES
+    per_entry = [
+        Signal(
+            ERROR_DIAGNOSTIC, _commit_prefixed(sha, str(d)),
+            commit=sha, from_entry=True,
+        )
+        for sha, d in entry_errors
     ]
+    seen: Counter[tuple[str | None, str, str]] = Counter(
+        (sha, d.path, d.message) for sha, d in entry_errors
+    )
+    return per_entry + _aggregate_signals(report.diagnostics, seen)
+
+
+def _bisect_signals(report: Any) -> list[Signal]:
+    return _aggregate_signals(report.diagnostics, Counter())
+
+
+def _lint_signals(report: Any) -> list[Signal]:
+    """Compile failures, then one signal per *rule* that did not run.
+
+    The engine emits one runtime warning per dispatched element, so a single
+    rule raising on a nine-field message produces nine warnings. Rendering
+    those one-for-one would report nine rules as not having run; they are
+    grouped here, at the owner, so every renderer counts rules.
+    """
+    out = [
+        Signal(COMPILE_DIAGNOSTIC, str(d.message))
+        for d in report.diagnostics if d.level == "error"
+    ]
+    groups: dict[tuple[str, str | None], list[Any]] = {}
+    for w in report.runtime_warnings:
+        if w.category in INCOMPLETE_ANALYSIS_CATEGORIES:
+            groups.setdefault((w.category, w.rule_id), []).append(w)
+    for (category, rule_id), warnings in groups.items():
+        first = warnings[0]
+        named = f"{rule_id}: " if rule_id else ""
+        tail = f" (on {len(warnings)} elements)" if len(warnings) > 1 else ""
+        out.append(Signal(
+            RULE_DID_NOT_RUN, f"[{category}] {named}{first.message}{tail}",
+        ))
+    return out
 
 
 #: One row per report kind: the attribute whose presence identifies the kind,
-#: and the function that reads its incompleteness signal. Order matters in
+#: and the function that reads its incompleteness signals. Order matters in
 #: exactly one place: ``LintReport`` also has ``findings``, so the compat row
 #: comes last and the lint row claims a ``LintReport`` first. ``diagnostics``
 #: is deliberately not an identifying attribute — all five kinds carry it, so
 #: it identifies none of them; it is required *alongside* the identifying one.
-_KINDS: tuple[tuple[str, Callable[[Any], list[str]]], ...] = (
-    ("runtime_warnings", _lint_reasons),    # LintReport
-    ("truncated_paths", _diff_reasons),     # DiffResult
-    ("entries", _history_reasons),          # HistoryReport
-    ("breaking_commit", _bisect_reasons),   # BisectReport
-    ("findings", _compat_reasons),          # CompatibilityReport
+_KINDS: tuple[tuple[str, Callable[[Any], list[Signal]]], ...] = (
+    ("runtime_warnings", _lint_signals),    # LintReport
+    ("truncated_paths", _diff_signals),     # DiffResult
+    ("entries", _history_signals),          # HistoryReport
+    ("breaking_commit", _bisect_signals),   # BisectReport
+    ("findings", _compat_signals),          # CompatibilityReport
 )
 
 
-def reasons(report: object) -> tuple[str, ...]:
-    """Why ``report`` cannot be read as success, one line per cause.
+def signals(report: object) -> tuple[Signal, ...]:
+    """Every reason ``report`` cannot be read as success, typed.
 
     Args:
         report: A ``DiffResult``, ``CompatibilityReport``, ``HistoryReport``,
             ``BisectReport`` or ``LintReport``.
 
     Returns:
-        Human-readable reasons in emission order; empty when the report is
-        trustworthy. Each is a single line of printable characters, safe to
-        print beside a stable prefix. Warnings never appear here — they are
-        advisory.
+        Signals in emission order; empty when the report is trustworthy.
+        Every ``text`` is a single printable line. Warnings never appear —
+        they are advisory.
 
     Raises:
         TypeError: ``report`` is not one of the five kinds. Never defaults
@@ -213,7 +282,9 @@ def reasons(report: object) -> tuple[str, ...]:
     if hasattr(report, "diagnostics"):
         for attribute, fn in _KINDS:
             if hasattr(report, attribute):
-                return tuple(_one_line(reason) for reason in fn(report))
+                return tuple(
+                    s._replace(text=one_line(s.text)) for s in fn(report)
+                )
     raise TypeError(
         f"protokit._trust does not know how to vouch for "
         f"{type(report).__name__!r}: it carries none of the attributes a "
@@ -223,16 +294,74 @@ def reasons(report: object) -> tuple[str, ...]:
     )
 
 
-def is_trustworthy(report: object) -> bool:
-    """Whether an empty ``report`` means "nothing found" rather than "did not look".
+def reasons(report: object) -> tuple[str, ...]:
+    """The text of every signal, for a renderer that shows them as lines.
 
     Args:
-        report: One of the five report kinds; see :func:`reasons`.
+        report: One of the five report kinds; see :func:`signals`.
 
     Returns:
-        True iff :func:`reasons` is empty.
+        One printable line per reason, in emission order.
 
     Raises:
         TypeError: ``report`` is not one of the five kinds.
     """
-    return not reasons(report)
+    return tuple(s.text for s in signals(report))
+
+
+def signals_other_than(
+    report: object, kind: str, *, only_from_entries: bool = False,
+) -> tuple[Signal, ...]:
+    """Signals a format does not already render structurally.
+
+    A machine renderer that turns every error diagnostic into its own
+    ``<testcase>`` passes ``ERROR_DIAGNOSTIC`` and gets back what it has not
+    shown — nothing today, and whatever this module learns tomorrow.
+
+    Args:
+        report: One of the five report kinds.
+        kind: The signal kind the caller renders itself.
+        only_from_entries: For ``HistoryReport``: the caller renders each
+            *entry's* diagnostics inside that entry's suite, so only
+            entry-level signals of ``kind`` are already shown. A
+            walk-level one is not, and is returned.
+
+    Returns:
+        The signals the caller still has to render.
+
+    Raises:
+        TypeError: ``report`` is not one of the five kinds.
+    """
+    return tuple(
+        s for s in signals(report)
+        if s.kind != kind or (only_from_entries and not s.from_entry)
+    )
+
+
+def walk_level_reasons(report: object) -> tuple[str, ...]:
+    """A ``HistoryReport``'s reasons that no entry carries.
+
+    The per-commit renderers (``history_junit``'s one suite per entry) show
+    each entry's own errors where the entry is; this is the remainder -- an
+    aggregate error attributed to a commit with no entry, or to none -- which
+    they would otherwise drop (V23's fourth site).
+
+    Raises:
+        TypeError: ``report`` is not one of the five kinds.
+    """
+    return tuple(s.text for s in signals(report) if not s.from_entry)
+
+
+def is_trustworthy(report: object) -> bool:
+    """Whether an empty ``report`` means "nothing found" rather than "did not look".
+
+    Args:
+        report: One of the five report kinds; see :func:`signals`.
+
+    Returns:
+        True iff :func:`signals` is empty.
+
+    Raises:
+        TypeError: ``report`` is not one of the five kinds.
+    """
+    return not signals(report)

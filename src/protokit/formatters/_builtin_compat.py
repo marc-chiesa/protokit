@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
-from collections.abc import Sized
 from typing import Any
 
 import click
@@ -151,20 +150,30 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
     return json.dumps(payload, indent=2)
 
 
-def _reasons_not_shown(report: object, shown: Sized) -> tuple[str, ...]:
-    """The seam's reasons, when this format has rendered no error of its own.
+def _reasons_not_shown(report: object, **kwargs: bool) -> tuple[str, ...]:
+    """The seam's reasons this format does not already render structurally.
 
-    The JUnit and SARIF renderers turn each error diagnostic into a structured
-    case (its path, its commit), which a flat reason string cannot replace. But
-    the *verdict* is ``protokit._trust``'s: if the seam distrusts a report for a
-    reason these renderers do not derive for themselves, they would pass it.
+    The JUnit and SARIF renderers turn each error diagnostic into a case of
+    its own, carrying the path and commit a flat sentence would lose — so
+    they tell the seam that much (``ERROR_DIAGNOSTIC``) and render whatever
+    else it knows. Today that is nothing; the point is the day it is not.
 
-    Today the two always agree, so this returns ``()`` whenever ``shown`` is
-    non-empty. It exists so that the day the seam learns a new reason, every
-    format fails closed on it instead of drifting — and so the bypass guard in
-    ``tests/meta/test_formatter_trust.py`` can hold these formats to the owner.
+    Asking by kind rather than "did I render anything?" is what makes it
+    exact: a report that already carries an error diagnostic AND a reason of
+    some other kind would, under the older guess, have had the second one
+    silently dropped.
+
+    Args:
+        report: The report being rendered.
+        **kwargs: Passed to ``protokit._trust.signals_other_than``; history's
+            renderers set ``only_from_entries=True`` because each entry's
+            suite shows that entry's own diagnostics.
     """
-    return () if shown else _trust.reasons(report)
+    return tuple(
+        s.text for s in _trust.signals_other_than(
+            report, _trust.ERROR_DIAGNOSTIC, **kwargs,
+        )
+    )
 
 
 def _suite_name_for(ctx: FormatterContext) -> str:
@@ -200,7 +209,7 @@ def _build_compat_testsuite(
     """
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
-    not_shown = _reasons_not_shown(report, error_diags)
+    not_shown = _reasons_not_shown(report)
     findings_count = len(report.findings)
     errors_count = len(error_diags) + len(not_shown)
 
@@ -294,7 +303,7 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
     when ``ctx.proto_file`` is set.
     """
     errors, warnings = sarif.collect_diagnostics_from_report(report)
-    errors.extend((None, reason) for reason in _reasons_not_shown(report, errors))
+    errors.extend((None, reason) for reason in _reasons_not_shown(report))
     findings_with_context = [
         (f, ctx.proto_file, None) for f in report.findings
     ]

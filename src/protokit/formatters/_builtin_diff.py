@@ -52,10 +52,17 @@ def _annotation_suffix(diff: Difference) -> str:
     A hook calling ``ctx.annotate(...)`` attaches an explanation to a
     difference; before V25 closed, no built-in format emitted it, so the
     feature was write-only.
+
+    The text is a hook author's, and this is the one place it reaches a line
+    of terminal or JUnit output, so it goes through the seam's sanitizer:
+    otherwise an annotation carrying a newline could forge a diagnostic line
+    or a second verdict under a real difference. ``diff_json`` keeps the
+    original strings — a JSON string encodes a newline without forging
+    anything, and a consumer wants what the hook wrote.
     """
     if not diff.annotations:
         return ""
-    return f" [{'; '.join(diff.annotations)}]"
+    return f" [{'; '.join(_trust.one_line(a) for a in diff.annotations)}]"
 
 
 def _format_diff_human(diff: Difference) -> str:
@@ -122,9 +129,13 @@ def _format_change_human(diff: Difference) -> str:
 
 
 def _advisory_lines(result: DiffResult) -> list[str]:
-    """Every non-error diagnostic, one yellow line each."""
+    """Every non-error diagnostic, one yellow line each.
+
+    Sanitized like an annotation: a warning's text can come from a plugin,
+    and "one line each" has to be true of the output, not just of the loop.
+    """
     return [
-        click.style(f"  ⚠ {d}", fg="yellow")
+        click.style(f"  ⚠ {_trust.one_line(str(d))}", fg="yellow")
         for d in result.diagnostics if d.level != "error"
     ]
 
@@ -421,11 +432,17 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
     # a walk that did not finish -- so the seam, not ``result.errors``, decides.
     untrusted = _trust.reasons(result)
     errors = 1 if untrusted else 0
-    # One testcase for the comparison verdict, plus one for the integrity
-    # diagnostics when present. ``tests`` counts CASES, not conditions, so
-    # ``tests - failures - errors`` never goes negative for an aggregator
-    # deriving a pass count that way (GitLab, some Jenkins renderers).
-    tests = 1 + errors
+    # A passing ``messages-equal`` case asserts the messages ARE equal. On a
+    # result with no differences that the seam distrusts, that is the V24
+    # claim in XML, beside the error case saying the run did not finish, so
+    # the verdict case is withheld and only the error speaks.
+    verdict = has_changes or not untrusted
+    # One testcase for the comparison verdict when there is one to state,
+    # plus one for the integrity diagnostics when present. ``tests`` counts
+    # CASES, not conditions, so ``tests - failures - errors`` never goes
+    # negative for an aggregator deriving a pass count that way (GitLab,
+    # some Jenkins renderers).
+    tests = (1 if verdict else 0) + errors
 
     suite = junit.make_testsuite(
         name="protokit-diff",
@@ -433,19 +450,20 @@ def diff_junit(result: DiffResult, ctx: FormatterContext) -> str:
         failures=failures,
         errors=errors,
     )
-    case = junit.make_testcase(
-        classname="diff", name="messages-equal",
-    )
-    if has_changes:
-        body = "\n".join(_difference_line(d) for d in result)
-        plural = "s" if n != 1 else ""
-        junit.append_failure(
-            case,
-            message=f"{n} difference{plural} found",
-            type_="diff",
-            body=body,
+    if verdict:
+        case = junit.make_testcase(
+            classname="diff", name="messages-equal",
         )
-    junit.add_testcase(suite, case)
+        if has_changes:
+            body = "\n".join(_difference_line(d) for d in result)
+            plural = "s" if n != 1 else ""
+            junit.append_failure(
+                case,
+                message=f"{n} difference{plural} found",
+                type_="diff",
+                body=body,
+            )
+        junit.add_testcase(suite, case)
     if untrusted:
         # A failure is "the messages differ" (a real verdict); an error is
         # "the comparison itself is untrustworthy". They can co-occur, but
