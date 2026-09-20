@@ -236,31 +236,24 @@ def _diff_exit_code(result: DiffResult) -> int:
 
     Error outranks "different" because 2 is the error rung, not a louder 1;
     ``compat`` already exits 2 on diagnostics before reporting its verdict.
-    Warnings deliberately do not move the code — diff's warning channel is
-    routine (a skipped map comparison emits one), unlike compat's.
+    **A ``--max-depth`` truncation joins it on 2**: a truncated comparison
+    did not run to completion, and the differences it found are a lower
+    bound, so exit 1 ("the tool ran and found a problem") would overstate
+    what it knows. Warnings deliberately do not move the code — diff's
+    warning channel is routine (a skipped map comparison emits one), unlike
+    compat's — and the seam never signals on an advisory warning either.
 
     NOTE: the diff CLI registers no hooks, so an error diagnostic is
     unreachable through it today; this closes the contract for Python API
     callers and wires the CLI correctly for when a hook surface lands.
 
-    **U8: the predicate is now the seam's.** It used to read
-    ``result.errors`` directly, which left ``--max-depth`` truncation out:
-    a comparison cut above the only difference has ``has_changes() ==
-    False``, so two genuinely differing messages exited **0**. U7 had
-    already closed the rendering half -- the output says INCOMPLETE and the
-    JSON emits ``"equal": false`` -- so the exit code was the last surface
-    still claiming the run succeeded, and it is the one CI reads.
-
-    Truncation lands on 2, not 1. Exit 1 means "the tool ran and found a
-    problem"; a truncated comparison did not run to completion, and the
-    differences it did find are a lower bound. That also keeps 2 outranking
-    1 as it already did for an error diagnostic -- 2 is the error rung, not
-    a louder 1 -- and matches ``compat``, which exits 2 on a diagnostic
-    before reporting any verdict.
-
-    Warnings still do not move the code: diff's warning channel is routine
-    (a skipped map comparison emits one) and the seam never signals on an
-    advisory warning diagnostic.
+    **The predicate is the seam's (U8).** It used to read ``result.errors``
+    directly, which left truncation out: a comparison cut above the only
+    difference has ``has_changes() == False``, so two genuinely differing
+    messages exited **0**. U7 had already closed the rendering half -- the
+    output says INCOMPLETE and the JSON emits ``"equal": false`` -- which
+    left the exit code as the last surface still claiming the run
+    succeeded, and it is the one CI reads.
     """
     if not _trust.is_trustworthy(result):
         return 2

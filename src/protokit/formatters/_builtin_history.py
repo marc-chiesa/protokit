@@ -204,12 +204,21 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     error_messages: list[tuple[str | None, str]] = []
     warning_messages: list[tuple[str | None, str]] = []
 
+    # Keyed on (level, commit, path, message) -- the same triple
+    # ``protokit._trust`` keys restatements on, plus the level -- and filled
+    # here, in the pass that already walks these diagnostics, rather than in a
+    # second walk of its own.
+    per_entry: Counter[tuple[str, str | None, str | None, str]] = Counter()
+
     for entry in report.entries:
         commit = entry.commit_sha
         for f in entry.report.findings:
             findings_with_context.append(
                 (f, ctx.proto_file, {"commit": commit}),
             )
+        for d in entry.report.diagnostics:
+            level = "error" if d.level == "error" else "warning"
+            per_entry[(level, commit, d.path, d.message)] += 1
         per_errs, per_warns = sarif.collect_diagnostics_from_report(
             entry.report, commit=commit,
         )
@@ -235,18 +244,8 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     # Not a fail-open — ``executionSuccessful`` was already false — which
     # is why it survived: the document was never wrong, only short.
     #
-    # Built from the entries directly rather than from the flattened
-    # message lists above, because those lists are what lost the path.
-    per_entry: Counter[tuple[str, str | None, str | None, str]] = Counter(
-        (
-            "error" if d.level == "error" else "warning",
-            entry.commit_sha,
-            d.path,
-            d.message,
-        )
-        for entry in report.entries
-        for d in entry.report.diagnostics
-    )
+    # Counted from the entries' own diagnostics above, not from the flattened
+    # message lists, because it is those lists that lost the path.
     for d in report.diagnostics:
         level = "error" if d.level == "error" else "warning"
         key = (level, d.commit, d.path, d.message)

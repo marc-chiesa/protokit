@@ -468,13 +468,23 @@ class _Tally:
     count: int = 0
     first: str | None = None
 
-    def record(self, err: FrameError) -> str:
-        """Tally ``err`` and return the line describing it."""
+    def record(self, err: FrameError, *, need_text: bool) -> str | None:
+        """Tally ``err``; return its description only when one is wanted.
+
+        ``need_text`` is the caller's ``warn`` flag. Under ``skip`` nothing
+        prints per fault and ``first`` is set once, so formatting every
+        later fault builds a string that is immediately discarded -- and a
+        corrupt file can carry millions of them, which is exactly the input
+        these modes exist for. The engine's own ``skip`` cost nothing per
+        fault; counting them has to cost something, but not this.
+        """
+        self.count += 1
+        if not need_text and self.first is not None:
+            return None
         text = (
             f"stream {err.stream_id!r} record {err.record_index} "
             f"(offset {err.offset}): {err.reason}"
         )
-        self.count += 1
         if self.first is None:
             self.first = text
         return text
@@ -518,7 +528,7 @@ def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
         loud = on_error == "warn"
 
         def sink(err: FrameError) -> None:
-            text = tally.record(err)
+            text = tally.record(err, need_text=loud)
             if loud:
                 click.echo(f"Warning: {text}", err=True)
 
@@ -664,9 +674,14 @@ def _exit_after_scan(on_error: str, matched: int, run: _Run, code: int) -> NoRet
         faults=run.tally.count if run.tally else 0,
         first_fault=run.tally.first if run.tally else None,
     )
-    if not _trust.is_trustworthy(report):
-        for reason in _trust.reasons(report):
-            click.echo(f"Error: {reason}", err=True)
+    # ``signals`` rather than ``is_trustworthy`` then ``reasons``, which
+    # would compute them twice. The text is already one printable line: the
+    # seam sanitizes every signal before returning it, which is why no
+    # renderer re-wraps it either.
+    untrusted = _trust.signals(report)
+    if untrusted:
+        for signal in untrusted:
+            click.echo(f"Error: {signal.text}", err=True)
         sys.exit(2)
     sys.exit(code)
 

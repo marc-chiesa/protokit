@@ -14,9 +14,10 @@ same-named imports, keep each version's imports under its own entry directory
 (auto-included) rather than on a shared ``-I`` path.
 
 Exit codes: 0 = analysis completed (any verdict, including ``no_clean_match``);
-2 = error (bad flags, an oversized message, a candidate that will not compile, or
-a message that parses under no candidate). The library never calls ``sys.exit``;
-this layer owns it.
+2 = error (bad flags, an oversized message, a candidate that will not compile, a
+message that parses under no candidate, or a ranking in which some -- not all --
+candidates could not be measured, which ``protokit._trust`` will not vouch for).
+The library never calls ``sys.exit``; this layer owns it.
 """
 
 from __future__ import annotations
@@ -244,12 +245,21 @@ def _exit_unless_vouched(report: object) -> None:
 
     The predicate is the seam's, shared with every other exit path, so a
     reason it learns tomorrow lands here rather than growing a second gate
-    beside it.
+    beside it. It stays in this module rather than moving to a shared helper
+    beside ``error_exit``: the bypass guard decides whether a command reaches
+    the seam by walking that command's own module for a ``_trust`` reference,
+    so a gate imported from elsewhere reads as a bypass however correct it is.
+
+    ``signals`` rather than ``is_trustworthy`` then ``reasons``, which would
+    compute them twice. Their text needs no sanitizing here -- the seam runs
+    every signal through ``one_line`` before returning it
+    (``_trust.signals``), which is why no renderer re-wraps it either.
     """
-    if _trust.is_trustworthy(report):
+    untrusted = _trust.signals(report)
+    if not untrusted:
         return
-    for reason in _trust.reasons(report):
-        click.echo(f"Error: {_trust.one_line(reason)}", err=True)
+    for signal in untrusted:
+        click.echo(f"Error: {signal.text}", err=True)
     sys.exit(2)
 
 
