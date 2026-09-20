@@ -85,6 +85,7 @@ from protokit.message.model import (
 )
 from protokit.schema.model import CommitDiagnostic, Finding
 from tests._trust_reports import (
+    ENTRY_SHA,
     bisect_report,
     compat_report,
     error_diagnostic,
@@ -215,6 +216,23 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         # per-entry verdict from one the renderer computed once.
         "second-entry-error": history_report(
             entry_diags=(_error(),), entries=2, broken_entry=1,
+        ),
+        # An aggregate diagnostic sharing the entry's commit and message but
+        # NOT its path. The seam counts two reasons; a renderer keying its
+        # restatement skip on the message alone counts one.
+        #
+        # This mode is here because its absence was a live defect (U8
+        # fold-in): no mode paired a path-scoped entry diagnostic with a
+        # path-distinct aggregate one, so neither the golden renderings nor
+        # the predicates ever rendered the case, and ``history --format
+        # sarif`` dropped a notification for two releases. The recording's
+        # coverage is exactly its fixtures' coverage — adding the fixture is
+        # the only thing that makes the case visible here.
+        "aggregate-same-message-other-path": history_report(
+            entry_diags=(error_diagnostic(_HOSTILE, path="acme.User.name"),),
+            aggregate=(CommitDiagnostic(
+                ENTRY_SHA, "error", "acme.User.email", _HOSTILE,
+            ),),
         ),
     },
     FormatterKind.COMPAT_BISECT: {

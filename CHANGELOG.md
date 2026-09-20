@@ -73,9 +73,9 @@ success verdict, human or machine, asks it first.
   a green `Messages are equal.`; `--format junit` reports an error testcase
   instead of a passing suite, and **withholds its `messages-equal` testcase
   entirely** rather than passing it beside the error — that case asserts the
-  very equality the run could not establish. **The exit code is still 0 in this case** — a
-  known issue, fixed with the rest of the exit-code contract later in this
-  release (U8); gate on the JSON `equal` key or the JUnit result until then.
+  very equality the run could not establish. The exit code for this case is
+  fixed with the rest of the exit-code contract later in this release: it is
+  now **2**, not 0.
 - **`protokit diff --format json`: `schema_version` is now `"0.2"`.** `equal` is
   `true` only when no difference was found *and* the comparison can be trusted:
   it is `false` for a truncated comparison, and for one carrying an error-level
@@ -143,6 +143,79 @@ ASCII for `history`, `bisect` and `lint`, and within cp1252 for `compat`, as
 those renderers were before; text quoted from a plugin or a compiler is
 reproduced as written, minus control characters, so its encoding is the
 plugin's to choose.
+
+### Fixed — BREAKING (U8: no CLI exits 0 on a run that did not complete)
+
+This release's headline outcome. A green exit from a protokit command now means
+the analysis ran; when it could not, the command says so and exits 2. Every exit
+decision in the CLI routes through `protokit._trust` — the same predicate the
+renderers adopted in U7 — so a command's exit code and its own output can no
+longer disagree about whether the run finished. Exit 1 keeps its meaning: the
+tool ran and found a problem.
+
+- **`protokit storage scan` / `head` / `count` exit 2 when records were
+  dropped.** `--on-error skip` and `--on-error warn` recover past a corrupt
+  record and continue; both then exited 0, so a scan that silently skipped
+  records was indistinguishable from one that read the whole file. The good
+  records still reach stdout exactly as before, and `skip` is still silent
+  about the individual faults — what changed is only whether the process
+  claims the scan succeeded. `--on-error raise` (the default) is unchanged.
+- **`protokit compat history` / `bisect` reject an unresolvable
+  `--proto-file`** (audit finding U15-1). A path that does not exist at the
+  range's NEW endpoint enumerated zero commits and exited 0 with
+  `no commits touch …`, hiding any break in the range. No typo is needed: a
+  proto renamed in-repo let a checked-in CI invocation pass forever. Both now
+  pre-flight the path and exit 2, as `check --since` already did.
+- **A rule pack can no longer decide the process exit code** (audit finding
+  U15-2). A pack whose module body called `sys.exit(0)` terminated the run with
+  its own code — exit 0, empty output, on a genuinely breaking schema — because
+  `SystemExit` does not derive from `Exception`. A pack raising anything other
+  than `AttributeError`/`TypeError` while its `RULES` were read escaped as a
+  traceback and exited 1, the code reserved for INCOMPATIBLE. Both are exit 2
+  now.
+- **A missing `git` binary is a tooling error, not a schema break** (audit
+  finding U15-4). `check --since`, `ci --base` and `bisect` exited 1 on a
+  machine without git; only `history` reported it correctly. All four exit 2.
+- **A rule pack's `print()` no longer corrupts machine output or defeats
+  `--quiet`** (audit finding U15-3). Rule functions run in-process while the
+  report is built and nothing separated their stdout from the CLI's, so one
+  `print()` prefixed the `--format json` document — `json.loads` failed on
+  protokit's own output — and reached stdout under `--quiet`, whose contract is
+  "exit code only". Pack output is captured and re-emitted on stderr, prefixed
+  and flattened; it is not discarded.
+- **A `--max-depth`-truncated `protokit diff` exits 2, not 0** (audit finding
+  U15-7). When the cut hid every difference the comparison reported no changes
+  and exited 0 on genuinely differing messages. U7 fixed the output; this is
+  the exit code, which is what CI reads. It is 2 rather than 1 because the run
+  did not finish — the differences it reported are a lower bound — and applies
+  under `--quiet` too.
+- **`protokit forensics match` / `drift` exit 2 on an incomplete run.** Both
+  fell off the end of their callback at 0 for every run that did not hard-error.
+  A ranking in which a candidate never parsed, or could not be measured because
+  a proto2 `required` field was absent, read exactly like a clean sweep: the
+  winner had won a smaller contest and nothing said so. The ranking still
+  renders in full. `drift` still exits 0 on divergences — they are what it was
+  asked to find.
+- **`protokit compat history --format sarif` no longer drops a diagnostic.** An
+  aggregate diagnostic sharing a per-entry one's commit and message but
+  carrying a *different* path was treated as a restatement of it and skipped,
+  so the seam reported two reasons and `--format junit` emitted two `<error>`
+  elements while SARIF emitted one notification. It keys on the same
+  `(commit, path, message)` triple the seam does now.
+  `executionSuccessful` was already `false`, so no document ever claimed
+  success — the count was short, not the verdict.
+
+*Upgrade impact:* every change above moves a path from exit 0 (or, for the
+rule-pack and missing-git cases, exit 1) to exit 2. A pipeline that treats any
+non-zero exit as failure sees runs start failing that used to pass; each one is
+a run where protokit did not analyse what it was asked to, and the exit code was
+the last surface still saying otherwise. **There is no opt-out flag.** A switch
+restoring a silent fail-open would be a supported way to keep shipping breaks,
+and it would outlive the release that introduced it. The two most likely to fire
+in an existing pipeline are `storage` under a non-default `--on-error` and
+`compat history`/`bisect` over a `--proto-file` that has been renamed; both are
+worth checking before upgrading. `protokit lint`'s `analysis-incomplete` gate is
+unchanged — it shipped in 0.15.1.
 
 ### Fixed — `protokit diff` exit codes
 

@@ -178,6 +178,15 @@ cccccccccccc OK (0 finding(s))
 ### COMPAT_HISTORY :: aggregate-only [control]
 cccccccccccc OK (0 finding(s))
 
+### COMPAT_HISTORY :: aggregate-same-message-other-path
+cccccccccccc INCOMPLETE (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! cccccccccccc: acme.User.name: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+    ! cccccccccccc: acme.User.email: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: aggregate-same-message-other-path [control]
+cccccccccccc OK (0 finding(s))
+
 ### COMPAT_HISTORY :: aggregate-uncommitted
 cccccccccccc OK (0 finding(s))
 # A..B: INCOMPLETE: the walk cannot be trusted:
