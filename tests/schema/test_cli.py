@@ -88,6 +88,59 @@ class TestCompatibleExit0:
         assert "COMPATIBLE" in result.output
 
 
+class TestWarningDiagnosticStillExits2:
+    """U8 adjacent behavior: compat stays stricter than the ``_trust`` seam.
+
+    The seam signals on error-level diagnostics; ``compat`` has always exited
+    2 on a **warning**-level one too -- "comparison caveats share the exit-2
+    contract", as the renderer loop says. U8 routed these exit paths through
+    the seam and deliberately kept that extra check, so the seam is the floor
+    and this is the ceiling compat keeps.
+
+    It needs a stub because the compat checker emits only ``level="error"``
+    diagnostics today (``checker.py`` builds one for a plugin crash and
+    nothing else), which makes the two branches observationally identical
+    through the CLI -- and therefore makes the preserved branch untestable
+    any other way. Without this, dropping the warning check from the exit
+    gate passes the whole suite.
+    """
+
+    def test_a_warning_only_report_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from protokit.message.model import Diagnostic
+        from protokit.schema.checker import SchemaChecker
+        from protokit.schema.model import CompatibilityLevel, CompatibilityReport
+
+        warned = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            findings=(),
+            diagnostics=(Diagnostic(
+                path=None, message="comparison caveat", level="warning",
+            ),),
+        )
+        monkeypatch.setattr(
+            SchemaChecker, "check", lambda *a, **k: warned,
+        )
+
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+        ])
+
+        # The seam vouches for this report -- no error-level diagnostic --
+        # so only compat's own stricter check can produce the 2.
+        from protokit import _trust
+        assert _trust.is_trustworthy(warned) is True
+        assert result.exit_code == 2, result.output
+        assert "Warning:" in result.output
+
+
 class TestIncompatibleExit1:
     def test_field_removed_exits_1(self, tmp_path: Path) -> None:
         old, new = _simple_pair(

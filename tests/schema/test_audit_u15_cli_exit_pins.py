@@ -372,8 +372,9 @@ def test_u15_2_rule_pack_calling_sys_exit_does_not_forge_exit_0(
         sys.modules.pop(pack_name, None)
 
 
+@pytest.mark.parametrize("raised", [RuntimeError, ValueError])
 def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
-    breaking_protos: tuple[Path, Path],
+    breaking_protos: tuple[Path, Path], raised: type[Exception],
 ) -> None:
     """A pack that raises while its RULES are read must exit 2, not 1.
 
@@ -382,6 +383,15 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
     ``sys.exit(0)`` pin above -- same function, same too-narrow guard --
     and fixing one while leaving the other is the failure mode this release
     exists to stop. Un-marked; stays as a regression test.
+
+    **Parametrized over the exception type, and that is load-bearing.** As
+    written the pin raised ``RuntimeError`` only, which U8's *other* fix --
+    ``_git_error_boundary`` now catching ``RuntimeError`` -- also converts
+    to exit 2. The mutation proof was therefore vacuous: restoring the
+    narrow ``(AttributeError, TypeError)`` guard still passed, because the
+    boundary caught what escaped. ``ValueError`` (the case this docstring
+    names below) is caught by nothing else, so it is what actually proves
+    this guard.
 
     Mechanism, as pinned: ``iter_rule_pack`` (schema/plugins.py) does ``for entry
     in rules``. Any exception from that iteration that is neither
@@ -401,7 +411,7 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
 
     class _BadRules:
         def __iter__(self):
-            raise RuntimeError("boom from __iter__")
+            raise raised("boom from __iter__")
 
     with _temp_rule_pack(pack_name, _BadRules()):
         result = CliRunner().invoke(compat_main, [
