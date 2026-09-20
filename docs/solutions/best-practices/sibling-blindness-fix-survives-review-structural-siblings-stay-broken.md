@@ -370,6 +370,19 @@ assert "no commits touch" not in result.output   # history / bisect
 assert "COMPATIBLE" not in result.output         # check / ci
 ```
 
+**Know what this assertion actually guarantees.** It catches reintroduction of
+*that exact string*, which is the regression it is written against and is worth
+having. It does not decide whether the output claims success: a renderer that
+states the same false claim in wording the assertion never enumerated — a
+synonym, a re-casing, a re-spacing — passes it. That limit is structural rather
+than a matter of listing more words, and pairing it with a differential check
+against a control rendering does not close it either, because a differential
+check is blind to anything the renderer prints unconditionally. Where the
+question is "does this output tell the reader the truth" rather than "did this
+known string come back", the sound form is a Recorded rendering: see
+[a predicate over rendered output cannot be made sound](predicate-guards-on-rendered-output-cannot-be-made-sound-record-the-rendering.md),
+established over four adversarial review rounds on PRs #73 and #74.
+
 **Checklist before you believe a parity test.** For each dimension the class
 claims parity over, is there a case at the **zero boundary** of that dimension?
 If not, the class proves the shared thing is correct, not that it is shared.

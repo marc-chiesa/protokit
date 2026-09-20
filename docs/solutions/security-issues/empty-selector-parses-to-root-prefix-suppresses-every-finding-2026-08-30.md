@@ -73,7 +73,7 @@ success.
 ## What Didn't Work
 
 **Validating at the CLI flag boundary.** The first fix rejected an empty
-value inside `_build_configured_checker` in `schema/cli.py`, which every
+value inside `_build_configured_checker` in `src/protokit/schema/cli.py`, which every
 compat subcommand routes through. It made all four subcommands exit 2 and
 the regression tests passed.
 
@@ -225,7 +225,7 @@ def test_empty_ignore_value_exits_2(self, tmp_path):
                                        "--ignore", ""])
     assert result.exit_code == 2
     assert "empty path suppresses every finding" in result.output   # specific
-    assert "COMPATIBLE" not in result.output
+    assert "COMPATIBLE" not in result.output   # see note below
 
 
 def test_truthy_empty_str_subclass_is_rejected(self):
@@ -240,6 +240,15 @@ def test_truthy_empty_str_subclass_is_rejected(self):
 The **baseline assertion is load-bearing**: without it, a test that asserts
 "no findings after the fix" cannot distinguish a working suppression from a
 schema that never had a finding.
+
+The `"COMPATIBLE" not in result.output` line is narrower than it looks. It
+catches reintroduction of that exact string, which is this defect's own
+regression and the reason it is here; it does not decide whether the output
+claims success, because a renderer stating the same false claim in wording the
+assertion never enumerated passes it. That limit cannot be closed by listing
+more words. Where the question is whether the output tells the reader the truth,
+the sound form is a Recorded rendering: see
+[a predicate over rendered output cannot be made sound](../best-practices/predicate-guards-on-rendered-output-cannot-be-made-sound-record-the-rendering.md).
 
 Prove non-vacuity with the repo's harness — the guard must make tests fail
 when broken:
