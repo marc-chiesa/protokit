@@ -27,12 +27,19 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
+from protokit import _trust
 from protokit.formatters import (
     FormatterKind,
     clear_user_formatters,
     register_formatter,
 )
-from protokit.schema.lint.cli import main as lint_main
+from protokit.schema.compile import LintCompileDiagnostic
+from protokit.schema.lint.cli import (
+    _analysis_incomplete_detail,
+)
+from protokit.schema.lint.cli import (
+    main as lint_main,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1391,7 +1398,8 @@ class TestAnalysisIncompleteExitGate:
         deliberately NOT gated in 0.15.1: excluding everything is an
         explicit user instruction, and a per-directory CI matrix where
         some directories legitimately match nothing would start failing.
-        U7/U8 own the decision when the `_trust` seam lands.
+        U8 owns the decision: the `_trust` seam (U7) moved the gate's
+        owner without widening its reach.
 
         This test exists so that flipping the behavior is a deliberate
         act with a visible diff, not an accident — and so the carve-out
@@ -1427,3 +1435,39 @@ class TestAnalysisIncompleteExitGate:
         assert result.exit_code != 2, result.output
         assert "analysis-incomplete" not in result.stderr
 
+
+
+class TestAnalysisIncompleteMessageMatchesItsPredicate:
+    """The gate's sentence is built from the same signals that fire it.
+
+    They were once separate: the gate asked ``protokit._trust`` while the
+    sentence counted runtime warnings. A report whose only reason was a
+    compile failure then exited 2 saying "0 of 0 runtime warning(s) mean a
+    rule did not run ()" — under a code CI greps for.
+    """
+
+    def test_a_compile_only_reason_is_named(self) -> None:
+        from protokit.schema.lint.model import LintReport
+        report = LintReport(diagnostics=(LintCompileDiagnostic(
+            level="error", message="protoc compilation failed",
+            category="protoc_subprocess",
+        ),))
+        assert not _trust.is_trustworthy(report)
+        gate = _analysis_incomplete_detail(report, _trust.signals(report))
+        assert "0 of 0 runtime warning(s)" not in gate
+        assert "protoc compilation failed" in gate
+
+    def test_the_runtime_warning_wording_is_unchanged(self) -> None:
+        """Adjacent behavior: the reachable case keeps its pinned sentence."""
+        from protokit.schema.lint.model import LintReport, LintRuntimeWarning
+        report = LintReport(runtime_warnings=(
+            LintRuntimeWarning(
+                category="rule_exception", rule_id="a/one", message="boom",
+            ),
+            LintRuntimeWarning(
+                category="min_severity_relaxed", rule_id=None, message="fyi",
+            ),
+        ))
+        gate = _analysis_incomplete_detail(report, _trust.signals(report))
+        assert "1 of 2 runtime warning(s) mean a rule did not run" in gate
+        assert "rule_exception" in gate

@@ -39,6 +39,7 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import assert_never
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -162,7 +163,26 @@ def _render_finding_line(finding: LintFinding, spec: LintRuleSpec | None) -> str
     severity = finding.severity.name  # "INFO" / "WARNING" / "ERROR"
     location = str(finding.location)
     message = _render_message(finding, spec)
-    return f"{severity} {location} [{finding.rule_id}] {message}"
+    # ``message`` is the rule's template interpolated with its own params,
+    # and ``rule_id`` is the pack's; both are its words, on a line agents grep.
+    return _trust.one_line(
+        f"{severity} {location} [{finding.rule_id}] {message}"
+    )
+
+
+def _reasons_not_shown(report: LintReport) -> tuple[str, ...]:
+    """The seam's reasons other than the compile failures already rendered.
+
+    Every lint format shows compile diagnostics in a channel of its own (the
+    ``diagnostic[category]:`` lines, an ``<error>`` testcase, a SARIF
+    notification), so the seam's ``COMPILE_DIAGNOSTIC`` signals for them would
+    be a second copy. What is left is one reason per *rule* that did not run.
+    """
+    return tuple(
+        s.text for s in _trust.signals_other_than(
+            report, _trust.COMPILE_DIAGNOSTIC,
+        )
+    )
 
 
 def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
@@ -172,6 +192,11 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     For clean runs (no findings, no diagnostics), returns an empty
     string — the CLI is responsible for any "no findings" sentinel
     or the ``--statistics`` footer (see Unit 4 in the D3 plan).
+
+    A run is clean only if ``protokit._trust`` vouches for it. When a
+    selected rule did not run (``rule_exception`` / ``unloaded_rule``
+    runtime warnings), a trailing ``INCOMPLETE:`` block lists each
+    reason, so an empty findings list cannot read as a pass.
 
     Findings render as::
 
@@ -216,11 +241,28 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     # defensive fallbacks.
     diag: LintCompileDiagnostic
     for diag in report.diagnostics:
-        lines.append(f"diagnostic[{diag.category}]: {diag.message}")
+        # ``message`` can be a compiler's own words (a protoc dump is
+        # multi-line), and this line carries a stable ``diagnostic[...]:``
+        # prefix that agents grep for, so it is flattened like every other
+        # foreign text this renderer prints.
+        lines.append(
+            f"diagnostic[{diag.category}]: {_trust.one_line(str(diag.message))}"
+        )
 
     for finding in report.findings:
         spec = report.specs.get(finding.rule_id)
         lines.append(_render_finding_line(finding, spec))
+
+    # This renderer prints no success verdict -- a clean run is the empty
+    # string -- which is exactly why it must say so when that emptiness is
+    # not a verdict: a rule that raised produces zero findings.
+    untrusted = _reasons_not_shown(report)
+    if untrusted:
+        lines.append(
+            f"INCOMPLETE: {len(untrusted)} selected rule(s) did not run; "
+            "the findings above are a lower bound"
+        )
+        lines.extend(f"  {reason}" for reason in untrusted)
 
     return "\n".join(lines)
 
@@ -310,6 +352,17 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     mypy-strict narrowing pattern documented on
 #:     :class:`LintRuntimeWarning`) must extend their match
 #:     construct to handle BOTH new cases.
+#:   - **0.16.0 bump**: ``"0.6"`` → ``"0.7"`` under trigger (b), a change in
+#:     the meaning of an existing field. ``runs[].invocations[0]
+#:     .executionSuccessful`` was ``false`` only for an error-level compile
+#:     diagnostic; it is now ``false`` whenever ``protokit._trust`` distrusts
+#:     the report, which adds the runs where a selected rule raised or was
+#:     never loaded (``rule_exception`` / ``unloaded_rule``). A consumer
+#:     reading that boolean sees a run flip from success to failure without
+#:     the findings list changing, which is exactly what the field now means.
+#:     ``lint_json`` carries no verdict field and is unchanged in shape; it
+#:     shares the constant, so its version moves with SARIF's by the
+#:     same-value parity rule above.
 #:   - **0.7.0 bump**: ``"0.5"`` → ``"0.6"`` for the eighth and ninth
 #:     ``LintRuntimeWarning.category`` Literal values
 #:     (``"contradictory_disable_config"`` + ``"unknown_rule_id"``),
@@ -322,7 +375,7 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     bump (``0.6.0`` → ``0.7.0``) is a distinct surface that lands
 #:     with the CHANGELOG fold per the pre-1.0 version-bump
 #:     communication contract.
-_LINT_JSON_SCHEMA_VERSION: str = "0.6"
+_LINT_JSON_SCHEMA_VERSION: str = "0.7"
 
 
 def lint_json(report: LintReport, _ctx: FormatterContext) -> str:
@@ -512,12 +565,20 @@ def _build_lint_testsuite(
     the failure count. Empty-suite fallback emits a single passing
     ``<testcase classname="lint" name="clean"/>`` so CI consumers
     don't read "no tests ran."
+
+    Each reason ``protokit._trust`` gives for not trusting the report
+    (a selected rule raised or was never loaded) is an ``<error>``
+    testcase too. Such a run produces *zero* findings, so without
+    them it took the ``clean`` fallback and rendered as a green suite
+    beside a human report saying INCOMPLETE (R4). The runtime
+    warnings themselves still go to ``<system-out>``, all of them.
     """
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
+    untrusted = _reasons_not_shown(report)
     findings_count = len(report.findings)
-    errors_count = len(error_diags)
+    errors_count = len(error_diags) + len(untrusted)
 
     has_real_cases = findings_count > 0 or errors_count > 0
     tests_count = findings_count + errors_count if has_real_cases else 1
@@ -552,6 +613,15 @@ def _build_lint_testsuite(
         )
         junit.append_error(
             case, message=diag.message, type_="error", body=diag.message,
+        )
+        junit.add_testcase(suite, case)
+
+    for index, reason in enumerate(untrusted, start=1):
+        case = junit.make_testcase(
+            classname="analysis-incomplete", name=f"rule-did-not-run-{index}",
+        )
+        junit.append_error(
+            case, message=reason, type_="analysis-incomplete", body=reason,
         )
         junit.add_testcase(suite, case)
 
@@ -877,8 +947,14 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
             "properties": {"category": diag.category},
         })
 
+    # A selected rule that raised or never loaded means the run did not
+    # execute successfully, however clean ``results`` looks: a crashing rule
+    # contributes zero results (R4). Only the boolean moves. The warnings
+    # themselves stay in ``runs[].properties.runtime_warnings`` and out of
+    # ``toolExecutionNotifications``, which is compile-stage only by design
+    # so a consumer can filter the two channels apart.
     invocation: dict[str, Any] = {
-        "executionSuccessful": not error_diags,
+        "executionSuccessful": _trust.is_trustworthy(report),
     }
     if notifications:
         invocation["toolExecutionNotifications"] = notifications

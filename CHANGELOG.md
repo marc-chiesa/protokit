@@ -41,6 +41,109 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `DiffResult.filter` accept it too (ignore selectors still take no bracket
   suffix, as before).
 
+### Fixed — BREAKING (U7: human and machine output agree on success)
+
+Every report type already recorded when it had come back empty for the wrong
+reason — a plugin crashed, `--max-depth` cut the walk short, a lint rule raised.
+Some renderers looked and some did not, so one report could print a pass on the
+terminal and an error in CI — or, for `lint`, a crashed run could render as a
+green JUnit suite. A new internal module, `protokit._trust`, now owns that
+question for all five report kinds, and every built-in renderer that states a
+success verdict, human or machine, asks it first.
+
+- **`protokit compat` no longer prints a pass over a check that broke** (audit
+  finding V23). With zero findings and an error-level diagnostic, `check` / `ci`
+  print `INCOMPLETE` instead of `COMPATIBLE`; a `history` entry prints
+  `INCOMPLETE` instead of `OK`; `bisect` prints `INCOMPLETE` instead of
+  `no break found`. Each lists the reasons. `INCOMPATIBLE` / `BROKEN` / a found
+  breaking commit are unchanged — a finding is definitive — but are now
+  followed by the reasons too. `history --format junit` gains a trailing
+  `…-walk` suite for an error no commit entry carries, which it used to drop.
+  Exit codes are unchanged: these runs already exited 2.
+- **`protokit compat --format json`: `compatible` is no longer `true` over a
+  check that broke.** `check` / `ci` emit `"compatible": false` when there are
+  no findings but an error-level diagnostic, and `history` does the same per
+  entry (both were `true`). All three compat JSON payloads gain `complete`
+  (bool) — `history` per entry as well — so a consumer can tell "nothing
+  found" from "did not finish"; for `bisect`, whose `"breaking_commit": null`
+  *is* the "no break" answer, it is the only way to tell.
+- **A `--max-depth`-truncated `protokit diff` is no longer reported as equal**
+  (audit finding V24). When the cut hides every difference, the human output
+  says `INCOMPLETE` and names the subtrees that were not compared, instead of
+  a green `Messages are equal.`; `--format junit` reports an error testcase
+  instead of a passing suite, and **withholds its `messages-equal` testcase
+  entirely** rather than passing it beside the error — that case asserts the
+  very equality the run could not establish. **The exit code is still 0 in this case** — a
+  known issue, fixed with the rest of the exit-code contract later in this
+  release (U8); gate on the JSON `equal` key or the JUnit result until then.
+- **`protokit diff --format json`: `schema_version` is now `"0.2"`.** `equal` is
+  `true` only when no difference was found *and* the comparison can be trusted:
+  it is `false` for a truncated comparison, and for one carrying an error-level
+  diagnostic (previously `true` in both cases). New top-level keys: `complete`
+  (bool), false in exactly those two cases — the same meaning it has in the
+  compat JSON payloads, and wider than the Python `DiffResult.is_complete`,
+  which is about truncation alone — and `truncated_paths` (list of paths),
+  naming what a truncation cut. Each difference entry gains `annotations`
+  (list of strings, empty when there are none).
+- **REPORT-hook annotations are rendered** (audit finding V25). Text attached
+  with `ctx.annotate(...)` was dropped by every built-in diff format; it now
+  appears as a trailing `[a; b]` in human and JUnit output and as the
+  `annotations` list in JSON. In the two text formats a control character in
+  an annotation is replaced by a space, so a hook cannot forge a diagnostic
+  line or a second verdict; JSON carries the annotation verbatim, since a JSON
+  string encodes a newline without forging anything.
+- **`protokit lint` no longer renders a crashed run as clean.** When a selected
+  rule raised or was never loaded (`rule_exception` / `unloaded_rule`) the run
+  produces no findings for that rule, and every format read that as a pass:
+  human stdout was empty, `--format junit` emitted a passing `clean` testcase,
+  and `--format sarif` emitted `"executionSuccessful": true`. Now human stdout
+  ends with an `INCOMPLETE:` block listing each rule, JUnit emits one
+  `analysis-incomplete` `<error>` testcase per rule (and no `clean` case), and
+  SARIF emits `"executionSuccessful": false`. **A rule is counted once**, not
+  once per element it was dispatched over: one rule raising on a nine-field
+  message is one line and one testcase naming that rule, not nine. A schema
+  that failed to compile counts the same way — it too produced no findings for
+  a reason other than cleanliness. The runtime warnings themselves are where
+  they were (stderr, `<system-out>`, `runs[].properties.runtime_warnings`), and
+  the exit-2 `analysis-incomplete` gate is unchanged; it and every renderer now
+  read `protokit._trust`, so the report and the exit code cannot disagree.
+  `--format json` is unchanged: it states no verdict, and carries every runtime
+  warning with its category.
+- **BREAKING — `protokit lint` wire version `"0.6"` → `"0.7"`** (`lint --format
+  json`'s `schema_version`, and `runs[].properties.lint_schema_version` in
+  SARIF, which share the constant). `invocations[0].executionSuccessful` was
+  false only for a compile error; it is now false whenever the analysis did not
+  complete. A consumer pinned to `"0.6"` sees a run flip from success to failure
+  with an unchanged findings list, which is what the field now means. The JSON
+  payload's shape is unchanged.
+- **A rule pack's own text can no longer forge a line.** A finding's message,
+  its rule id and its path are written by whichever rule pack produced it, and
+  every human renderer interpolated them raw: a message containing a newline
+  printed an `error[...]:` line at column 0 in `compat`, `history`, `bisect`
+  and `lint` output, next to the stable prefixes CI greps for. They are
+  flattened now, like the other plugin-authored channels. Machine formats are
+  unaffected: XML and JSON encode a newline without forging anything.
+- The `protokit diff` human output with differences replaces its separate
+  `Errors:` block and truncation footer with one `Not trustworthy` block, and
+  an untrusted result with no differences lists its warnings before that block
+  rather than after the verdict line. Diagnostic text shown as a reason, or as
+  a warning, has control characters replaced by spaces, so a rule pack's
+  message cannot forge an `error[…]:` line in the report.
+
+*Upgrade impact:* anything parsing the human output for `COMPATIBLE`, `OK`,
+`no break found` or `Messages are equal.` sees those strings only on runs that
+completed. A consumer reading `equal` from `diff --format json`, or `compatible`
+from `compat --format json`, gets `false` where it used to get a misleading
+`true`; one that validates a closed key set must accept the new keys
+(`complete` everywhere it was added, plus `truncated_paths` and per-entry
+`annotations` for diff). A CI dashboard ingesting `lint --format junit` or
+`--format sarif` starts showing a crashed-rule run as an error, which is what
+its exit code always said. The wording protokit itself adds to human output is
+ASCII for `history`, `bisect` and `lint`, and within cp1252 for `compat`, as
+those renderers were before; text quoted from a plugin or a compiler is
+reproduced as written, minus control characters, so its encoding is the
+plugin's to choose.
+
 ### Fixed — `protokit diff` exit codes
 
 - **A malformed selector now exits 2, not 1** (audit finding U15-6). `--ignore`,

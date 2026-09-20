@@ -46,6 +46,15 @@ exit 1), which closed U15-6 ahead of U8, in the same 0.16.0 row. Its pin
 XPASSed under strict mode and is un-marked below; the test stays as a
 plain regression test.
 
+**Split — U15-7.** The pin asserted two things: the output must not
+claim equality, and the exit code must not be 0. U7 (the ``_trust``
+seam, V24) closed the first — every renderer and the CLI's equal
+short-circuit now ask the seam, so a truncated comparison prints
+INCOMPLETE and emits ``"equal": false``. That half is un-marked below.
+The exit code is U8's decision (1 or 2), so that half stays a
+strict-xfail pin of its own rather than keeping the closed half hidden
+behind it.
+
 **Deliberately not pinned — closed by 0.15.1.** The original U15-1
 claim also covered a malformed ``--ignore`` on ``history`` / ``bisect``
 (including on an empty commit range, which skipped checker
@@ -77,7 +86,7 @@ import types
 from pathlib import Path
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from protokit.message.cli import main as diff_main
 from protokit.schema.cli import main as compat_main
@@ -775,53 +784,81 @@ def test_u15_6_diff_flag_validation_errors_exit_2_not_1(
 # ---------------------------------------------------------------------------
 
 
+def _diff_nested_at_depth(
+    order_proto: Path, nested_pair: tuple[Path, Path], depth: str,
+    *extra: str,
+) -> Result:
+    left, right = nested_pair
+    return _diff([
+        "--proto", str(order_proto), "--message-type", "acme.Order",
+        "--text-format", "--max-depth", depth, *extra, str(left), str(right),
+    ])
+
+
+@pytest.mark.parametrize("depth", ["0", "1"])
+def test_u15_7_truncated_comparison_is_not_reported_as_equal(
+    order_proto: Path, nested_pair: tuple[Path, Path], depth: str,
+) -> None:
+    """``--max-depth`` must not turn "did not look" into "are equal".
+
+    **Flipped — U7 (V24).** This half of the original U15-7 pin closed when
+    every renderer began asking ``protokit._trust`` before claiming
+    equality; it is un-marked and stays as a plain regression test. The
+    other half — the exit code — is the pin below.
+
+    Mechanism, as pinned: the truncation is recorded as a ``warning``
+    diagnostic, and the human short-circuit in ``message/cli.py`` only
+    refused to print the green stub for ``result.errors``. Observed on
+    0.15.1 for payloads differing only at ``mid.inner.label``:
+    ``--max-depth 0`` and ``--max-depth 1`` both printed ``Messages are
+    equal.``; ``--format json`` emitted ``"equal": true``; ``--verbose``
+    still led with ``Messages are equal.`` before the warning. Without
+    the flag the same pair reports ``~ mid.inner.label: 'L' -> 'R'``
+    (control test below).
+    """
+    human = _diff_nested_at_depth(order_proto, nested_pair, depth)
+    assert "Messages are equal." not in human.stdout, (
+        f"--max-depth {depth} truncated the comparison above the only "
+        f"difference yet claimed equality: {human.stdout!r}"
+    )
+    assert "INCOMPLETE" in human.stdout
+
+    verbose = _diff_nested_at_depth(order_proto, nested_pair, depth, "--verbose")
+    assert "Messages are equal." not in verbose.stdout
+    assert "INCOMPLETE" in verbose.stdout
+
+    payload = json.loads(_diff_nested_at_depth(
+        order_proto, nested_pair, depth, "--format", "json",
+    ).stdout)
+    assert payload["equal"] is False
+    assert payload["complete"] is False
+    assert payload["truncated_paths"]
+
+
 @pytest.mark.parametrize("depth", ["0", "1"])
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
     reason=(
         "U15-7: with --max-depth truncating before the differing "
-        "subtree, DiffResult.has_changes() is False and the truncation "
-        "is only a warning-level diagnostic, so message/cli.py's "
-        "`not result.has_changes() and not result.errors and not "
-        "verbose` short-circuit prints 'Messages are equal.' and exits "
-        "0 on genuinely differing payloads."
+        "subtree, DiffResult.has_changes() is False, so "
+        "message/cli.py's `_diff_exit_code` returns 0 on genuinely "
+        "differing payloads. U7 closed the rendering half (the output "
+        "now says INCOMPLETE and \"equal\": false); the exit code is "
+        "U8's, which owns the 1-vs-2 contract."
     ),
 )
-def test_u15_7_truncated_comparison_is_not_reported_as_equal(
+def test_u15_7_truncated_comparison_does_not_exit_0(
     order_proto: Path, nested_pair: tuple[Path, Path], depth: str,
 ) -> None:
-    """``--max-depth`` must not turn "did not look" into "are equal".
-
-    Mechanism: the truncation is recorded as a ``warning``
-    diagnostic, and the human short-circuit in ``message/cli.py``
-    only refuses to print the green stub for ``result.errors``.
-    ``_diff_exit_code`` then sees no differences and returns 0.
-
-    Observed on 0.15.1 for payloads differing only at
-    ``mid.inner.label``: ``--max-depth 0`` and ``--max-depth 1`` both
-    print ``Messages are equal.`` and exit 0; ``--quiet`` exits 0
-    silently; ``--format json`` emits ``"equal": true`` with the
-    truncation demoted to a warning; ``--verbose`` still leads with
-    ``Messages are equal.`` before the warning. Without the flag the
-    same pair reports ``~ mid.inner.label: 'L' -> 'R'`` and exits 1
-    (control test below). The 0.16.0 plan (U7/V24) specifies the fix:
-    "a max_depth-truncated comparison of genuinely-differing nested
-    messages prints an INCOMPLETE verdict and emits ``equal: false``".
+    """A truncated comparison that found nothing must not exit 0.
 
     The pin deliberately does not fix an exact non-zero code: U8
     ("no CLI exits 0 on a run that did not complete") leaves the
     choice between 1 (different) and 2 (could not run) to the fix.
+    ``--quiet`` exits 0 silently today for the same reason.
     """
-    left, right = nested_pair
-    result = _diff([
-        "--proto", str(order_proto), "--message-type", "acme.Order",
-        "--text-format", "--max-depth", depth, str(left), str(right),
-    ])
-    assert "Messages are equal." not in result.stdout, (
-        f"--max-depth {depth} truncated the comparison above the only "
-        f"difference yet claimed equality: {result.stdout!r}"
-    )
+    result = _diff_nested_at_depth(order_proto, nested_pair, depth)
     assert result.exit_code != 0, (
         f"--max-depth {depth} exited 0 on genuinely differing messages"
     )

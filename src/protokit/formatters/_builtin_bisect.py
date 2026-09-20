@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import xml.etree.ElementTree as ET
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -32,7 +33,13 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
       {proto_file}``. ``proto_file`` comes from ``ctx`` when
       available.
     - **Clean walk**: emit ``# {range}: no break found across
-      N commit(s)``.
+      N commit(s)`` -- only when ``protokit._trust`` vouches for the
+      report. A walk in which a commit's check broke has not shown
+      there is no break, so it renders ``INCOMPLETE`` instead (V23).
+
+    Every state is followed by the seam's reasons when there are any:
+    a break found *after* a commit whose check broke may not be the
+    first one.
 
     Args:
         report: The bisect report to render.
@@ -41,18 +48,34 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
     Returns:
         A multi-line string.
     """
+    untrusted = _trust.reasons(report)
+    said_incomplete = False
     if report.breaking_commit is not None:
         lines = [f"first breaking commit: {report.breaking_commit}"]
         for f in report.breaking_findings:
-            lines.append(f"  {f}")
-        return "\n".join(lines)
-    if report.commits_walked == 0:
+            # ``Finding.__str__`` embeds the rule pack's own message.
+            lines.append(_trust.one_line(f"  {f}"))
+    elif report.commits_walked == 0:
         proto_file = ctx.proto_file or "<unknown>"
-        return f"# {report.range_spec}: no commits touch {proto_file}"
-    return (
-        f"# {report.range_spec}: no break found across "
-        f"{report.commits_walked} commit(s)"
-    )
+        lines = [f"# {report.range_spec}: no commits touch {proto_file}"]
+    elif untrusted:
+        lines = [
+            f"# {report.range_spec}: INCOMPLETE: walked "
+            f"{report.commits_walked} commit(s), but not every check finished"
+        ]
+        said_incomplete = True
+    else:
+        lines = [
+            f"# {report.range_spec}: no break found across "
+            f"{report.commits_walked} commit(s)"
+        ]
+    if untrusted:
+        if not said_incomplete:
+            lines.append(
+                f"# {report.range_spec}: INCOMPLETE: the walk cannot be trusted:"
+            )
+        lines.extend(f"    ! {reason}" for reason in untrusted)
+    return "\n".join(lines)
 
 
 def bisect_json(report: BisectReport, ctx: FormatterContext) -> str:
@@ -86,11 +109,15 @@ def bisect_junit(report: BisectReport, ctx: FormatterContext) -> str:
     Empty walks (no commits in range) emit a single passing
     testcase named ``"no-commits"`` so the suite isn't empty.
     """
+    # Local import — see ``_builtin_history.history_junit`` for the cycle.
+    from protokit.formatters._builtin_compat import _reasons_not_shown
+
     del ctx  # range/sha info comes from the report itself
     failures = 1 if report.breaking_commit is not None else 0
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
-    errors = len(error_diags)
+    not_shown = _reasons_not_shown(report)
+    errors = len(error_diags) + len(not_shown)
 
     cases: list[ET.Element] = []
     if report.breaking_commit is not None:
@@ -113,6 +140,11 @@ def bisect_junit(report: BisectReport, ctx: FormatterContext) -> str:
             name=d.path or "(global)",
         )
         junit.append_error(case, message=d.message, type_="error", body=d.message)
+        cases.append(case)
+
+    for reason in not_shown:
+        case = junit.make_testcase(classname="diagnostic", name="(untrusted)")
+        junit.append_error(case, message=reason, type_="error", body=reason)
         cases.append(case)
 
     if not cases:
@@ -155,7 +187,10 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
     commits_walked) flows into ``run.properties`` for
     downstream consumption.
     """
-    from protokit.formatters._builtin_compat import _protokit_version
+    from protokit.formatters._builtin_compat import (
+        _protokit_version,
+        _reasons_not_shown,
+    )
 
     findings_with_context: list[
         tuple[Finding, str | None, dict[str, str] | None]
@@ -173,6 +208,9 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))
 
+    error_messages.extend(
+        (None, reason) for reason in _reasons_not_shown(report)
+    )
     run = sarif.build_run(
         findings_with_context=findings_with_context,
         error_messages=error_messages,

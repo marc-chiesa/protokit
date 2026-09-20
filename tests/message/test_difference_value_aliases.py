@@ -133,7 +133,7 @@ class TestJsonDualEmit:
 
     def test_output_carries_schema_version(self) -> None:
         result, _ = _modified_diff()
-        assert _json(result)["schema_version"] == "0.1"
+        assert _json(result)["schema_version"] == "0.2"
 
 
 class TestFormattersDoNotSelfWarn:

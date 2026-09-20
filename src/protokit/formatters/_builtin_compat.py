@@ -15,6 +15,7 @@ from typing import Any
 
 import click
 
+from protokit import _trust
 from protokit.formatters import _junit_xml as junit
 from protokit.formatters import _sarif_json as sarif
 from protokit.formatters._registry import (
@@ -47,10 +48,14 @@ def _format_finding_human(finding: Finding) -> str:
         fg=color,
         bold=True,
     )
-    path_str = str(finding.path) if finding.path else "(root)"
+    # ``message``, ``rule_id`` and the path are a rule pack's words. Each is
+    # flattened before it is styled -- after styling the line carries click's
+    # own escape codes, which the sanitizer would flatten too.
+    path_str = _trust.one_line(str(finding.path) if finding.path else "(root)")
     path_styled = click.style(path_str, bold=True)
-    rule = click.style(f"({finding.rule_id})", fg="cyan")
-    return f"  {tag} {path_styled}: {finding.message} {rule}"
+    rule = click.style(f"({_trust.one_line(str(finding.rule_id))})", fg="cyan")
+    message = _trust.one_line(str(finding.message))
+    return f"  {tag} {path_styled}: {message} {rule}"
 
 
 def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
@@ -63,8 +68,13 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
 
     Returns:
         A multi-line string. Header names the profile; body lists
-        each finding; trailer shows the verdict (COMPATIBLE or
-        INCOMPATIBLE in color).
+        each finding, then every reason ``protokit._trust`` gives for
+        not trusting the report; trailer shows the verdict in color.
+        ``COMPATIBLE`` is printed only when the seam vouches for the
+        report: zero findings from a check that broke part-way is
+        ``INCOMPLETE``, not a pass (V23). ``INCOMPATIBLE`` needs no
+        such consent -- a finding is definitive however the rest of
+        the check went.
     """
     del ctx  # unused; level is on the report itself
     lines = []
@@ -77,10 +87,19 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
     for finding in report:
         lines.append(_format_finding_human(finding))
 
-    if report.is_compatible:
-        verdict = click.style("COMPATIBLE", fg="green", bold=True)
-    else:
+    untrusted = _trust.reasons(report)
+    for reason in untrusted:
+        lines.append(click.style(f"  ! {reason}", fg="red"))
+
+    if not report.is_compatible:
         verdict = click.style("INCOMPATIBLE", fg="red", bold=True)
+    elif untrusted:
+        verdict = click.style(
+            "INCOMPLETE: no findings, but the check did not finish",
+            fg="red", bold=True,
+        )
+    else:
+        verdict = click.style("COMPATIBLE", fg="green", bold=True)
     lines.append("")
     lines.append(verdict)
     return "\n".join(lines)
@@ -89,10 +108,14 @@ def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:
 def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
     """Render a CompatibilityReport as pretty-printed JSON.
 
-    Returns the same shape the schema CLI has emitted since
-    Phase 1: ``compatible`` (bool), ``level`` (string),
-    ``findings`` (list of dicts), ``diagnostics`` (list of dicts),
-    ``summary`` (severity-bucket counts).
+    Returns the shape the schema CLI has emitted since Phase 1:
+    ``compatible`` (bool), ``level`` (string), ``findings`` (list of
+    dicts), ``diagnostics`` (list of dicts), ``summary``
+    (severity-bucket counts) — plus, since 0.16.0, ``complete``
+    (bool): whether ``protokit._trust`` vouches for the report.
+    ``compatible`` is a verdict and needs that consent: zero findings
+    from a check that broke is ``"compatible": false, "complete":
+    false``, matching the human renderer's ``INCOMPLETE`` (R4).
 
     Args:
         report: The report to render.
@@ -102,8 +125,10 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
         A JSON string with two-space indentation.
     """
     del ctx
+    complete = _trust.is_trustworthy(report)
     payload: dict[str, Any] = {
-        "compatible": report.is_compatible,
+        "compatible": report.is_compatible and complete,
+        "complete": complete,
         "level": report.level.value,
         "findings": [
             {
@@ -127,6 +152,32 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
         },
     }
     return json.dumps(payload, indent=2)
+
+
+def _reasons_not_shown(report: object, **kwargs: bool) -> tuple[str, ...]:
+    """The seam's reasons this format does not already render structurally.
+
+    The JUnit and SARIF renderers turn each error diagnostic into a case of
+    its own, carrying the path and commit a flat sentence would lose — so
+    they tell the seam that much (``ERROR_DIAGNOSTIC``) and render whatever
+    else it knows. Today that is nothing; the point is the day it is not.
+
+    Asking by kind rather than "did I render anything?" is what makes it
+    exact: a report that already carries an error diagnostic AND a reason of
+    some other kind would, under the older guess, have had the second one
+    silently dropped.
+
+    Args:
+        report: The report being rendered.
+        **kwargs: Passed to ``protokit._trust.signals_other_than``; history's
+            renderers set ``only_from_entries=True`` because each entry's
+            suite shows that entry's own diagnostics.
+    """
+    return tuple(
+        s.text for s in _trust.signals_other_than(
+            report, _trust.ERROR_DIAGNOSTIC, **kwargs,
+        )
+    )
 
 
 def _suite_name_for(ctx: FormatterContext) -> str:
@@ -162,8 +213,9 @@ def _build_compat_testsuite(
     """
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
+    not_shown = _reasons_not_shown(report)
     findings_count = len(report.findings)
-    errors_count = len(error_diags)
+    errors_count = len(error_diags) + len(not_shown)
 
     has_real_cases = findings_count > 0 or errors_count > 0
     tests_count = findings_count + errors_count if has_real_cases else 1
@@ -195,6 +247,11 @@ def _build_compat_testsuite(
             name=d.path or "(global)",
         )
         junit.append_error(case, message=d.message, type_="error", body=d.message)
+        junit.add_testcase(suite, case)
+
+    for reason in not_shown:
+        case = junit.make_testcase(classname="diagnostic", name="(untrusted)")
+        junit.append_error(case, message=reason, type_="error", body=reason)
         junit.add_testcase(suite, case)
 
     if not has_real_cases:
@@ -250,6 +307,7 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
     when ``ctx.proto_file`` is set.
     """
     errors, warnings = sarif.collect_diagnostics_from_report(report)
+    errors.extend((None, reason) for reason in _reasons_not_shown(report))
     findings_with_context = [
         (f, ctx.proto_file, None) for f in report.findings
     ]

@@ -128,7 +128,10 @@ SEAM_MODULES = (
 # absent-is-skipped rule above would otherwise pass over a typo'd seam name
 # silently. It compares names already in SEAM_MODULES, so a seam that lands
 # under a spelling SEAM_MODULES does not list goes into SEAM_MODULES first.
-LANDED_SEAMS: frozenset[str] = frozenset({"protokit._fieldview"})
+LANDED_SEAMS: frozenset[str] = frozenset({
+    "protokit._fieldview",
+    "protokit._trust",
+})
 
 # Function-level imports that exist to break a load-time cycle: the named
 # importer's *runtime* imports of the named module occur only inside function
