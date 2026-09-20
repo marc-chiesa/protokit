@@ -1,0 +1,321 @@
+### DIFF :: trusted
+Messages are equal.
+
+### DIFF :: error
+No differences found, but the comparison is not trustworthy:
+  ✗ error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### DIFF :: error [control]
+Messages are equal.
+
+### DIFF :: error-and-truncated
+No differences found, but the comparison is not trustworthy:
+  ✗ error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+  ✗ comparison truncated at max depth: 1 subtree(s) not compared (inner)
+
+### DIFF :: error-and-truncated [control]
+Messages are equal.
+
+### DIFF :: error-and-warning
+No differences found, but the comparison is not trustworthy:
+  ⚠ error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+  ✗ error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### DIFF :: error-and-warning [control]
+Messages are equal.
+  ⚠ error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### DIFF :: error-with-differences
+Found 1 difference:
+
+  ~ name: 'A' → 'B' [error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed]
+
+Not trustworthy — there may be more differences:
+  ✗ error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### DIFF :: error-with-differences [control]
+Found 1 difference:
+
+  ~ name: 'A' → 'B' [error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed]
+
+### DIFF :: truncated
+INCOMPLETE: no differences found above the max-depth cut, but the comparison did not finish:
+  ⚠ inner: comparison truncated at depth 0; differences below this path are not reported
+  ✗ comparison truncated at max depth: 1 subtree(s) not compared (inner)
+
+### DIFF :: truncated [control]
+Messages are equal.
+  ⚠ inner: comparison truncated at depth 0; differences below this path are not reported
+
+### DIFF :: truncated-with-differences
+Found 1 difference:
+
+  ~ name: 'A' → 'B' [error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed]
+
+Not trustworthy — there may be more differences:
+  ✗ comparison truncated at max depth: 1 subtree(s) not compared (inner)
+
+Warnings:
+  ⚠ inner: comparison truncated at depth 0; differences below this path are not reported
+
+### DIFF :: truncated-with-differences [control]
+Found 1 difference:
+
+  ~ name: 'A' → 'B' [error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed]
+
+Warnings:
+  ⚠ inner: comparison truncated at depth 0; differences below this path are not reported
+
+### COMPAT :: trusted
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT :: error
+protokit compat — level: STRICT, 0 finding(s)
+  ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+INCOMPLETE: no findings, but the check did not finish
+
+### COMPAT :: error [control]
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT :: error-with-findings
+protokit compat — level: STRICT, 1 finding(s)
+  [SEMANTIC/BACKWARD] user.email: field present in old schema, absent in new error[lint-fake]: analysis completed (rule error[lint-fake]: analysis completed)
+  ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+INCOMPATIBLE
+
+### COMPAT :: error-with-findings [control]
+protokit compat — level: STRICT, 1 finding(s)
+  [SEMANTIC/BACKWARD] user.email: field present in old schema, absent in new error[lint-fake]: analysis completed (rule error[lint-fake]: analysis completed)
+
+INCOMPATIBLE
+
+### COMPAT :: error-with-path
+protokit compat — level: STRICT, 0 finding(s)
+  ! user.email: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+INCOMPLETE: no findings, but the check did not finish
+
+### COMPAT :: error-with-path [control]
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT :: repeated-error
+protokit compat — level: STRICT, 0 finding(s)
+  ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+  ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+INCOMPLETE: no findings, but the check did not finish
+
+### COMPAT :: repeated-error [control]
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT :: six-errors
+protokit compat — level: STRICT, 0 finding(s)
+  ! failure 0
+  ! failure 1
+  ! failure 2
+  ! failure 3
+  ! failure 4
+  ! failure 5
+
+INCOMPLETE: no findings, but the check did not finish
+
+### COMPAT :: six-errors [control]
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT :: three-errors
+protokit compat — level: STRICT, 0 finding(s)
+  ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+  ! second failure
+  ! third failure
+
+INCOMPLETE: no findings, but the check did not finish
+
+### COMPAT :: three-errors [control]
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT :: two-errors
+protokit compat — level: STRICT, 0 finding(s)
+  ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+  ! second failure
+
+INCOMPLETE: no findings, but the check did not finish
+
+### COMPAT :: two-errors [control]
+protokit compat — level: STRICT, 0 finding(s)
+
+COMPATIBLE
+
+### COMPAT_HISTORY :: trusted
+cccccccccccc OK (0 finding(s))
+
+### COMPAT_HISTORY :: aggregate-no-entries
+# A..B: no commits touch <unknown>
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! dddddddddddd: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: aggregate-no-entries [control]
+# A..B: no commits touch <unknown>
+
+### COMPAT_HISTORY :: aggregate-only
+cccccccccccc OK (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! dddddddddddd: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: aggregate-only [control]
+cccccccccccc OK (0 finding(s))
+
+### COMPAT_HISTORY :: aggregate-uncommitted
+cccccccccccc OK (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: aggregate-uncommitted [control]
+cccccccccccc OK (0 finding(s))
+
+### COMPAT_HISTORY :: entry-and-aggregate
+cccccccccccc INCOMPLETE (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! cccccccccccc: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+    ! dddddddddddd: walk broke
+
+### COMPAT_HISTORY :: entry-and-aggregate [control]
+cccccccccccc OK (0 finding(s))
+
+### COMPAT_HISTORY :: entry-error
+cccccccccccc INCOMPLETE (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! cccccccccccc: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: entry-error [control]
+cccccccccccc OK (0 finding(s))
+
+### COMPAT_HISTORY :: entry-error-with-findings
+cccccccccccc BROKEN (1 finding(s))
+    [SEMANTIC/BACKWARD] user.email: field present in old schema, absent in new error[lint-fake]: analysis completed (rule error[lint-fake]: analysis completed)
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! cccccccccccc: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: entry-error-with-findings [control]
+cccccccccccc BROKEN (1 finding(s))
+    [SEMANTIC/BACKWARD] user.email: field present in old schema, absent in new error[lint-fake]: analysis completed (rule error[lint-fake]: analysis completed)
+
+### COMPAT_HISTORY :: second-entry-error
+aaaaaaaaaaaa OK (0 finding(s))
+bbbbbbbbbbbb INCOMPLETE (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! bbbbbbbbbbbb: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: second-entry-error [control]
+aaaaaaaaaaaa OK (0 finding(s))
+bbbbbbbbbbbb OK (0 finding(s))
+
+### COMPAT_BISECT :: trusted
+# A..B: no break found across 3 commit(s)
+
+### COMPAT_BISECT :: error
+# A..B: INCOMPLETE: walked 3 commit(s), but not every check finished
+    ! aaaaaaaaaaaa: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_BISECT :: error [control]
+# A..B: no break found across 3 commit(s)
+
+### COMPAT_BISECT :: error-uncommitted
+# A..B: INCOMPLETE: walked 3 commit(s), but not every check finished
+    ! error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_BISECT :: error-uncommitted [control]
+# A..B: no break found across 3 commit(s)
+
+### COMPAT_BISECT :: error-with-break
+first breaking commit: ffffffffffffffffffffffffffffffffffffffff
+  [SEMANTIC/BACKWARD] user.email: field present in old schema, absent in new error[lint-fake]: analysis completed (rule error[lint-fake]: analysis completed)
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! aaaaaaaaaaaa: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_BISECT :: error-with-break [control]
+first breaking commit: ffffffffffffffffffffffffffffffffffffffff
+  [SEMANTIC/BACKWARD] user.email: field present in old schema, absent in new error[lint-fake]: analysis completed (rule error[lint-fake]: analysis completed)
+
+### COMPAT_BISECT :: repeated-error
+# A..B: INCOMPLETE: walked 3 commit(s), but not every check finished
+    ! aaaaaaaaaaaa: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+    ! aaaaaaaaaaaa: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_BISECT :: repeated-error [control]
+# A..B: no break found across 3 commit(s)
+
+### COMPAT_BISECT :: two-errors
+# A..B: INCOMPLETE: walked 3 commit(s), but not every check finished
+    ! aaaaaaaaaaaa: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+    ! bbbbbbbbbbbb: second
+
+### COMPAT_BISECT :: two-errors [control]
+# A..B: no break found across 3 commit(s)
+
+### COMPAT_BISECT :: two-errors-one-commit
+# A..B: INCOMPLETE: walked 3 commit(s), but not every check finished
+    ! aaaaaaaaaaaa: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+    ! aaaaaaaaaaaa: second
+
+### COMPAT_BISECT :: two-errors-one-commit [control]
+# A..B: no break found across 3 commit(s)
+
+### LINT_REPORT :: trusted
+(empty)
+
+### LINT_REPORT :: category-rule_exception
+INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+  [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### LINT_REPORT :: category-rule_exception [control]
+(empty)
+
+### LINT_REPORT :: category-unloaded_rule
+INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+  [unloaded_rule] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### LINT_REPORT :: category-unloaded_rule [control]
+(empty)
+
+### LINT_REPORT :: compile-error
+diagnostic[unexpected]: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### LINT_REPORT :: compile-error [control]
+(empty)
+
+### LINT_REPORT :: compile-error-and-rule
+diagnostic[unexpected]: protoc failed
+INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+  [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### LINT_REPORT :: compile-error-and-rule [control]
+(empty)
+
+### LINT_REPORT :: rule-exception-repeated
+INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+  [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed (on 9 elements)
+
+### LINT_REPORT :: rule-exception-repeated [control]
+(empty)
+
+### LINT_REPORT :: rule-exception-with-findings
+WARNING acme/user.proto:acme.User.BadField [pack/rule error[lint-fake]: analysis completed] pack/rule error[lint-fake]: analysis completed
+INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+  [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### LINT_REPORT :: rule-exception-with-findings [control]
+WARNING acme/user.proto:acme.User.BadField [pack/rule error[lint-fake]: analysis completed] pack/rule error[lint-fake]: analysis completed
