@@ -34,7 +34,7 @@ never reaches this module.
 
 **It fails closed.** A report type this module does not recognise raises
 ``TypeError``. Defaulting an unknown object to "trustworthy" would rebuild
-the fail-open class inside the seam meant to end it: a sixth report kind
+the fail-open class inside the seam meant to end it: the next report kind
 would silently render as success until someone remembered to come here.
 
 **Every reason is one printable line.** A reason quotes diagnostic text a
@@ -49,9 +49,10 @@ which is why the function is public.
 **Layer 0 (KTD8).** This module imports nothing from ``protokit`` at any
 scope, so the report types cannot be named here. A kind is recognised by one
 attribute only it has — ``truncated_paths``, ``entries``,
-``breaking_commit``, ``runtime_warnings``, or ``findings`` last, because a
-``LintReport`` has that one too. Some of those carry the incompleteness
-signal and some (``breaking_commit``, ``findings``) merely identify; what
+``breaking_commit``, ``runtime_warnings``, ``ranked``, ``divergences``,
+``faults``, or ``findings`` last, because a ``LintReport`` has that one too. Some of those
+carry the incompleteness signal and some (``breaking_commit``, ``findings``,
+``divergences``) merely identify; what
 they have in common is being a name no other kind answers to. Alongside it
 this module requires ``diagnostics``, which every kind has, so an object
 answering to neither is refused rather than waved through.
@@ -75,6 +76,15 @@ ERROR_DIAGNOSTIC = "error-diagnostic"
 COMPILE_DIAGNOSTIC = "compile-diagnostic"
 #: ``max_depth`` cut the comparison above some subtrees.
 TRUNCATION = "truncation"
+#: A record a storage scan never read: a decode or framing fault that
+#: ``--on-error skip`` / ``warn`` recovered past. The records that did come
+#: out are a subset of the input, not the input.
+RECORD_NOT_READ = "record-not-read"
+#: A forensics candidate the ranking could not measure: the message did not
+#: parse under it, or a missing ``required`` field made its modeled-byte
+#: fraction unmeasurable. The ranking is then over fewer schemas than the
+#: user named, so the winner is a winner of a smaller contest.
+CANDIDATE_NOT_MEASURED = "candidate-not-measured"
 
 
 class Signal(NamedTuple):
@@ -253,17 +263,82 @@ def _lint_signals(report: Any) -> list[Signal]:
     return out
 
 
+#: ``CandidateFit.parse_outcome`` values that mean the candidate was never
+#: measured on the same evidence as its rivals -- the message did not parse
+#: under it (``decode_error``), or it is proto2-uninitialized so the modeled
+#: byte count is unavailable (``incomplete``). Both land in ``ParseTier.FAULT``.
+_UNMEASURED_OUTCOMES: frozenset[str] = frozenset({"decode_error", "incomplete"})
+
+
+def _match_signals(report: Any) -> list[Signal]:
+    """Error diagnostics, then one signal per candidate that was not measured.
+
+    A ranking is an answer to "which of these schemas produced the message".
+    A candidate the ranker could not measure did not lose that contest -- it
+    never entered it -- so a verdict naming a winner over the remainder is a
+    verdict over a smaller field than the user asked for. ``match`` already
+    refuses the all-faulted case at the CLI; this is the partial one, which
+    exited 0 indistinguishably from a clean sweep.
+    """
+    out = _error_signals(report.diagnostics)
+    out.extend(
+        Signal(
+            CANDIDATE_NOT_MEASURED,
+            f"{fit.label}: {fit.detail or fit.parse_outcome}",
+        )
+        for fit in report.ranked
+        if fit.parse_outcome in _UNMEASURED_OUTCOMES
+    )
+    return out
+
+
+def _scan_signals(report: Any) -> list[Signal]:
+    """Error diagnostics, then one bounded signal for the records not read.
+
+    ``--on-error skip`` / ``warn`` exist so a corrupt file still yields its
+    good records; neither ever meant the scan read everything. One signal
+    rather than one per fault, because a corrupt file can carry millions and
+    ``warn`` has already streamed each to stderr -- the seam's job here is
+    the verdict, not a second transcript of it.
+    """
+    out = _error_signals(report.diagnostics)
+    if report.faults:
+        first = f" (first: {report.first_fault})" if report.first_fault else ""
+        out.append(Signal(
+            RECORD_NOT_READ,
+            f"{report.faults} record(s) were not read{first}",
+        ))
+    return out
+
+
+def _drift_signals(report: Any) -> list[Signal]:
+    """Error diagnostics only: a divergence is a finding, not an incompleteness.
+
+    ``drift`` reconciles one message against one schema; each divergence is
+    something it *found*, the analogue of a compat finding, and belongs on the
+    findings rung rather than this one. The walk either completes or raises a
+    typed error the CLI turns into exit 2, so the report has no partial state
+    of its own. This exists so the kind is recognised rather than refused, and
+    so a tool-level failure -- if forensics ever records one instead of
+    raising -- cannot be read as success.
+    """
+    return _error_signals(report.diagnostics)
+
+
 #: One row per report kind: the attribute whose presence identifies the kind,
 #: and the function that reads its incompleteness signals. Order matters in
 #: exactly one place: ``LintReport`` also has ``findings``, so the compat row
 #: comes last and the lint row claims a ``LintReport`` first. ``diagnostics``
-#: is deliberately not an identifying attribute — all five kinds carry it, so
+#: is deliberately not an identifying attribute — every kind carries it, so
 #: it identifies none of them; it is required *alongside* the identifying one.
 _KINDS: tuple[tuple[str, Callable[[Any], list[Signal]]], ...] = (
     ("runtime_warnings", _lint_signals),    # LintReport
     ("truncated_paths", _diff_signals),     # DiffResult
     ("entries", _history_signals),          # HistoryReport
     ("breaking_commit", _bisect_signals),   # BisectReport
+    ("ranked", _match_signals),             # MatchReport
+    ("divergences", _drift_signals),        # DriftReport
+    ("faults", _scan_signals),              # storage's per-run scan report
     ("findings", _compat_signals),          # CompatibilityReport
 )
 
@@ -273,7 +348,8 @@ def signals(report: object) -> tuple[Signal, ...]:
 
     Args:
         report: A ``DiffResult``, ``CompatibilityReport``, ``HistoryReport``,
-            ``BisectReport`` or ``LintReport``.
+            ``BisectReport``, ``LintReport``, ``MatchReport`` or
+            ``DriftReport``.
 
     Returns:
         Signals in emission order; empty when the report is trustworthy.
@@ -282,7 +358,7 @@ def signals(report: object) -> tuple[Signal, ...]:
         does, when its category means a selected rule did not run.
 
     Raises:
-        TypeError: ``report`` is not one of the five kinds. Never defaults
+        TypeError: ``report`` is not one of the known kinds. Never defaults
             to trustworthy.
     """
     if hasattr(report, "diagnostics"):
@@ -304,13 +380,13 @@ def reasons(report: object) -> tuple[str, ...]:
     """The text of every signal, for a renderer that shows them as lines.
 
     Args:
-        report: One of the five report kinds; see :func:`signals`.
+        report: One of the known report kinds; see :func:`signals`.
 
     Returns:
         One printable line per reason, in emission order.
 
     Raises:
-        TypeError: ``report`` is not one of the five kinds.
+        TypeError: ``report`` is not one of the known kinds.
     """
     return tuple(s.text for s in signals(report))
 
@@ -325,7 +401,7 @@ def signals_other_than(
     shown — nothing today, and whatever this module learns tomorrow.
 
     Args:
-        report: One of the five report kinds.
+        report: One of the known report kinds.
         kind: The signal kind the caller renders itself.
         only_from_entries: For ``HistoryReport``: the caller renders each
             *entry's* diagnostics inside that entry's suite, so only
@@ -336,7 +412,7 @@ def signals_other_than(
         The signals the caller still has to render.
 
     Raises:
-        TypeError: ``report`` is not one of the five kinds.
+        TypeError: ``report`` is not one of the known kinds.
     """
     return tuple(
         s for s in signals(report)
@@ -353,7 +429,7 @@ def walk_level_reasons(report: object) -> tuple[str, ...]:
     they would otherwise drop (V23's fourth site).
 
     Raises:
-        TypeError: ``report`` is not one of the five kinds.
+        TypeError: ``report`` is not one of the known kinds.
     """
     return tuple(s.text for s in signals(report) if not s.from_entry)
 
@@ -362,12 +438,12 @@ def is_trustworthy(report: object) -> bool:
     """Whether an empty ``report`` means "nothing found" rather than "did not look".
 
     Args:
-        report: One of the five report kinds; see :func:`signals`.
+        report: One of the known report kinds; see :func:`signals`.
 
     Returns:
         True iff :func:`signals` is empty.
 
     Raises:
-        TypeError: ``report`` is not one of the five kinds.
+        TypeError: ``report`` is not one of the known kinds.
     """
     return not signals(report)

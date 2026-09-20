@@ -1034,9 +1034,6 @@ PENDING_U8: frozenset[str] = frozenset({
     "compat history",
     "forensics drift",
     "forensics match",
-    "storage count",
-    "storage head",
-    "storage scan",
 })
 
 

@@ -18,6 +18,7 @@ from google.protobuf.descriptor import Descriptor, FieldDescriptor
 
 from protokit import _descriptors
 from protokit.forensics._wire import WIRETYPE_LEN, WireObservation, walk_top_level
+from protokit.message.model import Diagnostic
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
 
 # Expected wire type for each FieldDescriptor.type.
@@ -64,6 +65,12 @@ class DriftReport:
 
     divergences: tuple[FieldDivergence, ...]
     observed_field_count: int
+    #: Tool-level failures during the reconciliation, for ``protokit._trust``
+    #: (U8). See :class:`~protokit.forensics.MatchReport.diagnostics`: a
+    #: malformed message makes ``walk_top_level`` raise rather than degrade,
+    #: so nothing populates this today and the gate it feeds is closed ahead
+    #: of a producer rather than after one.
+    diagnostics: tuple[Diagnostic, ...] = ()
 
 
 def _declared_numbers(

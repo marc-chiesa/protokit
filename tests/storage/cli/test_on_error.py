@@ -4,6 +4,13 @@ The load-bearing distinction (KD-7): the length-delimited reader is a generator,
 so a *framing* fault (truncated / oversized frame) ENDS the scan even under
 skip/warn, while a *decode* fault (a bad message body) leaves the source alive and
 is recovered past. The tests assert both so the contract is not oversold.
+
+**U8 changed the exit code, not the output.** ``skip`` / ``warn`` used to exit
+0 whenever the run reached the end, so a scan that silently dropped records was
+indistinguishable from a clean one. They now exit 2 once any record was not
+read; the good records still reach stdout exactly as before, and ``skip`` is
+still silent about the individual faults. What changed is only whether the
+process claims the scan succeeded.
 """
 
 from __future__ import annotations
@@ -49,9 +56,13 @@ def test_skip_recovers_past_decode_faults(
         [cls(x=7).SerializeToString(), _DECODE_BAD, cls(x=9).SerializeToString()]
     )
     result = _run(runner, [*_base(data, desc), "--on-error", "skip"])
-    assert result.exit_code == 0
+    # U8: a dropped record means the scan did not read the whole input.
+    assert result.exit_code == 2
     # Both good records survive the bad one in the middle.
     assert result.output.count("# stream=") == 2
+    # ``skip`` stays silent about each fault -- only the closing reason line.
+    assert "Warning:" not in result.stderr
+    assert "1 record(s)" in result.stderr
 
 
 def test_warn_recovers_and_reports_decode_faults(
@@ -64,7 +75,7 @@ def test_warn_recovers_and_reports_decode_faults(
         [cls(x=7).SerializeToString(), _DECODE_BAD, cls(x=9).SerializeToString()]
     )
     result = _run(runner, [*_base(data, desc), "--on-error", "warn"])
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # U8: a record was dropped
     assert result.output.count("# stream=") == 2  # good records on stdout
     assert "Warning:" in result.stderr  # the fault on stderr
     assert "matched 2 records, 1 faults" in result.stderr  # trailing summary
@@ -84,7 +95,7 @@ def test_warn_summary_counts_matched_not_total_under_where(
     ]
     data = data_file_factory(payloads)
     result = _run(runner, [*_base(data, desc), "--on-error", "warn", "--where", "x == 7"])
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # U8: a record was dropped
     assert "matched 3 records, 1 faults" in result.stderr
     assert "scanned" not in result.stderr  # never the misleading label
 
@@ -103,7 +114,7 @@ def test_count_under_warn_recovers_and_summarizes(
         runner,
         ["storage", "count", str(data), "--desc", str(desc), "--type", "a.A", "--on-error", "warn"],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # U8: a record was dropped
     assert result.stdout.strip() == "2"  # the count on stdout, separate from warnings
     assert "matched 2 records, 1 faults" in result.stderr
 
@@ -149,7 +160,7 @@ def test_warn_framing_fault_stops_the_scan(
     )
     data = raw_file_factory(raw)
     result = _run(runner, [*_base(data, desc), "--on-error", "warn"])
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # U8: good2 was never read
     # Only good1 emerges; the framing fault exhausts the reader so good2 is lost.
     assert result.output.count("# stream=") == 1
     assert "x: 7" in result.output and "x: 9" not in result.output
@@ -166,9 +177,97 @@ def test_warn_json_stdout_stays_valid_jsonl(
         [cls(x=7).SerializeToString(), _DECODE_BAD, cls(x=9).SerializeToString()]
     )
     result = _run(runner, [*_base(data, desc), "--on-error", "warn", "--format", "json"])
-    assert result.exit_code == 0
+    assert result.exit_code == 2  # U8: a record was dropped
     # stdout (separate from stderr) is clean JSONL: warnings did not interleave.
     lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
     assert [json.loads(ln) for ln in lines] == [{"x": 7}, {"x": 9}]
     assert "Warning:" not in result.stdout
     assert "Warning:" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# U8 adjacent behavior: the gate fires on a dropped record and on nothing else.
+# ---------------------------------------------------------------------------
+
+
+def test_skip_without_a_fault_still_exits_0(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """The gate keys on records dropped, not on the mode being tolerant."""
+    desc, cls = desc_and_cls
+    data = data_file_factory(
+        [cls(x=7).SerializeToString(), cls(x=9).SerializeToString()]
+    )
+    result = _run(runner, [*_base(data, desc), "--on-error", "skip"])
+    assert result.exit_code == 0
+    assert result.output.count("# stream=") == 2
+    assert "record(s) were not read" not in result.stderr
+
+
+def test_head_that_stops_before_the_fault_exits_0(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """``-n`` is the user's own limit; records past it were never in scope."""
+    desc, cls = desc_and_cls
+    data = data_file_factory(
+        [cls(x=7).SerializeToString(), cls(x=9).SerializeToString(), _DECODE_BAD]
+    )
+    result = _run(runner, [
+        "storage", "head", str(data), "--desc", str(desc), "--type", "a.A",
+        "-n", "2", "--on-error", "skip",
+    ])
+    assert result.exit_code == 0
+    assert result.output.count("# stream=") == 2
+
+
+def test_head_that_reaches_the_fault_exits_2(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    desc, cls = desc_and_cls
+    data = data_file_factory(
+        [cls(x=7).SerializeToString(), _DECODE_BAD, cls(x=9).SerializeToString()]
+    )
+    result = _run(runner, [
+        "storage", "head", str(data), "--desc", str(desc), "--type", "a.A",
+        "-n", "2", "--on-error", "skip",
+    ])
+    assert result.exit_code == 2
+    assert result.output.count("# stream=") == 2  # both good records still shown
+
+
+def test_the_reason_names_the_count_and_one_example(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """One bounded line, whatever the fault count: the seam's reason."""
+    desc, cls = desc_and_cls
+    data = data_file_factory(
+        [_DECODE_BAD, _DECODE_BAD, cls(x=9).SerializeToString()]
+    )
+    result = _run(runner, [*_base(data, desc), "--on-error", "skip"])
+    assert result.exit_code == 2
+    assert "Error: 2 record(s) were not read (first: stream" in result.stderr
+    assert result.stderr.count("record(s) were not read") == 1
+
+
+def test_count_quiet_prefers_the_incompleteness_over_the_grep_signal(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """Zero matches on an unreadable file is not "nothing matched"."""
+    desc, cls = desc_and_cls
+    data = data_file_factory([_DECODE_BAD, cls(x=9).SerializeToString()])
+    result = _run(runner, [
+        "storage", "count", str(data), "--desc", str(desc), "--type", "a.A",
+        "--quiet", "--on-error", "skip", "--where", "x == 1",
+    ])
+    assert result.exit_code == 2  # not 1 ("nothing matched")
+    assert result.stdout == ""  # --quiet still means no stdout

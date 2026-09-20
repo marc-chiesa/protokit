@@ -27,6 +27,7 @@ from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import DecodeError, Message
 
 from protokit.forensics._drift import compatibility_score
+from protokit.message.model import Diagnostic
 from protokit.forensics._wire import WalkError, walk_top_level
 from protokit.storage._fidelity_probe import unmodeled_byte_delta
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
@@ -79,6 +80,15 @@ class MatchReport:
     ranked: tuple[CandidateFit, ...]
     verdict: Verdict
     ambiguous_top: bool  # top-2 modeled fractions within the tie-margin (Phase-B hook)
+    #: Tool-level failures during the ranking, for ``protokit._trust`` (U8).
+    #: Keyword-defaulted, so every existing positional construction is
+    #: unaffected. Nothing populates it today -- ``fit_candidate`` records a
+    #: per-candidate fault on the fit itself and a broken *candidate schema*
+    #: propagates as a typed error -- so it exists to close the contract the
+    #: way ``DiffResult.errors`` does for the diff CLI: the seam cannot vouch
+    #: for a kind it does not recognise, and a report kind carrying no
+    #: ``diagnostics`` at all is one the seam must refuse outright.
+    diagnostics: tuple[Diagnostic, ...] = ()
 
 
 def _present_declared_field_count(message: Message) -> int:

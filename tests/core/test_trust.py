@@ -1,6 +1,6 @@
 """Unit tests for the ``_trust`` seam (U7, closes V23/V24; feeds U8/V33).
 
-``_trust`` answers one question for all five report kinds: *can a "nothing
+``_trust`` answers one question for every report kind: *can a "nothing
 found" result from this report be read as success?* These tests pin the
 answer per kind against real report objects, and pin the one property the
 seam must never lose — an object it does not recognise **raises**, because
@@ -22,10 +22,14 @@ from protokit.schema.model import CommitDiagnostic
 from tests._trust_reports import (
     ENTRY_SHA,
     bisect_report,
+    candidate_fit,
     compat_report,
+    drift_report,
     error_diagnostic,
+    field_divergence,
     history_report,
     lint_report,
+    match_report,
     truncated_diff_result,
     warning_diagnostic,
 )
@@ -47,6 +51,8 @@ class TestTrustworthyReports:
         pytest.param(history_report(), id="history"),
         pytest.param(bisect_report(), id="bisect"),
         pytest.param(_lint(), id="lint"),
+        pytest.param(match_report(), id="match"),
+        pytest.param(drift_report(), id="drift"),
     ])
     def test_clean_report_is_trustworthy(self, report: object) -> None:
         assert _trust.is_trustworthy(report) is True
@@ -60,6 +66,8 @@ class TestTrustworthyReports:
             bisect_report(CommitDiagnostic("abc", "warning", None, "heads up")),
             id="bisect",
         ),
+        pytest.param(match_report(warning_diagnostic()), id="match"),
+        pytest.param(drift_report(warning_diagnostic()), id="drift"),
     ])
     def test_a_warning_does_not_cost_trust(self, report: object) -> None:
         """Adjacent behavior: warnings are routine and must stay advisory."""
@@ -161,6 +169,74 @@ class TestUnknownReportRaises:
 
         with pytest.raises(TypeError):
             _trust.is_trustworthy(Lookalike())
+
+
+class TestForensicsReports:
+    """U8: the seam learned ``MatchReport`` and ``DriftReport``.
+
+    Forensics' two commands exited 0 on every run that did not hard-error,
+    including a ranking in which a candidate never parsed. The seam now
+    recognises both kinds, so their exit paths can ask it the same question
+    every other command asks.
+    """
+
+    @pytest.mark.parametrize("outcome", ["decode_error", "incomplete"])
+    def test_a_candidate_that_was_not_measured_costs_trust(
+        self, outcome: str,
+    ) -> None:
+        report = match_report(ranked=(
+            candidate_fit("v1"),
+            candidate_fit("v2", parse_outcome=outcome, detail="could not measure"),
+        ))
+        assert _trust.is_trustworthy(report) is False
+        assert _trust.reasons(report) == ("v2: could not measure",)
+
+    def test_the_reason_falls_back_to_the_outcome_without_a_detail(self) -> None:
+        report = match_report(ranked=(
+            candidate_fit("v2", parse_outcome="decode_error"),
+        ))
+        assert _trust.reasons(report) == ("v2: decode_error",)
+
+    def test_every_unmeasured_candidate_gets_its_own_reason(self) -> None:
+        """Two blind spots must not collapse into one line."""
+        report = match_report(ranked=(
+            candidate_fit("v1", parse_outcome="decode_error", detail="bad tag"),
+            candidate_fit("v2", parse_outcome="incomplete", detail="no required"),
+        ))
+        assert _trust.reasons(report) == ("v1: bad tag", "v2: no required")
+
+    @pytest.mark.parametrize("outcome", ["clean", "unmodeled"])
+    def test_a_measured_candidate_costs_nothing(self, outcome: str) -> None:
+        """Adjacent behavior: ``unmodeled`` is a ranking signal, not a fault."""
+        report = match_report(ranked=(candidate_fit("v1", parse_outcome=outcome),))
+        assert _trust.is_trustworthy(report) is True
+
+    def test_match_signals_are_their_own_kind(self) -> None:
+        """A renderer that shows error diagnostics itself still sees these."""
+        report = match_report(ranked=(
+            candidate_fit("v2", parse_outcome="decode_error"),
+        ))
+        signal, = _trust.signals(report)
+        assert signal.kind == _trust.CANDIDATE_NOT_MEASURED
+        assert _trust.signals_other_than(report, _trust.ERROR_DIAGNOSTIC) == (signal,)
+
+    def test_a_match_error_diagnostic_costs_trust(self) -> None:
+        report = match_report(error_diagnostic("ranker blew up"))
+        assert _trust.is_trustworthy(report) is False
+        assert _trust.reasons(report) == ("ranker blew up",)
+
+    def test_a_divergence_is_a_finding_not_an_incompleteness(self) -> None:
+        """``drift``'s whole output is divergences; they are what it found."""
+        report = drift_report(divergences=(
+            field_divergence(7), field_divergence(9),
+        ))
+        assert _trust.is_trustworthy(report) is True
+        assert _trust.reasons(report) == ()
+
+    def test_a_drift_error_diagnostic_costs_trust(self) -> None:
+        report = drift_report(error_diagnostic("walk blew up"))
+        assert _trust.is_trustworthy(report) is False
+        assert _trust.reasons(report) == ("walk blew up",)
 
 
 class TestReasonsAreOnePrintableLine:
