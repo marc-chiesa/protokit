@@ -612,6 +612,32 @@ _MACHINE_VERDICTS: dict[tuple[FormatterKind, str], Callable[[str], bool] | None]
     (FormatterKind.LINT_REPORT, "sarif"): _sarif_succeeded,
 }
 
+#: The exact top-level key set each JSON payload carries. Pinned so a new
+#: key -- especially a second verdict -- cannot appear unreviewed.
+_JSON_KEYS: dict[FormatterKind, set[str]] = {
+    FormatterKind.DIFF: {
+        "schema_version", "equal", "complete", "truncated_paths",
+        "differences", "diagnostics",
+    },
+    FormatterKind.COMPAT: {
+        "compatible", "complete", "level", "findings", "diagnostics", "summary",
+    },
+    FormatterKind.COMPAT_HISTORY: {
+        "range", "old", "new", "commits_walked", "complete", "entries",
+        "diagnostics",
+    },
+    FormatterKind.COMPAT_BISECT: {
+        "range", "old", "new", "breaking_commit", "complete", "findings",
+        "commits_walked", "diagnostics",
+    },
+    # ``profiles_run`` / ``rules_run`` appear only when the engine ran, which
+    # these fixtures do not; the summary block carries the counts instead.
+    FormatterKind.LINT_REPORT: {
+        "schema_version", "findings", "diagnostics", "runtime_warnings",
+        "filtered_count", "summary",
+    },
+}
+
 _VERDICT_FORMATS = sorted(
     (key for key, reader in _MACHINE_VERDICTS.items() if reader is not None),
     key=lambda key: (key[0].name, key[1]),
@@ -650,6 +676,64 @@ def _registered_builtins_from_source() -> set[tuple[str, str]]:
             )
             found.add((kind.attr, first.value))
     return found
+
+
+#: Every human rendering the fixtures produce, recorded verbatim.
+_GOLDEN = Path(__file__).with_name("trust_renderings.golden")
+
+
+def _all_renderings() -> str:
+    """Render every fixture and every control, in a stable order."""
+    out: list[str] = []
+    for kind in FormatterKind:
+        pairs: list[tuple[str, object]] = [("trusted", _TRUSTED[kind])]
+        pairs += sorted(_UNTRUSTED[kind].items())
+        for label, report in pairs:
+            shapes = [(label, report)]
+            if label != "trusted":
+                shapes.append((f"{label} [control]", _made_trustworthy(report)))
+            for tag, shape in shapes:
+                out.append(f"### {kind.name} :: {tag}")
+                text = _render_human(kind, shape)
+                out.append(text if text.strip() else "(empty)")
+                out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def test_human_renderings_match_the_golden_file() -> None:
+    """Every line protokit prints about trust is recorded and reviewed.
+
+    The checks around this one ask whether a rendering satisfies a predicate:
+    does it avoid the success word, is each line accounted for, does a refusal
+    appear. Four rounds of adversarial review found the same answer each time
+    -- a sentence can satisfy any such predicate and still tell the reader the
+    opposite of the truth. "All checks passed; safe to deploy." printed on
+    every report passes them all, because a differential check sees no
+    difference and a word list does not know the phrase.
+
+    So this one asks nothing about the text. It records it. A renderer cannot
+    add, remove or reword a line without this file changing, and the change
+    lands in a diff a human reads -- which is the review the predicates were
+    standing in for. The predicates stay because they say WHY a line is wrong
+    when one fails; this says THAT something changed.
+
+    Regenerate deliberately, never reflexively, after reading the diff:
+        .venv/bin/python -m tests.meta.regen_trust_golden
+    """
+    actual = _all_renderings()
+    expected = _GOLDEN.read_text()
+    if actual != expected:
+        import difflib
+        diff = "\n".join(difflib.unified_diff(
+            expected.splitlines(), actual.splitlines(),
+            fromfile="recorded", tofile="rendered", lineterm="",
+        ))
+        raise AssertionError(
+            "a human rendering changed. Read the diff below: if every line of "
+            "it is a change you meant, regenerate with\n"
+            "    .venv/bin/python -m tests.meta.regen_trust_golden\n\n"
+            + diff
+        )
 
 
 class TestEachHistoryEntryIsJudgedOnItsOwn:
@@ -713,6 +797,80 @@ class TestEveryMachineVerdictAsksTheSeam:
         assert reader is not None
         assert reader(_render(name, kind, _TRUSTED[kind])) is True
         assert reader(_render(name, kind, _UNTRUSTED[kind][mode])) is False
+
+    @pytest.mark.parametrize(
+        "key",
+        [k for k, r in _MACHINE_VERDICTS.items() if k[1] == "json"],
+        ids=lambda k: f"{k[0].name}-{k[1]}",
+    )
+    def test_a_json_payload_grows_no_key_unnoticed(
+        self, key: tuple[FormatterKind, str],
+    ) -> None:
+        """The reader reads one key; a second one can contradict it.
+
+        ``_MACHINE_VERDICTS`` reads ``compatible``, so a payload that also
+        gained ``"success": true`` on the same distrusted report satisfied the
+        table while telling a consumer the opposite. Pinning the key set makes
+        any new one a deliberate, reviewed change.
+        """
+        kind, name = key
+        for report in [_TRUSTED[kind], *_UNTRUSTED[kind].values()]:
+            keys = set(json.loads(_render(name, kind, report)))
+            assert keys == _JSON_KEYS[kind], (kind.name, name, sorted(keys))
+
+    @pytest.mark.parametrize(("key", "mode"), [
+        pytest.param(k, m, id=f"{k[0].name}-{m}")
+        for k in _VERDICT_FORMATS if k[1] == "junit"
+        for m in _UNTRUSTED[k[0]]
+    ])
+    def test_junit_error_text_comes_from_the_report(
+        self, key: tuple[FormatterKind, str], mode: str,
+    ) -> None:
+        """A failing document has to say what failed, in the report's words.
+
+        The verdict readers check whether a document passes, not what it says.
+        Replacing every error's explanation with "analysis failed" kept the
+        counts right and left a CI reader with a red build and no cause.
+        """
+        kind, name = key
+        report = _UNTRUSTED[kind][mode]
+        root = ET.fromstring(_render(name, kind, report))
+        sources = set(_trust.reasons(report))
+
+        def _collect(holder: object) -> None:
+            for d in getattr(holder, "diagnostics", ()):
+                sources.add(str(d.message))
+            for f in getattr(holder, "findings", ()):
+                # A compat Finding carries ``message``; a LintFinding renders
+                # from its rule's template, so its rule id is the identifier.
+                sources.add(str(getattr(f, "message", "") or f.rule_id))
+                sources.add(str(f.rule_id))
+            for f in getattr(holder, "breaking_findings", ()):
+                sources.add(str(f.message))
+            for d in getattr(holder, "differences", ()):
+                sources.add(str(d.path))
+
+        _collect(report)
+        for entry in getattr(report, "entries", ()):
+            _collect(entry.report)
+            sources.add(entry.commit_sha)
+        # A structural message of protokit's own ("first break in range: <sha>")
+        # identifies the thing that failed, which is the point; a generic one
+        # does not.
+        if getattr(report, "breaking_commit", None):
+            sources.add(report.breaking_commit)  # type: ignore[attr-defined]
+        # Message attribute and body together: a renderer may summarise in the
+        # attribute and name the causes in the body, as ``diff`` does.
+        texts = [
+            f"{e.get('message') or ''}\n{e.text or ''}"
+            for e in root.iter() if e.tag in {"error", "failure"}
+        ]
+        assert texts, (kind.name, mode)
+        for text in texts:
+            assert any(
+                src in text or _trust.one_line(src) in text
+                for src in sources if src
+            ), (kind.name, mode, text, sorted(sources))
 
     @pytest.mark.parametrize(
         "key",
