@@ -21,18 +21,21 @@ Exit codes (uniform across subcommands):
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib
+import io
 import subprocess
 import sys
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, NoReturn
 
 import click
 from google.protobuf import descriptor_pool
 
+from protokit import _trust
 from protokit._cli_utils import (
     _safe_for_stderr,
     compile_proto,
@@ -144,6 +147,22 @@ def _safe_load_pool(
 def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> None:
     """Import each module by name and load its ``RULES`` into the checker.
 
+    A rule pack is arbitrary third-party Python, so both boundaries catch
+    broadly and translate to exit 2 -- "the tool could not run" (U15-2, R1):
+
+    - ``SystemExit`` is explicitly named because it derives from
+      ``BaseException``, not ``Exception``. A pack whose module body calls
+      ``sys.exit(0)`` used to pass straight through this guard and through
+      Click and *become the process exit code*: exit 0, empty stdout and
+      stderr, on a genuinely breaking schema.
+    - ``load_rule_pack`` gets the same treatment as the import. Guarding only
+      ``AttributeError``/``TypeError`` let anything else raised while
+      ``RULES`` is iterated escape as a traceback and exit 1 -- the code
+      reserved for INCOMPATIBLE -- turning a broken pack into a schema break.
+
+    ``KeyboardInterrupt`` is deliberately not caught: Ctrl-C is the operator
+    speaking, not the pack.
+
     Args:
         checker: The ``SchemaChecker`` to register plugins on.
         module_names: Fully-qualified dotted module names to import
@@ -158,14 +177,14 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
     for name in module_names:
         try:
             module = importlib.import_module(name)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             error_exit(
                 f"failed to import rule pack '{_safe_for_stderr(name)}': "
                 f"{_safe_for_stderr(exc)}"
             )
         try:
             checker.load_rule_pack(module)
-        except (AttributeError, TypeError) as exc:
+        except (Exception, SystemExit) as exc:
             error_exit(
                 f"failed to load rule pack '{_safe_for_stderr(name)}': "
                 f"{_safe_for_stderr(exc)}"
@@ -280,6 +299,33 @@ def _load_pools_local(
     )
 
 
+@contextlib.contextmanager
+def _plugin_stdout_to_stderr(prefix: str = "") -> Iterator[None]:
+    """Run a checker pass with plugin stdout kept off the CLI's stdout (U15-3).
+
+    Rule functions are arbitrary third-party Python, called in-process while
+    the report is being built, and nothing separated their stdout from the
+    CLI's own. One ``print()`` in a rule prefixed the ``--format json``
+    document -- so ``json.loads`` failed on the CLI's *own* output -- and
+    reached stdout under ``--quiet``, whose documented contract is "suppress
+    output; return exit code only".
+
+    The captured text is re-emitted on stderr rather than dropped: a pack
+    printing its own diagnostics is doing something legitimate, and silently
+    swallowing it would trade one surprise for another. On stderr it cannot
+    corrupt a machine payload, and ``--quiet`` never promised stderr silence
+    (the diagnostics stream there already).
+
+    Each captured line is sanitized and prefixed, so pack output cannot forge
+    one of this CLI's own stderr lines.
+    """
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        yield
+    for line in buffer.getvalue().splitlines():
+        click.echo(f"{prefix}{_safe_for_stderr(line)}", err=True)
+
+
 def _git_failure_exit(exc: subprocess.CalledProcessError) -> NoReturn:
     """Route an unclassified git subprocess failure to exit 2.
 
@@ -314,6 +360,16 @@ def _git_error_boundary(fn: Callable[..., Any]) -> Callable[..., Any]:
     catches whatever a future git version (or a future call site)
     fails with, so no unclassified subprocess error can ever reach
     Click and masquerade as the "incompatible" exit code.
+
+    ``RuntimeError`` is caught for the same reason (U15-4). ``git.py``
+    translates a missing binary into ``RuntimeError("git not found on
+    PATH; ...")`` at two call sites, and only ``_resolve_range_endpoints``
+    -- reached by ``history`` alone -- ever caught it. On ``check --since``,
+    ``ci --base`` and ``bisect`` it escaped as a traceback and exited 1, so
+    a machine with no git reported a schema break. Anything reaching here
+    is by definition a run that did not produce a verdict, which is what
+    exit 2 means; the alternative is Click's exit 1, which means the
+    opposite.
     """
 
     @functools.wraps(fn)
@@ -322,6 +378,8 @@ def _git_error_boundary(fn: Callable[..., Any]) -> Callable[..., Any]:
             return fn(*args, **kwargs)
         except subprocess.CalledProcessError as exc:
             _git_failure_exit(exc)
+        except RuntimeError as exc:
+            error_exit(_safe_for_stderr(str(exc)))
 
     return wrapper
 
@@ -676,7 +734,8 @@ def _run_check_pipeline(
     )
 
     try:
-        report = checker.check(old_pool, old_type, new_pool, new_type)
+        with _plugin_stdout_to_stderr("rule-pack: "):
+            report = checker.check(old_pool, old_type, new_pool, new_type)
     except ValueError as exc:
         error_exit(str(exc))
 
@@ -708,7 +767,18 @@ def _run_check_pipeline(
         )
         click.echo(run_formatter_safely(fn, report, ctx, name=output_format))
 
-    if report.diagnostics:
+    # U8: the verdict is ``protokit._trust``'s, so this exit code and the
+    # rendered report cannot disagree about whether the run completed, and a
+    # reason the seam learns tomorrow gates here without a second predicate
+    # growing beside it.
+    #
+    # ``report.diagnostics`` stays in the condition because compat is
+    # deliberately STRICTER than the seam: the seam signals on error-level
+    # diagnostics, while this command has always exited 2 on a warning-level
+    # one too ("comparison caveats share the exit-2 contract" -- the loop
+    # above renders both). The seam is the floor, not the ceiling, and
+    # narrowing to it would quietly stop gating a case that gates today.
+    if not _trust.is_trustworthy(report) or report.diagnostics:
         sys.exit(2)
     sys.exit(0 if report.is_compatible else 1)
 
@@ -1175,6 +1245,13 @@ def history(
     # specified as moving names like ``HEAD~20..HEAD``.
     old_endpoint, new_endpoint = _resolve_range_endpoints(range_spec)
 
+    # U15-1: an unresolvable --proto-file enumerates zero commits, and the
+    # empty-range branch below renders "no commits touch" and exits 0 --
+    # a clean walk over a path that exists nowhere, which is how a proto
+    # renamed in-repo lets a checked-in CI invocation pass forever. The
+    # check/ci path already pre-flights the same way, one call site away.
+    _verify_proto_file_at_ref(proto_file, new_endpoint, proto_roots)
+
     try:
         commits = commits_affecting_dep_tree(
             range_spec, proto_file, proto_roots,
@@ -1245,9 +1322,10 @@ def history(
             dedupe_by_type=dedupe_by_type,
         )
         try:
-            report = checker.check(
-                old_pool, old_type_name, new_pool, new_type_name,
-            )
+            with _plugin_stdout_to_stderr(f"rule-pack ({new_ref[:12]}): "):
+                report = checker.check(
+                    old_pool, old_type_name, new_pool, new_type_name,
+                )
         except ValueError as exc:
             error_exit(str(exc))
 
@@ -1314,7 +1392,10 @@ def history(
             fn, history_report, ctx, name=output_format,
         ))
 
-    if any_diagnostics:
+    # U8: see ``_run_check_pipeline``. ``any_diagnostics`` is the stricter
+    # warning-level half; the seam covers every entry's errors plus the
+    # walk-level aggregate ones no entry carries.
+    if not _trust.is_trustworthy(history_report) or any_diagnostics:
         sys.exit(2)
     sys.exit(1 if any_findings else 0)
 
@@ -1521,6 +1602,10 @@ def bisect(
     # before the next invocation.
     old_sha, new_sha = _resolve_range_endpoints(f"{old_ref}..{new_ref}")
 
+    # U15-1: see ``history`` -- an unresolvable path walks zero commits and
+    # the empty-range branch reports a clean bisect over it.
+    _verify_proto_file_at_ref(proto_file, new_sha, proto_roots)
+
     try:
         commits = commits_affecting_dep_tree(
             f"{old_ref}..{new_ref}", proto_file, proto_roots,
@@ -1539,9 +1624,15 @@ def bisect(
         commits_walked: int,
         exit_code: int,
     ) -> None:
-        """Render via the bisect formatter and exit."""
-        if quiet:
-            sys.exit(exit_code)
+        """Render via the bisect formatter and exit.
+
+        U8: the report is built before the ``--quiet`` short-circuit, not
+        after it. It used to be built only on the rendering path, so under
+        ``--quiet`` -- the CI shape, where the exit code is the entire
+        output -- nothing ever reached the seam. Every caller's
+        ``exit_code`` is escalated to 2 when the seam will not vouch for
+        the walk, so the quiet and rendered paths cannot disagree.
+        """
         bisect_report = BisectReport(
             range_spec=range_spec,
             old_sha=old_sha,
@@ -1551,6 +1642,10 @@ def bisect(
             breaking_findings=breaking_findings,
             diagnostics=diagnostics,
         )
+        if not _trust.is_trustworthy(bisect_report):
+            exit_code = 2
+        if quiet:
+            sys.exit(exit_code)
         fn = resolve_and_validate_formatter(
             output_format, FormatterKind.COMPAT_BISECT,
         )
@@ -1622,9 +1717,10 @@ def bisect(
             dedupe_by_type=dedupe_by_type,
         )
         try:
-            report = checker.check(
-                anchor_pool, old_type_name, new_pool, new_type_name,
-            )
+            with _plugin_stdout_to_stderr(f"rule-pack ({sha[:12]}): "):
+                report = checker.check(
+                    anchor_pool, old_type_name, new_pool, new_type_name,
+                )
         except ValueError as exc:
             error_exit(str(exc))
 

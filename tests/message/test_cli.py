@@ -718,6 +718,24 @@ class TestSelectorGrammarExitCode:
         assert "Error:" in result.output
         assert "Bracket syntax is not supported" in result.output
 
+    def test_ignore_trailing_dot_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        """U8: the U15-family residual the plan calls out at ``cli.py:366``.
+
+        ``--ignore bad.trailing.`` was reported as raising ``ValueError``
+        *before* the try block, producing a traceback and click's exit 1 --
+        the code this module reserves for "messages differ". Asserted here
+        rather than assumed: the same guard covers it as the bracket case.
+        """
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_same"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--ignore", "bad.trailing.",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+
     def test_treat_as_map_grammar_error_exits_2(
         self, runner: CliRunner, simple_setup: dict[str, Path],
     ) -> None:

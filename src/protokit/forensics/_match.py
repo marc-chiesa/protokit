@@ -27,8 +27,8 @@ from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import DecodeError, Message
 
 from protokit.forensics._drift import compatibility_score
-from protokit.message.model import Diagnostic
 from protokit.forensics._wire import WalkError, walk_top_level
+from protokit.message.model import Diagnostic
 from protokit.storage._fidelity_probe import unmodeled_byte_delta
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
 

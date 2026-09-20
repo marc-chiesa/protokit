@@ -1017,22 +1017,24 @@ class TestTheFailurePathCannotCrashALegacyConsole:
 # Guard 2 — the root Click group
 # ---------------------------------------------------------------------------
 
-#: Leaf commands whose callback does not reach ``protokit._trust`` yet. U8
-#: ("route every exit decision through the U7 ``_trust`` predicate") owns
-#: emptying this; it must be empty before 0.16.0 cuts. Why each is here:
+#: Leaf commands whose callback does not reach ``protokit._trust``. **Empty
+#: since U8**, which routed the last nine, and the assertion below compares
+#: for equality — so a new command that bypasses the seam fails here, and so
+#: would a re-added entry. Keep it empty; it is not a place to park work.
 #:
-#: * ``compat *`` — the renderers they dispatch to ask the seam (guard 1), but
-#:   the exit gates are ``if report.diagnostics: sys.exit(2)``, which is
-#:   *stricter* than the seam (warnings exit 2 too). Routing them is a
-#:   behavior decision, not a migration.
-#: * ``forensics *`` / ``storage *`` — no report kind of theirs is known to
-#:   the seam; U8 decides what vouching for a ``MatchReport`` or a scan means.
-PENDING_U8: frozenset[str] = frozenset({
-    "compat bisect",
-    "compat check",
-    "compat ci",
-    "compat history",
-})
+#: What each of the nine needed, since "route it through the seam" understated
+#: three different problems:
+#:
+#: * ``compat *`` — the renderers already asked the seam (guard 1); the exit
+#:   gates were ``if report.diagnostics: sys.exit(2)``, *stricter* than the
+#:   seam because a warning-level diagnostic exits 2 too. Both now run: the
+#:   seam is the floor, the warning check the ceiling compat keeps.
+#: * ``forensics *`` — ``MatchReport`` / ``DriftReport`` carried no
+#:   ``diagnostics`` at all, so the seam could only refuse them. They gained
+#:   the field and the seam gained both kinds.
+#: * ``storage *`` — no report object exists at all; the CLI builds a private
+#:   one (``_ScanReport``) from its fault tally and hands the seam that.
+PENDING_U8: frozenset[str] = frozenset()
 
 
 def _leaf_commands(
