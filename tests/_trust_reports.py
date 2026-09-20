@@ -13,6 +13,8 @@ point: the seam recognises kinds by the attributes the real types carry.
 
 from __future__ import annotations
 
+import dataclasses
+
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.message import MessageDifferencer
@@ -60,21 +62,32 @@ def history_report(
     *,
     entry_diags: tuple[Diagnostic, ...] = (),
     aggregate: tuple[CommitDiagnostic, ...] = (),
-    entries: bool = True,
+    entries: int | bool = True,
     findings: tuple[Finding, ...] = (),
+    broken_entry: int = 0,
 ) -> HistoryReport:
     """One-entry walk; ``entries=False`` makes it an empty walk.
 
     ``findings`` puts a rule pack's own text on the entry, which is the only
     way the per-finding lines of this kind's renderers are ever exercised.
     """
-    entry = HistoryEntry(
-        commit_sha=ENTRY_SHA, parent_sha="p" * 40, commit_subject="subject",
-        report=compat_report(*entry_diags, findings=findings),
+    count = int(entries)
+    built = tuple(
+        HistoryEntry(
+            commit_sha=chr(ord("a") + i) * 40, parent_sha="p" * 40,
+            commit_subject="subject",
+            report=compat_report(
+                *(entry_diags if i == broken_entry else ()), findings=findings,
+            ),
+        )
+        for i in range(count)
     )
+    # One entry keeps ENTRY_SHA so existing expectations hold.
+    if count == 1:
+        built = (dataclasses.replace(built[0], commit_sha=ENTRY_SHA),)
     return HistoryReport(
         range_spec="A..B", old_sha="a", new_sha="b", commits_walked=2,
-        entries=(entry,) if entries else (), diagnostics=aggregate,
+        entries=built, diagnostics=aggregate,
     )
 
 

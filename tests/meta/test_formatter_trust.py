@@ -57,17 +57,17 @@ import functools
 import importlib
 import inspect
 import json
+import pkgutil
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import click
 import pytest
 
-# LINT_REPORT formatters register when their module loads, and nothing in
-# ``protokit.formatters`` loads it (the lint CLI does).
-import protokit.formatters._builtin_lint  # noqa: F401
+import protokit
 from protokit import _trust
 from protokit.cli import main as root_group
 from protokit.formatters import (
@@ -92,14 +92,26 @@ from tests._trust_reports import (
     lint_finding,
     lint_report,
     truncated_diff_result,
+    warning_diagnostic,
 )
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "protokit"
 
+# A formatter registers when its module loads, and some load only when a CLI
+# reaches them. Import every module in the package so the registry is complete
+# here whatever the spelling -- ``_register_builtin``, an alias of it, the
+# public ``register_formatter``, or a direct assignment. Reading the source for
+# one literal call, which is what this used to do, sees only the first.
+for _module in pkgutil.walk_packages(protokit.__path__, "protokit."):
+    importlib.import_module(_module.name)
+
 # A reason's text is written by a rule pack or plugin. This one tries to
 # forge a second, stable-prefixed line.
 _FORGED = "error[lint-fake]: analysis completed"
-_HOSTILE = f"plugin crashed\n{_FORGED}"
+#: Sandwiched: a renderer that keeps only the first segment, or only the
+#: last, still forges a line -- which a leading-text-only payload could not
+#: show.
+_HOSTILE = f"{_FORGED}\nplugin crashed\n{_FORGED}"
 
 
 def _error() -> Diagnostic:
@@ -126,9 +138,10 @@ def _finding() -> Finding:
 
 
 def _difference() -> Difference:
+    """Carries a REPORT-hook annotation, which is a hook author's own text."""
     return Difference(
         path=FieldPath.parse("name"), change_type=ChangeType.MODIFIED,
-        left_value="A", right_value="B",
+        left_value="A", right_value="B", annotations=(_HOSTILE,),
     )
 
 
@@ -152,11 +165,28 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "error-and-truncated": dataclasses.replace(
             truncated_diff_result(), diagnostics=(_error(),),
         ),
+        # A warning rides along with an error: a warning alone does not
+        # distrust a report, so the advisory path was never rendered by any
+        # untrusted mode and dropping its sanitizer forged a line unseen.
+        "error-and-warning": DiffResult(
+            differences=(), diagnostics=(_error(), warning_diagnostic(_HOSTILE)),
+        ),
     },
     FormatterKind.COMPAT: {
         "error": compat_report(_error()),
         "error-with-findings": compat_report(_error(), findings=(_finding(),)),
         "two-errors": compat_report(_error(), error_diagnostic("second failure")),
+        # Three, so a renderer capping the list at two is visible; and two
+        # identical ones, so an exact de-dup is.
+        "three-errors": compat_report(
+            _error(), error_diagnostic("second failure"),
+            error_diagnostic("third failure"),
+        ),
+        "repeated-error": compat_report(_error(), _error()),
+        # Six: a cap at any small N is visible, not just a cap below three.
+        "six-errors": compat_report(*(
+            error_diagnostic(f"failure {i}") for i in range(6)
+        )),
         # Every error-diagnostic fixture carried ``path=None``, so a renderer
         # could treat a path-scoped error as not touching the verdict and
         # still pass.
@@ -181,6 +211,11 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "entry-error-with-findings": history_report(
             entry_diags=(_error(),), findings=(_finding(),),
         ),
+        # Two entries, the SECOND one broken: a one-entry walk cannot tell a
+        # per-entry verdict from one the renderer computed once.
+        "second-entry-error": history_report(
+            entry_diags=(_error(),), entries=2, broken_entry=1,
+        ),
     },
     FormatterKind.COMPAT_BISECT: {
         "error": bisect_report(_commit_error()),
@@ -191,6 +226,13 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "two-errors": bisect_report(
             _commit_error(), CommitDiagnostic("b" * 40, "error", None, "second"),
         ),
+        # Both on ONE commit, which a per-commit collapse would merge.
+        "two-errors-one-commit": bisect_report(
+            _commit_error(), CommitDiagnostic("a" * 40, "error", None, "second"),
+        ),
+        # Identical twice: the seam reports two, so a de-duplication that
+        # renders one is a dropped reason.
+        "repeated-error": bisect_report(_commit_error(), _commit_error()),
     },
     FormatterKind.LINT_REPORT: {
         # One per gated category, so U8 widening the set is exercised here
@@ -225,6 +267,20 @@ _TRUSTED: dict[FormatterKind, object] = {
     FormatterKind.LINT_REPORT: lint_report(),
 }
 
+#: The marker each kind prints when it refuses a verdict. The mirror of
+#: ``_SUCCESS_TEXT``: the absence of a success word is not the presence of a
+#: refusal, and a renderer that simply goes quiet is as wrong as one that
+#: claims success. ``lint``'s compile-error mode prints no header -- its
+#: reason IS an ordinary ``diagnostic[...]`` line -- which is why that line is
+#: listed as a refusal shape too.
+_REFUSAL_TEXT: dict[FormatterKind, tuple[str, ...]] = {
+    FormatterKind.DIFF: ("INCOMPLETE", "not trustworthy"),
+    FormatterKind.COMPAT: ("INCOMPLETE",),
+    FormatterKind.COMPAT_HISTORY: ("INCOMPLETE",),
+    FormatterKind.COMPAT_BISECT: ("INCOMPLETE",),
+    FormatterKind.LINT_REPORT: ("INCOMPLETE", "diagnostic["),
+}
+
 _MODES = [
     pytest.param(kind, mode, id=f"{kind.name}-{mode}")
     for kind, modes in _UNTRUSTED.items() for mode in modes
@@ -244,9 +300,50 @@ def _states_success(out: str, success: str) -> bool:
     """Whether ``out`` states ``success`` as its own word.
 
     Bounded on both sides: ``COMPATIBLE`` is a substring of ``INCOMPATIBLE``,
-    and a plain ``in`` would read the refusal as the claim.
+    and a plain ``in`` would read the refusal as the claim. Case- and
+    whitespace-insensitive, because "Messages are EQUAL." and "Messages  are
+    equal." are the same claim to a reader and were not to an exact match.
     """
-    return bool(re.search(rf"(?<![A-Za-z]){re.escape(success)}(?![A-Za-z])", out))
+    flat = " ".join(out.split())
+    return bool(re.search(
+        rf"(?<![A-Za-z]){re.escape(success)}(?![A-Za-z])", flat, re.IGNORECASE,
+    ))
+
+
+def _made_trustworthy(report: object) -> object:
+    """The same report with only its untrustworthiness removed.
+
+    This is the control the accounting test turns on. Comparing an untrusted
+    rendering against a *clean* report cannot tell an invented verdict from
+    the ordinary structure of a report that has findings; comparing it
+    against the same report minus its reasons can.
+    """
+    no_errors = tuple(
+        d for d in report.diagnostics if d.level != "error"  # type: ignore[attr-defined]
+    )
+    if hasattr(report, "truncated_paths"):          # DiffResult
+        return dataclasses.replace(
+            report, truncated_paths=(), diagnostics=no_errors,  # type: ignore[type-var]
+        )
+    if hasattr(report, "runtime_warnings"):         # LintReport
+        return dataclasses.replace(
+            report,  # type: ignore[type-var]
+            runtime_warnings=tuple(
+                w for w in report.runtime_warnings  # type: ignore[attr-defined]
+                if w.category not in _trust.INCOMPLETE_ANALYSIS_CATEGORIES
+            ),
+            diagnostics=no_errors,
+        )
+    if hasattr(report, "entries"):                  # HistoryReport
+        return dataclasses.replace(
+            report,  # type: ignore[type-var]
+            entries=tuple(
+                dataclasses.replace(e, report=_made_trustworthy(e.report))  # type: ignore[arg-type]
+                for e in report.entries  # type: ignore[attr-defined]
+            ),
+            diagnostics=no_errors,
+        )
+    return dataclasses.replace(report, diagnostics=no_errors)  # type: ignore[type-var]
 
 
 #: The text that states success, per kind. A table, because "the last line of
@@ -303,17 +400,23 @@ class TestEveryHumanFormatterAsksTheSeam:
         """Showing the reasons *beside* a pass is still a pass."""
         success = _SUCCESS_TEXT[kind]
         if success is None:
+            # Nothing to withhold (lint's clean rendering is empty); the
+            # accounting test carries this kind instead.
             return
         report = _UNTRUSTED[kind][mode]
         out = _render_human(kind, report)
-        if kind is FormatterKind.COMPAT_HISTORY and mode.startswith("aggregate"):
-            # The walk is in doubt, but each entry's own check finished, so
-            # its OK line is the truth. What must appear is the walk-level
-            # verdict — asserted here rather than described and skipped,
-            # which left the only modes that reach this branch unguarded.
-            assert "INCOMPLETE" in out, (kind.name, mode, out)
-            return
-        assert not _states_success(out, success), (kind.name, mode)
+        if kind is FormatterKind.COMPAT_HISTORY:
+            # A walk states two kinds of verdict. Each entry's own OK is the
+            # truth when that entry's check finished -- a healthy entry beside
+            # a broken one keeps it -- so only the walk summary is asserted
+            # here. The per-entry lines are covered by the control comparison
+            # in ``test_no_line_is_invented``, which sees a broken entry whose
+            # line did not change.
+            out = "\n".join(
+                line for line in out.splitlines()
+                if line.startswith(f"# {report.range_spec}")  # type: ignore[attr-defined]
+            )
+        assert not _states_success(out, success), (kind.name, mode, out)
 
     @pytest.mark.parametrize(("kind", "mode"), _MODES)
     def test_every_reason_is_rendered(
@@ -323,8 +426,101 @@ class TestEveryHumanFormatterAsksTheSeam:
         out = _render_human(kind, report)
         reasons = _trust.reasons(report)
         assert reasons
-        for reason in reasons:
-            assert reason in out, (kind.name, mode, reason, out)
+        # Counted, not merely contained: two identical reasons that render as
+        # one is a de-dup the containment check could not see.
+        for reason, wanted in Counter(reasons).items():
+            hits = sum(1 for line in out.splitlines() if reason in line)
+            assert hits >= wanted, (kind.name, mode, reason, wanted, hits, out)
+
+    @pytest.mark.parametrize(("kind", "mode"), _MODES)
+    def test_a_refusal_is_stated(self, kind: FormatterKind, mode: str) -> None:
+        """Going quiet is not refusing: the marker has to be there.
+
+        The positive half of the verdict question. Withholding the success
+        word satisfies ``test_the_success_verdict_is_withheld`` even if the
+        renderer then says nothing at all about why.
+        """
+        report = _UNTRUSTED[kind][mode]
+        success = _SUCCESS_TEXT[kind]
+        control = _render_human(kind, _made_trustworthy(report))
+        if success is not None and not _states_success(control, success):
+            # The control already reports a failure (findings, a break), so
+            # there is no success claim to withdraw and nothing to state.
+            return
+        out = _render_human(kind, report).lower()
+        assert any(r.lower() in out for r in _REFUSAL_TEXT[kind]), (
+            kind.name, mode, out,
+        )
+
+    @pytest.mark.parametrize(("kind", "mode"), _MODES)
+    def test_the_control_is_trustworthy(
+        self, kind: FormatterKind, mode: str,
+    ) -> None:
+        """Premise of the accounting test: the control differs ONLY in trust.
+
+        Both halves matter. A control that is still untrustworthy makes the
+        comparison meaningless; a control that lost something else -- an
+        advisory warning, a finding -- renders fewer lines and so excuses
+        fewer, which weakens the accounting silently.
+        """
+        report = _UNTRUSTED[kind][mode]
+        control = _made_trustworthy(report)
+        assert _trust.is_trustworthy(control), (kind.name, mode)
+        for field in dataclasses.fields(report):  # type: ignore[arg-type]
+            if field.name in {"diagnostics", "runtime_warnings", "truncated_paths",
+                              "entries"}:
+                continue
+            assert getattr(control, field.name) == getattr(report, field.name), (
+                kind.name, mode, field.name,
+            )
+        # Advisory diagnostics are not reasons, so the control keeps them.
+        assert [
+            d for d in control.diagnostics if d.level != "error"  # type: ignore[attr-defined]
+        ] == [
+            d for d in report.diagnostics if d.level != "error"  # type: ignore[attr-defined]
+        ], (kind.name, mode)
+
+    @pytest.mark.parametrize(("kind", "mode"), _MODES)
+    def test_no_line_is_invented(self, kind: FormatterKind, mode: str) -> None:
+        """Every line of an untrusted rendering is accounted for.
+
+        Enumerating forbidden success words is a blacklist a synonym walks
+        through: a renderer that withholds ``Messages are equal.`` and prints
+        ``The two messages match.`` instead passes every check built that way.
+        So the question is inverted here. A line may appear because the
+        control -- the same report with only its untrustworthiness removed --
+        prints it too, because it carries one of the seam's reasons, or
+        because it is the kind's refusal marker. A line that is none of those
+        is a verdict the renderer invented.
+        """
+        report = _UNTRUSTED[kind][mode]
+        out = _render_human(kind, report)
+        control = set(_render_human(kind, _made_trustworthy(report)).splitlines())
+        reasons = _trust.reasons(report)
+        refusals = _REFUSAL_TEXT[kind]
+        for line in out.splitlines():
+            if not line.strip() or line in control:
+                continue
+            if any(r.lower() in line.lower() for r in refusals):
+                # A refusal sentence is prose of protokit's own, so it is taken
+                # whole. ``test_the_success_verdict_is_withheld`` still forbids
+                # the kind's success text anywhere, including here.
+                continue
+            # Carrying a reason does NOT excuse the rest of the line. A
+            # renderer that appended its own verdict to a reason -- "All
+            # checks passed; safe to deploy. Advisory: <reason>" -- satisfied
+            # a containment test while telling the reader the opposite of the
+            # truth. Remove what is legitimately there and require silence.
+            remainder = line
+            for reason in reasons:
+                remainder = remainder.replace(reason, " ")
+            if not any(ch.isalpha() for ch in remainder):
+                continue
+            raise AssertionError(
+                f"{kind.name}/{mode}: unaccounted text {remainder.strip()!r} "
+                f"on line {line!r}\nit is not in the control rendering, is not "
+                f"a refusal, and is not part of a reason.\nfull output:\n{out}"
+            )
 
     @pytest.mark.parametrize(("kind", "mode"), _MODES)
     def test_a_reason_cannot_forge_a_line(
@@ -456,6 +652,40 @@ def _registered_builtins_from_source() -> set[tuple[str, str]]:
     return found
 
 
+class TestEachHistoryEntryIsJudgedOnItsOwn:
+    """A walk's per-entry verdicts are per entry.
+
+    The control comparison cannot carry this: in a two-entry walk with one
+    broken entry, the control legitimately prints ``OK`` for both, so a
+    renderer that judged every entry by the first one's report -- or by the
+    walk's -- produces a line the control also prints. Both mutations left
+    the whole suite green.
+    """
+
+    @staticmethod
+    def _lines(broken: int) -> list[str]:
+        report = history_report(
+            entry_diags=(error_diagnostic("plugin crashed"),),
+            entries=2, broken_entry=broken,
+        )
+        out = _render_human(FormatterKind.COMPAT_HISTORY, report)
+        # Entry summary lines only: the walk-level block and the indented
+        # reason lines beneath it belong to the walk, not to an entry.
+        return [
+            line for line in out.splitlines()
+            if line.strip() and not line.startswith(f"# {report.range_spec}")
+            and not line.startswith(" ")
+        ]
+
+    @pytest.mark.parametrize("broken", [0, 1])
+    def test_only_the_broken_entry_withholds_its_verdict(self, broken: int) -> None:
+        entries = self._lines(broken)
+        assert len(entries) == 2, entries
+        assert "INCOMPLETE" in entries[broken], (broken, entries)
+        assert _states_success(entries[1 - broken], "OK"), (broken, entries)
+        assert not _states_success(entries[broken], "OK"), (broken, entries)
+
+
 class TestEveryMachineVerdictAsksTheSeam:
     def test_every_registered_format_is_classified(self) -> None:
         registered = {key for key in _registry._REGISTRY if key[1] != "human"}
@@ -515,7 +745,12 @@ _SENTINEL_FORGED = " ".join(["error[lint-fake]:"] * 30)
 #: A kind no format claims to render structurally: this models the day the
 #: seam learns a new reason, which every format must fail closed on.
 _SENTINEL_KIND = "sentinel-reason"
-_SENTINELS = (_SENTINEL, _SENTINEL_FORGED)
+#: Five, so a cap at two or three is visible; the forged one is repeated at
+#: both ends so a head- or tail-truncation still shows it.
+_SENTINELS = (
+    _SENTINEL_FORGED, _SENTINEL, f"{_SENTINEL}-2", f"{_SENTINEL}-3",
+    f"{_SENTINEL_FORGED} tail",
+)
 
 
 @pytest.fixture
@@ -673,7 +908,11 @@ def _seam_aliases(tree: ast.Module) -> set[str]:
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 is_the_module = node.module == "protokit" and alias.name == "_trust"
-                if is_the_module or node.module == "protokit._trust":
+                if is_the_module:
+                    names.add(alias.asname or alias.name)
+                elif node.module == "protokit._trust" and alias.name in _VERDICT_NAMES:
+                    # A direct import of a verdict function binds that name
+                    # locally; ``one_line`` imported the same way does not.
                     names.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
@@ -699,8 +938,37 @@ def _module_functions(
     return frozenset(_seam_aliases(tree)), functions
 
 
+#: Names on the seam that answer the verdict question. A command that reaches
+#: ``protokit._trust`` only for ``one_line`` -- a text utility -- has not asked
+#: it anything, so the reference does not count.
+_VERDICT_NAMES: frozenset[str] = frozenset({
+    "is_trustworthy", "reasons", "signals", "signals_other_than",
+    "walk_level_reasons", "INCOMPLETE_ANALYSIS_CATEGORIES",
+})
+
+_ANNOTATION_FIELDS = frozenset({"annotation", "returns"})
+
+
+def _runtime_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """``ast.walk`` minus type annotations, which never execute.
+
+    ``from __future__ import annotations`` makes every annotation a string at
+    runtime, so ``def f(x: _trust.Signal)`` mentions the seam without asking
+    it anything -- and counting that let a command drop its real call.
+    """
+    todo: list[ast.AST] = [node]
+    while todo:
+        current = todo.pop()
+        yield current
+        for field, value in ast.iter_fields(current):
+            if field in _ANNOTATION_FIELDS:
+                continue
+            items = value if isinstance(value, list) else [value]
+            todo.extend(v for v in items if isinstance(v, ast.AST))
+
+
 def _reaches_seam(module_name: str, function_name: str) -> bool:
-    """Does ``function_name``'s module-local call closure reference the seam?"""
+    """Does ``function_name``'s module-local call closure ASK the seam?"""
     aliases, functions = _module_functions(module_name)
     assert function_name in functions, (module_name, function_name)
 
@@ -711,9 +979,13 @@ def _reaches_seam(module_name: str, function_name: str) -> bool:
         if name in seen:
             continue
         seen.add(name)
-        for node in ast.walk(functions[name]):
+        for node in _runtime_nodes(functions[name]):
+            if isinstance(node, ast.Attribute) and node.attr in _VERDICT_NAMES:
+                value = node.value
+                if isinstance(value, ast.Name) and value.id in aliases:
+                    return True
             if isinstance(node, ast.Name):
-                if node.id in aliases:
+                if node.id in aliases and node.id in _VERDICT_NAMES:
                     return True
                 if node.id in functions:
                     todo.append(node.id)
