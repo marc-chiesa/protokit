@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 from pathlib import Path
 
 import click
 from google.protobuf import descriptor_pb2
 from google.protobuf.message import DecodeError
 
+from protokit import _trust
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
 from protokit.forensics._drift import DriftReport, drift
@@ -231,6 +233,26 @@ def _verdict_line(report: MatchReport) -> str:
     return f"verdict: clean match — {top}"
 
 
+def _exit_unless_vouched(report: object) -> None:
+    """Exit 2 when ``protokit._trust`` will not vouch for ``report`` (U8, R1).
+
+    Called after the report has been rendered: what the run did produce is
+    still worth showing, and only the verdict changes. Both commands used to
+    fall off the end at exit 0 for every run that did not hard-error, so a
+    ranking that silently skipped a candidate was indistinguishable from a
+    clean sweep.
+
+    The predicate is the seam's, shared with every other exit path, so a
+    reason it learns tomorrow lands here rather than growing a second gate
+    beside it.
+    """
+    if _trust.is_trustworthy(report):
+        return
+    for reason in _trust.reasons(report):
+        click.echo(f"Error: {_trust.one_line(reason)}", err=True)
+    sys.exit(2)
+
+
 @main.command(name="match")
 @click.argument(
     "message_file", type=click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -327,6 +349,8 @@ def match_cmd(
     else:
         click.echo(_render_human(report))
         click.echo(_verdict_line(report), err=True)
+
+    _exit_unless_vouched(report)
 
 
 def _render_drift_human(report: DriftReport) -> str:
@@ -429,3 +453,11 @@ def drift_cmd(
             else f"drift: {len(report.divergences)} divergence(s)"
         )
         click.echo(summary, err=True)
+
+    # A divergence is what ``drift`` was asked to find, not a reason to
+    # distrust the run, so this fires only on a tool-level failure. Nothing
+    # records one today -- a malformed message makes the walk raise, which
+    # is already exit 2 -- so the gate is closed ahead of a producer rather
+    # than after one, the way ``message diff`` wired ``result.errors``
+    # before any hook could emit it.
+    _exit_unless_vouched(report)

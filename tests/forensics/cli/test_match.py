@@ -243,9 +243,13 @@ def test_fault_row_renders_dashes(runner: CliRunner, tmp_path: Path) -> None:
         "--type", "a.A",
     )
 
-    assert result.exit_code == 0
+    # U8: the ranking is over fewer schemas than the user named -- ``req``
+    # never entered the contest -- so the winner won a smaller one. The table
+    # still renders in full; only the verdict changed.
+    assert result.exit_code == 2
     assert "incomplete" in result.stdout
     assert " -" in result.stdout  # the fault row's dash cells rendered
+    assert "req:" in result.stderr  # the seam's reason names the candidate
 
 
 def test_unparseable_under_all_exits_2(runner: CliRunner, tmp_path: Path) -> None:
@@ -351,3 +355,60 @@ class TestDescriptorSetSuffixes:
     def test_binpb_is_declared(self) -> None:
         """Named explicitly: it is the member the audit proved was droppable."""
         assert ".binpb" in forensics_cli._FDS_SUFFIXES
+
+
+# ---------------------------------------------------------------------------
+# U8 — the exit gate. Both commands used to fall off the end at 0 for every
+# run that did not hard-error (R1).
+# ---------------------------------------------------------------------------
+
+
+def test_one_candidate_that_does_not_parse_exits_2(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """A partial sweep is not a clean one: ``v2`` never entered the contest.
+
+    The all-faulted case already exited 2 with its own message; this is the
+    partial one, which exited 0 indistinguishably from a full ranking.
+    """
+    produced = fdp({"x": 1})
+    # ``req`` declares a proto2 ``required`` field the message does not carry,
+    # so its modeled-byte fraction cannot be measured (ParseTier.FAULT) while
+    # ``ok`` parses cleanly. One candidate measured, one not.
+    unmeasurable = proto2_required_fdp(required={"z": 9}, optional={"x": 1})
+    write_desc(tmp_path / "ok.desc", produced)
+    write_desc(tmp_path / "bad.desc", unmeasurable)
+    write_message(tmp_path / "msg.bin", produced, {"x": 5})
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"ok={tmp_path / 'ok.desc'}",
+        "--schema", f"bad={tmp_path / 'bad.desc'}",
+        "--type", "a.A",
+    )
+
+    assert result.exit_code == 2
+    assert "ok" in result.stdout  # the ranking still rendered in full
+    assert "bad:" in result.stderr  # the seam's reason names the candidate
+
+
+def test_a_clean_sweep_still_exits_0(runner: CliRunner, tmp_path: Path) -> None:
+    """Adjacent behavior: the gate keys on an unmeasured candidate only."""
+    full, old = fdp({"x": 1, "y": 2}), fdp({"x": 1})
+    write_desc(tmp_path / "full.desc", full)
+    write_desc(tmp_path / "old.desc", old)
+    write_message(tmp_path / "msg.bin", full, {"x": 5, "y": 7})
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"full={tmp_path / 'full.desc'}",
+        "--schema", f"old={tmp_path / 'old.desc'}",
+        "--type", "a.A",
+    )
+
+    # ``old`` models fewer bytes than ``full`` -- that is a ranking signal,
+    # not a fault, and must not reach the gate.
+    assert result.exit_code == 0
+    assert "Error:" not in result.stderr
