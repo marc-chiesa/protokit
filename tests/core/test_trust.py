@@ -180,41 +180,48 @@ class TestForensicsReports:
     every other command asks.
     """
 
-    @pytest.mark.parametrize("outcome", ["decode_error", "incomplete"])
-    def test_a_candidate_that_was_not_measured_costs_trust(
-        self, outcome: str,
-    ) -> None:
+    def test_a_candidate_that_was_not_measured_costs_trust(self) -> None:
         report = match_report(ranked=(
             candidate_fit("v1"),
-            candidate_fit("v2", parse_outcome=outcome, detail="could not measure"),
+            candidate_fit(
+                "v2", parse_outcome="incomplete", detail="could not measure",
+            ),
         ))
         assert _trust.is_trustworthy(report) is False
         assert _trust.reasons(report) == ("v2: could not measure",)
 
     def test_the_reason_falls_back_to_the_outcome_without_a_detail(self) -> None:
         report = match_report(ranked=(
-            candidate_fit("v2", parse_outcome="decode_error"),
+            candidate_fit("v2", parse_outcome="incomplete"),
         ))
-        assert _trust.reasons(report) == ("v2: decode_error",)
+        assert _trust.reasons(report) == ("v2: incomplete",)
 
     def test_every_unmeasured_candidate_gets_its_own_reason(self) -> None:
         """Two blind spots must not collapse into one line."""
         report = match_report(ranked=(
-            candidate_fit("v1", parse_outcome="decode_error", detail="bad tag"),
-            candidate_fit("v2", parse_outcome="incomplete", detail="no required"),
+            candidate_fit("v1", parse_outcome="incomplete", detail="no x"),
+            candidate_fit("v2", parse_outcome="incomplete", detail="no y"),
         ))
-        assert _trust.reasons(report) == ("v1: bad tag", "v2: no required")
+        assert _trust.reasons(report) == ("v1: no x", "v2: no y")
 
-    @pytest.mark.parametrize("outcome", ["clean", "unmodeled"])
+    @pytest.mark.parametrize("outcome", ["clean", "unmodeled", "decode_error"])
     def test_a_measured_candidate_costs_nothing(self, outcome: str) -> None:
-        """Adjacent behavior: ``unmodeled`` is a ranking signal, not a fault."""
+        """``unmodeled`` and ``decode_error`` are ranking results, not faults.
+
+        A candidate the message does not decode under has been *evaluated*
+        and ruled out -- the ordinary outcome of ranking one message against
+        several schema versions, most of which did not produce it. Gating on
+        it would make a healthy ranking exit non-zero nearly every time. Only
+        a candidate whose modeled-byte fraction could not be computed at all
+        (``incomplete``) never entered the contest.
+        """
         report = match_report(ranked=(candidate_fit("v1", parse_outcome=outcome),))
         assert _trust.is_trustworthy(report) is True
 
     def test_match_signals_are_their_own_kind(self) -> None:
         """A renderer that shows error diagnostics itself still sees these."""
         report = match_report(ranked=(
-            candidate_fit("v2", parse_outcome="decode_error"),
+            candidate_fit("v2", parse_outcome="incomplete"),
         ))
         signal, = _trust.signals(report)
         assert signal.kind == _trust.CANDIDATE_NOT_MEASURED

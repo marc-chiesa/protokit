@@ -38,14 +38,23 @@ Error policy (``--on-error``): ``raise`` (default, fail-loud) aborts on the firs
 bad record; ``skip`` drops bad records; ``warn`` reports each to stderr live and
 continues. NOTE: with the length-delimited reader a *framing* fault (truncated
 frame) ends the scan even under ``skip`` / ``warn`` — only *decode* and
-*unknown-stream* faults are recovered past.
+*unknown-stream* faults are recovered past. Under ``skip`` / ``warn`` the good
+records still reach stdout exactly as they would without a fault, and ``skip``
+still says nothing about the individual drops -- only the exit code marks the
+run as incomplete (see below).
 
-Exit codes: 0 = success, 2 = error (a bad flag, an unresolved schema, a malformed
-``--where``, or a data fault under ``--on-error raise``). A Ctrl-C exits 1 via
-Click's ``Abort`` (any partial parquet temp is still discarded). ``count
+Exit codes: 0 = success, 2 = error -- a bad flag, an unresolved schema, a
+malformed ``--where``, a data fault under ``--on-error raise`` (which aborts on
+the first one), or a record the scan never read once the run ends, which
+``protokit._trust`` will not vouch for. That last case reaches ``scan``,
+``head`` and ``count`` alike, and fires under the tolerant ``skip`` / ``warn``
+modes too: dropping even one record exits 2 the same as ``raise`` does, even
+though the records that did come out already reached stdout. A Ctrl-C exits 1
+via Click's ``Abort`` (any partial parquet temp is still discarded). ``count
 --quiet`` adds the grep-like signal: 1 = zero matches, 0 = at least one
-(mirroring ``diff --quiet``). Storage library code never calls ``sys.exit``;
-this layer owns it.
+(mirroring ``diff --quiet``) -- but an incomplete scan outranks it, so a run
+that dropped a record still exits 2 even when ``count`` matched something.
+Storage library code never calls ``sys.exit``; this layer owns it.
 """
 
 from __future__ import annotations

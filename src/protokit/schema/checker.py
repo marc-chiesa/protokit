@@ -88,6 +88,32 @@ from protokit.schema.rules import (
 
 FD = proto_descriptor.FieldDescriptor
 
+# Plugin-dispatch exception tuple. ``SystemExit`` is named explicitly
+# because it derives from ``BaseException``, not ``Exception``: a rule
+# function calling ``sys.exit(0)`` would otherwise unwind past this
+# guard, past ``schema/cli.py``'s ``except ValueError``, past Click,
+# and *become the process exit code* — exit 0, empty stdout and stderr,
+# on a genuinely breaking schema. ``check()`` is a library call that
+# returns a ``CompatibilityReport``; a third-party rule must never be
+# able to terminate the caller's process and forge a clean verdict.
+# This mirrors ``schema/lint/engine.py``'s ``_RULE_EXCEPTION_TUPLE``,
+# which lists ``SystemExit`` first for the same reason on the sibling
+# lint surface.
+#
+# ``KeyboardInterrupt`` is deliberately NOT included here, and the
+# omission is a per-surface judgment rather than an oversight (see
+# ``docs/solutions/security-issues/
+# keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md``,
+# "General Python pattern"): this is a *dispatch* surface reached mid-walk
+# while the operator is watching, so a Ctrl-C arriving here is the
+# operator asking the process to stop and must keep propagating. The
+# *load* surface is the opposite case — an interrupt raised there comes
+# from the pack's own module body — and ``_load_rule_packs`` catches it.
+_PLUGIN_DISPATCH_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    SystemExit,
+    Exception,
+)
+
 
 class SchemaChecker:
     """Configurable compatibility checker.
@@ -758,7 +784,7 @@ class SchemaChecker:
         )
         try:
             result = plugin_fn(ctx)
-        except Exception as exc:
+        except _PLUGIN_DISPATCH_EXCEPTIONS as exc:
             self._record_plugin_failure(
                 rule_id, exc, path, warnings_sink,
             )
@@ -801,7 +827,7 @@ class SchemaChecker:
         )
         try:
             result = plugin_fn(ctx)
-        except Exception as exc:
+        except _PLUGIN_DISPATCH_EXCEPTIONS as exc:
             self._record_plugin_failure(
                 rule_id, exc, path, warnings_sink,
             )
@@ -848,7 +874,7 @@ class SchemaChecker:
     @staticmethod
     def _record_plugin_failure(
         rule_id: str,
-        exc: Exception,
+        exc: BaseException,
         path: FieldPath,
         warnings_sink: list[Diagnostic],
     ) -> None:
@@ -860,6 +886,12 @@ class SchemaChecker:
         callers fail-closed on any error diagnostic (exit 2);
         library callers can read ``report.errors`` directly or
         iterate ``report.diagnostics`` and branch on ``d.level``.
+
+        ``exc`` is typed ``BaseException``, not ``Exception``: the
+        dispatch guards catch ``_PLUGIN_DISPATCH_EXCEPTIONS``, which
+        names ``SystemExit`` so a rule calling ``sys.exit(0)`` lands
+        here as an error diagnostic instead of becoming the process
+        exit code.
         """
         message = (
             f"schema plugin '{rule_id}' raised "

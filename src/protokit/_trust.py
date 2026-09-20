@@ -80,10 +80,16 @@ TRUNCATION = "truncation"
 #: ``--on-error skip`` / ``warn`` recovered past. The records that did come
 #: out are a subset of the input, not the input.
 RECORD_NOT_READ = "record-not-read"
-#: A forensics candidate the ranking could not measure: the message did not
-#: parse under it, or a missing ``required`` field made its modeled-byte
-#: fraction unmeasurable. The ranking is then over fewer schemas than the
-#: user named, so the winner is a winner of a smaller contest.
+#: A forensics candidate the ranking could not measure at all: a missing
+#: proto2 ``required`` field left its modeled-byte fraction uncomputable, so
+#: it never entered the contest and the winner won a smaller one.
+#:
+#: Deliberately NOT a candidate that merely failed to decode. That candidate
+#: *was* measured -- it lost decisively, which is the ordinary result of
+#: ranking one message against several schema versions, most of which are
+#: not the one that produced it. Gating on it would make a healthy ranking
+#: exit non-zero nearly every time. The case where *no* candidate parses is
+#: still an error, caught by ``forensics match``'s own all-faulted check.
 CANDIDATE_NOT_MEASURED = "candidate-not-measured"
 
 
@@ -264,21 +270,26 @@ def _lint_signals(report: Any) -> list[Signal]:
 
 
 #: ``CandidateFit.parse_outcome`` values that mean the candidate was never
-#: measured on the same evidence as its rivals -- the message did not parse
-#: under it (``decode_error``), or it is proto2-uninitialized so the modeled
-#: byte count is unavailable (``incomplete``). Both land in ``ParseTier.FAULT``.
-_UNMEASURED_OUTCOMES: frozenset[str] = frozenset({"decode_error", "incomplete"})
+#: measured at all: proto2-uninitialized, so the modeled byte count is
+#: unavailable. ``decode_error`` is excluded on purpose -- see
+#: :data:`CANDIDATE_NOT_MEASURED`. Both outcomes land in ``ParseTier.FAULT``,
+#: so the tier is not the discriminator here.
+_UNMEASURED_OUTCOMES: frozenset[str] = frozenset({"incomplete"})
 
 
 def _match_signals(report: Any) -> list[Signal]:
     """Error diagnostics, then one signal per candidate that was not measured.
 
-    A ranking is an answer to "which of these schemas produced the message".
-    A candidate the ranker could not measure did not lose that contest -- it
-    never entered it -- so a verdict naming a winner over the remainder is a
-    verdict over a smaller field than the user asked for. ``match`` already
-    refuses the all-faulted case at the CLI; this is the partial one, which
-    exited 0 indistinguishably from a clean sweep.
+    A ranking answers "which of these schemas produced the message". A
+    candidate whose modeled-byte fraction could not be computed did not lose
+    that contest -- it never entered it -- so naming a winner over the
+    remainder is a verdict over a smaller field than the user asked for.
+
+    A candidate that merely failed to decode is the opposite case and costs
+    no trust: it was measured and ruled out, which is what ranking a message
+    against several schema versions is *for*. ``match`` still refuses the
+    all-faulted case at the CLI, so a run where nothing parsed is an error
+    rather than a ranking.
     """
     out = _error_signals(report.diagnostics)
     out.extend(

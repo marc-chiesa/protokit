@@ -155,13 +155,25 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
       ``sys.exit(0)`` used to pass straight through this guard and through
       Click and *become the process exit code*: exit 0, empty stdout and
       stderr, on a genuinely breaking schema.
+    - ``KeyboardInterrupt`` is named for the same reason, and the rule is the
+      project's, not this function's: at a *load* surface the interrupt comes
+      from the pack's own module body (or from ``RULES`` being iterated), so
+      it is the pack speaking, not the operator. Uncaught it reaches Click's
+      ``BaseException`` handler, which prints ``Aborted!`` and exits **1** --
+      the code this module reserves for INCOMPATIBLE, i.e. a broken pack
+      reported to CI as a schema break. See ``docs/solutions/security-issues/
+      keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md``,
+      which walked back exactly the "Ctrl-C is the operator speaking"
+      rationale for this class of surface and fixed the lint sibling; the
+      compat siblings ``load_formatter_packs``
+      (``protokit._cli_utils``) and lint's ``_load_user_rule_pack`` both
+      already carry the arm. The *dispatch* surface is the other half of that
+      per-surface judgment and decides the other way -- see
+      ``_PLUGIN_DISPATCH_EXCEPTIONS`` in ``schema/checker.py``.
     - ``load_rule_pack`` gets the same treatment as the import. Guarding only
       ``AttributeError``/``TypeError`` let anything else raised while
       ``RULES`` is iterated escape as a traceback and exit 1 -- the code
       reserved for INCOMPATIBLE -- turning a broken pack into a schema break.
-
-    ``KeyboardInterrupt`` is deliberately not caught: Ctrl-C is the operator
-    speaking, not the pack.
 
     Args:
         checker: The ``SchemaChecker`` to register plugins on.
@@ -177,6 +189,11 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
     for name in module_names:
         try:
             module = importlib.import_module(name)
+        except KeyboardInterrupt:
+            error_exit(
+                f"failed to import rule pack '{_safe_for_stderr(name)}': "
+                "raised KeyboardInterrupt at module-body load time"
+            )
         except (Exception, SystemExit) as exc:
             error_exit(
                 f"failed to import rule pack '{_safe_for_stderr(name)}': "
@@ -184,6 +201,11 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
             )
         try:
             checker.load_rule_pack(module)
+        except KeyboardInterrupt:
+            error_exit(
+                f"failed to load rule pack '{_safe_for_stderr(name)}': "
+                "raised KeyboardInterrupt at pack-load time"
+            )
         except (Exception, SystemExit) as exc:
             error_exit(
                 f"failed to load rule pack '{_safe_for_stderr(name)}': "
@@ -318,12 +340,22 @@ def _plugin_stdout_to_stderr(prefix: str = "") -> Iterator[None]:
 
     Each captured line is sanitized and prefixed, so pack output cannot forge
     one of this CLI's own stderr lines.
+
+    The drain runs in a ``finally``, and that is the whole point of the
+    promise above: the interesting case is the run that *did not* finish. A
+    pack that prints a diagnostic and then takes the process down -- the one
+    moment its own output is worth most -- would otherwise have that line
+    swallowed on the way out, because the drain sat after the ``with`` and
+    the exception skipped it. The exception itself is untouched; the
+    ``finally`` only re-emits, and lets it propagate unchanged.
     """
     buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        yield
-    for line in buffer.getvalue().splitlines():
-        click.echo(f"{prefix}{_safe_for_stderr(line)}", err=True)
+    try:
+        with contextlib.redirect_stdout(buffer):
+            yield
+    finally:
+        for line in buffer.getvalue().splitlines():
+            click.echo(f"{prefix}{_safe_for_stderr(line)}", err=True)
 
 
 def _git_failure_exit(exc: subprocess.CalledProcessError) -> NoReturn:

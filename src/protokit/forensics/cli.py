@@ -15,9 +15,13 @@ same-named imports, keep each version's imports under its own entry directory
 
 Exit codes: 0 = analysis completed (any verdict, including ``no_clean_match``);
 2 = error (bad flags, an oversized message, a candidate that will not compile, a
-message that parses under no candidate, or a ranking in which some -- not all --
-candidates could not be measured, which ``protokit._trust`` will not vouch for).
-The library never calls ``sys.exit``; this layer owns it.
+message that parses under no candidate, or a ranking holding a candidate whose
+modeled-byte fraction could not be computed at all -- a proto2 ``required``
+field absent -- which ``protokit._trust`` will not vouch for). A candidate the
+message simply does not decode under is **not** that case: it was measured and
+ranked last, which is what ranking against several schema versions is for, so a
+ranking with a clean winner beside it still exits 0. The library never calls
+``sys.exit``; this layer owns it.
 """
 
 from __future__ import annotations

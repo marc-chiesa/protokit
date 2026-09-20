@@ -172,7 +172,18 @@ tool ran and found a problem.
   `SystemExit` does not derive from `Exception`. A pack raising anything other
   than `AttributeError`/`TypeError` while its `RULES` were read escaped as a
   traceback and exited 1, the code reserved for INCOMPATIBLE. Both are exit 2
-  now.
+  now — and so are the two the same class hid one level further in:
+  - **A rule *function* calling `sys.exit()` while the check runs.** The loader
+    was not the only boundary: the per-rule dispatch inside the checker caught
+    `Exception`, so an exiting rule unwound past it and still became the process
+    exit code. `protokit compat check`, `ci`, `history` and `bisect` all reached
+    it. A rule that exits is now recorded as an error diagnostic naming the rule,
+    and the run exits 2 with the schema's real verdict still rendered.
+  - **A pack raising `KeyboardInterrupt` from its module body.** That reported a
+    broken pack to CI as exit 1 — a schema break — where the two sibling pack
+    loaders already reported it as a tooling error. The compat loader now matches
+    them. An operator's Ctrl-C *during* a check still propagates as it always
+    did; only an interrupt raised by the pack's own code at load time is caught.
 - **A missing `git` binary is a tooling error, not a schema break** (audit
   finding U15-4). `check --since`, `ci --base` and `bisect` exited 1 on a
   machine without git; only `history` reported it correctly. All four exit 2.
@@ -182,20 +193,28 @@ tool ran and found a problem.
   `print()` prefixed the `--format json` document — `json.loads` failed on
   protokit's own output — and reached stdout under `--quiet`, whose contract is
   "exit code only". Pack output is captured and re-emitted on stderr, prefixed
-  and flattened; it is not discarded.
-- **A `--max-depth`-truncated `protokit diff` exits 2, not 0** (audit finding
-  U15-7). When the cut hid every difference the comparison reported no changes
-  and exited 0 on genuinely differing messages. U7 fixed the output; this is
-  the exit code, which is what CI reads. It is 2 rather than 1 because the run
-  did not finish — the differences it reported are a lower bound — and applies
+  and flattened; it is not discarded, including when the check it was captured
+  around goes on to fail.
+- **A `--max-depth`-truncated `protokit diff` always exits 2** (audit finding
+  U15-7), whether or not the truncation hid a difference. When the cut hid every
+  difference the comparison reported no changes and exited 0 on genuinely
+  differing messages — U7 fixed the output; the exit code, which is what CI
+  reads, did not follow. When the cut left some differences visible it used to
+  exit 1, same as any diff with changes; that case is also 2 now, since the
+  differences reported are a lower bound and the run did not finish either way.
+  The seam draws no distinction between the two — 2 either way — and applies
   under `--quiet` too.
 - **`protokit forensics match` / `drift` exit 2 on an incomplete run.** Both
   fell off the end of their callback at 0 for every run that did not hard-error.
-  A ranking in which a candidate never parsed, or could not be measured because
-  a proto2 `required` field was absent, read exactly like a clean sweep: the
-  winner had won a smaller contest and nothing said so. The ranking still
-  renders in full. `drift` still exits 0 on divergences — they are what it was
-  asked to find.
+  A ranking holding a candidate that could not be measured at all — a proto2
+  `required` field absent, so its modeled-byte fraction is uncomputable — read
+  exactly like a clean sweep: the winner had won a smaller contest and nothing
+  said so. The ranking still renders in full. **A candidate the message merely
+  does not decode under is not that case** and still exits 0: it was measured
+  and ranked last, which is what ranking one message against several schema
+  versions is for. A message that parses under *no* candidate remains exit 2, as
+  before. `drift` still exits 0 on divergences — they are what it was asked to
+  find.
 - **`protokit compat history --format sarif` no longer drops a diagnostic.** An
   aggregate diagnostic sharing a per-entry one's commit and message but
   carrying a *different* path was treated as a restatement of it and skipped,
@@ -206,16 +225,19 @@ tool ran and found a problem.
   success — the count was short, not the verdict.
 
 *Upgrade impact:* every change above moves a path from exit 0 (or, for the
-rule-pack and missing-git cases, exit 1) to exit 2. A pipeline that treats any
-non-zero exit as failure sees runs start failing that used to pass; each one is
-a run where protokit did not analyse what it was asked to, and the exit code was
-the last surface still saying otherwise. **There is no opt-out flag.** A switch
-restoring a silent fail-open would be a supported way to keep shipping breaks,
-and it would outlive the release that introduced it. The two most likely to fire
-in an existing pipeline are `storage` under a non-default `--on-error` and
-`compat history`/`bisect` over a `--proto-file` that has been renamed; both are
-worth checking before upgrading. `protokit lint`'s `analysis-incomplete` gate is
-unchanged — it shipped in 0.15.1.
+rule-pack, missing-git, and truncated-diff-with-differences cases, exit 1) to
+exit 2. A pipeline that treats any non-zero exit as failure sees runs start
+failing that used to pass; each one is a run where protokit did not analyse what
+it was asked to, and the exit code was the last surface still saying otherwise.
+**There is no opt-out flag.** A switch restoring a silent fail-open would be a
+supported way to keep shipping breaks, and it would outlive the release that
+introduced it. The three most likely to fire in an existing pipeline are
+`storage` under a non-default `--on-error`, `compat history`/`bisect` over a
+`--proto-file` that has been renamed, and `diff --max-depth` in CI over messages
+that already differ — that last one used to exit 1 like any other diff with
+changes and now exits 2. All three are worth checking before upgrading.
+`protokit lint`'s `analysis-incomplete` gate is unchanged — it shipped in
+0.15.1.
 
 ### Fixed — `protokit diff` exit codes
 
