@@ -48,10 +48,14 @@ def _format_finding_human(finding: Finding) -> str:
         fg=color,
         bold=True,
     )
-    path_str = str(finding.path) if finding.path else "(root)"
+    # ``message``, ``rule_id`` and the path are a rule pack's words. Each is
+    # flattened before it is styled -- after styling the line carries click's
+    # own escape codes, which the sanitizer would flatten too.
+    path_str = _trust.one_line(str(finding.path) if finding.path else "(root)")
     path_styled = click.style(path_str, bold=True)
-    rule = click.style(f"({finding.rule_id})", fg="cyan")
-    return f"  {tag} {path_styled}: {finding.message} {rule}"
+    rule = click.style(f"({_trust.one_line(str(finding.rule_id))})", fg="cyan")
+    message = _trust.one_line(str(finding.message))
+    return f"  {tag} {path_styled}: {message} {rule}"
 
 
 def compat_human(report: CompatibilityReport, ctx: FormatterContext) -> str:

@@ -53,7 +53,8 @@ def bisect_human(report: BisectReport, ctx: FormatterContext) -> str:
     if report.breaking_commit is not None:
         lines = [f"first breaking commit: {report.breaking_commit}"]
         for f in report.breaking_findings:
-            lines.append(f"  {f}")
+            # ``Finding.__str__`` embeds the rule pack's own message.
+            lines.append(_trust.one_line(f"  {f}"))
     elif report.commits_walked == 0:
         proto_file = ctx.proto_file or "<unknown>"
         lines = [f"# {report.range_spec}: no commits touch {proto_file}"]

@@ -116,6 +116,13 @@ success verdict, human or machine, asks it first.
   complete. A consumer pinned to `"0.6"` sees a run flip from success to failure
   with an unchanged findings list, which is what the field now means. The JSON
   payload's shape is unchanged.
+- **A rule pack's own text can no longer forge a line.** A finding's message,
+  its rule id and its path are written by whichever rule pack produced it, and
+  every human renderer interpolated them raw: a message containing a newline
+  printed an `error[...]:` line at column 0 in `compat`, `history`, `bisect`
+  and `lint` output, next to the stable prefixes CI greps for. They are
+  flattened now, like the other plugin-authored channels. Machine formats are
+  unaffected: XML and JSON encode a newline without forging anything.
 - The `protokit diff` human output with differences replaces its separate
   `Errors:` block and truncation footer with one `Not trustworthy` block, and
   an untrusted result with no differences lists its warnings before that block

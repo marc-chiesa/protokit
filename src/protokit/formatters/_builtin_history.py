@@ -67,10 +67,11 @@ def history_human(report: HistoryReport, ctx: FormatterContext) -> str:
         )
         for f in entry.report.findings:
             path_str = str(f.path) if f.path else "(root)"
-            lines.append(
+            # A rule pack wrote the message, the rule id and the path.
+            lines.append(_trust.one_line(
                 f"    [{f.severity.value}/{f.direction.value}] "
                 f"{path_str}: {f.message} ({f.rule_id})"
-            )
+            ))
 
     untrusted = _trust.reasons(report)
     if untrusted:

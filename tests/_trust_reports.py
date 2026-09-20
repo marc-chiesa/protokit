@@ -35,8 +35,11 @@ _T = descriptor_pb2.FieldDescriptorProto
 ENTRY_SHA = "c" * 40
 
 
-def error_diagnostic(message: str = "plugin crashed") -> Diagnostic:
-    return Diagnostic(level="error", path=None, message=message)
+def error_diagnostic(
+    message: str = "plugin crashed", *, path: str | None = None,
+) -> Diagnostic:
+    """``path`` matters: a renderer can treat a path-scoped error differently."""
+    return Diagnostic(level="error", path=path, message=message)
 
 
 def warning_diagnostic(message: str = "heads up") -> Diagnostic:
@@ -58,11 +61,16 @@ def history_report(
     entry_diags: tuple[Diagnostic, ...] = (),
     aggregate: tuple[CommitDiagnostic, ...] = (),
     entries: bool = True,
+    findings: tuple[Finding, ...] = (),
 ) -> HistoryReport:
-    """One-entry walk; ``entries=False`` makes it an empty walk."""
+    """One-entry walk; ``entries=False`` makes it an empty walk.
+
+    ``findings`` puts a rule pack's own text on the entry, which is the only
+    way the per-finding lines of this kind's renderers are ever exercised.
+    """
     entry = HistoryEntry(
         commit_sha=ENTRY_SHA, parent_sha="p" * 40, commit_subject="subject",
-        report=compat_report(*entry_diags),
+        report=compat_report(*entry_diags, findings=findings),
     )
     return HistoryReport(
         range_spec="A..B", old_sha="a", new_sha="b", commits_walked=2,
@@ -116,6 +124,20 @@ def truncated_diff_result() -> DiffResult:
     assert not result.has_changes()
     assert not result.is_complete
     return result
+
+
+def lint_finding(rule_id: str = "naming/snake-case-fields") -> LintFinding:
+    """A lint finding whose rule id and rendered message are a pack's words."""
+    from protokit.schema.lint.model import FieldLocation, LintSeverity
+    return LintFinding(
+        rule_id=rule_id,
+        severity=LintSeverity.WARNING,
+        location=FieldLocation(
+            file="acme/user.proto", message="acme.User", field="BadField",
+        ),
+        violation_kind=rule_id,
+        params={"name": "BadField"},
+    )
 
 
 def lint_report(

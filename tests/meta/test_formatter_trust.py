@@ -89,6 +89,7 @@ from tests._trust_reports import (
     compat_report,
     error_diagnostic,
     history_report,
+    lint_finding,
     lint_report,
     truncated_diff_result,
 )
@@ -110,11 +111,17 @@ def _commit_error(commit: str | None = "a" * 40) -> CommitDiagnostic:
 
 
 def _finding() -> Finding:
+    """A finding whose text is a rule pack's, and hostile.
+
+    Findings were the one plugin-authored channel no fixture exercised, and
+    every human renderer interpolated them raw: a message with a newline
+    forged an ``error[...]`` line at column 0 on shipped code.
+    """
     from protokit.schema.model import Direction, Severity
     return Finding(
-        path=FieldPath.parse("user.email"), rule_id="field_removed",
+        path=FieldPath.parse("user.email"), rule_id=f"rule\n{_FORGED}",
         severity=Severity.SEMANTIC, direction=Direction.BACKWARD,
-        message="field present in old schema, absent in new",
+        message=f"field present in old schema, absent in new\n{_FORGED}",
     )
 
 
@@ -150,6 +157,12 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "error": compat_report(_error()),
         "error-with-findings": compat_report(_error(), findings=(_finding(),)),
         "two-errors": compat_report(_error(), error_diagnostic("second failure")),
+        # Every error-diagnostic fixture carried ``path=None``, so a renderer
+        # could treat a path-scoped error as not touching the verdict and
+        # still pass.
+        "error-with-path": compat_report(
+            error_diagnostic(_HOSTILE, path="user.email"),
+        ),
     },
     FormatterKind.COMPAT_HISTORY: {
         "entry-error": history_report(entry_diags=(_error(),)),
@@ -161,6 +174,12 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "entry-and-aggregate": history_report(
             entry_diags=(_error(),),
             aggregate=(CommitDiagnostic("d" * 40, "error", None, "walk broke"),),
+        ),
+        # Untrustworthy AND carrying findings: without it, the per-finding
+        # lines of this renderer are never rendered by the guard at all, and
+        # a renderer may gate the seam's reasons on "nothing else to report".
+        "entry-error-with-findings": history_report(
+            entry_diags=(_error(),), findings=(_finding(),),
         ),
     },
     FormatterKind.COMPAT_BISECT: {
@@ -187,6 +206,10 @@ _UNTRUSTED: dict[FormatterKind, dict[str, object]] = {
         "compile-error-and-rule": lint_report(
             categories=("rule_exception",), message=_HOSTILE,
             compile_error="protoc failed",
+        ),
+        "rule-exception-with-findings": lint_report(
+            categories=("rule_exception",), message=_HOSTILE,
+            findings=(lint_finding(f"pack/rule\n{_FORGED}"),),
         ),
     },
 }
@@ -314,6 +337,25 @@ class TestEveryHumanFormatterAsksTheSeam:
 # ---------------------------------------------------------------------------
 # Machine formats — R4 names the machine counterpart too
 # ---------------------------------------------------------------------------
+
+
+def _verdict_shaped(payload: object, path: str = "") -> Iterator[str]:
+    """Every value anywhere in ``payload`` that could be read as a verdict.
+
+    Not just top-level, and not just ``bool``: a nested ``summary.analysis_
+    complete`` or a ``"true"`` string is a verdict a consumer would read, and
+    a check that looked only at top-level booleans let one through.
+    """
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield from _verdict_shaped(value, f"{path}.{key}" if path else key)
+    elif isinstance(payload, list):
+        for i, value in enumerate(payload):
+            yield from _verdict_shaped(value, f"{path}[{i}]")
+    elif isinstance(payload, bool) or (
+        isinstance(payload, str) and payload.lower() in {"true", "false"}
+    ):
+        yield f"{path}={payload!r}"
 
 
 def _junit_passes(out: str) -> bool:
@@ -458,8 +500,8 @@ class TestEveryMachineVerdictAsksTheSeam:
         kind, name = key
         for report in [_TRUSTED[kind], *_UNTRUSTED[kind].values()]:
             payload = json.loads(_render(name, kind, report))
-            booleans = [k for k, v in payload.items() if isinstance(v, bool)]
-            assert not booleans, (kind.name, name, booleans)
+            found = sorted(_verdict_shaped(payload))
+            assert not found, (kind.name, name, found)
 
 
 # ---------------------------------------------------------------------------

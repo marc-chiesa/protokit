@@ -163,7 +163,11 @@ def _render_finding_line(finding: LintFinding, spec: LintRuleSpec | None) -> str
     severity = finding.severity.name  # "INFO" / "WARNING" / "ERROR"
     location = str(finding.location)
     message = _render_message(finding, spec)
-    return f"{severity} {location} [{finding.rule_id}] {message}"
+    # ``message`` is the rule's template interpolated with its own params,
+    # and ``rule_id`` is the pack's; both are its words, on a line agents grep.
+    return _trust.one_line(
+        f"{severity} {location} [{finding.rule_id}] {message}"
+    )
 
 
 def _reasons_not_shown(report: LintReport) -> tuple[str, ...]:
