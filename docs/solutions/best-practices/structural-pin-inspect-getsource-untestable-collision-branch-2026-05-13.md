@@ -382,8 +382,9 @@ Behavior survives refactoring; the structural pin can be removed.
 - Anchor commit: ``6a1f520`` (Unit 9 ce:review follow-up F1
   — testing reviewer surfaced the collision-branch gap;
   ``inspect.getsource`` test added as the structural pin).
-- Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
-  Unit 9 R9a / KTD-2.
+- Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``,
+  which is maintainer-local and not in this repo — Unit 9 R9a / KTD-2.
 - 11-reviewer ce:review at ``.context/compound-engineering/
-  ce-review/20260513-113000-u9/`` — testing reviewer surfaced
-  the F1 P1 finding (0.97 confidence).
+  ce-review/20260513-113000-u9/``
+  — maintainer-local and not in this repo. The testing reviewer
+  surfaced the F1 P1 finding (0.97 confidence).

@@ -284,9 +284,9 @@ A checklist for any new subprocess wrapper in a test harness:
 - Commits `f96ecab` (Phase A — original wrappers without exit-code
   guards) and `20bb9d7` (ce:review follow-up — adds the guards).
 - 10-reviewer ce:review at `.context/compound-engineering/ce-review/
-  20260513-091500-u8phaseA/` — correctness, reliability, adversarial,
-  and testing reviewers all independently converged on this finding as
-  P1.
+  20260513-091500-u8phaseA/` — maintainer-local and not in this repo.
+  Correctness, reliability, adversarial, and testing reviewers all
+  independently converged on this finding as P1.
 - sha256sum-strict-flag-supply-chain-silent-bypass-2026-05-13 —
   the bash-layer analog. This doc covers Python `subprocess.run(check=False)`
   + empty-stdout fall-through silently passing when the tool exits

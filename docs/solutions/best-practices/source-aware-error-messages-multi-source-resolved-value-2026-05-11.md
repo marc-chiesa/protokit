@@ -351,5 +351,6 @@ simultaneously (the worst-of-both case).
   source-aware branching.
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-175812-997cfcc3/`
+  — maintainer-local and not in this repo
   (api-contract-reviewer.json AC-U2-03; cli-readiness-reviewer.json
   CLR-U2-04; agent-native-reviewer.json AN-U2-03 — 3-way convergence).

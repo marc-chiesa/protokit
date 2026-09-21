@@ -420,11 +420,12 @@ def test_unknown_rule_id_emits_unloaded_rule_warning(
   synthesis), ``6a1f520`` (ce:review follow-ups — Literal
   docstring updated, F8 assertion added that the unknown
   rule_id does not appear in findings).
-- Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
-  Unit 9 R9a / KTD-2.
+- Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``,
+  which is maintainer-local and not in this repo — Unit 9 R9a / KTD-2.
 - 11-reviewer ce:review at ``.context/compound-engineering/
-  ce-review/20260513-113000-u9/`` — cli-readiness reviewer F5
-  surfaced the documentation-path obligation.
+  ce-review/20260513-113000-u9/``
+  — maintainer-local and not in this repo. The cli-readiness reviewer
+  F5 surfaced the documentation-path obligation.
 - [[closed-literal-discriminator-bump-trigger-2026-05-17]] —
   triggered by the U5 resolution. The bump-contract refinement
   needed for the U5 split (closed-Literal vs open-ladder
@@ -450,4 +451,5 @@ def test_unknown_rule_id_emits_unloaded_rule_warning(
 - D6b U5 anchor commits: ``723e9aa`` (D6b U5 feat — split
   shipped), ``907ef53`` (D6b U5 ce:review follow-ups), U5
   brainstorm + plan at ``docs/brainstorms/2026-05-17-d6b-u5-r9-severities-category-split-requirements.md``
-  + ``docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md``.
+  + ``docs/plans/2026-05-17-003-feat-d6b-u5-r9-severities-category-split-plan.md``,
+  both of which are maintainer-local and not in this repo.

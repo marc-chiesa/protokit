@@ -396,6 +396,7 @@ test.
   parameter was added in this 22-finding fix commit.
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-094847-1685ca47/`
+  — maintainer-local and not in this repo
   (5-persona convergence captured in correctness.json,
   adversarial.json, kieran-python.json; maintainability and
   reliability convergence is in the orchestrator synthesis).

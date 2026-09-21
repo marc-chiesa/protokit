@@ -1,5 +1,5 @@
 ---
-title: "Drift-defense conventions for docs/solutions/: per-occurrence claim-currency markers and reference-triage"
+title: "Drift-defense conventions for docs/solutions/: per-occurrence claim-currency markers, reference-triage, and absent-artifact citations"
 date: 2026-06-13
 category: best-practices
 module: docs/solutions drift defense
@@ -15,6 +15,7 @@ applies_when:
   - "The reference-drift CI job (scripts/check_docs_test_refs.py / the docs-refs job) surfaces a docs/solutions/ line that names a renamed or removed test path"
   - "Auditing the docs/solutions/ corpus for claim currency, or deciding how to mark a single new claim"
   - "A version string in a learning is also asserted verbatim by a named presence-ratchet or membership test (a drift anchor)"
+  - "Citing, from a docs/solutions/ learning, a planning artifact or any other file the public repository does not contain (docs/plans/, docs/brainstorms/, .context/, the private learnings repo)"
 tags:
   - drift-defense
   - claim-currency
@@ -24,10 +25,12 @@ tags:
   - presence-ratchet
   - ratchet-anchored-provenance
   - docs-solutions-discipline
+  - absent-artifact-citation
+  - maintainer-local
   - moving-target
 ---
 
-# Drift-defense conventions for docs/solutions/: per-occurrence claim-currency markers and reference-triage
+# Drift-defense conventions for docs/solutions/: per-occurrence claim-currency markers, reference-triage, and absent-artifact citations
 
 ## Context
 
@@ -55,7 +58,7 @@ from "bumping one pin" to "every behavioral claim in the corpus."
 
 ## Guidance
 
-Two rules, each load-bearing. Both are *per occurrence* — classify by what a
+Three rules, each load-bearing. All are *per occurrence* — classify by what a
 sentence asserts, not by which doc it lives in or which version it names.
 
 ### Rule 1 — the claim-currency marker
@@ -119,6 +122,55 @@ prose-reference analogue of `#34`'s current-state-vs-historical split, and of
 the "class 5 — refresh, don't gate" tracked-prose rule in
 [[behavior-preserving-test-move-breaks-path-coupling-2026-06-13]].
 
+### Rule 3 — citations to an artifact this repo does not contain
+
+**A citation to an artifact the public repository does not contain must say so inline, in the citation's own sentence: keep the path as the identifier and mark it maintainer-local and not in this repo.**
+
+`docs/plans/` and `docs/brainstorms/` are gitignored (`.gitignore:30-31`) and hold
+zero tracked files; so does `.context/`. A repo-relative path to one of them
+*looks* like it resolves and does not, which is worse than a reference that
+fails loudly — the reader cannot tell a missing file from a typo, and an agent
+following the path finds nothing and concludes the claim is unsupported.
+
+**Keep the path.** It is the artifact's identifier and the maintainer's grep
+handle, and it discloses nothing the tree does not already say (`.gitignore:24`
+names the private repo in a tracked file). Deleting it destroys a true fact to
+fix a problem the path does not have, and two learnings that describe the same
+plan in different words become two apparently different artifacts. Once the line
+says the artifact is not here, the path cannot mislead anyone.
+
+**Use the phrase verbatim:** `maintainer-local and not in this repo` (the shape
+PR #77 set). One fixed string keeps the corpus greppable and lets a presence
+ratchet pin this rule; vary the wording and both are lost. Place it where it
+scans — these citations are not uniformly end-of-line, and a blind suffix
+produces broken prose. It may wrap onto the next source line; it may not wrap
+through the middle of the phrase itself. Say it once per citation, even where one bullet cites two
+absent artifacts. A maintainer-side *learning* has its own established phrase
+(`maintainer-side learning, kept in the private learnings repository rather than
+this tree`); keep using that one for those.
+
+**Two cases this rule does not reach**, both genuinely different questions:
+
+- A path used as an *illustration of a path's shape* rather than as a reference
+  to a file — an elided path in a rubric's example column names no artifact, so
+  it cannot fail to resolve. Marking it would corrupt the rubric.
+- A path inside a fenced block that transcribes source, where the block's job is
+  to reproduce what the file says. Fix the source or leave the block; do not
+  annotate a transcription.
+
+**Not the same as the frozen-planning-artifact rule.**
+[[stale-forward-looking-text-cli-help-agent-discoverability-2026-05-12]] rules
+that a hit *inside* `docs/plans/` or `docs/brainstorms/` is a frozen artifact to
+leave alone. That is about forward-looking language inside a snapshot; this is
+about whether a citation *pointing at* such a snapshot resolves for a reader.
+Different questions, and both hold at once.
+
+**Nothing enforces this.** `scripts/check_docs_test_refs.py` keys only on
+renamed or removed `tests/**.py` paths, never checks that a cited path exists,
+and returns 0 regardless (`docs-refs` is non-blocking by design — see Rule 2).
+No markdown link checker runs in any workflow. This rule is carried by the
+PR checklist and by reviewers, like Rule 1.
+
 ## Why This Matters
 
 **The marker makes currency legible at the point of retrieval.** An agent rarely
@@ -136,6 +188,14 @@ ratchet *wants* the string frozen so a new upstream rule forces a deliberate
 update; a "current-state" marker invites a bump that breaks the ratchet test and
 silently disarms the drift detector it exists to be. Classify the numerator as
 provenance, name its pinning test, and say "do not bump."
+
+**An unresolvable citation spends trust the corpus cannot get back.** A reader
+who follows two dead paths stops following the third, and the citations that
+*do* resolve lose their value along with the ones that do not. The marker costs
+one clause and converts a broken promise into an honest one: the artifact
+exists, it is not yours, here is what it is called. That is also why the path
+stays — "not in this repo" plus an identifier is a fact a reader can act on by
+asking; a deleted path is not.
 
 **Reference-triage keeps the floor trustworthy.** A check that auto-rewrote
 every surfaced path, or that blocked the build, would false-positive on the
@@ -155,6 +215,10 @@ is the design that keeps the signal worth reading (the reason a continuous
 - **Bumping a pin** (`#34`'s scenario): the marker you wrote tells the bumper
   which occurrences are current-state (bump) and which are provenance / ratchet
   anchors (leave) — the convention and the bump-time decision reinforce.
+
+- **Citing a planning artifact, brainstorm or any other file the public repo
+  does not contain:** apply Rule 3 in the same edit — keep the path, add
+  `maintainer-local and not in this repo` where it scans.
 
 **Skip the marker** when the claim is executable (a live test re-asserts it) or
 when it names no moving target at all (a structural invariant, a code shape a
@@ -193,6 +257,17 @@ surfaces three `docs/solutions/` lines naming `tests/foo.py`. Two are
 navigational ("the gate lives at `tests/foo.py`") → update both to the new path.
 One is historical ("when #29 shipped the file was `tests/foo.py`") → leave it.
 The build is not blocked; the job reported, the author decided.
+
+**5. absent-artifact citation (Rule 3 in action).**
+A learning's Related section reads "- Plan:
+`docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`". The path is
+gitignored and untracked, so no public reader can open it. Keep the path and
+mark it: "- Plan: `docs/plans/...-d3-cli-plan.md`
+— maintainer-local and not in this repo." The same rule applied mid-sentence
+needs rewriting rather than appending, because the phrase has to attach to the
+path and not to whatever clause happens to end the line. Keep the phrase
+unbroken by the line wrap wherever you put it: a reader greps that literal
+string, and a wrap through the middle of it is a citation nobody finds.
 
 ## Related
 

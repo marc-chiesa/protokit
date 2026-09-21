@@ -88,7 +88,8 @@ a follow-up:
   was carried verbatim into the D3 brainstorm without being
   re-evaluated against the new surface.
 - **(session history) The D3 brainstorm explicitly accepted the gap.**
-  `docs/brainstorms/2026-05-04-protokit-lint-delivery-3-cli-requirements.md`
+  `docs/brainstorms/2026-05-04-protokit-lint-delivery-3-cli-requirements.md`,
+  which is maintainer-local and not in this repo,
   documents the `--rule-pack` catch pattern and states
   "BaseException/KeyboardInterrupt still propagates" as a stated
   design choice, not an oversight. The U3 implementation followed
@@ -471,6 +472,7 @@ for the standalone learning.
   closed the gap; KTD-9 was already named in the plan but the
   spatial-scope audit happened here)
 - ce:review run artifact: `.context/compound-engineering/ce-review/20260511-094847-1685ca47/`
+  — maintainer-local and not in this repo.
 
 > **Update (2026-08-30) — recurrence.** The pattern this section names recurred
 > three more times during the 0.15.1 correctness release (#51, #52), including
@@ -495,7 +497,8 @@ for the standalone learning.
   Surfaced from the same U3 ce:review adversarial reviewer pass on
   the same `--rule-pack` trust surface. Distinct attack vector
   (output-channel injection, not exception-hierarchy bypass).
-- Brainstorm: `docs/brainstorms/2026-05-04-protokit-lint-delivery-3-cli-requirements.md`.
+- Brainstorm: `docs/brainstorms/2026-05-04-protokit-lint-delivery-3-cli-requirements.md`
+  — maintainer-local and not in this repo.
   Documents the stated deferral ("BaseException/KeyboardInterrupt
   still propagates"). (session history) The brainstorm's
   document-review security-lens reviewer focused on `--rule-pack`

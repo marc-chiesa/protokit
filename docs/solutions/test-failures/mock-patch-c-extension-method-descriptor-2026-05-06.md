@@ -339,7 +339,8 @@ fallback).
   template.
 
 - **D3 Unit 2 plan, R24 helper section** —
-  `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`
+  `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`,
+  which is maintainer-local and not in this repo,
   documents the test obligation for `_load_descriptor_sets_to_result`
   (pin against actual `descriptor_pool.Add` output for all three
   observed message shapes). This learning enabled the third shape
