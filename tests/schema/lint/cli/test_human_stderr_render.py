@@ -406,6 +406,16 @@ class TestHumanHookIntegration:
     ) -> None:
         """``--exclude '**/*'`` drops every file; the all_files_excluded
         runtime warning is emitted to stderr under the U5 envelope.
+
+        U8/R1: this run exits **2**, not 0. ``--exclude '**/*'`` removed
+        every input file the user named, so the CLI short-circuits
+        ``engine.run`` and lints nothing — the analysis did not complete,
+        and a success code here would be a lint gate that silently
+        stopped gating (the lint twin of V31). The render path is
+        unchanged: the warning still carries ``rule_id=None`` and still
+        lands on stderr under the same envelope, and the gate's
+        ``error[lint-analysis-incomplete]`` line is written by
+        ``error_exit_with_code`` only AFTER the report has rendered.
         """
         from google.protobuf import descriptor_pb2
 
@@ -430,7 +440,8 @@ class TestHumanHookIntegration:
                 str(path),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # Exit 2: every named input was excluded, so nothing was linted.
+        assert result.exit_code == 2, result.output
         # Hook fired in human format.
         assert (
             "protokit lint: warning [all_files_excluded]:" in result.stderr
@@ -447,7 +458,9 @@ class TestHumanHookIntegration:
                 str(path),
             ],
         )
-        assert result_json.exit_code == 0, result_json.output
+        # The incomplete-analysis gate is format-independent: the JSON
+        # run exits 2 for the same reason the human run does.
+        assert result_json.exit_code == 2, result_json.output
         warnings = runtime_warnings_from_json(result_json.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
@@ -560,6 +573,12 @@ class TestHumanHookIntegration:
     ) -> None:
         """Per KTD-6: ``--quiet`` suppresses findings on stdout only.
         Runtime warnings on stderr remain visible regardless.
+
+        U8/R1: ``--exclude '**/*'`` excluded every named input, so the
+        run linted zero files and exits **2** — ``--quiet`` silences
+        stdout findings, never the incomplete-analysis gate. What
+        ``--quiet`` governs is unchanged (stdout is still empty, the
+        warning still reaches stderr); only the exit code moved.
         """
         from google.protobuf import descriptor_pb2
 
@@ -583,7 +602,8 @@ class TestHumanHookIntegration:
                 str(path),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # Exit 2: nothing was linted, so the analysis did not complete.
+        assert result.exit_code == 2, result.output
         # Stdout: zero findings (quiet semantics preserved).
         assert result.stdout == ""
         # Stderr: hook still emits warning.
@@ -597,6 +617,12 @@ class TestHumanHookIntegration:
         """``--format=json`` does not produce the ``protokit lint:
         warning [...]:`` stderr envelope — the JSON payload already
         carries the warning. The hook is human-format-only.
+
+        U8/R1: ``--exclude '**/*'`` excluded every named input, so this
+        run lints nothing and exits **2**. That gate writes its own
+        ``error[lint-analysis-incomplete]`` line to stderr, which is NOT
+        the human hook's envelope — which is exactly what the assertion
+        below still pins.
         """
         from google.protobuf import descriptor_pb2
 
@@ -620,7 +646,8 @@ class TestHumanHookIntegration:
                 str(path),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # Exit 2: nothing was linted, so the analysis did not complete.
+        assert result.exit_code == 2, result.output
         assert "protokit lint: warning [" not in result.stderr, (
             "Human-format hook leaked into a machine-format run. "
             f"stderr was:\n{result.stderr}"

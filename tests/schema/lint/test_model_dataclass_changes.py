@@ -144,14 +144,15 @@ class TestIncompleteAnalysisCategoryClassification:
     """
 
     #: Categories that mean a rule DID NOT RUN but are deliberately not
-    #: gated yet, for blast radius. Owned by U8, which would widen
-    #: ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` (the gate's set
-    #: has lived in the ``_trust`` seam since U7).
+    #: gated, for blast radius. U8 moved ``all_files_excluded`` out of this
+    #: bucket and into the gate; these two stayed, because
+    #: ``extension_unresolved`` fires on nearly every run whose inputs lack
+    #: ``google/api/field_behavior.proto`` and the honest fix is to make that
+    #: rule warn only when the schema uses the extension — a redesign, 0.17.0's.
     #: Moving one of these into the gate is a deliberate breaking change.
     DEFERRED_INCOMPLETE: tuple[str, ...] = (
         "extension_unresolved",
         "custom_annotation_extension_unresolved",
-        "all_files_excluded",
     )
 
     #: Categories that are genuinely advisory: they describe an
@@ -198,13 +199,17 @@ class TestIncompleteAnalysisCategoryClassification:
         assert not (gated & advisory), gated & advisory
         assert not (deferred & advisory), deferred & advisory
 
-    def test_gated_set_is_exactly_the_two_shipped_in_0_15_1(self) -> None:
+    def test_gated_set_is_exactly_the_declared_three(self) -> None:
         """Pins the gate's current membership so widening it is a
-        deliberate, reviewed act rather than a drive-by edit."""
+        deliberate, reviewed act rather than a drive-by edit.
+
+        0.15.1 shipped the first two; U8 added ``all_files_excluded`` after
+        reproducing ``lint --exclude '*'`` exiting 0 having linted nothing.
+        """
         from protokit.schema.lint.cli import _INCOMPLETE_ANALYSIS_CATEGORIES
 
         assert set(_INCOMPLETE_ANALYSIS_CATEGORIES) == {
-            "rule_exception", "unloaded_rule",
+            "rule_exception", "unloaded_rule", "all_files_excluded",
         }
 
 

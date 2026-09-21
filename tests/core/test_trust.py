@@ -130,18 +130,28 @@ class TestUntrustworthyReports:
     @pytest.mark.parametrize("category", [
         "severities_unloaded_rule", "min_severity_relaxed",
         "contradictory_disable_config", "unknown_rule_id",
-        # Deferred-incomplete (owned by U8): a rule did not run, but gating
-        # them is a deliberate breaking change that has not been made.
+        # Still deferred: a rule did not run, but ``extension_unresolved``
+        # fires on nearly every run whose inputs lack
+        # ``google/api/field_behavior.proto``, so gating it would exit 2
+        # almost everywhere. The fix is to make that rule warn only when the
+        # schema uses the extension — a redesign, and 0.17.0's.
         "extension_unresolved", "custom_annotation_extension_unresolved",
-        "all_files_excluded",
     ])
     def test_other_lint_categories_do_not_cost_trust(self, category: str) -> None:
-        """Adjacent behavior: U7 moves the 0.15.1 gate's owner, not its reach."""
+        """Adjacent behavior: the gate reaches only what it declares."""
         assert _trust.is_trustworthy(_lint(category)) is True
 
-    def test_incomplete_categories_are_the_gated_pair(self) -> None:
+    def test_all_files_excluded_costs_trust(self) -> None:
+        """U8: an ``--exclude`` that dropped every input ran no rule at all.
+
+        The lint twin of V31 — the engine is short-circuited, the report is
+        empty for a reason other than cleanliness, and the run exited 0.
+        """
+        assert _trust.is_trustworthy(_lint("all_files_excluded")) is False
+
+    def test_incomplete_categories_are_the_gated_set(self) -> None:
         assert frozenset(
-            {"rule_exception", "unloaded_rule"},
+            {"rule_exception", "unloaded_rule", "all_files_excluded"},
         ) == _trust.INCOMPLETE_ANALYSIS_CATEGORIES
 
 

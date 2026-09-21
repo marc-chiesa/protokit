@@ -258,9 +258,15 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     # not a verdict: a rule that raised produces zero findings.
     untrusted = _reasons_not_shown(report)
     if untrusted:
+        # "reason(s) the analysis did not complete", not "selected rule(s) did
+        # not run". The narrower wording stopped being true when U8 gated
+        # ``all_files_excluded``: there no rule was selected and skipped -- an
+        # ``--exclude`` dropped every input, so the engine never ran at all.
+        # Each reason names its own category on the line below, so the header
+        # does not have to guess which shape it is.
         lines.append(
-            f"INCOMPLETE: {len(untrusted)} selected rule(s) did not run; "
-            "the findings above are a lower bound"
+            f"INCOMPLETE: {len(untrusted)} reason(s) the analysis did not "
+            "complete; the findings above are a lower bound"
         )
         lines.extend(f"  {reason}" for reason in untrusted)
 

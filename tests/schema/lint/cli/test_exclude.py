@@ -13,6 +13,23 @@ Covers:
   ``lint_json`` formatter's ``runtime_warnings`` array (D5 U4 removed
   the previous ``warning[lint-runtime]:`` stderr loop; structured
   warnings now flow through formatter dispatch only).
+- BREAKING (U8): an all-excluded run now EXITS 2, not 0.
+  ``all_files_excluded`` joined
+  ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES``, so the
+  ``error[lint-analysis-incomplete]:`` gate fires on stderr *after* the
+  report has been rendered. A run that linted zero files did not
+  complete, and R1 for this release is that no protokit CLI exit code
+  reports success on such a run; the old exit 0 was the lint twin of
+  V31 (an empty selector suppressing every finding — a gate that
+  silently stopped gating, closed in 0.15.1).
+  Only the exit code moved. The warning still fires, still carries
+  ``rule_id=None``, still renders in every formatter, still reaches
+  stderr under ``--quiet``, and still co-emits/orders with other
+  runtime warnings as before — the assertions on all of that below are
+  unchanged on purpose, because they are what proves the change was
+  surgical. An ``--exclude`` that leaves at least one file standing
+  lints it and still exits 0 (or 1 on findings); the warning does not
+  fire at all in that case.
 - D5 U4 source-aware messages: the all_files_excluded message names
   ``--exclude`` (CLI source), ``[tool.protokit.lint] exclude``
   (pyproject source), or ``--exclude and [tool.protokit.lint] exclude``
@@ -116,6 +133,10 @@ class TestCliExcludeHappyPath:
         Both files excluded → all_files_excluded fires in the
         ``runtime_warnings`` JSON array (D5 U4 contract: structured
         warnings via formatter dispatch).
+
+        "Happy path" here means the *pattern* semantics are happy: each
+        flag contributed a pattern. The run itself analysed nothing, so
+        since U8 it exits 2 rather than 0 (see below).
         """
         result = CliRunner().invoke(
             lint_main,
@@ -127,7 +148,16 @@ class TestCliExcludeHappyPath:
                 str(multi_file_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # 2, not 0: both patterns applied, so every input file was
+        # dropped, engine.run was short-circuited and the analysis never
+        # happened. U8 put ``all_files_excluded`` in
+        # ``_trust.INCOMPLETE_ANALYSIS_CATEGORIES``, so the
+        # ``error[lint-analysis-incomplete]`` gate fires (R1: no exit
+        # code reports success on a run that did not complete). The
+        # exit code is also how we know the SECOND ``--exclude`` was not
+        # dropped on the floor — with only ``vendor/**`` applied,
+        # ``api/user.proto`` would survive and this would exit 0.
+        assert result.exit_code == 2, result.output
         warnings = runtime_warnings_from_json(result.stdout)
         categories = [w["category"] for w in warnings]
         assert "all_files_excluded" in categories
@@ -216,7 +246,13 @@ class TestCliAppendsToPyproject:
                 str(multi_file_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # 2, not 0: the two layers between them excluded every input
+        # file, so the engine was short-circuited and nothing was
+        # linted. U8 gates that as analysis-incomplete. The exit code
+        # says nothing about attribution — the message assertions below
+        # are what pin the R20 both-sources contract, and they are
+        # unchanged.
+        assert result.exit_code == 2, result.output
         warnings = runtime_warnings_from_json(result.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
@@ -234,16 +270,28 @@ class TestCliAppendsToPyproject:
 
 
 class TestAllFilesExcludedWarning:
-    def test_all_inputs_excluded_emits_warning(
+    def test_all_inputs_excluded_emits_warning_and_exits_2(
         self, single_vendor_descriptor_set: Path,
     ) -> None:
         """When the pattern matches every input file, the
-        ``all_files_excluded`` warning fires CLI-side and
-        ``engine.run`` is short-circuited (no findings).
+        ``all_files_excluded`` warning fires CLI-side,
+        ``engine.run`` is short-circuited (no findings), and the
+        command exits 2.
 
         D5 U4 contract: warning surfaces via the lint_json formatter's
         ``runtime_warnings`` array. F-04 fold-in: ``rule_id`` is
         serialized as JSON ``null`` (not the string ``"None"``).
+
+        U8 BREAKING: the exit code is 2, not the 0 this test used to
+        assert. ``all_files_excluded`` is now in
+        ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES``, and the
+        short-circuit is precisely why: zero files were linted, so an
+        empty report is not evidence the schema is clean. Exiting 0
+        made ``protokit lint --exclude '<too-broad>'`` a CI gate that
+        silently stopped gating — the lint twin of V31. Everything
+        else this test asserts (message text, the input count, the
+        pattern, ``rule_id is None``, the CLI-source attribution) is
+        unchanged: only the process exit code moved.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -254,7 +302,14 @@ class TestAllFilesExcludedWarning:
                 str(single_vendor_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 2, result.output
+        # The gate's own stderr line, emitted by ``error_exit_with_code``
+        # AFTER the report was rendered to stdout. Asserting on the
+        # prefix (not just the code) pins that the 2 came from the
+        # analysis-incomplete gate and not from some unrelated failure.
+        assert "error[lint-analysis-incomplete]:" in result.stderr, (
+            result.stderr
+        )
         warnings = runtime_warnings_from_json(result.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
@@ -269,12 +324,16 @@ class TestAllFilesExcludedWarning:
         assert "--exclude patterns" in msg
         assert "[tool.protokit.lint]" not in msg
 
-    def test_glob_matching_all_files_emits_warning(
+    def test_glob_matching_all_files_emits_warning_and_exits_2(
         self, multi_file_descriptor_set: Path,
     ) -> None:
         """A `**/*` pattern is a sledgehammer that drops every file
         in a multi-file pool. The all_files_excluded warning fires
-        with the correct file count (2).
+        with the correct file count (2), and the run exits 2.
+
+        U8 BREAKING: previously 0. Nothing was linted, so R1 forbids a
+        success code — the sledgehammer case is the one this gate exists
+        for. The file count and ``rule_id`` assertions are untouched.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -285,7 +344,10 @@ class TestAllFilesExcludedWarning:
                 str(multi_file_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 2, result.output
+        assert "error[lint-analysis-incomplete]:" in result.stderr, (
+            result.stderr
+        )
         warnings = runtime_warnings_from_json(result.stdout)
         afe = [w for w in warnings if w["category"] == "all_files_excluded"]
         assert len(afe) == 1
@@ -369,7 +431,14 @@ class TestR21LegacyStderrFormatAbsent:
                 str(multi_file_descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # 2 since U8, because ``**/*`` excluded every file: the gate
+        # in ``_trust.INCOMPLETE_ANALYSIS_CATEGORIES`` fires on a run
+        # that linted nothing. The exit code is incidental to what this
+        # test pins — the stderr WIRE FORMAT — but it is asserted so a
+        # future change to the gate cannot pass here unnoticed. The
+        # gate's line is additive: it does not disturb the legacy-shape
+        # absence or the U5 envelope presence checked below.
+        assert result.exit_code == 2, result.output
         assert "warning[lint-runtime]:" not in result.stderr, (
             "R21 regression: the legacy stderr loop was re-introduced. "
             f"stderr was:\n{result.stderr}"

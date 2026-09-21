@@ -116,19 +116,28 @@ class Signal(NamedTuple):
 #: ``LintRuntimeWarning`` categories that mean a selected rule did not run,
 #: so the findings are a lower bound on an unknown total (V33).
 #:
-#: Deliberately the same pair the 0.15.1 lint exit gate shipped with: U7
-#: moves the owner, not the reach. Three further categories also mean a rule
-#: did not run (``extension_unresolved``,
-#: ``custom_annotation_extension_unresolved``, ``all_files_excluded``) and are
-#: not gated, for blast radius — ``extension_unresolved`` fires on nearly every
-#: run whose inputs lack ``google/api/field_behavior.proto``. Widening this set
-#: is a breaking change that U8 owns;
+#: ``all_files_excluded`` joined the pair the 0.15.1 gate shipped with (U8).
+#: It fires when the user named inputs and an ``--exclude`` pattern dropped
+#: *every one of them*, so the engine is short-circuited and never runs:
+#: ``lint <schema> --exclude '*'`` rendered nothing and exited **0**, which is
+#: the lint twin of V31 — a gate that silently stops gating. It cannot fire on
+#: an ordinary run, because a filter that leaves one file standing lints that
+#: file; the blast radius is confined to runs that already analysed nothing.
+#:
+#: Two categories that also mean a rule did not run remain ungated on purpose:
+#: ``extension_unresolved`` and ``custom_annotation_extension_unresolved``.
+#: The first fires on nearly every run whose inputs lack
+#: ``google/api/field_behavior.proto``, so gating it would exit 2 almost
+#: everywhere; the honest fix is to make that rule warn only when the schema
+#: actually *uses* the extension, which is a redesign rather than a wider set
+#: here, and is 0.17.0's. Widening this set is a breaking change either way;
 #: ``TestIncompleteAnalysisCategoryClassification`` in
 #: ``tests/schema/lint/test_model_dataclass_changes.py`` makes every category's
-#: bucket an explicit decision.
+#: bucket an explicit decision rather than a default.
 INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = frozenset({
     "rule_exception",
     "unloaded_rule",
+    "all_files_excluded",
 })
 
 

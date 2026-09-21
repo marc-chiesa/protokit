@@ -1162,7 +1162,8 @@ class TestAnalysisIncompleteExitGate:
 
     ``unloaded_rule`` is the same class: a rule the resolved profile
     names but the engine never loaded did not run, so its silence is
-    not evidence.
+    not evidence. As of U8 so is ``all_files_excluded``, where every
+    named input was excluded and ``engine.run`` never ran at all.
     """
 
     def test_crashed_rule_exits_2(
@@ -1388,22 +1389,33 @@ class TestAnalysisIncompleteExitGate:
         # reported so the operator knows what else is there.
         assert "2 of 3" in gate[0], gate[0]
 
-    def test_all_files_excluded_still_exits_0_deliberately(
+    def test_all_files_excluded_exits_2(
         self, clean_descriptor_set: Path,
     ) -> None:
-        """KNOWN CARVE-OUT, pinned so it reads as a decision.
+        """U8 CLOSES THE CARVE-OUT: an all-excluded run is incomplete.
 
-        ``all_files_excluded`` means the engine was short-circuited and
-        nothing was linted — structurally the lint form of V31. It is
-        deliberately NOT gated in 0.15.1: excluding everything is an
-        explicit user instruction, and a per-directory CI matrix where
-        some directories legitimately match nothing would start failing.
-        U8 owns the decision: the `_trust` seam (U7) moved the gate's
-        owner without widening its reach.
+        ``all_files_excluded`` fires only when the user named inputs and
+        every one of them was excluded. The CLI then short-circuits
+        ``engine.run`` outright and renders an empty report: not one file
+        was linted, so the clean result is not evidence that the schema
+        is clean. Through 0.15.1 this exited **0** — a lint gate that had
+        silently stopped gating, structurally the lint twin of V31 (an
+        empty ``--ignore`` selector suppressing every finding).
 
-        This test exists so that flipping the behavior is a deliberate
-        act with a visible diff, not an accident — and so the carve-out
-        cannot be mistaken for an oversight.
+        R1 for this release is "No protokit CLI exit code reports success
+        on a run where the analysis did not complete", and a run that
+        linted zero files did not complete. So ``all_files_excluded``
+        joined ``_trust.INCOMPLETE_ANALYSIS_CATEGORIES`` and the run now
+        exits **2** under ``error[lint-analysis-incomplete]:``. That is a
+        deliberate, maintainer-approved breaking change: the
+        per-directory CI matrix this carve-out used to protect was being
+        protected by a silent pass, which is the failure R1 exists to
+        end.
+
+        Only the exit code moved. The warning still renders, and the gate
+        still names the category that blocked the run — asserted below,
+        because an exit-code-only assertion would also pass if the gate
+        had started firing for some unrelated reason.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -1413,7 +1425,35 @@ class TestAnalysisIncompleteExitGate:
                 str(clean_descriptor_set),
             ],
         )
+        assert result.exit_code == 2, result.output
+        gate_lines = [
+            line for line in result.stderr.splitlines()
+            if line.startswith("error[lint-analysis-incomplete]:")
+        ]
+        assert gate_lines, result.stderr
+        assert "all_files_excluded" in gate_lines[0], gate_lines[0]
+
+    def test_exclude_leaving_one_file_standing_does_not_gate(
+        self, clean_descriptor_set: Path,
+    ) -> None:
+        """Adjacent-behavior gate: the U8 widening stayed surgical.
+
+        ``all_files_excluded`` is an *all*-excluded condition. An
+        ``--exclude`` that leaves at least one input standing lints that
+        input, never emits the warning, and keeps its ordinary exit code.
+        Without this pin, a regression that gated on *any* exclusion
+        would still pass ``test_all_files_excluded_exits_2``.
+        """
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--no-config",
+                "--exclude", "**/does-not-match-anything/**",
+                str(clean_descriptor_set),
+            ],
+        )
         assert result.exit_code == 0, result.output
+        assert "all_files_excluded" not in result.stderr
         assert "analysis-incomplete" not in result.stderr
 
     def test_non_analysis_runtime_warning_does_not_gate(

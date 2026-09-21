@@ -204,6 +204,21 @@ tool ran and found a problem.
   differences reported are a lower bound and the run did not finish either way.
   The seam draws no distinction between the two — 2 either way — and applies
   under `--quiet` too.
+- **`protokit lint` exits 2 when `--exclude` dropped every input file.** The
+  CLI short-circuits the engine when a pattern excludes all the files the user
+  named, so the run linted nothing — and rendered nothing, and exited **0**. A
+  lint gate that silently stops gating is the same shape as the empty
+  `--ignore` selector closed in 0.15.1, and `--exclude '*'` in a CI config made
+  it permanent. The `all_files_excluded` runtime-warning category now counts as
+  an incomplete analysis, so the run exits 2 and says why. **An `--exclude`
+  that leaves at least one file standing is unaffected** — it lints that file
+  and exits as before; the warning does not fire at all in that case. Two
+  sibling categories that also mean a rule did not run
+  (`extension_unresolved`, `custom_annotation_extension_unresolved`) stay
+  ungated: the first fires on nearly every run whose inputs lack
+  `google/api/field_behavior.proto`, and the fix there is to make that rule
+  warn only when the schema actually uses the extension — a rule redesign,
+  which is 0.17.0's.
 - **`protokit forensics match` / `drift` exit 2 on an incomplete run.** Both
   fell off the end of their callback at 0 for every run that did not hard-error.
   A ranking holding a candidate that could not be measured at all — a proto2
@@ -231,13 +246,14 @@ failing that used to pass; each one is a run where protokit did not analyse what
 it was asked to, and the exit code was the last surface still saying otherwise.
 **There is no opt-out flag.** A switch restoring a silent fail-open would be a
 supported way to keep shipping breaks, and it would outlive the release that
-introduced it. The three most likely to fire in an existing pipeline are
+introduced it. The four most likely to fire in an existing pipeline are
 `storage` under a non-default `--on-error`, `compat history`/`bisect` over a
-`--proto-file` that has been renamed, and `diff --max-depth` in CI over messages
-that already differ — that last one used to exit 1 like any other diff with
-changes and now exits 2. All three are worth checking before upgrading.
-`protokit lint`'s `analysis-incomplete` gate is unchanged — it shipped in
-0.15.1.
+`--proto-file` that has been renamed, `diff --max-depth` in CI over messages
+that already differ — that one used to exit 1 like any other diff with changes
+and now exits 2 — and `lint` under an `--exclude` pattern that happens to match
+every input. All four are worth checking before upgrading. `protokit lint`'s
+`analysis-incomplete` gate itself shipped in 0.15.1; what changed here is its
+reach, which now includes an all-excluded run.
 
 ### Fixed — `protokit diff` exit codes
 
