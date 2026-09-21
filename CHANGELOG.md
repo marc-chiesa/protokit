@@ -295,6 +295,16 @@ backend-neutral rather than merely fixed (KTD6).
 under the pure-Python runtime with no known-failure list, and the
 `test-pure-python` CI cell is a required check (see Internal).
 
+### Fixed — documentation
+
+- **`protokit lint --help` no longer promises exit 0 for a run that did not
+  complete.** The EXIT CODES block described `0` as any run without findings,
+  which stopped being true when U8 gated the analysis-incomplete categories:
+  `lint <schema> --exclude '**/*'` produces no findings and exits 2. `0` now
+  reads "clean run that completed", and `2` names the incomplete analysis
+  alongside the lint-internal and usage errors it already listed. Help text
+  only; no behaviour change.
+
 ### Internal
 
 - Field enumeration has a single owner, `protokit._fieldview.FieldView`,

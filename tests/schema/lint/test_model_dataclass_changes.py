@@ -181,10 +181,10 @@ class TestIncompleteAnalysisCategoryClassification:
             f"{sorted(literal_args - classified)}; classified but not in "
             f"the model: {sorted(classified - literal_args)}. Decide "
             "whether the new category means a rule did not run (add it to "
-            "_INCOMPLETE_ANALYSIS_CATEGORIES in "
-            "src/protokit/schema/lint/cli.py, with a CHANGELOG BREAKING "
-            "row) or is advisory (add it to ADVISORY here). Silence is "
-            "the one option that reintroduces the fail-open."
+            "INCOMPLETE_ANALYSIS_CATEGORIES in src/protokit/_trust.py, "
+            "which owns the set, with a CHANGELOG BREAKING row) or is "
+            "advisory (add it to ADVISORY here). Silence is the one "
+            "option that reintroduces the fail-open."
         )
 
     def test_buckets_are_disjoint(self) -> None:

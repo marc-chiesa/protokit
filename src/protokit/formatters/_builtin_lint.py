@@ -193,10 +193,10 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
     string — the CLI is responsible for any "no findings" sentinel
     or the ``--statistics`` footer (see Unit 4 in the D3 plan).
 
-    A run is clean only if ``protokit._trust`` vouches for it. When a
-    selected rule did not run (``rule_exception`` / ``unloaded_rule``
-    runtime warnings), a trailing ``INCOMPLETE:`` block lists each
-    reason, so an empty findings list cannot read as a pass.
+    A run is clean only if ``protokit._trust`` vouches for it. A
+    trailing ``INCOMPLETE:`` block lists every reason it gives for
+    withholding that vouch, so an empty findings list cannot read as
+    a pass. ``protokit._trust`` owns which categories those are.
 
     Findings render as::
 
@@ -362,8 +362,8 @@ def lint_human(report: LintReport, _ctx: FormatterContext) -> str:
 #:     the meaning of an existing field. ``runs[].invocations[0]
 #:     .executionSuccessful`` was ``false`` only for an error-level compile
 #:     diagnostic; it is now ``false`` whenever ``protokit._trust`` distrusts
-#:     the report, which adds the runs where a selected rule raised or was
-#:     never loaded (``rule_exception`` / ``unloaded_rule``). A consumer
+#:     the report, which adds every run that module counts as incomplete —
+#:     it owns that set, and this entry does not restate it. A consumer
 #:     reading that boolean sees a run flip from success to failure without
 #:     the findings list changing, which is exactly what the field now means.
 #:     ``lint_json`` carries no verdict field and is unchanged in shape; it
@@ -573,11 +573,11 @@ def _build_lint_testsuite(
     don't read "no tests ran."
 
     Each reason ``protokit._trust`` gives for not trusting the report
-    (a selected rule raised or was never loaded) is an ``<error>``
-    testcase too. Such a run produces *zero* findings, so without
-    them it took the ``clean`` fallback and rendered as a green suite
-    beside a human report saying INCOMPLETE (R4). The runtime
-    warnings themselves still go to ``<system-out>``, all of them.
+    is an ``<error>`` testcase too. Such a run can produce *zero*
+    findings, so without them it took the ``clean`` fallback and
+    rendered as a green suite beside a human report saying INCOMPLETE
+    (R4). The runtime warnings themselves still go to
+    ``<system-out>``, all of them.
     """
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
@@ -953,12 +953,12 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
             "properties": {"category": diag.category},
         })
 
-    # A selected rule that raised or never loaded means the run did not
-    # execute successfully, however clean ``results`` looks: a crashing rule
-    # contributes zero results (R4). Only the boolean moves. The warnings
-    # themselves stay in ``runs[].properties.runtime_warnings`` and out of
-    # ``toolExecutionNotifications``, which is compile-stage only by design
-    # so a consumer can filter the two channels apart.
+    # Any reason ``protokit._trust`` distrusts the report means the run did
+    # not execute successfully, however clean ``results`` looks: a crashing
+    # rule contributes zero results (R4). Only the boolean moves. The
+    # warnings themselves stay in ``runs[].properties.runtime_warnings`` and
+    # out of ``toolExecutionNotifications``, which is compile-stage only by
+    # design so a consumer can filter the two channels apart.
     invocation: dict[str, Any] = {
         "executionSuccessful": _trust.is_trustworthy(report),
     }
