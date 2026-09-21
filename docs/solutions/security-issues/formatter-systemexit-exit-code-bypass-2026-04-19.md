@@ -418,8 +418,9 @@ unilaterally. Enforce this structurally:
   — Phase 1.5b formatter release. The exception-policy contract
   ("any uncaught exception from a formatter... exits with code 2")
   is documented here; this fix is what it takes to actually honor it.
-- Brainstorm: `~/.gstack/projects/python_message_differencer/marc-main-brainstorm-phase-1.5b-ci-release-20260418-115400.md`
-  — formatter trust model and exception policy rationale.
+- Brainstorm: the Phase 1.5b CI-release brainstorm (2026-04-18), which is
+  maintainer-local and not in this repo — formatter trust model and
+  exception policy rationale.
 - Phase 1 precedent: Codex adversarial review of
   `SchemaChecker._dispatch_field_plugin` (April 13-14, 2026)
   flagged the same class of bug for rule plugins; fix was scoped
