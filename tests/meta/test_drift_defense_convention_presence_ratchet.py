@@ -1,12 +1,14 @@
 """Presence ratchet for the drift-defense convention's two load-bearing rules.
 
 ``docs/solutions/best-practices/docs-code-drift-defense-convention-2026-06-13.md``
-is itself prose that no static analyzer reads, yet it carries two load-bearing
+is itself prose that no static analyzer reads, yet it carries three load-bearing
 commitments: the claim-currency marker rule (mark behavioral claims about a
-moving target current-state or provenance, per occurrence, co-located inline)
-and the reference-triage rule (navigational pointer to a moved test path ->
-update it; historical / illustrative mention -> leave it). A future contributor
-doing a docs cleanup could silently delete or gut either rule, weakening the
+moving target current-state or provenance, per occurrence, co-located inline),
+the reference-triage rule (navigational pointer to a moved test path ->
+update it; historical / illustrative mention -> leave it), and the
+absent-artifact citation rule (a citation to a file the public repo does not
+contain keeps its path and says so inline). A future contributor
+doing a docs cleanup could silently delete or gut any of them, weakening the
 discipline with no test failure and no reviewer noticing — the exact regression
 class the convention exists to defend against. The anti-drift convention should
 itself be drift-protected.
@@ -46,6 +48,10 @@ _MARKER_RULE_SUBSTRING = (
     "current-state or provenance, per occurrence, co-located inline with the claim"
 )
 _TRIAGE_RULE_SUBSTRING = "update it; a historical or illustrative mention"
+_ABSENT_ARTIFACT_RULE_SUBSTRING = (
+    "keep the path as the identifier and mark it maintainer-local and not in "
+    "this repo"
+)
 
 
 class TestDriftDefenseConventionRatchet:
@@ -97,4 +103,28 @@ class TestDriftDefenseConventionRatchet:
             "Either restore the substring or update _TRIAGE_RULE_SUBSTRING in "
             "this test after confirming the new wording carries the same "
             "meaning."
+        )
+
+    def test_absent_artifact_rule_substring_is_present(self) -> None:
+        """Ratchet against silent reversion of the absent-artifact rule.
+
+        The phrase this pins is also the one every annotated citation in the
+        corpus carries, so a reader greps one string and a reviewer checks one
+        string. Rewording the rule without rewording the corpus would break
+        that correspondence silently, which is the regression this guards.
+
+        If you are intentionally rewording it, update
+        ``_ABSENT_ARTIFACT_RULE_SUBSTRING`` above to match — but only after
+        confirming the new wording still says the path is KEPT and marked, not
+        deleted.
+        """
+        body = _CONVENTION_PATH.read_text(encoding="utf-8")
+        assert _ABSENT_ARTIFACT_RULE_SUBSTRING in body, (
+            f"The drift-defense convention no longer states the absent-artifact "
+            f"citation rule ({_ABSENT_ARTIFACT_RULE_SUBSTRING!r}). The "
+            "keep-the-path-and-mark-it discipline for citations the public repo "
+            "cannot resolve was deleted or reworded. Either restore the "
+            "substring or update _ABSENT_ARTIFACT_RULE_SUBSTRING in this test "
+            "after confirming the new wording still keeps the path rather than "
+            "deleting it."
         )

@@ -581,7 +581,8 @@ to pass user-supplied module paths.
   middle-ground bypass that the parent's "Symmetric surface"
   callout predicted.
 - (session history) D3 brainstorm document-review:
-  `docs/brainstorms/2026-05-04-protokit-lint-delivery-3-cli-requirements.md`.
+  `docs/brainstorms/2026-05-04-protokit-lint-delivery-3-cli-requirements.md`
+  — maintainer-local and not in this repo.
   The brainstorm's security-lens reviewer focused on `--rule-pack`
   code-execution and on `template_str.format(**finding.params)`
   format-injection — neither touched the post-import-metadata

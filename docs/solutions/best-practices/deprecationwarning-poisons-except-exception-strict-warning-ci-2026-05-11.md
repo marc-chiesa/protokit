@@ -386,5 +386,6 @@ reviewing defensive broad catches:
   `<1` to `<2`.
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-211250-ea0a68bb/`
+  — maintainer-local and not in this repo
   (adversarial-reviewer.json ADV-U3-01 with full empirical
   reproduction trace).

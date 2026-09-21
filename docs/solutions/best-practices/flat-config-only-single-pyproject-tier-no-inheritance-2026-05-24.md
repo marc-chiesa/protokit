@@ -88,7 +88,7 @@ This pattern does NOT mean "never implement multi-tier config." It means: start 
 
 ### KD-3 in the D6f plan (the deferral decision, recorded)
 
-`docs/plans/2026-05-24-001-feat-d6f-r6-promotion-and-r9b-per-rule-disable-plan.md`, KD-3 section:
+`docs/plans/2026-05-24-001-feat-d6f-r6-promotion-and-r9b-per-rule-disable-plan.md`, which is maintainer-local and not in this repo, KD-3 section:
 
 > Protokit currently uses **flat-config-only**. There is no `find_pyproject_files()` that walks parent directories and merges multiple `[tool.protokit.lint]` tables. The brainstorm adversarial-F6 layered-config scenario (parent `disabled_rules` + child `enabled_rules`) is therefore HYPOTHETICAL — D6f does not implement it.
 >

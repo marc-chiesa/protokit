@@ -65,7 +65,8 @@ except Exception as exc:
 This appears comprehensive but silently excludes the entire
 `BaseException` branch. The Phase 1.5b plan document explicitly
 required "any uncaught exception from a formatter... exits with
-code 2" (`docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md`),
+code 2" (`docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md`,
+which is maintainer-local and not in this repo),
 but the implementation narrowed "any uncaught exception" to the
 `Exception` subtree without recognising that `SystemExit` lives
 outside it.
@@ -414,8 +415,9 @@ unilaterally. Enforce this structurally:
 
 ## Related Issues
 
-- Original plan: `docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md`
-  — Phase 1.5b formatter release. The exception-policy contract
+- Original plan: `docs/plans/2026-04-18-001-feat-pluggable-formatters-junit-plan.md`,
+  which is maintainer-local and not in this repo — Phase 1.5b formatter
+  release. The exception-policy contract
   ("any uncaught exception from a formatter... exits with code 2")
   is documented here; this fix is what it takes to actually honor it.
 - Brainstorm: the Phase 1.5b CI-release brainstorm (2026-04-18), which is

@@ -421,5 +421,5 @@ test is the next defense-in-depth layer.)
 - Anchor commits: `dba6d71` (the one-line `.name` → `.value`
   fix in `lint_json`); `cd6d513` (the U4b feat where the bug
   first shipped).
-- Plan: `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`
-  Unit 4b.
+- Plan: `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`,
+  which is maintainer-local and not in this repo — Unit 4b.

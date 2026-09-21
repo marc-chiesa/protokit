@@ -377,10 +377,11 @@ def test_lint_junit_does_not_emit_schema_version(self, ...) -> None:
   introducing the field at both sites); ``6a1f520`` (ce:review
   follow-up F2 adding the absence semantic to the constant's
   docstring and consolidating the inline comments to pointers).
-- Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``
-  Unit 9 R9d.
+- Plan: ``docs/plans/2026-05-12-001-feat-protokit-lint-d6a-rule-library-plan.md``,
+  which is maintainer-local and not in this repo — Unit 9 R9d.
 - 11-reviewer ce:review at ``.context/compound-engineering/
-  ce-review/20260513-113000-u9/`` — api-contract reviewer
+  ce-review/20260513-113000-u9/``
+  — maintainer-local and not in this repo. The api-contract reviewer
   surfaced AC-1 (P1, 0.82 confidence) as the field-absence-gap
   finding.
 - [[pre-1.0-version-bump-as-communication-contract]] — the

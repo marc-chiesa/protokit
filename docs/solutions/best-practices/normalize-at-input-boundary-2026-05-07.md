@@ -438,6 +438,7 @@ def test_severity_keys_normalized_at_boundary() -> None:
   fix + `TestFormatCaseNormalization`); `0094157` (the U4a feat
   delivery where the bug was latent).
 - Plan: `docs/plans/2026-05-04-001-feat-protokit-lint-d3-cli-plan.md`,
+  which is maintainer-local and not in this repo,
   Unit 4a — defined the `--format` / `--quiet` / `--statistics`
   trust boundary that introduced the comparison sites.
 - [[cross-file-pin-regex-anchor-structure-not-annotation-token-2026-05-13]] —

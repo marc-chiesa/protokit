@@ -441,4 +441,5 @@ distinguishes within tiers 2-3.
   (F-02 finding, 2-way correctness + adversarial convergence).
 - ce:review run artifact:
   `.context/compound-engineering/ce-review/20260511-175812-997cfcc3/`
+  — maintainer-local and not in this repo
   (correctness-reviewer.json, adversarial-reviewer.json).
