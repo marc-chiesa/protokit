@@ -148,7 +148,10 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
     """Import each module by name and load its ``RULES`` into the checker.
 
     A rule pack is arbitrary third-party Python, so both boundaries catch
-    broadly and translate to exit 2 -- "the tool could not run" (U15-2, R1):
+    broadly and translate to exit 2 -- "the tool could not run" (U15-2, R1).
+    Both boundaries catch *exceptions*; a pack that calls ``os._exit`` takes
+    the process down with its own code and no Python-level guard can see it,
+    which is the standing limit of loading third-party code in process:
 
     - ``SystemExit`` is explicitly named because it derives from
       ``BaseException``, not ``Exception``. A pack whose module body calls
@@ -338,8 +341,20 @@ def _plugin_stdout_to_stderr(prefix: str = "") -> Iterator[None]:
     corrupt a machine payload, and ``--quiet`` never promised stderr silence
     (the diagnostics stream there already).
 
-    Each captured line is sanitized and prefixed, so pack output cannot forge
-    one of this CLI's own stderr lines.
+    Each captured line is sanitized and prefixed, so pack output *that this
+    context manager sees* cannot forge one of this CLI's own stderr lines.
+
+    **What it does not cover, measured rather than assumed.**
+    ``redirect_stdout`` rebinds ``sys.stdout``; it does not touch file
+    descriptor 1. A pack calling ``os.write(1, ...)`` still lands on the real
+    stdout and still corrupts a ``--format json`` document, and
+    ``os.write(2, ...)`` still writes an unprefixed line to stderr. The same
+    goes for anything a pack subprocesses, and for a thread it leaves running
+    past this block. This also covers only the *check* window: a pack's module
+    body runs earlier, during import, outside any capture. Closing that class
+    means running packs out of process, which is a different unit's work.
+    ``print()`` from a rule function is the case this closes, which is the
+    case that actually occurred (U15-3).
 
     The drain runs in a ``finally``, and that is the whole point of the
     promise above: the interesting case is the run that *did not* finish. A
