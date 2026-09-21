@@ -14,6 +14,21 @@ Contributions may credit AI tools via `Co-Authored-By:` trailers in
 commit messages. You are responsible for correctness and license
 compliance of everything you submit, regardless of tooling used.
 
+## Background reading
+
+Two tracked files record why the code looks the way it does, which the code
+itself cannot tell you:
+
+- `docs/solutions/` — write-ups of problems this project has already solved,
+  filed by category. Each one records the reasoning behind a decision, not
+  just the outcome. If you are about to change something that looks
+  arbitrary, check whether a document explains why it is that way.
+- `CONCEPTS.md` — the vocabulary this project uses with a specific meaning:
+  its entities, named processes and status concepts.
+
+Neither is required reading, and neither is a specification. Both are worth a
+grep before a change you expect to be uncontroversial.
+
 ## Running tests
 
 The full test suite runs under `pytest`:
