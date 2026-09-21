@@ -1,7 +1,7 @@
 ---
 title: "An empty selector parses to the root path and prefix-matches every finding, opening the whole gate"
 date: 2026-08-30
-last_updated: 2026-08-30
+last_updated: 2026-09-20
 category: docs/solutions/security-issues
 module: protokit.schema
 problem_type: security_issue
@@ -268,7 +268,7 @@ and whatever it was guarding is unguarded.
 
 ## Related
 
-This defect is one instance of a pattern this codebase has now documented nine
+This defect is one instance of a pattern this codebase has now documented ten
 times: a fix lands at one call site while structurally identical siblings stay
 broken. See [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]]
 for the detection procedure, and for why naming the pattern has repeatedly

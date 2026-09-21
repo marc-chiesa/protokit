@@ -332,10 +332,17 @@ the surface is wrong, and that is the finding.**
 It also shows the structural difference between the two subsystems. Lint funnels
 eight dispatch call sites through **one** owner, `_invoke_rule`
 (`src/protokit/schema/lint/engine.py:1394`), so its guard is a place. Compat
-dispatches from seven sites in one file and guards two of them. Where a boundary is a set
-rather than a seam, every future guard has to be applied N times and the N is
-not written down anywhere — which is the standing argument for making
-third-party dispatch a **single-owner seam** in compat as well.
+dispatches from seven sites in one file and guards two of them. Where a boundary
+is a set rather than a single owner, every future guard has to be applied N times
+and the N is not written down anywhere — which is the standing argument for
+giving compat's third-party dispatch **one owner** as well.
+
+Note the deliberate wording: one owner, not a *seam*. This project reserves
+"seam" for an owner that also sits at layer 0, importing nothing from the rest
+of the package — which is what makes it safe for every layer above to import.
+Compat's dispatch owner would live inside the checker and could not satisfy
+that. Single-ownership and layer-0-ness are separable, and only the first is
+what this argument needs.
 
 **A live instance of exactly this, as of 2026-09-20 (current-state — verified
 by the reproduction below against the tree at #76).** Five of compat's seven

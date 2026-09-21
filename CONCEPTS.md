@@ -113,6 +113,24 @@ A module that owns one recurring decision for the whole package — how a messag
 
 A seam sits at layer 0: it imports nothing from the rest of the package at any scope, which is what makes it safe for every layer above to import. Only a typing-guarded import is exempt, since that never executes. Depending on nothing above it, rather than deferring a dependency into a function body, is what keeps a seam from participating in an import cycle — a deferred import is the sanctioned repair for a cycle that already exists, not a way to give a seam a dependency it should not have.
 
+### Completion verdict
+The answer to one question asked of every report a command produces — can an empty
+result be read as "nothing found" rather than "did not look"? A report is untrustworthy
+when anything about the run says the analysis did not finish: a rule that raised, a
+selector that excluded every input, a comparison a depth limit cut short, a record a
+tolerant mode skipped. Distinct from a finding, which is something the analysis *found*
+and which leaves the verdict intact.
+*Avoid:* trust check, completeness check
+
+One owner answers it for every kind of report, and both the rendered output and the
+process exit code read that one answer, so a run cannot print a caveat while exiting
+clean or the reverse. The verdict fails closed: a kind the owner does not recognise
+raises rather than defaulting to trustworthy, because a permissive default would rebuild
+the fail-open the owner exists to end. Each reason it gives is one printable line, since
+a reason quotes text a plugin wrote and is printed beside stable prefixes that tooling
+greps for. A caller that renders some reasons structurally asks which ones it has not
+shown rather than guessing, so a reason the owner learns later is never silently dropped.
+
 ## Flagged ambiguities
 
 - "backend" had been used for both the protobuf Runtime backend (upb / pure-Python) and the Compile backend (in-process compiler / system `protoc`) — these are distinct axes, and a finding or CI cell names which one it is about.

@@ -1,7 +1,7 @@
 ---
 title: "Formatter SystemExit bypass flips CLI exit code from 1 to 0"
 date: 2026-04-19
-last_updated: 2026-06-13
+last_updated: 2026-09-20
 category: docs/solutions/security-issues
 module: protokit.formatters
 problem_type: security_issue
@@ -89,6 +89,16 @@ overrides a verdict the CLI has already computed. The class of bug
 was known; the fix was not extended when the formatter path landed
 in Phase 1.5b.
 
+> **Update (2026-09-20) — the deferral was overturned.** PR #76 caught
+> `SystemExit` at rule-plugin dispatch after all, on the same ground this
+> paragraph uses to exempt formatters: `check()` is a library call whose
+> contract is to *report*, so a rule plugin's `sys.exit()` is a contract
+> violation there too, not a termination request. It is now recorded as an
+> error diagnostic and the exit code comes from the report, never from the
+> plugin. `_PLUGIN_DISPATCH_EXCEPTIONS` in
+> `src/protokit/schema/checker.py` is the live form; the paragraph below
+> ("Why This Works") states the reasoning that was walked back.
+
 ## Solution
 
 Add an explicit `except SystemExit` clause **before** the general
@@ -173,6 +183,23 @@ violation, never a legitimate process-termination request, so the
 right response is to intercept it and surface a controlled
 exit-code-2 error. (session history)
 
+> **Update (2026-09-20) — the subtlety resolved the other way.** The
+> "arguably defensible" reading did not survive: PR #76 put `SystemExit`
+> into the checker's rule-plugin dispatch guard, and the argument that
+> carried it is the one this paragraph already makes for formatters, applied
+> one level up. `check()` is itself a library call whose contract is to
+> return a report, so the ambiguity ("does the plugin want the process to
+> die?") is not resolved by the plugin's intent but by *who is speaking*:
+> at dispatch it is the plugin, and a plugin does not get to end the
+> caller's process. `_PLUGIN_DISPATCH_EXCEPTIONS` in
+> `src/protokit/schema/checker.py` is now `(SystemExit, Exception)`, applied
+> at both `_dispatch_field_plugin` and `_dispatch_message_plugin`; the
+> escape becomes an error diagnostic and the exit code is derived from the
+> report. `KeyboardInterrupt` is still *not* in that tuple — dispatch runs
+> mid-walk with the operator watching, so a Ctrl-C there is the operator's
+> — which is the same per-surface split this doc draws, now drawn inside
+> the checker instead of around it.
+
 ## Prevention
 
 ### Regression test
@@ -242,10 +269,18 @@ exit code. Verify whether to extend the `except (SystemExit,
 Exception)` treatment to the pack-loading path, or document that
 pack modules must not call `sys.exit()` at import time.
 
-**Update (2026-05-07 / extended 2026-05-09):** The "Symmetric
-surface" prediction named two analogous load-time surfaces.
-**Both** were eventually confirmed and closed, but in **different
-deliveries** of the protokit-lint D3 work, not a single unit.
+**Update (2026-05-07 / extended 2026-05-09; corrected 2026-09-20):**
+The "Symmetric surface" prediction named two analogous load-time
+surfaces. **One** of them — the formatter loader, `load_formatter_packs`
+— was confirmed and closed in the 2026-05-09 protokit-lint D3 work
+recorded below. The other, `_load_rule_packs` in
+`src/protokit/schema/cli.py` — *the surface the callout named first* —
+was **not** closed until **PR #76** (2026-09-20). What the D3 work also
+closed was the same *class* of bug on a **third** surface the callout
+never named: lint's `_load_user_rule_pack`, in
+`src/protokit/schema/lint/_cli_utils.py`. This Update recorded that
+third surface as though it were the rule-pack half of the prediction,
+and so reported the pair complete while half of it was still open.
 
 Lint-side surface — `_load_user_rule_pack` in
 `src/protokit/schema/lint/_cli_utils.py`:
@@ -265,10 +300,10 @@ Lint-side surface — `_load_user_rule_pack` in
   `error[lint-…]:` lines on stderr); see
   `docs/solutions/security-issues/module-name-newline-injection-stderr-forge-2026-05-07.md`.
 
-Compat-side surface — `load_formatter_packs` in
-`src/protokit/_cli_utils.py` (this is the surface the original
-"Symmetric surface" callout explicitly named alongside
-`_load_rule_packs`):
+Compat-side formatter surface — `load_formatter_packs` in
+`src/protokit/_cli_utils.py` (this is *one* of the two surfaces the
+original "Symmetric surface" callout explicitly named; the other,
+`_load_rule_packs`, is the section below and was not closed here):
 
 - The `SystemExit` half landed in **D3 Unit 5** (commit `b869562`)
   with the same `except SystemExit` first / `except Exception`
@@ -291,6 +326,30 @@ Compat-side surface — `load_formatter_packs` in
   module name via `{name!r}`) landed in the same Unit 5
   ce:review follow-up commit.
 
+Compat-side rule-pack surface — `_load_rule_packs` in
+`src/protokit/schema/cli.py` (the surface the "Symmetric surface"
+callout named *first*):
+
+- Neither half landed in the D3 work, nor in anything after it for the
+  next four months. At the commit before **PR #76** the import was guarded
+  by a bare `except Exception`, and `checker.load_rule_pack(module)` by
+  `except (AttributeError, TypeError)` — so a pack whose module body
+  called `sys.exit(0)` escaped and became the process exit code, and
+  anything outside `AttributeError`/`TypeError` raised while `RULES`
+  was iterated escaped as a traceback and exit `1`, the code this
+  module reserves for INCOMPATIBLE.
+- **PR #76** (2026-09-20) closed both halves at once: an explicit
+  `except KeyboardInterrupt` arm and an `except (Exception,
+  SystemExit)` arm at *each* of the two boundaries, which also widened
+  the second guard from `(AttributeError, TypeError)`.
+- The cheapest check that this surface really had been untouched all
+  along: `git log -S'KeyboardInterrupt' -- src/protokit/schema/cli.py`
+  returns exactly one commit, PR #76's. None of the D3 commits this
+  Update cites touches that file at all — they touch
+  `src/protokit/_cli_utils.py` and
+  `src/protokit/schema/lint/_cli_utils.py`. A file-level diff against
+  the cited commits would have caught this in 2026-05-09.
+
 **Lesson for future similar predictions** (extended): when a
 "Symmetric surface" callout names two surfaces in different
 modules, treat each as its own delivery item with its own ship
@@ -302,6 +361,13 @@ parity (one surface) and plan-spirit parity (every analogous
 surface) diverge often enough that the doc-update step should
 explicitly enumerate every named surface, not just the first
 one closed.
+
+That lesson was broken in the act of writing it: the 2026-05-09
+extension substituted a differently-named function in a third module
+(`_load_user_rule_pack`) for the named one and declared the prediction
+resolved — precisely the failure the paragraph above warns against,
+committed in the doc's own update, and left standing for the four and
+a half months until PR #76.
 
 The original lesson still holds: when a "Symmetric surface"
 callout names a parenthetical "possibly," re-evaluate the
@@ -335,6 +401,16 @@ unilaterally. Enforce this structurally:
 > [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]] for the executable
 > detection procedure and the finding that prose documentation of this pattern —
 > including this document — has not prevented its recurrence.
+
+> **Update (2026-09-20) — the third enforcement point.** Steps 1 and 2 above
+> were enforced at the formatter dispatch surface (this doc) and at the
+> rule-pack *load* surface, and the pair read as complete — but the trust
+> boundary they belong to had a third site, per-rule dispatch inside
+> `SchemaChecker`, which none of the prior findings named because each
+> named only the symptom it had reproduced. See
+> [[trust-boundary-enforcement-points-derived-from-code-not-the-findings-wording]]
+> for the enumeration procedure: a boundary's site set comes from the code
+> that crosses it, not from the wording of the finding that exposed it.
 
 ## Related Issues
 
