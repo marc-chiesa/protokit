@@ -1,0 +1,166 @@
+# Dependency-drift watcher.
+#
+# Scheduled workflow that compares every requirement declared in
+# `pyproject.toml` — base dependencies and every optional-dependency
+# group — against what is currently on PyPI, and opens (or updates) a
+# tracking issue titled exactly `"dependency pins behind upstream"` when
+# something has drifted.
+#
+# ----- Rationale -----
+#
+# protokit builds on its dependencies, so a dependency's supported
+# surface defines protokit's, not the reverse. A declared upper bound
+# that excludes the current release stops being a safety rail and becomes
+# an install barrier: the user on a modern runtime cannot install
+# protokit at all, and the gap widens with every upstream release. That
+# failure is silent — CI stays green, because CI resolves the same old
+# versions the bound admits. Nothing in the test suite can see it.
+#
+# The watcher reports two drifts that call for opposite responses:
+#
+#   * Ceiling drift — the declared specifier excludes the latest release.
+#     Re-test against it and lift the bound, or record why the bound is
+#     deliberate.
+#   * Upstream staleness — the package itself has stopped releasing. No
+#     bound is drifting yet, but the dependency is decaying and will
+#     eventually pin protokit to whatever it was last built against.
+#
+# ----- Schedule + dispatch -----
+#
+# Monthly cron on the 1st at 13:00 UTC, matching the buf watcher's
+# time-of-day (early Pacific morning, mid-day European working hours).
+# Monthly is the floor, not a target: dependency ceilings move on release
+# cadences measured in weeks, and a monthly sweep bounds how far behind
+# the tip protokit can drift without anyone noticing. `workflow_dispatch`
+# lets a maintainer run it on demand — before a release, or after news of
+# an upstream major.
+#
+# ----- Why an issue, not a failing check -----
+#
+# Deciding whether a bound is deliberate (a known incompatibility, a
+# pinned ABI) or merely stale is a human judgement. A gate that failed on
+# drift would fail every PR for a reason unrelated to that PR, and would
+# be routed around within a week. Same contract as the `docs-refs` job:
+# surface it, never block on it. The script exits 0 unconditionally.
+#
+# ----- Permissions -----
+#
+# `issues: write` to create / edit the tracking issue.
+# `contents: read` to check out pyproject.toml and the script.
+# Uses the default `GITHUB_TOKEN`; no secrets needed.
+
+name: dependency-drift-watch
+
+on:
+  schedule:
+    # 1st of the month, 13:00 UTC.
+    - cron: '0 13 1 * *'
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: 'Days without a release before a dependency is called stale'
+        required: false
+        default: '365'
+
+permissions:
+  issues: write
+  contents: read
+
+# Two simultaneous workflow_dispatch invocations would otherwise both
+# pass the "no open issue" check and both create a tracking issue --
+# yielding duplicates. Serializing via concurrency-group makes the
+# check + create + edit pipeline atomic relative to other watcher runs.
+concurrency:
+  group: dependency-drift-watch
+  cancel-in-progress: false
+
+jobs:
+  check-dependency-drift:
+    runs-on: ubuntu-latest
+
+    # Cap the job: the script makes one PyPI request per declared
+    # requirement and a stalled TCP connection (accepted, no response)
+    # is something `set -euo pipefail` cannot detect. The script's own
+    # per-request timeout is 20s; this is the outer backstop.
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The reporter needs only `packaging` for PEP 440 comparison; it
+      # deliberately does not install protokit or its dependencies, so a
+      # dependency that cannot resolve is still reported rather than
+      # breaking the watcher that exists to report it.
+      - name: Install reporter dependency
+        run: python -m pip install --disable-pip-version-check 'packaging>=23'
+
+      - name: Check dependency drift
+        id: drift
+        env:
+          STALE_DAYS: ${{ inputs.stale_days || '365' }}
+        # The script writes `drift=true|false` to $GITHUB_OUTPUT and the
+        # Markdown report to $GITHUB_STEP_SUMMARY. It always exits 0 --
+        # a non-zero status here means the script itself broke, which
+        # SHOULD fail the job.
+        run: |
+          set -euo pipefail
+          python scripts/check_dependency_drift.py \
+            --stale-days "$STALE_DAYS" \
+            | tee drift-report.md
+
+      - name: Find or create tracking issue
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # Route values through `env:` rather than inlining `${{ }}` into
+        # the shell script: GH Actions expands `${{ }}` at YAML template
+        # time, BEFORE bash sees it, so surrounding quotes are bash
+        # quoting and not GH-template quoting. Matches the buf watcher.
+        #
+        # `gh issue list --search` matches loosely, so jq post-filters on
+        # the exact title -- otherwise an issue merely *mentioning* the
+        # phrase could be edited instead of the tracking issue.
+        run: |
+          set -euo pipefail
+          title="dependency pins behind upstream"
+          body=$(cat <<EOF
+          $(cat drift-report.md)
+
+          ---
+
+          Generated by \`.github/workflows/dependency-drift-watch.yml\` ([run]($RUN_URL)).
+          The body is rewritten on each run, so it always reflects the latest sweep;
+          close it once the drift is resolved or recorded as deliberate. A later sweep
+          that still finds drift opens a fresh issue rather than reopening this one.
+          EOF
+          )
+          existing=$(
+            gh issue list \
+              --state open \
+              --search "$title in:title" \
+              --json number,title \
+              --jq ".[] | select(.title == \"$title\") | .number" \
+              | head -n 1
+          )
+          if [ -n "$existing" ]; then
+            echo "updating existing tracking issue #$existing"
+            gh issue edit "$existing" --body "$body"
+          else
+            echo "opening new tracking issue"
+            gh issue create --title "$title" --body "$body"
+          fi
+
+      - name: No drift
+        if: steps.drift.outputs.drift != 'true'
+        # Deliberately does NOT close an open tracking issue. A
+        # maintainer who recorded a bound as deliberate may have left the
+        # issue open as the record; auto-closing would erase that
+        # decision. Closing is the maintainer's call.
+        run: echo "No dependency drift detected; leaving any open tracking issue untouched."

@@ -163,6 +163,7 @@ jobs:
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
             src/protokit/storage/ \
+            scripts/check_dependency_drift.py \
             scripts/check_docs_test_refs.py
 
       - name: Run test suite
