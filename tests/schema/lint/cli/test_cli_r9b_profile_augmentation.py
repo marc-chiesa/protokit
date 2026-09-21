@@ -38,13 +38,25 @@ def _run_lint_json(
     descriptor_set: Path,
     pyproject: Path | None,
     extra_args: tuple[str, ...] = (),
+    allowed_exit_codes: tuple[int, ...] = (0, 1),
 ) -> dict[str, object]:
     """Invoke ``protokit lint --format=json`` and return the parsed payload.
 
-    A non-zero exit code is allowed because findings → exit 1 is
-    expected for the baseline case (un-suppressed rule fires). Tests
-    assert on the parsed JSON payload, not the exit code, to keep
-    the suppression contract orthogonal to the CI-gate ladder.
+    ``allowed_exit_codes`` defaults to ``(0, 1)`` because these runs
+    all lint at least one file: clean → 0, findings → 1. Tests assert
+    on the parsed JSON payload, not on which of those two it was, to
+    keep the suppression contract orthogonal to the CI-gate ladder.
+
+    A run whose ``--exclude`` patterns dropped *every* input file is
+    different in kind: it emits the ``all_files_excluded`` runtime
+    warning, short-circuits ``engine.run`` and lints nothing, so
+    ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` counts it as an
+    incomplete analysis and the CLI exits 2 per R1 ("no protokit CLI
+    exit code reports success on a run where the analysis did not
+    complete"). Such a caller passes ``allowed_exit_codes=(2,)``.
+    Rendering is unchanged — the gate's
+    ``error[lint-analysis-incomplete]:`` line goes to stderr *after*
+    the report is written — so the payload still parses off stdout.
     """
     args: list[str] = ["--format", "json"]
     if pyproject is not None:
@@ -59,8 +71,9 @@ def _run_lint_json(
     args.extend(extra_args)
     args.append(str(descriptor_set))
     result = CliRunner().invoke(lint_main, args)
-    assert result.exit_code in (0, 1), (
-        f"unexpected exit code {result.exit_code}; "
+    assert result.exit_code in allowed_exit_codes, (
+        f"unexpected exit code {result.exit_code} "
+        f"(allowed: {allowed_exit_codes!r}); "
         f"stdout={result.stdout!r}; stderr={result.stderr!r}"
     )
     return json.loads(result.stdout)
@@ -211,11 +224,22 @@ class TestR9bProfileAugmentationEndToEnd:
     ) -> None:
         """Excluding all files AND specifying contradictory R9b directives
         produces BOTH ``all_files_excluded`` AND ``contradictory_disable_config``
-        warnings in the same payload.
+        warnings in the same payload, and the run exits 2.
 
         Pins the post-branch ordering: ``all_files_excluded`` (short-circuit
         path in cli.py) does NOT suppress the ``contradictory_disable_config``
         warnings that ``from_dict`` accumulated in ``resolved.runtime_warnings``.
+
+        Exit code is **2**, not 0. ``all_files_excluded`` is in
+        ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES``: the
+        ``--exclude`` pattern dropped every input file the user named,
+        so ``engine.run`` never ran and this command linted nothing.
+        Exiting 0 there would be a lint gate that silently stopped
+        gating — the lint twin of V31 — and R1 forbids a success exit
+        code on a run whose analysis did not complete. Only the exit
+        code changed: both warnings are still emitted, in this order,
+        and are still rendered into the payload below, which is what
+        the assertions on ``categories`` continue to prove.
         """
         pyproject = _make_pyproject(
             tmp_path,
@@ -230,6 +254,8 @@ class TestR9bProfileAugmentationEndToEnd:
             descriptor_set=bad_naming_descriptor_set,
             pyproject=pyproject,
             extra_args=("--exclude", "**/*.proto",),
+            # Every input file was excluded → incomplete analysis → exit 2.
+            allowed_exit_codes=(2,),
         )
         categories = {
             w["category"]

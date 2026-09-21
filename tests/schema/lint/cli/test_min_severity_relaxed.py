@@ -12,7 +12,9 @@ Covers:
 - **Co-emission with `all_files_excluded`**: when both CLI-emitted
   warnings fire in the same invocation, the alphabetical ordering
   contract (KTD-4: `all_files_excluded` < `min_severity_relaxed`)
-  is preserved in `runtime_warnings`.
+  is preserved in `runtime_warnings`. That invocation now exits 2,
+  because `all_files_excluded` is an incomplete-analysis category
+  (R1); the warning's rendering and ordering are unaffected.
 - **BREAKING contract**: the new category produces `rule_id=null`
   in JSON output (R18 widening verified end-to-end).
 
@@ -211,6 +213,16 @@ class TestCoEmissionWithAllFilesExcluded:
         min_severity_relaxed), the alphabetical ordering contract per
         KTD-4 is preserved: all_files_excluded comes before
         min_severity_relaxed in the runtime_warnings array.
+
+        The run exits **2**, not 0: ``--exclude '**/*'`` drops every
+        input file the user named, so the CLI short-circuits
+        ``engine.run`` and lints nothing. ``all_files_excluded`` is an
+        incomplete-analysis category (``_trust``), and R1 forbids a
+        success exit code on a run whose analysis did not complete --
+        an empty findings list here means "nothing was looked at", not
+        "the schema is clean". Only the exit code moved: the report
+        below is rendered in full first, and every ordering / rule_id
+        assertion in this test is the pre-change contract, unchanged.
         """
         result = CliRunner().invoke(
             lint_main,
@@ -222,7 +234,11 @@ class TestCoEmissionWithAllFilesExcluded:
                 str(descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        # Exit 2 = lint-analysis-incomplete (see docstring); the gate
+        # fires on stderr AFTER the JSON report has been rendered, so
+        # stdout below is the complete, unchanged report.
+        assert result.exit_code == 2, result.output
+        assert "error[lint-analysis-incomplete]:" in result.stderr
         parsed = json.loads(result.stdout)
         categories = [
             w["category"] for w in parsed["runtime_warnings"]

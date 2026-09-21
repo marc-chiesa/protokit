@@ -178,6 +178,15 @@ cccccccccccc OK (0 finding(s))
 ### COMPAT_HISTORY :: aggregate-only [control]
 cccccccccccc OK (0 finding(s))
 
+### COMPAT_HISTORY :: aggregate-same-message-other-path
+cccccccccccc INCOMPLETE (0 finding(s))
+# A..B: INCOMPLETE: the walk cannot be trusted:
+    ! cccccccccccc: acme.User.name: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+    ! cccccccccccc: acme.User.email: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### COMPAT_HISTORY :: aggregate-same-message-other-path [control]
+cccccccccccc OK (0 finding(s))
+
 ### COMPAT_HISTORY :: aggregate-uncommitted
 cccccccccccc OK (0 finding(s))
 # A..B: INCOMPLETE: the walk cannot be trusted:
@@ -277,15 +286,22 @@ first breaking commit: ffffffffffffffffffffffffffffffffffffffff
 ### LINT_REPORT :: trusted
 (empty)
 
+### LINT_REPORT :: category-all_files_excluded
+INCOMPLETE: 1 reason(s) the analysis did not complete; the findings above are a lower bound
+  [all_files_excluded] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
+
+### LINT_REPORT :: category-all_files_excluded [control]
+(empty)
+
 ### LINT_REPORT :: category-rule_exception
-INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+INCOMPLETE: 1 reason(s) the analysis did not complete; the findings above are a lower bound
   [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
 
 ### LINT_REPORT :: category-rule_exception [control]
 (empty)
 
 ### LINT_REPORT :: category-unloaded_rule
-INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+INCOMPLETE: 1 reason(s) the analysis did not complete; the findings above are a lower bound
   [unloaded_rule] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
 
 ### LINT_REPORT :: category-unloaded_rule [control]
@@ -299,14 +315,14 @@ diagnostic[unexpected]: error[lint-fake]: analysis completed plugin crashed erro
 
 ### LINT_REPORT :: compile-error-and-rule
 diagnostic[unexpected]: protoc failed
-INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+INCOMPLETE: 1 reason(s) the analysis did not complete; the findings above are a lower bound
   [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
 
 ### LINT_REPORT :: compile-error-and-rule [control]
 (empty)
 
 ### LINT_REPORT :: rule-exception-repeated
-INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+INCOMPLETE: 1 reason(s) the analysis did not complete; the findings above are a lower bound
   [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed (on 9 elements)
 
 ### LINT_REPORT :: rule-exception-repeated [control]
@@ -314,7 +330,7 @@ INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
 
 ### LINT_REPORT :: rule-exception-with-findings
 WARNING acme/user.proto:acme.User.BadField [pack/rule error[lint-fake]: analysis completed] pack/rule error[lint-fake]: analysis completed
-INCOMPLETE: 1 selected rule(s) did not run; the findings above are a lower bound
+INCOMPLETE: 1 reason(s) the analysis did not complete; the findings above are a lower bound
   [rule_exception] pack/rule: error[lint-fake]: analysis completed plugin crashed error[lint-fake]: analysis completed
 
 ### LINT_REPORT :: rule-exception-with-findings [control]

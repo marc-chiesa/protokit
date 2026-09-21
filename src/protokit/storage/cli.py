@@ -38,34 +38,46 @@ Error policy (``--on-error``): ``raise`` (default, fail-loud) aborts on the firs
 bad record; ``skip`` drops bad records; ``warn`` reports each to stderr live and
 continues. NOTE: with the length-delimited reader a *framing* fault (truncated
 frame) ends the scan even under ``skip`` / ``warn`` — only *decode* and
-*unknown-stream* faults are recovered past.
+*unknown-stream* faults are recovered past. Under ``skip`` / ``warn`` the good
+records still reach stdout exactly as they would without a fault, and ``skip``
+still says nothing about the individual drops -- only the exit code marks the
+run as incomplete (see below).
 
-Exit codes: 0 = success, 2 = error (a bad flag, an unresolved schema, a malformed
-``--where``, or a data fault under ``--on-error raise``). A Ctrl-C exits 1 via
-Click's ``Abort`` (any partial parquet temp is still discarded). ``count
+Exit codes: 0 = success, 2 = error -- a bad flag, an unresolved schema, a
+malformed ``--where``, a data fault under ``--on-error raise`` (which aborts on
+the first one), or a record the scan never read once the run ends, which
+``protokit._trust`` will not vouch for. That last case reaches ``scan``,
+``head`` and ``count`` alike, and fires under the tolerant ``skip`` / ``warn``
+modes too: dropping even one record exits 2 the same as ``raise`` does, even
+though the records that did come out already reached stdout. A Ctrl-C exits 1
+via Click's ``Abort`` (any partial parquet temp is still discarded). ``count
 --quiet`` adds the grep-like signal: 1 = zero matches, 0 = at least one
-(mirroring ``diff --quiet``). Storage library code never calls ``sys.exit``;
-this layer owns it.
+(mirroring ``diff --quiet``) -- but an incomplete scan outranks it, so a run
+that dropped a record still exits 2 even when ``count`` matched something.
+Storage library code never calls ``sys.exit``; this layer owns it.
 """
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, NamedTuple
+from typing import BinaryIO, NamedTuple, NoReturn
 
 import click
 from click.core import ParameterSource
 from google.protobuf import descriptor_pb2, json_format, text_format
 from google.protobuf.message import DecodeError, Message
 
+from protokit import _trust
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
+from protokit.message.model import Diagnostic
 from protokit.storage import (
     Fidelity,
     FidelityError,
@@ -452,23 +464,82 @@ def _prepare(
     return _Setup(registry, stream_id, predicate, selection, explicit_defaults)
 
 
+@dataclasses.dataclass
+class _Tally:
+    """Live count of the records a tolerant scan did not read.
+
+    Mutable and written from the error sink mid-iteration, so the exit gate
+    can read the total once the loop ends. ``first`` keeps one example for
+    the gate's reason line -- a corrupt file can carry millions of faults and
+    the reason is one printable line.
+    """
+
+    count: int = 0
+    first: str | None = None
+
+    def record(self, err: FrameError, *, need_text: bool) -> str | None:
+        """Tally ``err``; return its description only when one is wanted.
+
+        ``need_text`` is the caller's ``warn`` flag. Under ``skip`` nothing
+        prints per fault and ``first`` is set once, so formatting every
+        later fault builds a string that is immediately discarded -- and a
+        corrupt file can carry millions of them, which is exactly the input
+        these modes exist for. The engine's own ``skip`` cost nothing per
+        fault; counting them has to cost something, but not this.
+        """
+        self.count += 1
+        if not need_text and self.first is not None:
+            return None
+        text = (
+            f"stream {err.stream_id!r} record {err.record_index} "
+            f"(offset {err.offset}): {err.reason}"
+        )
+        if self.first is None:
+            self.first = text
+        return text
+
+
 class _Run(NamedTuple):
     result: ScanResult
-    faults: list[int] | None  # populated only under 'warn' (route)
+    #: Populated under 'skip' and 'warn' (both route); ``None`` under 'raise',
+    #: where the first fault propagates instead of being recovered past.
+    tally: _Tally | None
+
+
+@dataclasses.dataclass(frozen=True)
+class _ScanReport:
+    """One text-format scan run, in the shape ``protokit._trust`` reads (U8).
+
+    Storage has no report dataclass of its own -- ``scan`` yields records and
+    the CLI prints them -- so the exit gate needs something to hand the seam.
+    This is that something: the identifying attribute is ``faults``, which no
+    other report kind answers to, and ``diagnostics`` satisfies the seam's
+    requirement that every kind carry one. It is deliberately CLI-private;
+    the library surface is unchanged.
+    """
+
+    faults: int
+    first_fault: str | None = None
+    diagnostics: tuple[Diagnostic, ...] = ()
 
 
 def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
-    """Build the ScanResult, wiring a stderr sink + fault tally for 'warn' (route)."""
-    if on_error == "warn":
-        faults = [0]
+    """Build the ScanResult, wiring a fault tally for the tolerant modes.
+
+    Both tolerant modes route (U8). ``warn`` prints each fault to stderr as it
+    always did; ``skip`` stays silent about the individual faults -- that is
+    what distinguishes it -- but is counted all the same, because the engine's
+    own ``skip`` drops a record leaving no trace, and a gate cannot fire on
+    something nothing recorded.
+    """
+    if on_error in {"warn", "skip"}:
+        tally = _Tally()
+        loud = on_error == "warn"
 
         def sink(err: FrameError) -> None:
-            faults[0] += 1
-            click.echo(
-                f"Warning: stream {err.stream_id!r} record {err.record_index} "
-                f"(offset {err.offset}): {err.reason}",
-                err=True,
-            )
+            text = tally.record(err, need_text=loud)
+            if loud:
+                click.echo(f"Warning: {text}", err=True)
 
         result = scan(
             source,
@@ -477,7 +548,7 @@ def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
             on_error="route",
             error_sink=sink,
         )
-        return _Run(result, faults)
+        return _Run(result, tally)
     result = scan(
         source,
         setup.registry,
@@ -588,8 +659,40 @@ def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:
     # predicate and were emitted/counted, NOT the total read from the source
     # (which the engine does not expose). Under --where / head -n the two
     # differ, so calling it "scanned" would misstate the scan volume.
-    if on_error == "warn" and run.faults is not None:
-        click.echo(f"matched {matched} records, {run.faults[0]} faults", err=True)
+    if on_error == "warn" and run.tally is not None:
+        click.echo(f"matched {matched} records, {run.tally.count} faults", err=True)
+
+
+def _exit_after_scan(on_error: str, matched: int, run: _Run, code: int) -> NoReturn:
+    """Emit the warn summary, then exit -- 2 if the scan did not read it all.
+
+    R1: a tolerant ``--on-error`` mode is a licence to keep going past a
+    corrupt record, not a claim that the file was read. The records that did
+    come out have already gone to stdout by the time this runs, so the caller
+    keeps everything the mode promised; what it no longer gets is an exit code
+    saying the scan succeeded.
+
+    The verdict is ``protokit._trust``'s, the same predicate every renderer
+    and every other exit path asks, so a reason it learns tomorrow lands here
+    without a second gate growing beside it. Incompleteness outranks
+    ``count --quiet``'s grep-like 0/1: "I could not read the file" is not an
+    answer to "did anything match".
+    """
+    _emit_warn_summary(on_error, matched, run)
+    report = _ScanReport(
+        faults=run.tally.count if run.tally else 0,
+        first_fault=run.tally.first if run.tally else None,
+    )
+    # ``signals`` rather than ``is_trustworthy`` then ``reasons``, which
+    # would compute them twice. The text is already one printable line: the
+    # seam sanitizes every signal before returning it, which is why no
+    # renderer re-wraps it either.
+    untrusted = _trust.signals(report)
+    if untrusted:
+        for signal in untrusted:
+            click.echo(f"Error: {signal.text}", err=True)
+        sys.exit(2)
+    sys.exit(code)
 
 
 def _write_parquet(
@@ -788,8 +891,7 @@ def scan_cmd(
                 yielded += 1
         except _TYPED_CLI_ERRORS as exc:
             error_exit(str(exc))
-    _emit_warn_summary(on_error, yielded, run)
-    sys.exit(0)
+    _exit_after_scan(on_error, yielded, run, 0)
 
 
 @main.command(name="head")
@@ -850,8 +952,7 @@ def head_cmd(
                         break
             except _TYPED_CLI_ERRORS as exc:
                 error_exit(str(exc))
-    _emit_warn_summary(on_error, yielded, run)
-    sys.exit(0)
+    _exit_after_scan(on_error, yielded, run, 0)
 
 
 @main.command(name="count")
@@ -888,8 +989,9 @@ def count_cmd(
                 matched += 1
         except _TYPED_CLI_ERRORS as exc:
             error_exit(str(exc))
-    _emit_warn_summary(on_error, matched, run)
     if quiet:
-        sys.exit(0 if matched > 0 else 1)
+        _exit_after_scan(on_error, matched, run, 0 if matched > 0 else 1)
+    # The count itself is still printed on an incomplete scan: it is a true
+    # count of what was read, and the exit code carries the caveat.
     click.echo(str(matched))
-    sys.exit(0)
+    _exit_after_scan(on_error, matched, run, 0)

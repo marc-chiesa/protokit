@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import warnings
 from types import ModuleType
 
@@ -143,6 +144,57 @@ class TestFieldPlugin:
         assert any("boom" in w.message for w in report.errors)
         assert any("RuntimeError" in w.message for w in report.errors)
         assert any(f.rule_id == "follow_up" for f in report.findings)
+
+    def test_plugin_sys_exit_recorded_and_traversal_continues(self) -> None:
+        """``sys.exit(0)`` from a rule is a crash, not a verdict.
+
+        ``SystemExit`` derives from ``BaseException``, so the dispatch
+        guard's ``except Exception`` never saw it: it unwound straight
+        out of ``check()`` -- a library call whose contract is to
+        *return* a report -- and, through the CLI and Click, became the
+        process exit code (exit 0, empty stdout and stderr, on a
+        genuinely breaking schema). ``_PLUGIN_DISPATCH_EXCEPTIONS`` now
+        names it, mirroring lint's ``_RULE_EXCEPTION_TUPLE``.
+        """
+        old, new = _identical_pair()
+
+        def suicide(ctx: FieldRuleContext) -> None:
+            sys.exit(0)
+
+        def follow_up(ctx: FieldRuleContext) -> None:
+            ctx.emit(severity=Severity.WIRE, message="still ran")
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        checker.register_field_rule("suicide", suicide)
+        checker.register_field_rule("follow_up", follow_up)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any("suicide" in w.message for w in report.errors)
+        assert any("SystemExit" in w.message for w in report.errors)
+        assert any(f.rule_id == "follow_up" for f in report.findings)
+
+    def test_plugin_keyboard_interrupt_still_propagates(self) -> None:
+        """Ctrl-C at *dispatch* time is the operator's, and must escape.
+
+        The per-surface judgment recorded in
+        ``docs/solutions/security-issues/
+        keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md``
+        cuts both ways: at a rule-pack *load* surface an interrupt comes
+        from the pack's own module body and is caught (see
+        ``_load_rule_packs``), while here it arrives mid-walk from a
+        human who wants the process to stop. Swallowing it into a
+        diagnostic would make ``check()`` un-interruptible on a large
+        descriptor set. Pinned so the ``SystemExit`` arm beside it is
+        never widened to ``BaseException`` by accident.
+        """
+        old, new = _identical_pair()
+
+        def interrupted(ctx: FieldRuleContext) -> None:
+            raise KeyboardInterrupt
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        checker.register_field_rule("interrupted", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            checker.check(old, "t.M", new, "t.M")
 
     def test_plugin_exception_surfaces_in_report_warnings(self) -> None:
         """CI safety: CLI uses ``report.errors`` for exit-code 2."""
@@ -292,6 +344,27 @@ class TestMessagePlugin:
         # Built-in rules still ran (no findings here since pair is identical
         # at the message level; report.errors is the sole signal).
         assert not report.findings
+
+    def test_message_plugin_sys_exit_recorded(self) -> None:
+        """The message dispatch site needs the same ``SystemExit`` arm.
+
+        ``iter_rule_pack`` registers every ``RULES`` entry as a *field*
+        rule, so a rule pack -- and therefore the CLI-level regression
+        in ``tests/schema/test_audit_u15_cli_exit_pins.py`` -- can never
+        reach ``_dispatch_message_plugin``. Registered directly it is
+        the same hole, and the two guards were written as a pair; this
+        keeps them provable as a pair.
+        """
+        old, new = _identical_pair()
+
+        def suicide(ctx: MessageRuleContext) -> None:
+            sys.exit(0)
+
+        checker = SchemaChecker()
+        checker.register_message_rule("suicide", suicide)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any("suicide" in w.message for w in report.errors)
+        assert any("SystemExit" in w.message for w in report.errors)
 
 
 # ---------------------------------------------------------------------------

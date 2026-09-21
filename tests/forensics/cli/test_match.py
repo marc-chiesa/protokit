@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from google.protobuf import descriptor_pb2
+from google.protobuf.descriptor_pb2 import FieldDescriptorProto as FieldProto
 
 from protokit.cli import main
 from protokit.forensics import cli as forensics_cli
@@ -243,9 +245,13 @@ def test_fault_row_renders_dashes(runner: CliRunner, tmp_path: Path) -> None:
         "--type", "a.A",
     )
 
-    assert result.exit_code == 0
+    # U8: the ranking is over fewer schemas than the user named -- ``req``
+    # never entered the contest -- so the winner won a smaller one. The table
+    # still renders in full; only the verdict changed.
+    assert result.exit_code == 2
     assert "incomplete" in result.stdout
     assert " -" in result.stdout  # the fault row's dash cells rendered
+    assert "req:" in result.stderr  # the seam's reason names the candidate
 
 
 def test_unparseable_under_all_exits_2(runner: CliRunner, tmp_path: Path) -> None:
@@ -351,3 +357,125 @@ class TestDescriptorSetSuffixes:
     def test_binpb_is_declared(self) -> None:
         """Named explicitly: it is the member the audit proved was droppable."""
         assert ".binpb" in forensics_cli._FDS_SUFFIXES
+
+
+# ---------------------------------------------------------------------------
+# U8 — the exit gate. Both commands used to fall off the end at 0 for every
+# run that did not hard-error (R1).
+# ---------------------------------------------------------------------------
+
+
+def test_one_candidate_that_could_not_be_measured_exits_2(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """A partial sweep is not a clean one: ``bad`` never entered the contest.
+
+    The all-faulted case already exited 2 with its own message; this is the
+    partial one, which exited 0 indistinguishably from a full ranking.
+
+    "Could not be measured" is narrower than "did not fit" -- see
+    ``test_a_candidate_that_does_not_decode_still_exits_0`` below.
+    """
+    produced = fdp({"x": 1})
+    # ``req`` declares a proto2 ``required`` field the message does not carry,
+    # so its modeled-byte fraction cannot be measured (ParseTier.FAULT) while
+    # ``ok`` parses cleanly. One candidate measured, one not.
+    unmeasurable = proto2_required_fdp(required={"z": 9}, optional={"x": 1})
+    write_desc(tmp_path / "ok.desc", produced)
+    write_desc(tmp_path / "bad.desc", unmeasurable)
+    write_message(tmp_path / "msg.bin", produced, {"x": 5})
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"ok={tmp_path / 'ok.desc'}",
+        "--schema", f"bad={tmp_path / 'bad.desc'}",
+        "--type", "a.A",
+    )
+
+    assert result.exit_code == 2
+    assert "ok" in result.stdout  # the ranking still rendered in full
+    assert "bad:" in result.stderr  # the seam's reason names the candidate
+
+
+def test_a_clean_sweep_still_exits_0(runner: CliRunner, tmp_path: Path) -> None:
+    """Adjacent behavior: the gate keys on an unmeasured candidate only."""
+    full, old = fdp({"x": 1, "y": 2}), fdp({"x": 1})
+    write_desc(tmp_path / "full.desc", full)
+    write_desc(tmp_path / "old.desc", old)
+    write_message(tmp_path / "msg.bin", full, {"x": 5, "y": 7})
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"full={tmp_path / 'full.desc'}",
+        "--schema", f"old={tmp_path / 'old.desc'}",
+        "--type", "a.A",
+    )
+
+    # ``old`` models fewer bytes than ``full`` -- that is a ranking signal,
+    # not a fault, and must not reach the gate.
+    assert result.exit_code == 0
+    assert "Error:" not in result.stderr
+
+
+def _bytes_field_schema() -> object:
+    """``a.A { bytes x = 1; }`` -- models a length-delimited payload as opaque."""
+    f = descriptor_pb2.FileDescriptorProto(name="a.proto", package="a", syntax="proto3")
+    mt = f.message_type.add()
+    mt.name = "A"
+    fl = mt.field.add()
+    fl.name, fl.number = "x", 1
+    fl.type, fl.label = FieldProto.TYPE_BYTES, FieldProto.LABEL_OPTIONAL
+    return f
+
+
+def _submessage_field_schema() -> object:
+    """``a.A { Inner x = 1; }`` -- reads the same payload as a nested message."""
+    f = descriptor_pb2.FileDescriptorProto(name="a.proto", package="a", syntax="proto3")
+    mt = f.message_type.add()
+    mt.name = "A"
+    inner = f.message_type.add()
+    inner.name = "Inner"
+    y = inner.field.add()
+    y.name, y.number = "y", 1
+    y.type, y.label = FieldProto.TYPE_INT32, FieldProto.LABEL_OPTIONAL
+    x = mt.field.add()
+    x.name, x.number = "x", 1
+    x.type, x.label = FieldProto.TYPE_MESSAGE, FieldProto.LABEL_OPTIONAL
+    x.type_name = ".a.Inner"
+    return f
+
+
+def test_a_candidate_that_does_not_decode_still_exits_0(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """Ruling a candidate out is what ``match`` is for, not an incomplete run.
+
+    Ranking one message against several schema versions means most of them
+    did not produce it, and a candidate the message will not decode under has
+    been evaluated and ranked last. Gating on that would make a healthy
+    forensic ranking exit non-zero nearly every time, so only a candidate
+    whose modeled-byte fraction could not be computed at all costs trust.
+    The case where *nothing* parses keeps its own exit 2
+    (``test_unparseable_under_all_exits_2``).
+
+    The payload is one length-delimited field holding ``0xFF`` -- opaque and
+    fine as ``bytes``, and not a decodable message, so reading it as a nested
+    message is a genuine ``DecodeError`` rather than an unknown field.
+    """
+    write_desc(tmp_path / "ok.desc", _bytes_field_schema())
+    write_desc(tmp_path / "bad.desc", _submessage_field_schema())
+    (tmp_path / "msg.bin").write_bytes(b"\x0a\x01\xff")
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"ok={tmp_path / 'ok.desc'}",
+        "--schema", f"bad={tmp_path / 'bad.desc'}",
+        "--type", "a.A",
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "Error:" not in result.stderr
+    assert "decode_error" in result.stdout  # the candidate WAS ranked, and lost

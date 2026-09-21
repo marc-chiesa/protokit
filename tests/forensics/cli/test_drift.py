@@ -111,3 +111,27 @@ def test_drift_malformed_message_exits_2(runner: CliRunner, tmp_path: Path) -> N
 
     assert result.exit_code == 2
     assert "Error:" in result.stderr
+
+
+def test_drift_with_divergences_still_exits_0(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """U8 adjacent behavior: a divergence is a finding, not an incompleteness.
+
+    ``drift``'s whole output is divergences, so gating on them would make
+    every interesting run exit non-zero. The seam classifies them on the
+    findings rung and leaves the exit code where it was; what U8 added is a
+    gate on a tool-level failure, which nothing records today.
+    """
+    rich, poor = fdp({"x": 1, "y": 5}), fdp({"x": 1})
+    write_desc(tmp_path / "poor.desc", poor)
+    write_message(tmp_path / "msg.bin", rich, {"x": 5, "y": 7})
+
+    result = _invoke(
+        runner, str(tmp_path / "msg.bin"),
+        "--schema", f"poor={tmp_path / 'poor.desc'}", "--type", "a.A",
+    )
+
+    assert result.exit_code == 0
+    assert "divergence" in result.stderr
+    assert "Error:" not in result.stderr

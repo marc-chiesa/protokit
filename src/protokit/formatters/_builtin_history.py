@@ -204,12 +204,21 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     error_messages: list[tuple[str | None, str]] = []
     warning_messages: list[tuple[str | None, str]] = []
 
+    # Keyed on (level, commit, path, message) -- the same triple
+    # ``protokit._trust`` keys restatements on, plus the level -- and filled
+    # here, in the pass that already walks these diagnostics, rather than in a
+    # second walk of its own.
+    per_entry: Counter[tuple[str, str | None, str | None, str]] = Counter()
+
     for entry in report.entries:
         commit = entry.commit_sha
         for f in entry.report.findings:
             findings_with_context.append(
                 (f, ctx.proto_file, {"commit": commit}),
             )
+        for d in entry.report.diagnostics:
+            level = "error" if d.level == "error" else "warning"
+            per_entry[(level, commit, d.path, d.message)] += 1
         per_errs, per_warns = sarif.collect_diagnostics_from_report(
             entry.report, commit=commit,
         )
@@ -220,18 +229,28 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     # attribution from the CommitDiagnostic itself. `compat history`
     # builds them by copying each entry's report.diagnostics, so for
     # CLI-produced reports they restate what the per-entry pass just
-    # emitted — notifying twice. Skip each restatement, matched on
-    # (level, commit, message) with multiplicity so a hand-built
-    # report carrying genuinely extra aggregate diagnostics (or a
-    # deliberate repeat) keeps every one of them.
-    per_entry = Counter(
-        [("error", *e) for e in error_messages]
-        + [("warning", *w) for w in warning_messages],
-    )
+    # emitted — notifying twice. Skip each restatement, matched with
+    # multiplicity so a hand-built report carrying genuinely extra
+    # aggregate diagnostics (or a deliberate repeat) keeps every one.
+    #
+    # **Matched on (level, commit, path, message)** — the same triple
+    # ``protokit._trust`` keys restatements on, plus the level. It used to
+    # key on the message alone, taken from
+    # ``collect_diagnostics_from_report``, which drops the path: an
+    # aggregate diagnostic sharing an entry diagnostic's commit and message
+    # but carrying a *different* path read as a restatement and was
+    # dropped, so the seam reported two reasons and JUnit emitted two
+    # ``<error>`` elements while this renderer emitted one notification.
+    # Not a fail-open — ``executionSuccessful`` was already false — which
+    # is why it survived: the document was never wrong, only short.
+    #
+    # Counted from the entries' own diagnostics above, not from the flattened
+    # message lists, because it is those lists that lost the path.
     for d in report.diagnostics:
         level = "error" if d.level == "error" else "warning"
-        if per_entry[(level, d.commit, d.message)]:
-            per_entry[(level, d.commit, d.message)] -= 1
+        key = (level, d.commit, d.path, d.message)
+        if per_entry[key]:
+            per_entry[key] -= 1
             continue
         target = error_messages if d.level == "error" else warning_messages
         target.append((d.commit, d.message))

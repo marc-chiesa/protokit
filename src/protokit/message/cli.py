@@ -236,20 +236,26 @@ def _diff_exit_code(result: DiffResult) -> int:
 
     Error outranks "different" because 2 is the error rung, not a louder 1;
     ``compat`` already exits 2 on diagnostics before reporting its verdict.
-    Warnings deliberately do not move the code — diff's warning channel is
-    routine (a skipped map comparison emits one), unlike compat's.
+    **A ``--max-depth`` truncation joins it on 2**: a truncated comparison
+    did not run to completion, and the differences it found are a lower
+    bound, so exit 1 ("the tool ran and found a problem") would overstate
+    what it knows. Warnings deliberately do not move the code — diff's
+    warning channel is routine (a skipped map comparison emits one), unlike
+    compat's — and the seam never signals on an advisory warning either.
 
-    NOTE: the diff CLI registers no hooks, so ``result.errors`` is unreachable
-    through it today; this closes the contract for Python API callers and wires
-    the CLI correctly for when a hook surface lands.
+    NOTE: the diff CLI registers no hooks, so an error diagnostic is
+    unreachable through it today; this closes the contract for Python API
+    callers and wires the CLI correctly for when a hook surface lands.
 
-    This reads ``result.errors`` rather than ``_trust.is_trustworthy`` on
-    purpose. The seam also refuses a ``--max-depth``-truncated result, and what
-    that should exit with (it prints INCOMPLETE and emits ``"equal": false``,
-    and still exits 0) is the exit-code contract U8 owns. The strict-xfail pin
-    ``test_u15_7_truncated_comparison_does_not_exit_0`` holds the gap open.
+    **The predicate is the seam's (U8).** It used to read ``result.errors``
+    directly, which left truncation out: a comparison cut above the only
+    difference has ``has_changes() == False``, so two genuinely differing
+    messages exited **0**. U7 had already closed the rendering half -- the
+    output says INCOMPLETE and the JSON emits ``"equal": false`` -- which
+    left the exit code as the last surface still claiming the run
+    succeeded, and it is the one CI reads.
     """
-    if result.errors:
+    if not _trust.is_trustworthy(result):
         return 2
     return 1 if result.has_changes() else 0
 

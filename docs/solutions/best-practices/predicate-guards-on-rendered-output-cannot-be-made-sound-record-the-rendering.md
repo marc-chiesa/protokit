@@ -542,25 +542,40 @@ mutations left the whole suite green
 
 ## Limits — what this does not close
 
-**The golden's coverage is the mode table's coverage, and there is a live
-instance.** A cross-model pass run against the seam branch (session history)
-reported that `history --format sarif` deduplicates aggregate diagnostics on
+**The golden's coverage is the mode table's coverage — and it had a live
+instance, now closed.** A cross-model pass run against the seam branch reported
+that `history --format sarif` deduplicated aggregate diagnostics on
 `(level, commit, message)` while the seam keys restatements on
-`(commit, path, message)`. Reproduced against `main` at the time of writing: an
-aggregate `CommitDiagnostic` sharing a per-entry diagnostic's commit and message
-but carrying a *different* path yields two seam reasons and two JUnit `<error>`
-elements, but only **one** SARIF notification. The dedup key is
-`(level, commit, message)` at `src/protokit/formatters/_builtin_history.py:219-229`,
-and the message it keys on is the bare `d.message` with no path
-(`src/protokit/formatters/_sarif_json.py:268-273`).
+`(commit, path, message)`. Reproduced twice independently: an aggregate
+`CommitDiagnostic` sharing a per-entry diagnostic's commit and message but
+carrying a *different* path yielded two seam reasons and two JUnit `<error>`
+elements, but only **one** SARIF notification.
 
-This is a fidelity gap, not a fail-open — `executionSuccessful` is still `false`,
-so nothing claims success. But it is the caveat above demonstrating itself: no
-mode in `_UNTRUSTED[COMPAT_HISTORY]` pairs a path-scoped entry diagnostic with a
-path-distinct aggregate one, so neither the golden nor the predicates render the
-case, and the JUnit sibling was fixed while the SARIF sibling was not. That is
-[sibling blindness](sibling-blindness-fix-survives-review-structural-siblings-stay-broken.md)
-in the dedup key, and the mode table is where it should be closed.
+It was a fidelity gap, not a fail-open — `executionSuccessful` was already
+`false`, so nothing claimed success — and that is exactly why it survived two
+releases: the document was never wrong, only short. It was the caveat above
+demonstrating itself. No mode in `_UNTRUSTED[COMPAT_HISTORY]` paired a
+path-scoped entry diagnostic with a path-distinct aggregate one, so neither the
+golden nor the predicates ever rendered the case, and the JUnit sibling was
+brought onto the seam's keying while the SARIF sibling was not — [sibling
+blindness](sibling-blindness-fix-survives-review-structural-siblings-stay-broken.md)
+in the dedup key.
+
+**Closed in the CLI exit-gates unit** (0.16.0): the skip now keys on the same
+triple the seam does, built from the entries directly rather than from the
+flattened message lists that had dropped the path, and the mode table gained
+`aggregate-same-message-other-path` so the golden records the case. Two things
+are worth carrying forward from how it was closed:
+
+- **The fix went in the mode table, not only in the renderer.** Fixing the key
+  alone would have left the next path-distinct bug just as invisible. The
+  recording's coverage is exactly its fixtures' coverage, so a fixture is part
+  of the fix, not a follow-up to it.
+- **Assert the count, not the verdict.** The regression test asserts the SARIF
+  notification *count*; `executionSuccessful` was correct before and after, and
+  asserting it would have passed on the broken code. When a guard hides a bug by
+  being right about the wrong quantity, the replacement has to measure the
+  quantity that was actually wrong.
 
 **A refusal line is taken whole**, so a synonym *inside* the refusal sentence
 would pass the accounting test. The success-text check still forbids the kind's

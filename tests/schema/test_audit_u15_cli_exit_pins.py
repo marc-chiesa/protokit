@@ -268,23 +268,17 @@ def _diff(args: list[str]):
         ("bisect", ["--old", "HEAD~1", "--new", "HEAD"]),
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "U15-1: history/bisect never pre-flight --proto-file, so a path "
-        "that does not exist at NEW enumerates zero commits and exits 0 "
-        "with '# <range>: no commits touch <path>', hiding a real break "
-        "inside the range. _verify_proto_file_at_ref (schema/cli.py) "
-        "exists but is called only from the check/ci path."
-    ),
-)
 def test_u15_1_history_bisect_typoed_proto_file_is_not_clean(
     breaking_repo: Path, subcommand: str, extra: list[str],
 ) -> None:
     """A ``--proto-file`` that does not resolve must not read as compatible.
 
-    Mechanism: ``history`` (schema/cli.py) and ``bisect`` ask
+    **Flipped — U8.** Both subcommands now pre-flight the path against the
+    NEW endpoint with ``_verify_proto_file_at_ref``, the helper the check/ci
+    path already used one call site away. Un-marked; stays as a regression
+    test.
+
+    Mechanism, as pinned: ``history`` (schema/cli.py) and ``bisect`` ask
     ``commits_affecting_dep_tree`` which commits touched the path,
     get an empty list for a path that exists nowhere, and take the
     ``if not commits:`` early return — rendering "no commits touch"
@@ -326,25 +320,17 @@ def test_u15_1_history_bisect_typoed_proto_file_is_not_clean(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "U15-2: _load_rule_packs wraps importlib.import_module in "
-        "`except Exception`, but SystemExit derives from BaseException, "
-        "so a rule pack whose module body calls sys.exit(0) passes "
-        "straight through Click and becomes the process exit code — "
-        "exit 0 with empty stdout and stderr on a genuinely breaking "
-        "schema."
-    ),
-)
 def test_u15_2_rule_pack_calling_sys_exit_does_not_forge_exit_0(
     breaking_protos: tuple[Path, Path], tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A rule pack that exits during import must not decide the verdict.
 
-    Mechanism: ``_load_rule_packs`` (schema/cli.py) catches
+    **Flipped — U8.** ``_load_rule_packs`` now names ``SystemExit``
+    alongside ``Exception`` at both of its boundaries. Un-marked; stays as
+    a regression test.
+
+    Mechanism, as pinned: ``_load_rule_packs`` (schema/cli.py) catches
     ``Exception`` around ``importlib.import_module``. ``SystemExit``
     is not an ``Exception``, so it unwinds through Click's
     ``standalone_mode`` — which only traps ``ClickException`` /
@@ -386,23 +372,28 @@ def test_u15_2_rule_pack_calling_sys_exit_does_not_forge_exit_0(
         sys.modules.pop(pack_name, None)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=RuntimeError,
-    reason=(
-        "U15-2: _load_rule_packs guards checker.load_rule_pack with "
-        "`except (AttributeError, TypeError)`, so any other exception "
-        "raised while RULES is iterated (iter_rule_pack's `for entry in "
-        "rules`) escapes as a traceback and exits 1 — the code reserved "
-        "for INCOMPATIBLE — turning a broken pack into a schema break."
-    ),
-)
+@pytest.mark.parametrize("raised", [RuntimeError, ValueError])
 def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
-    breaking_protos: tuple[Path, Path],
+    breaking_protos: tuple[Path, Path], raised: type[Exception],
 ) -> None:
     """A pack that raises while its RULES are read must exit 2, not 1.
 
-    Mechanism: ``iter_rule_pack`` (schema/plugins.py) does ``for entry
+    **Flipped — U8.** ``_load_rule_packs`` now guards ``load_rule_pack`` as
+    broadly as the import beside it. This is the sibling of the
+    ``sys.exit(0)`` pin above -- same function, same too-narrow guard --
+    and fixing one while leaving the other is the failure mode this release
+    exists to stop. Un-marked; stays as a regression test.
+
+    **Parametrized over the exception type, and that is load-bearing.** As
+    written the pin raised ``RuntimeError`` only, which U8's *other* fix --
+    ``_git_error_boundary`` now catching ``RuntimeError`` -- also converts
+    to exit 2. The mutation proof was therefore vacuous: restoring the
+    narrow ``(AttributeError, TypeError)`` guard still passed, because the
+    boundary caught what escaped. ``ValueError`` (the case this docstring
+    names below) is caught by nothing else, so it is what actually proves
+    this guard.
+
+    Mechanism, as pinned: ``iter_rule_pack`` (schema/plugins.py) does ``for entry
     in rules``. Any exception from that iteration that is neither
     ``AttributeError`` nor ``TypeError`` — a lazily-built ``RULES``
     generator that raises ``ValueError("config missing")`` is the
@@ -420,7 +411,7 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
 
     class _BadRules:
         def __iter__(self):
-            raise RuntimeError("boom from __iter__")
+            raise raised("boom from __iter__")
 
     with _temp_rule_pack(pack_name, _BadRules()):
         result = CliRunner().invoke(compat_main, [
@@ -440,22 +431,17 @@ def test_u15_2_rule_pack_iteration_failure_is_not_reported_as_incompatible(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason=(
-        "U15-3: rule-pack code writes to the same stdout the CLI uses "
-        "for its machine payload, so a print() inside a rule function "
-        "prefixes the --format json document and json.loads fails on "
-        "the CLI's own output."
-    ),
-)
 def test_u15_3_rule_pack_print_does_not_corrupt_json_stdout(
     breaking_protos: tuple[Path, Path],
 ) -> None:
     """``--format json`` stdout must be parseable JSON, pack or no pack.
 
-    Mechanism: plugin rule functions are called in-process while the
+    **Flipped — U8.** Every ``checker.check`` pass now runs inside
+    ``_plugin_stdout_to_stderr``, which re-emits whatever a pack wrote on
+    stderr instead of leaving it on the CLI's stdout. Un-marked; stays as a
+    regression test.
+
+    Mechanism, as pinned: plugin rule functions are called in-process while the
     CLI is building the report, and nothing redirects or captures
     their stdout. ``click.echo`` then appends the JSON document to
     whatever the pack already wrote.
@@ -488,19 +474,14 @@ def test_u15_3_rule_pack_print_does_not_corrupt_json_stdout(
         assert payload["compatible"] is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "U15-3: --quiet documents 'Suppress output; return exit code "
-        "only.' but only gates the CLI's own click.echo calls; a "
-        "rule-pack print() still reaches stdout."
-    ),
-)
 def test_u15_3_rule_pack_print_does_not_leak_under_quiet(
     breaking_protos: tuple[Path, Path],
 ) -> None:
     """``--quiet`` must mean exit-code-only, including for plugin output.
+
+    **Flipped — U8.** The same capture as the pin above: pack stdout no
+    longer reaches the CLI's stdout under any flag. Un-marked; stays as a
+    regression test.
 
     Mechanism: ``--quiet`` is implemented as ``if not quiet:`` guards
     around the CLI's own rendering. Plugin code runs before that
@@ -553,24 +534,16 @@ def test_u15_3_rule_pack_print_does_not_leak_under_quiet(
         ),
     ],
 )
-@pytest.mark.xfail(
-    strict=True,
-    raises=RuntimeError,
-    reason=(
-        "U15-4: _run_git translates a missing binary into "
-        "RuntimeError('git not found on PATH; ...'), but only "
-        "_resolve_range_endpoints (history-only) catches RuntimeError. "
-        "On check --since / ci --base / bisect it escapes as a "
-        "traceback and exits 1 — the code reserved for INCOMPATIBLE — "
-        "so a missing tool is reported as a schema break."
-    ),
-)
 def test_u15_4_missing_git_is_a_tooling_error_not_a_break(
     breaking_repo: Path, monkeypatch: pytest.MonkeyPatch, args: list[str],
 ) -> None:
     """git absent from PATH must exit 2 on every git-aware subcommand.
 
-    Mechanism: ``schema/git.py::_run_git`` converts
+    **Flipped — U8.** ``_git_error_boundary`` -- already applied to all four
+    git-aware subcommands -- now catches ``RuntimeError`` alongside
+    ``CalledProcessError``. Un-marked; stays as a regression test.
+
+    Mechanism, as pinned: ``schema/git.py::_run_git`` converts
     ``FileNotFoundError`` from ``subprocess.run(["git", ...])`` into a
     ``RuntimeError``. The ``@_git_error_boundary`` decorator on the
     subcommands catches ``subprocess.CalledProcessError`` only, and
@@ -836,31 +809,276 @@ def test_u15_7_truncated_comparison_is_not_reported_as_equal(
 
 
 @pytest.mark.parametrize("depth", ["0", "1"])
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "U15-7: with --max-depth truncating before the differing "
-        "subtree, DiffResult.has_changes() is False, so "
-        "message/cli.py's `_diff_exit_code` returns 0 on genuinely "
-        "differing payloads. U7 closed the rendering half (the output "
-        "now says INCOMPLETE and \"equal\": false); the exit code is "
-        "U8's, which owns the 1-vs-2 contract."
-    ),
-)
 def test_u15_7_truncated_comparison_does_not_exit_0(
     order_proto: Path, nested_pair: tuple[Path, Path], depth: str,
 ) -> None:
     """A truncated comparison that found nothing must not exit 0.
 
-    The pin deliberately does not fix an exact non-zero code: U8
-    ("no CLI exits 0 on a run that did not complete") leaves the
-    choice between 1 (different) and 2 (could not run) to the fix.
-    ``--quiet`` exits 0 silently today for the same reason.
+    **Flipped — U8**, which chose **2**: ``_diff_exit_code`` now asks
+    ``protokit._trust`` instead of reading ``result.errors``, and a
+    truncation is an incompleteness, not a difference. Exit 1 would claim
+    "the tool ran and found a problem"; this run did not finish, and the
+    differences it reported are a lower bound. Un-marked; stays as a
+    regression test, now asserting the exact code.
+
+    ``--quiet`` takes the same path (it calls the same helper), so the
+    silent CI shape is covered too.
     """
     result = _diff_nested_at_depth(order_proto, nested_pair, depth)
+    assert result.exit_code == 2, (
+        f"--max-depth {depth} exited {result.exit_code} on genuinely "
+        f"differing messages; a truncated run could not complete"
+    )
+
+    quiet = _diff_nested_at_depth(order_proto, nested_pair, depth, "--quiet")
+    assert quiet.exit_code == 2, (
+        "--quiet takes the same exit path and must not exit 0 silently"
+    )
+
+
+# ---------------------------------------------------------------------------
+# U8 review follow-ups — the rest of the rule-pack trust boundary
+#
+# U15-2 closed the *load* half of "a rule pack must not decide the verdict":
+# ``_load_rule_packs`` names ``SystemExit`` at both of its boundaries. The U8
+# code review found the same class of hole at the two boundaries U15-2 never
+# reached — the per-rule *dispatch* call in ``schema/checker.py``, and the
+# ``KeyboardInterrupt`` sibling at load time — plus a captured-stdout drain
+# that only ran when nothing went wrong. These are regression tests, not
+# pins: the fixes land with them.
+# ---------------------------------------------------------------------------
+
+
+def _suicidal_rule(ctx):
+    """A rule function whose only effect is calling ``sys.exit(0)``."""
+    sys.exit(0)
+
+
+def _noisy_then_interrupted_rule(ctx):
+    """A rule that prints and then takes the process down.
+
+    ``KeyboardInterrupt`` is the one thing a rule can raise at dispatch
+    time that still escapes ``checker.check`` after the ``SystemExit``
+    fix below — deliberately, since at dispatch time (unlike load time)
+    an interrupt is the operator's. That makes it the only lever left
+    for proving the stdout drain survives an exception.
+    """
+    print("PACK-LINE: about to be interrupted")
+    raise KeyboardInterrupt
+
+
+def test_rule_function_calling_sys_exit_does_not_forge_exit_0(
+    breaking_protos: tuple[Path, Path],
+) -> None:
+    """A rule *function* that exits must not decide the verdict either.
+
+    Mechanism: ``SchemaChecker._dispatch_field_plugin`` and
+    ``_dispatch_message_plugin`` wrap the third-party call as ``try:
+    result = plugin_fn(ctx)`` / ``except Exception``. ``SystemExit``
+    derives from ``BaseException``, not ``Exception``, so ``sys.exit(0)``
+    from a rule caught on nothing: it unwound past the dispatch guard,
+    past ``schema/cli.py``'s ``except ValueError``, past Click, and
+    became the process exit code.
+
+    Observed before the fix, on the pair whose only change is a removed
+    field (control: exit 1, INCOMPATIBLE): exit **0** with empty stdout
+    AND empty stderr. That is U15-2's module-body shape one layer
+    further in — and U15-2's fix hardened the two load boundaries while
+    leaving this third one open, which is exactly the sibling-blindness
+    failure this release exists to stop.
+    """
+    old, new = breaking_protos
+    pack_name = "u8_exit_rule_fn_pack"
+
+    with _temp_rule_pack(pack_name, [("suicidal", _suicidal_rule)]):
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", pack_name,
+        ], catch_exceptions=False)
+
+    assert result.exit_code == 2, (
+        "a rule function that calls sys.exit() is a broken pack (exit 2), "
+        f"not a compatible verdict; got exit {result.exit_code} with "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "SystemExit" in result.stderr, (
+        "the crash must be reported as an error diagnostic naming what "
+        f"the rule raised; stderr={result.stderr!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "subcommand,extra",
+    [
+        ("history", ["--range", "HEAD~1..HEAD"]),
+        ("bisect", ["--old", "HEAD~1", "--new", "HEAD"]),
+    ],
+)
+def test_rule_function_sys_exit_is_exit_2_on_the_walking_subcommands(
+    breaking_repo: Path, subcommand: str, extra: list[str],
+) -> None:
+    """``history`` / ``bisect`` route through the same dispatch guard.
+
+    All four subcommands build their checker through
+    ``_build_configured_checker`` and run it through ``checker.check``,
+    so the dispatch hole was never a ``check``-only defect — it forged a
+    clean walk on every commit pair too. Pinned here because the fix
+    lives one layer below the CLI and a future refactor could plausibly
+    re-narrow it for one caller without the ``check`` test noticing.
+    """
+    pack_name = f"u8_exit_rule_fn_pack_{subcommand}"
+
+    with _temp_rule_pack(pack_name, [("suicidal", _suicidal_rule)]):
+        result = _invoke_in_repo(breaking_repo, [
+            subcommand, *extra,
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--compat-rule-pack", pack_name,
+        ])
+
+    assert result.exit_code == 2, (
+        f"{subcommand}: a rule function calling sys.exit() must be a "
+        f"tooling error (exit 2); got exit {result.exit_code} with "
+        f"stdout={result.stdout!r}"
+    )
+
+
+def test_rule_pack_raising_keyboard_interrupt_on_import_is_not_a_break(
+    breaking_protos: tuple[Path, Path], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pack body that raises ``KeyboardInterrupt`` must exit 2, not 1.
+
+    Mechanism: ``KeyboardInterrupt`` is the third direct
+    ``BaseException`` subclass, so it escaped ``_load_rule_packs``'
+    ``except (Exception, SystemExit)`` at both boundaries, reached
+    Click's own ``except (EOFError, KeyboardInterrupt)``, and became
+    ``Abort`` — rendered as ``Aborted!`` and ``sys.exit(1)``.
+
+    Observed before the fix: exit **1** with stderr ``Aborted!`` — and
+    exit 1 is the code this very module documents as INCOMPATIBLE, so a
+    broken pack was reported to CI as a schema break.
+
+    The rationale this replaces ("Ctrl-C is the operator speaking, not
+    the pack") is refuted by the project's own record:
+    ``docs/solutions/security-issues/
+    keyboardinterrupt-baseexception-bypass-rule-pack-load-2026-05-07.md``
+    walked exactly that reasoning back for load surfaces, and both
+    siblings — ``load_formatter_packs`` and lint's
+    ``_load_user_rule_pack`` — already carry the arm.
+    """
+    old, new = breaking_protos
+    pack_dir = tmp_path / "ki_packs"
+    pack_dir.mkdir()
+    pack_name = "u8_keyboard_interrupt_rule_pack"
+    (pack_dir / f"{pack_name}.py").write_text(
+        "raise KeyboardInterrupt()\n"
+        "RULES = []\n"
+    )
+    monkeypatch.syspath_prepend(str(pack_dir))
+    try:
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", pack_name,
+        ], catch_exceptions=False)
+    finally:
+        sys.modules.pop(pack_name, None)
+
+    assert result.exit_code == 2, (
+        "a pack whose module body raises KeyboardInterrupt is a broken "
+        f"pack (exit 2), not an incompatibility (exit 1); got exit "
+        f"{result.exit_code} with stderr={result.stderr!r}"
+    )
+    assert any(
+        line.startswith("Error:") for line in result.stderr.splitlines()
+    ), (
+        "the failure must carry this CLI's own Error: prefix rather than "
+        f"Click's Aborted! banner; stderr={result.stderr!r}"
+    )
+
+
+def test_rule_pack_stdout_survives_a_failing_check(
+    breaking_protos: tuple[Path, Path],
+) -> None:
+    """Captured pack stdout must be drained even when the run blows up.
+
+    Mechanism: ``_plugin_stdout_to_stderr`` put its drain loop *after*
+    the ``with contextlib.redirect_stdout(buffer)`` block with no
+    ``finally``, so any exception out of ``checker.check`` skipped it
+    and every captured line was discarded — against the helper's own
+    docstring ("re-emitted on stderr rather than dropped").
+
+    ``KeyboardInterrupt`` is the lever here because it is the one
+    exception a rule can still raise past the dispatch guard: the
+    ``SystemExit`` fix above would otherwise mask this defect, since a
+    caught crash lets the ``with`` block exit normally and the old drain
+    runs. Exit 1 / ``Aborted!`` is the *intended* shape for an interrupt
+    at dispatch time (it is the operator's, unlike at load time), so
+    this test pins only that the line survived — not the code.
+    """
+    old, new = breaking_protos
+    pack_name = "u8_noisy_interrupt_pack"
+
+    with _temp_rule_pack(pack_name, [("noisy", _noisy_then_interrupted_rule)]):
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", pack_name,
+        ], catch_exceptions=False)
+
     assert result.exit_code != 0, (
-        f"--max-depth {depth} exited 0 on genuinely differing messages"
+        "a run cut short mid-comparison must not read as compatible; "
+        f"got exit {result.exit_code}"
+    )
+    assert "PACK-LINE: about to be interrupted" in result.stderr, (
+        "the pack's captured stdout was dropped when the wrapped call "
+        f"raised; stderr={result.stderr!r}"
+    )
+    assert "PACK-LINE" not in result.stdout, (
+        "pack output must never reach the CLI's own stdout; "
+        f"stdout={result.stdout!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "subcommand,extra",
+    [
+        ("history", ["--range", "HEAD~1..HEAD"]),
+        ("bisect", ["--old", "HEAD~1", "--new", "HEAD"]),
+    ],
+)
+def test_noisy_rule_pack_does_not_corrupt_json_on_the_walking_subcommands(
+    breaking_repo: Path, subcommand: str, extra: list[str],
+) -> None:
+    """``_plugin_stdout_to_stderr`` is wired at three call sites, not one.
+
+    U15-3 proved the capture only on ``check``. ``history`` and
+    ``bisect`` wrap their own ``checker.check`` call the same way, once
+    per commit, and a regression at either of those two sites would
+    corrupt a machine payload exactly as it did on ``check`` — with no
+    test to catch it. Asserting the JSON still parses pins the wiring,
+    not the helper.
+    """
+    pack_name = f"u8_noisy_pack_{subcommand}"
+
+    with _temp_rule_pack(pack_name, [("noisy", _noisy_rule)]):
+        result = _invoke_in_repo(breaking_repo, [
+            subcommand, *extra,
+            "--proto-file", "acme/user.proto",
+            "--type", "acme.User",
+            "--format", "json",
+            "--compat-rule-pack", pack_name,
+        ])
+
+    try:
+        json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"{subcommand} --format json stdout is not valid JSON ({exc}); "
+            f"stdout={result.stdout[:200]!r}"
+        )
+    assert "noisy_rule: examining field" in result.stderr, (
+        f"{subcommand}: the pack's stdout must be re-emitted on stderr, "
+        f"not swallowed; stderr={result.stderr!r}"
     )
 
 

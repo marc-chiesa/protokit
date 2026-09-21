@@ -341,6 +341,81 @@ class TestHistorySarif:
         assert len(notes) == 1, notes
         assert notes[0]["properties"]["commit"] == "abc"
 
+    def test_a_path_distinct_aggregate_is_not_a_restatement(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """U8 fold-in: two diagnostics differing only in path are two.
+
+        The restatement skip keyed on ``(level, commit, message)`` while
+        ``protokit._trust`` keys on ``(commit, path, message)``. An
+        aggregate ``CommitDiagnostic`` sharing a per-entry diagnostic's
+        commit and message but carrying a *different* path therefore looked
+        like a restatement and was dropped: the seam reported two reasons
+        and JUnit emitted two ``<error>`` elements, SARIF emitted one.
+
+        Asserts the notification COUNT. ``executionSuccessful`` is already
+        ``false`` here whichever way the skip goes, which is exactly what
+        hid this -- the document was never wrong, only short.
+        """
+        entry_report = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            diagnostics=(Diagnostic(
+                path="acme.User.name", message="plugin crashed", level="error",
+            ),),
+        )
+        report = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[HistoryEntry(
+                commit_sha="abc", parent_sha="zzz",
+                commit_subject="s", report=entry_report,
+            )],
+            diagnostics=[CommitDiagnostic(
+                commit="abc", level="error",
+                path="acme.User.email",  # same commit + message, other path
+                message="plugin crashed",
+            )],
+        )
+        fn = get_formatter("sarif", FormatterKind.COMPAT_HISTORY)
+        out = fn(report, FormatterContext(subcommand="compat-history"))
+        payload = _validate(sarif_validator, out)
+        notes = payload["runs"][0]["invocations"][0][
+            "toolExecutionNotifications"
+        ]
+        assert len(notes) == 2, notes
+
+    def test_an_exact_restatement_still_collapses(
+        self, sarif_validator: jsonschema.Draft7Validator,
+    ) -> None:
+        """Adjacent behavior: the path-aware key must not stop deduping.
+
+        A CLI-produced report restates every entry diagnostic verbatim,
+        path included, and those must still notify once.
+        """
+        entry_report = CompatibilityReport(
+            level=CompatibilityLevel.STRICT,
+            diagnostics=(Diagnostic(
+                path="acme.User.name", message="plugin crashed", level="error",
+            ),),
+        )
+        report = HistoryReport(
+            range_spec="r", old_sha="a", new_sha="b", commits_walked=1,
+            entries=[HistoryEntry(
+                commit_sha="abc", parent_sha="zzz",
+                commit_subject="s", report=entry_report,
+            )],
+            diagnostics=[CommitDiagnostic(
+                commit="abc", level="error",
+                path="acme.User.name", message="plugin crashed",
+            )],
+        )
+        fn = get_formatter("sarif", FormatterKind.COMPAT_HISTORY)
+        out = fn(report, FormatterContext(subcommand="compat-history"))
+        payload = _validate(sarif_validator, out)
+        notes = payload["runs"][0]["invocations"][0][
+            "toolExecutionNotifications"
+        ]
+        assert len(notes) == 1, notes
+
     def test_disjoint_aggregate_diagnostics_are_kept(
         self, sarif_validator: jsonschema.Draft7Validator,
     ) -> None:

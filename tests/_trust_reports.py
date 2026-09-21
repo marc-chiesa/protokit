@@ -3,7 +3,7 @@
 Three modules exercise the seam from three sides — the owner
 (``tests/core/test_trust.py``), its renderers
 (``tests/formatters/test_formatters_trust.py``) and its guards
-(``tests/meta/test_formatter_trust.py``) — and all three need the same five
+(``tests/meta/test_formatter_trust.py``) — and all three need the same
 report kinds in a trustworthy and an untrustworthy state. They are built here
 once so "an untrustworthy history report" means the same object in each.
 
@@ -17,6 +17,8 @@ import dataclasses
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
+from protokit.forensics import DriftReport, FieldDivergence, MatchReport
+from protokit.forensics._match import CandidateFit, ParseTier
 from protokit.message import MessageDifferencer
 from protokit.message.model import Diagnostic, DiffResult
 from protokit.schema.compile import LintCompileDiagnostic
@@ -179,4 +181,55 @@ def lint_report(
     )
     return LintReport(
         findings=findings, runtime_warnings=warnings, diagnostics=diagnostics,
+    )
+
+
+def candidate_fit(
+    label: str = "v1",
+    *,
+    parse_outcome: str = "clean",
+    detail: str | None = None,
+) -> CandidateFit:
+    """One ranked candidate. ``parse_outcome`` decides whether it was measured."""
+    measured = parse_outcome not in {"decode_error", "incomplete"}
+    return CandidateFit(
+        label=label,
+        tier=ParseTier.CLEAN if measured else ParseTier.FAULT,
+        parse_outcome=parse_outcome,  # type: ignore[arg-type]
+        total_bytes=12,
+        unmodeled_bytes=0 if measured else None,
+        modeled_fraction=1.0 if measured else None,
+        declared_field_coverage=1.0 if measured else None,
+        present_field_count=2 if measured else 0,
+        declared_field_count=2,
+        detail=detail,
+    )
+
+
+def match_report(
+    *diagnostics: Diagnostic, ranked: tuple[CandidateFit, ...] = (),
+) -> MatchReport:
+    """A ``MatchReport``. Default is a clean two-candidate sweep."""
+    return MatchReport(
+        ranked=ranked or (candidate_fit("v1"), candidate_fit("v2")),
+        verdict="clean_winner",
+        ambiguous_top=False,
+        diagnostics=tuple(diagnostics),
+    )
+
+
+def drift_report(
+    *diagnostics: Diagnostic, divergences: tuple[FieldDivergence, ...] = (),
+) -> DriftReport:
+    """A ``DriftReport``. Divergences are findings, so they cost no trust."""
+    return DriftReport(
+        divergences=divergences,
+        observed_field_count=2,
+        diagnostics=tuple(diagnostics),
+    )
+
+
+def field_divergence(field_number: int = 7) -> FieldDivergence:
+    return FieldDivergence(
+        field_number=field_number, kind="undeclared", detail="tag not declared",
     )

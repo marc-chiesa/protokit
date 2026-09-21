@@ -1,6 +1,6 @@
 """Unit tests for the ``_trust`` seam (U7, closes V23/V24; feeds U8/V33).
 
-``_trust`` answers one question for all five report kinds: *can a "nothing
+``_trust`` answers one question for every report kind: *can a "nothing
 found" result from this report be read as success?* These tests pin the
 answer per kind against real report objects, and pin the one property the
 seam must never lose — an object it does not recognise **raises**, because
@@ -22,10 +22,14 @@ from protokit.schema.model import CommitDiagnostic
 from tests._trust_reports import (
     ENTRY_SHA,
     bisect_report,
+    candidate_fit,
     compat_report,
+    drift_report,
     error_diagnostic,
+    field_divergence,
     history_report,
     lint_report,
+    match_report,
     truncated_diff_result,
     warning_diagnostic,
 )
@@ -47,6 +51,8 @@ class TestTrustworthyReports:
         pytest.param(history_report(), id="history"),
         pytest.param(bisect_report(), id="bisect"),
         pytest.param(_lint(), id="lint"),
+        pytest.param(match_report(), id="match"),
+        pytest.param(drift_report(), id="drift"),
     ])
     def test_clean_report_is_trustworthy(self, report: object) -> None:
         assert _trust.is_trustworthy(report) is True
@@ -60,6 +66,8 @@ class TestTrustworthyReports:
             bisect_report(CommitDiagnostic("abc", "warning", None, "heads up")),
             id="bisect",
         ),
+        pytest.param(match_report(warning_diagnostic()), id="match"),
+        pytest.param(drift_report(warning_diagnostic()), id="drift"),
     ])
     def test_a_warning_does_not_cost_trust(self, report: object) -> None:
         """Adjacent behavior: warnings are routine and must stay advisory."""
@@ -122,18 +130,28 @@ class TestUntrustworthyReports:
     @pytest.mark.parametrize("category", [
         "severities_unloaded_rule", "min_severity_relaxed",
         "contradictory_disable_config", "unknown_rule_id",
-        # Deferred-incomplete (owned by U8): a rule did not run, but gating
-        # them is a deliberate breaking change that has not been made.
+        # Still deferred: a rule did not run, but ``extension_unresolved``
+        # fires on nearly every run whose inputs lack
+        # ``google/api/field_behavior.proto``, so gating it would exit 2
+        # almost everywhere. The fix is to make that rule warn only when the
+        # schema uses the extension — a redesign, and 0.17.0's.
         "extension_unresolved", "custom_annotation_extension_unresolved",
-        "all_files_excluded",
     ])
     def test_other_lint_categories_do_not_cost_trust(self, category: str) -> None:
-        """Adjacent behavior: U7 moves the 0.15.1 gate's owner, not its reach."""
+        """Adjacent behavior: the gate reaches only what it declares."""
         assert _trust.is_trustworthy(_lint(category)) is True
 
-    def test_incomplete_categories_are_the_gated_pair(self) -> None:
+    def test_all_files_excluded_costs_trust(self) -> None:
+        """U8: an ``--exclude`` that dropped every input ran no rule at all.
+
+        The lint twin of V31 — the engine is short-circuited, the report is
+        empty for a reason other than cleanliness, and the run exited 0.
+        """
+        assert _trust.is_trustworthy(_lint("all_files_excluded")) is False
+
+    def test_incomplete_categories_are_the_gated_set(self) -> None:
         assert frozenset(
-            {"rule_exception", "unloaded_rule"},
+            {"rule_exception", "unloaded_rule", "all_files_excluded"},
         ) == _trust.INCOMPLETE_ANALYSIS_CATEGORIES
 
 
@@ -161,6 +179,81 @@ class TestUnknownReportRaises:
 
         with pytest.raises(TypeError):
             _trust.is_trustworthy(Lookalike())
+
+
+class TestForensicsReports:
+    """U8: the seam learned ``MatchReport`` and ``DriftReport``.
+
+    Forensics' two commands exited 0 on every run that did not hard-error,
+    including a ranking in which a candidate never parsed. The seam now
+    recognises both kinds, so their exit paths can ask it the same question
+    every other command asks.
+    """
+
+    def test_a_candidate_that_was_not_measured_costs_trust(self) -> None:
+        report = match_report(ranked=(
+            candidate_fit("v1"),
+            candidate_fit(
+                "v2", parse_outcome="incomplete", detail="could not measure",
+            ),
+        ))
+        assert _trust.is_trustworthy(report) is False
+        assert _trust.reasons(report) == ("v2: could not measure",)
+
+    def test_the_reason_falls_back_to_the_outcome_without_a_detail(self) -> None:
+        report = match_report(ranked=(
+            candidate_fit("v2", parse_outcome="incomplete"),
+        ))
+        assert _trust.reasons(report) == ("v2: incomplete",)
+
+    def test_every_unmeasured_candidate_gets_its_own_reason(self) -> None:
+        """Two blind spots must not collapse into one line."""
+        report = match_report(ranked=(
+            candidate_fit("v1", parse_outcome="incomplete", detail="no x"),
+            candidate_fit("v2", parse_outcome="incomplete", detail="no y"),
+        ))
+        assert _trust.reasons(report) == ("v1: no x", "v2: no y")
+
+    @pytest.mark.parametrize("outcome", ["clean", "unmodeled", "decode_error"])
+    def test_a_measured_candidate_costs_nothing(self, outcome: str) -> None:
+        """``unmodeled`` and ``decode_error`` are ranking results, not faults.
+
+        A candidate the message does not decode under has been *evaluated*
+        and ruled out -- the ordinary outcome of ranking one message against
+        several schema versions, most of which did not produce it. Gating on
+        it would make a healthy ranking exit non-zero nearly every time. Only
+        a candidate whose modeled-byte fraction could not be computed at all
+        (``incomplete``) never entered the contest.
+        """
+        report = match_report(ranked=(candidate_fit("v1", parse_outcome=outcome),))
+        assert _trust.is_trustworthy(report) is True
+
+    def test_match_signals_are_their_own_kind(self) -> None:
+        """A renderer that shows error diagnostics itself still sees these."""
+        report = match_report(ranked=(
+            candidate_fit("v2", parse_outcome="incomplete"),
+        ))
+        signal, = _trust.signals(report)
+        assert signal.kind == _trust.CANDIDATE_NOT_MEASURED
+        assert _trust.signals_other_than(report, _trust.ERROR_DIAGNOSTIC) == (signal,)
+
+    def test_a_match_error_diagnostic_costs_trust(self) -> None:
+        report = match_report(error_diagnostic("ranker blew up"))
+        assert _trust.is_trustworthy(report) is False
+        assert _trust.reasons(report) == ("ranker blew up",)
+
+    def test_a_divergence_is_a_finding_not_an_incompleteness(self) -> None:
+        """``drift``'s whole output is divergences; they are what it found."""
+        report = drift_report(divergences=(
+            field_divergence(7), field_divergence(9),
+        ))
+        assert _trust.is_trustworthy(report) is True
+        assert _trust.reasons(report) == ()
+
+    def test_a_drift_error_diagnostic_costs_trust(self) -> None:
+        report = drift_report(error_diagnostic("walk blew up"))
+        assert _trust.is_trustworthy(report) is False
+        assert _trust.reasons(report) == ("walk blew up",)
 
 
 class TestReasonsAreOnePrintableLine:

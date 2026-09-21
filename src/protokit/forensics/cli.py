@@ -14,21 +14,28 @@ same-named imports, keep each version's imports under its own entry directory
 (auto-included) rather than on a shared ``-I`` path.
 
 Exit codes: 0 = analysis completed (any verdict, including ``no_clean_match``);
-2 = error (bad flags, an oversized message, a candidate that will not compile, or
-a message that parses under no candidate). The library never calls ``sys.exit``;
-this layer owns it.
+2 = error (bad flags, an oversized message, a candidate that will not compile, a
+message that parses under no candidate, or a ranking holding a candidate whose
+modeled-byte fraction could not be computed at all -- a proto2 ``required``
+field absent -- which ``protokit._trust`` will not vouch for). A candidate the
+message simply does not decode under is **not** that case: it was measured and
+ranked last, which is what ranking against several schema versions is for, so a
+ranking with a clean winner beside it still exits 0. The library never calls
+``sys.exit``; this layer owns it.
 """
 
 from __future__ import annotations
 
 import json
 import stat
+import sys
 from pathlib import Path
 
 import click
 from google.protobuf import descriptor_pb2
 from google.protobuf.message import DecodeError
 
+from protokit import _trust
 from protokit._cli_utils import error_exit
 from protokit._pools import DescriptorPoolError
 from protokit.forensics._drift import DriftReport, drift
@@ -231,6 +238,35 @@ def _verdict_line(report: MatchReport) -> str:
     return f"verdict: clean match — {top}"
 
 
+def _exit_unless_vouched(report: object) -> None:
+    """Exit 2 when ``protokit._trust`` will not vouch for ``report`` (U8, R1).
+
+    Called after the report has been rendered: what the run did produce is
+    still worth showing, and only the verdict changes. Both commands used to
+    fall off the end at exit 0 for every run that did not hard-error, so a
+    ranking that silently skipped a candidate was indistinguishable from a
+    clean sweep.
+
+    The predicate is the seam's, shared with every other exit path, so a
+    reason it learns tomorrow lands here rather than growing a second gate
+    beside it. It stays in this module rather than moving to a shared helper
+    beside ``error_exit``: the bypass guard decides whether a command reaches
+    the seam by walking that command's own module for a ``_trust`` reference,
+    so a gate imported from elsewhere reads as a bypass however correct it is.
+
+    ``signals`` rather than ``is_trustworthy`` then ``reasons``, which would
+    compute them twice. Their text needs no sanitizing here -- the seam runs
+    every signal through ``one_line`` before returning it
+    (``_trust.signals``), which is why no renderer re-wraps it either.
+    """
+    untrusted = _trust.signals(report)
+    if not untrusted:
+        return
+    for signal in untrusted:
+        click.echo(f"Error: {signal.text}", err=True)
+    sys.exit(2)
+
+
 @main.command(name="match")
 @click.argument(
     "message_file", type=click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -327,6 +363,8 @@ def match_cmd(
     else:
         click.echo(_render_human(report))
         click.echo(_verdict_line(report), err=True)
+
+    _exit_unless_vouched(report)
 
 
 def _render_drift_human(report: DriftReport) -> str:
@@ -429,3 +467,11 @@ def drift_cmd(
             else f"drift: {len(report.divergences)} divergence(s)"
         )
         click.echo(summary, err=True)
+
+    # A divergence is what ``drift`` was asked to find, not a reason to
+    # distrust the run, so this fires only on a tool-level failure. Nothing
+    # records one today -- a malformed message makes the walk raise, which
+    # is already exit 2 -- so the gate is closed ahead of a producer rather
+    # than after one, the way ``message diff`` wired ``result.errors``
+    # before any hook could emit it.
+    _exit_unless_vouched(report)

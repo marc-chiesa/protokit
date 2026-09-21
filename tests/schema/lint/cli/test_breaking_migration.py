@@ -80,7 +80,23 @@ class TestCliEmittedCategoriesProduceJsonNull:
     def test_all_files_excluded_rule_id_is_null(
         self, descriptor_set: Path,
     ) -> None:
-        """`all_files_excluded` runtime warning: same contract."""
+        """`all_files_excluded` runtime warning: same wire-format
+        contract — `rule_id` is JSON `null`.
+
+        The exit code is 2, not 0: `all_files_excluded` is an
+        INCOMPLETE_ANALYSIS category, because `--exclude **/*` dropped
+        every input file the user named, so the CLI short-circuits
+        `engine.run` and lints nothing. R1 for this release is "no
+        protokit CLI exit code reports success on a run where the
+        analysis did not complete", and a run that linted zero files
+        did not complete — exiting 0 here was the lint twin of V31 (an
+        empty `--ignore` selector silently suppressing every finding).
+
+        Only the exit code moved. The `error[lint-analysis-incomplete]`
+        line goes to stderr AFTER the report is rendered, so the JSON
+        on stdout — and the `rule_id=null` contract this test exists to
+        pin — is unchanged.
+        """
         result = CliRunner().invoke(
             lint_main,
             [
@@ -90,7 +106,7 @@ class TestCliEmittedCategoriesProduceJsonNull:
                 str(descriptor_set),
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 2, result.output
         parsed = json.loads(result.stdout)
         afe = [
             w for w in parsed["runtime_warnings"]
