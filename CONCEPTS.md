@@ -53,7 +53,9 @@ The per-field divergence between wire data observed by the Wire-format field wal
 ## Lint
 
 ### Rule pack
-A module that contributes lint rules as a unit: the built-in packs the CLI always loads, plus any user pack loaded on top of them. A pack declares which profiles each of its rules belongs to, so the resolved rule set for a run is composed across packs by profile, and multi-pack runs announce their composition.
+A module that contributes rules as a unit, supplied by a user or shipped built-in, and executed inside the tool's own process. Both the lint surface and the compatibility surface take them, and a given pack belongs to one surface — it cannot be loaded into both. On the lint surface a pack declares which profiles each of its rules belongs to, so the resolved rule set for a run is composed across packs by profile, and multi-pack runs announce their composition.
+
+The two surfaces diverge on what loading a pack twice, or two packs claiming one rule id, does. Lint fails loudly on a cross-pack id collision and its load is idempotent per module, so a repeated load short-circuits. The compatibility surface allows both: a duplicate id runs both rules and attributes their findings to the same id, and a repeated load registers the pack's rules a second time. A pack is also arbitrary third-party code the tool runs, which makes every point where it executes part of a trust boundary rather than an implementation detail.
 
 ### Buf parity
 The claim that a protokit lint rule reports the same findings as the equivalent `buf lint` rule, held to a pinned buf version and checked by an in-repo harness that runs each such rule's fixtures through both tools. Parity is asserted per rule and per pinned version; a rule that intentionally diverges documents the divergence rather than claiming parity.
@@ -82,11 +84,15 @@ The failure mode where a fix lands at the call site that reported the defect whi
 
 A site the derivation finds and then excuses on a written claim that some input kind cannot reach it counts as unfixed until the claim is tested: the claim is an assumption wherever it is written, and the test either builds the excluded input and proves the site handles it or the site is migrated with its siblings.
 
+The derivation can also fail by never running. A defect report names a symptom, and a symptom names one site; taking the report's wording as the site list produces a fix that is complete against the words and partial against the code. The tell is prose that counts — a comment or docstring asserting it covered "both" or "every" site — because an exhaustive count inside one function reads like an exhaustive count of the surface and then blocks the next reader from re-deriving it. Such a claim names the scope it counted over, and a count that surprises the person deriving it is the finding rather than a detail.
+
 ### Mutation proof
 A check that a specific test is not vacuous: one anchor in the code the test guards is replaced with a plausible wrong version, the test is run, and the test must fail — a test that stays green with its guarded code broken proves nothing. Distinct from a Regression pin, which asserts correct behaviour for a defect not yet fixed; a mutation proof interrogates an already-passing test's power to catch a defect that does not yet exist.
 *Avoid:* vacuity check, vacuity gate, mutation test (the last is too broad: this is one anchor and one target, not a mutation-testing campaign)
 
 A proof is a verdict only when the target passed on the unmutated code first and then failed for the mutation, not for a setup problem — a target that never ran, collected nothing, or was already red proves nothing either way. The proof's exit is the evidence, so it must be run through the shared harness, which also keeps the interpreter from executing stale bytecode for the mutated or restored source. A proof of a predicate that only one Runtime backend exercises is legitimately vacuous under the other backend, so it is run under the backend the predicate is for; a vacuous verdict there is a finding about the test, not about the harness.
+
+A proof is also evidence about the tree it ran against, so a fix can silently disarm a neighbouring test that shares the changed path: a test needing an exception to escape stops being able to fail once something upstream starts catching it, and nothing turns red to say so. After a fix lands, the proof is re-run for every test on that path, not only for the test the fix was written with. A test that depends on an exception escaping names in its own docstring which exception and why the code lets it through, since one that escapes only because of a bug is a lever the bug's fix removes.
 
 ### Recorded rendering
 A meta-test that stores a program's exact rendered output for a fixed set of inputs and fails on any difference, used where the property under test is whether free-form text tells the reader the truth — a question no predicate over that text can decide, because a sentence can always satisfy the predicate and still say the opposite. Distinct from a Presence ratchet, which asserts a required phrase is still present rather than that a whole rendering is unchanged, and from a Regression pin, which asserts one defect's correct behaviour.
@@ -106,6 +112,24 @@ Which tool turns `.proto` source into descriptors for a test or a CLI run: the o
 A module that owns one recurring decision for the whole package — how a message's fields are enumerated, how a custom option is resolved, how a result type is frozen — so that the next defect in that class is fixed once, at the owner, rather than at each call site that happens to report it. What makes it a seam rather than a convention is that reaching around it fails: a seam lands together with a guard test that fails when a call site bypasses the owner. A call site that re-derives the owner's answer and happens to agree has reached around it without the guard noticing, so the guard exercises every way the owner can decide rather than one case per call site.
 
 A seam sits at layer 0: it imports nothing from the rest of the package at any scope, which is what makes it safe for every layer above to import. Only a typing-guarded import is exempt, since that never executes. Depending on nothing above it, rather than deferring a dependency into a function body, is what keeps a seam from participating in an import cycle — a deferred import is the sanctioned repair for a cycle that already exists, not a way to give a seam a dependency it should not have.
+
+### Completion verdict
+The answer to one question asked of every report a command produces — can an empty
+result be read as "nothing found" rather than "did not look"? A report is untrustworthy
+when anything about the run says the analysis did not finish: a rule that raised, a
+selector that excluded every input, a comparison a depth limit cut short, a record a
+tolerant mode skipped. Distinct from a finding, which is something the analysis *found*
+and which leaves the verdict intact.
+*Avoid:* trust check, completeness check
+
+One owner answers it for every kind of report, and both the rendered output and the
+process exit code read that one answer, so a run cannot print a caveat while exiting
+clean or the reverse. The verdict fails closed: a kind the owner does not recognise
+raises rather than defaulting to trustworthy, because a permissive default would rebuild
+the fail-open the owner exists to end. Each reason it gives is one printable line, since
+a reason quotes text a plugin wrote and is printed beside stable prefixes that tooling
+greps for. A caller that renders some reasons structurally asks which ones it has not
+shown rather than guessing, so a reason the owner learns later is never silently dropped.
 
 ## Flagged ambiguities
 

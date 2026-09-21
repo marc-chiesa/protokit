@@ -1,7 +1,7 @@
 ---
 title: "KeyboardInterrupt at rule-pack module load bypasses SystemExit and Exception guards"
 date: 2026-05-07
-last_updated: 2026-05-11
+last_updated: 2026-09-20
 category: docs/solutions/security-issues
 module: protokit.schema.lint
 problem_type: security_issue
@@ -536,3 +536,21 @@ for the standalone learning.
   during the call; the exit-code guard ensures a "successful"
   subprocess return that actually crashed (exit 1 + empty stdout)
   fails the test loudly rather than silently returning `[]`.
+- Carried into code (2026-09-20): `docs/solutions/security-issues/trust-boundary-enforcement-points-derived-from-code-not-the-findings-wording.md`.
+  PR #76 closed the last unguarded load surface — compat's
+  `_load_rule_packs` (`src/protokit/schema/cli.py:194-216`) now catches
+  `KeyboardInterrupt` and `(Exception, SystemExit)` at both its import and
+  `RULES`-iteration boundaries, making this doc's "General Python pattern"
+  split four-for-four in code: `SystemExit` and `KeyboardInterrupt` at both
+  *load* surfaces (`src/protokit/schema/cli.py:194-216`,
+  `src/protokit/schema/lint/_cli_utils.py:534-552`); `SystemExit` alone at
+  both *dispatch* surfaces (`src/protokit/schema/checker.py:112-115`, and
+  `run_formatter_safely` at `src/protokit/_cli_utils.py:964-970`, which has
+  no `KeyboardInterrupt` arm). This is also the first time this doc's
+  per-surface framework is cited by path and section name from the source
+  itself rather than carried only in prose: the comment above
+  `_PLUGIN_DISPATCH_EXCEPTIONS` in `src/protokit/schema/checker.py:104-107`
+  names this doc's "General Python pattern" section to justify omitting
+  `KeyboardInterrupt` from the dispatch guard, and
+  `src/protokit/schema/cli.py:166-169` cites it as having walked back the
+  "Ctrl-C is the operator speaking" rationale for this class of surface.

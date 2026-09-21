@@ -1,7 +1,7 @@
 ---
 title: "Sibling blindness: a fix at one call site survives the review built to catch it while structural siblings stay broken"
 date: 2026-08-30
-last_updated: 2026-09-15
+last_updated: 2026-09-20
 category: docs/solutions/best-practices
 module: protokit.schema
 problem_type: best_practice
@@ -32,7 +32,7 @@ tags:
 
 ## Context
 
-**This is the ninth documented recurrence of a pattern this codebase named,
+**This is the tenth documented recurrence of a pattern this codebase named,
 and wrote three prevention rules for, four months ago. That is the finding.**
 
 The shape: a fix is applied at the call site the bug report happened to name,
@@ -82,14 +82,16 @@ site), and an honest account of **what actually caught these** — iterative
 independent falsification review — versus what did not. If you take one thing:
 the control is a process you run, not a rule you know.
 
-Two sibling learnings from the same release cover the specific defects used
-below as illustrations; this one is about the meta-pattern and deliberately
-does not re-explain their mechanics:
+Three sibling learnings cover the specific defects used below as
+illustrations; this one is about the meta-pattern and deliberately does not
+re-explain their mechanics:
 
 - [[empty-selector-parses-to-root-prefix-suppresses-every-finding-2026-08-30]]
   (V31 — the empty `--ignore` fail-open; instances 1 and 2)
 - [[caught-rule-exception-must-participate-in-the-exit-verdict-2026-08-30]]
   (V33 — a swallowed rule exception that never reached the exit verdict)
+- [[trust-boundary-enforcement-points-derived-from-code-not-the-findings-wording]]
+  (#76 — the compat rule-pack dispatch guard blind to `SystemExit`; instance 4)
 
 Instance 3 (the stderr sanitizer applied to `check`/`ci` but not `history`/
 `bisect`) is captured here and nowhere else — at release time it existed only
@@ -614,6 +616,52 @@ Unicode-aware log aggregators break on them even though terminals do not.
 The regression test walks every subcommand rather than pinning the two that
 were broken, with the reason stated in its own docstring: this was the third
 occurrence of the pattern inside one change.
+
+### Instance 4 — the compat rule-pack dispatch guard (neither Shape A nor Shape B)
+
+Neither shape fits, and that is the point. The dispatch guard was not wrong
+(Shape A), and it was not unreached (Shape B) — it ran on every input, every
+time. What never happened is enumeration: the fix was scoped from the
+finding's wording ("a rule pack calling `sys.exit(0)`"), which named the
+pack's *import* and stopped there, so the compat trust boundary's third
+enforcement point — per-rule dispatch — was never put on a list to check
+against the code at all. This doc's own defence, "grep the ingredient, not
+the symptom," is exactly right; what failed is that the derivation never ran.
+
+**Before** — pack import and `RULES` iteration guarded, the per-rule dispatch
+call inside `SchemaChecker` still catching bare `except Exception`, which
+`SystemExit` (a `BaseException`) is not:
+
+```console
+$ protokit compat check --proto old.proto new.proto --type acme.Thing
+INCOMPATIBLE
+$ echo $?
+1
+
+$ protokit compat check --proto old.proto new.proto --type acme.Thing \
+    --compat-rule-pack suicidal_pack
+$ echo $?
+0
+```
+
+The second invocation's exit is 0 with empty stdout *and* empty stderr — not a
+traceback, not a warning, not the finding the walk had already computed.
+
+**After** (#76) — the dispatch guard also names `SystemExit`, from
+`_PLUGIN_DISPATCH_EXCEPTIONS` (`src/protokit/schema/checker.py:112-115`),
+applied at the two dispatch call sites (`:787`, `:830`):
+
+```console
+$ protokit compat check --proto old.proto new.proto --type acme.Thing \
+    --compat-rule-pack suicidal_pack
+  ! count: schema plugin 'suicidal' raised SystemExit: 0
+  ! name: schema plugin 'suicidal' raised SystemExit: 0
+INCOMPATIBLE
+$ echo $?
+2
+```
+
+The run no longer claims to have finished. Closed by #76.
 
 ## Limits — what this procedure cannot do
 

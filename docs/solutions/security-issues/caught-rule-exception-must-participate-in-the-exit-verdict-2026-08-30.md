@@ -1,7 +1,7 @@
 ---
 title: "A caught rule exception kept the run alive but never reached the exit verdict, so a crashed gate exited 0"
 date: 2026-08-30
-last_updated: 2026-08-30
+last_updated: 2026-09-20
 category: docs/solutions/security-issues
 module: protokit.schema.lint
 problem_type: security_issue
@@ -91,26 +91,38 @@ Add a completeness gate that runs **before** the findings gates and **after**
 the report is rendered:
 
 ```python
-#: Categories that mean a rule did not run, so the report is a lower
-#: bound on an unknown total rather than a complete answer.
-_INCOMPLETE_ANALYSIS_CATEGORIES: tuple[str, ...] = (
+# src/protokit/_trust.py:137-141 — the predicate, owned in one place.
+#: ``LintRuntimeWarning`` categories that mean a selected rule did not run,
+#: so the findings are a lower bound on an unknown total (V33).
+INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = frozenset({
     "rule_exception",
     "unloaded_rule",
+    "all_files_excluded",
+})
+
+# src/protokit/schema/lint/cli.py:174-176 — an alias to it, kept for the
+# gate's message and for the exhaustiveness test below.
+_INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = (
+    _trust.INCOMPLETE_ANALYSIS_CATEGORIES
 )
 
-# ... after the report, the human-warning hook, and the statistics footer:
-blocking = [w for w in report.runtime_warnings
-            if w.category in _INCOMPLETE_ANALYSIS_CATEGORIES]
-if blocking:
-    categories = ", ".join(sorted({_safe_for_stderr(w.category) for w in blocking}))
+# src/protokit/schema/lint/cli.py:1533 — after the report, the human-warning
+# hook, and the statistics footer:
+incomplete = _trust.signals(report)
+if incomplete:
     error_exit_with_code(
         "analysis-incomplete",
-        f"{len(blocking)} of {len(report.runtime_warnings)} runtime "
-        f"warning(s) mean a rule did not run ({categories}); the findings "
-        "this run produced are a lower bound, so a clean result would not "
-        "mean the schema is clean",
+        f"{_analysis_incomplete_detail(report, incomplete)}; the findings "
+        "this run produced are a lower bound, so a clean result would "
+        "not mean the schema is clean",
     )
 ```
+
+The predicate moved out of the lint CLI and into `protokit._trust` in 0.16.0
+so that the exit code and every renderer read one set instead of each deciding
+for itself, and `all_files_excluded` — an `--exclude` pattern that dropped
+every named input, so the engine never ran at all — joined the gated set in
+the exit-gates unit (PR #76).
 
 Three placement decisions carry the design:
 
@@ -167,7 +179,7 @@ old code.
 
 ### Ratchet the category set, do not rely on prose
 
-The gate keys on a hand-maintained tuple of `Literal` members. A future
+The gate keys on a hand-maintained frozenset of `Literal` members. A future
 category meaning "a rule did not run" would land outside it silently — the
 same drift the fix exists to stop. Force a decision instead:
 
@@ -179,6 +191,11 @@ def test_every_category_is_classified(self):
                   | set(DEFERRED_INCOMPLETE) | set(ADVISORY))
     assert classified == literal_args
 ```
+
+That test is
+`TestIncompleteAnalysisCategoryClassification::test_every_category_is_classified`
+in `tests/schema/lint/test_model_dataclass_changes.py:168`, with the two other
+buckets (`DEFERRED_INCOMPLETE`, `ADVISORY`) declared on the class beside it.
 
 Adding a category without classifying it now fails a test. Prose in a comment
 does not.
@@ -200,19 +217,43 @@ Then prove it non-vacuous:
 
 ```sh
 python3 scripts/mutation_check.py src/protokit/schema/lint/cli.py \
-  '    if blocking:' '    if False:' \
+  '    if incomplete:' '    if False:' \
   "tests/schema/lint/cli/test_cli_ci_gating.py::TestAnalysisIncompleteExitGate"
 ```
 
-**Check the harness output, not just its exit line.** A wrong pytest node id
-makes pytest exit non-zero with `no tests ran`, which a naive harness reads as
-"the test failed under mutation" and reports NON-VACUOUS. Confirm the output
-names actual failing tests before trusting the proof.
+**An anchor goes stale the way an assertion does.** This recipe used to read
+`'    if blocking:'`, which was the gate until the predicate moved to
+`protokit._trust`. That string is still in `src/protokit/schema/lint/cli.py`,
+and still *unique* — it now sits inside `_analysis_incomplete_detail`, which
+builds the gate's error **message**. So the harness accepts the anchor, mutates
+a sentence, watches a test that asserts on that sentence fail, and prints
+NON-VACUOUS: a real verdict about the message builder, handed to a reader who
+believes they proved the exit gate. That is the rule above — assert on the
+gate's own output, not on everything near it — one level up. An anchor has to
+be scoped to the code it means, and re-derived whenever that code moves;
+uniqueness is not aim.
+
+**The harness's own false verdicts are closed.** A wrong pytest node id used to
+make pytest exit non-zero with `no tests ran`, which a naive harness read as
+"the test failed under mutation" and reported NON-VACUOUS. That hole — with
+stale `.pyc` bytecode and a target already red before the mutation — was closed
+on 2026-09-15; see
+[mutation-check-harness-stale-bytecode-and-nonverdict-exit-codes-produce-false-verdicts](../logic-errors/mutation-check-harness-stale-bytecode-and-nonverdict-exit-codes-produce-false-verdicts.md).
 
 ## Related
 
-This defect is one instance of a pattern this codebase has now documented nine
+This defect is one instance of a pattern this codebase has now documented ten
 times: a fix lands at one call site while structurally identical siblings stay
 broken. See [[sibling-blindness-fix-survives-review-structural-siblings-stay-broken]]
 for the detection procedure, and for why naming the pattern has repeatedly
 failed to prevent it.
+
+[[trust-boundary-enforcement-points-derived-from-code-not-the-findings-wording]]
+is this doc's compat-side counterpart, carrying the opposite half of the same
+defect. Here the rule's exception *was* caught and simply never reached the
+verdict. There it was never caught at all — the dispatch guard read
+`except Exception`, which `SystemExit` is not — so nothing was recorded that
+could reach a verdict, and the rule's own exit code became the process's. Both
+now resolve through the same seam: lint at
+`src/protokit/schema/lint/cli.py:1533`, compat at
+`src/protokit/schema/cli.py:828`.
