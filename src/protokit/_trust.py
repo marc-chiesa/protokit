@@ -64,8 +64,8 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from typing import Any, NamedTuple
 
-#: A rule that was selected but did not run, or a plugin that raised: the
-#: findings are a lower bound on an unknown total.
+#: Analysis that did not complete — a selected rule that did not run, a
+#: plugin that raised, an engine never reached: findings are a lower bound.
 RULE_DID_NOT_RUN = "rule-did-not-run"
 #: An error-level ``Diagnostic`` / ``CommitDiagnostic`` on the report. The
 #: JUnit and SARIF renderers of compat, history and bisect already give each
@@ -375,7 +375,7 @@ def signals(report: object) -> tuple[Signal, ...]:
         Signals in emission order; empty when the report is trustworthy.
         Every ``text`` is a single printable line. An advisory
         warning-level diagnostic never appears; a lint *runtime* warning
-        does, when its category means a selected rule did not run.
+        does, when its category is in ``INCOMPLETE_ANALYSIS_CATEGORIES``.
 
     Raises:
         TypeError: ``report`` is not one of the known kinds. Never defaults

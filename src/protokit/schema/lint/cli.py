@@ -150,27 +150,27 @@ _BUF_PARITY_PIN: str = "v1.70.0"
 #: rather than a complete answer. Membership here drives the
 #: ``analysis-incomplete`` exit-2 gate (V33).
 #:
-#: Owned by ``protokit._trust`` since 0.16.0, so the exit gate below and
-#: every renderer read one set; this name is an alias kept for the gate's
-#: message and for the exhaustiveness test that classifies every category.
+#: ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` is that set and
+#: its single source of truth: this name is bound to that object, the
+#: gate below asks ``_trust.signals``, and every renderer's verdict is
+#: built on the same function. The alias is kept for the gate's message
+#: in ``_analysis_incomplete_detail`` and for the exhaustiveness test in
+#: ``tests/schema/lint/test_model_dataclass_changes.py``, which fails on
+#: a category nobody classified. Read the membership there and change it
+#: there: a comment that restates a set is a second copy of it, and
+#: drifts the moment the set moves — which is how the paragraph this one
+#: replaces came to describe a gate that had already changed.
 #:
-#: Deliberately narrow, and KNOWN INCOMPLETE. Three further categories
-#: also mean a rule did not run, and this gate does not fire for them:
-#: ``extension_unresolved`` and ``custom_annotation_extension_unresolved``
-#: (``model.py`` says each "skips without firing findings"), and
-#: ``all_files_excluded`` (the engine is short-circuited entirely — the
-#: lint equivalent of V31). They are excluded here for blast radius, not
-#: because they are sound: ``extension_unresolved`` fires on essentially
-#: every run whose inputs lack ``google/api/field_behavior.proto``, so
-#: gating it would exit 2 almost everywhere, and the honest fix is to
-#: make that rule warn only when the schema actually *uses* the
-#: extension. That is a redesign, not a patch. **U8 owns all three** (it
-#: widens ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES``, not this alias);
-#: the triage ledger records the reproductions. The remaining
-#: categories (``severities_unloaded_rule``, ``min_severity_relaxed``,
-#: ``contradictory_disable_config``, ``unknown_rule_id``) are genuinely
-#: advisory: they describe ineffective overrides or nonexistent ids,
-#: not a selected rule that failed to execute.
+#: The gate is deliberately narrower than "every category that means a
+#: rule did not run", and that reasoning belongs beside the exit path it
+#: would widen. ``extension_unresolved`` sets the limit: a built-in
+#: option-aware rule skips when the compile inputs never defined the
+#: extension it reads, so it fires on essentially every run whose inputs
+#: lack ``google/api/field_behavior.proto``, and gating that class would
+#: exit 2 almost everywhere. The honest fix is to make that rule warn
+#: only when the schema actually *uses* the extension — a rule redesign,
+#: not a wider set here. ``protokit._trust`` records which categories
+#: that reasoning covers today.
 _INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = (
     _trust.INCOMPLETE_ANALYSIS_CATEGORIES
 )
@@ -378,12 +378,12 @@ def _emit_human_runtime_warnings(report: LintReport) -> None:
         "    protokit lint --format=json --disable-rule custom/audit-required "
         "schema.descriptor_set\n\n"
         "EXIT CODES:\n\n"
-        "  0 = clean run (no findings, or only INFO findings, or "
-        "WARNINGs with --max-warnings unset / not exceeded).\n\n"
-        "  1 = ERROR-severity finding present, OR WARNING count "
-        "exceeds --max-warnings.\n\n"
-        "  2 = lint-internal error (`error[lint-CODE]:` prefix on stderr) "
-        "or click usage error (`Error:` or `Usage:` prefix on stderr)."
+        "  0 = clean run that completed (no findings, or only INFO "
+        "findings, or WARNINGs with --max-warnings unset / not "
+        "exceeded).\n\n  1 = ERROR-severity finding present, OR WARNING "
+        "count exceeds --max-warnings.\n\n  2 = the analysis did not "
+        "complete, a lint-internal error (`error[lint-CODE]:` on stderr), "
+        "or a click usage error (`Error:` / `Usage:` on stderr)."
     ),
 )
 @click.argument(

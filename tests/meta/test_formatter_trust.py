@@ -618,8 +618,8 @@ _MACHINE_VERDICTS: dict[tuple[FormatterKind, str], Callable[[str], bool] | None]
     (FormatterKind.COMPAT_BISECT, "json"): _json_key("complete"),
     (FormatterKind.COMPAT_BISECT, "junit"): _junit_passes,
     (FormatterKind.COMPAT_BISECT, "sarif"): _sarif_succeeded,
-    # Deliberately verdict-free. The seam's lint categories are KNOWN
-    # INCOMPLETE until U8 (three "rule did not run" categories are ungated),
+    # Deliberately verdict-free. ``protokit._trust`` still leaves some
+    # "rule did not run" categories ungated on purpose (it records which),
     # so an affirmative ``"complete": true`` would over-claim on exactly the
     # runs it is ungated for. The payload carries every runtime warning with
     # its category, and no success boolean that could be wrong — which
