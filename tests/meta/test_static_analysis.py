@@ -64,6 +64,7 @@ _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/schema/lint",
     "src/protokit/storage",
     "tests",
+    "scripts/check_dependency_drift.py",
     "scripts/check_docs_test_refs.py",
 )
 
@@ -86,6 +87,7 @@ _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/storage",
+    "scripts/check_dependency_drift.py",
     "scripts/check_docs_test_refs.py",
 )
 
