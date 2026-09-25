@@ -220,7 +220,7 @@ imports nothing from `protokit`, so `protokit.options` (core) and
             continue
 ```
 
-**After**, `src/protokit/options.py:153-174` (anchor `if not extends(options,
+**After**, `src/protokit/options.py:159-180` (anchor `if not extends(options,
 ext_desc)`):
 
 ```python
@@ -242,7 +242,7 @@ ext_desc)`):
 The presence guard is unchanged: `HasExtension` for singular extensions,
 emptiness for repeated ones. The `except` is gone.
 
-**The re-read**, `src/protokit/_extensions.py:65-99` (anchor `def
+**The re-read**, `src/protokit/_extensions.py:65-103` (anchor `def
 rebind_options`):
 
 ```python
@@ -264,7 +264,7 @@ extends`), compares `options.DESCRIPTOR.full_name` with
 `ext_desc.containing_type.full_name`. It compares by name because the two sides
 usually come from different pools.
 
-`_options_class` (`src/protokit/_extensions.py:102-114`) calls
+`_options_class` (`src/protokit/_extensions.py:106-118`) calls
 `message_factory.GetMessageClass` and falls back to
 `MessageFactory(pool).GetPrototype`. `GetMessageClass` is absent from protobuf
 4.21, the declared floor, and present by 4.25, the floor CI runs.
@@ -294,7 +294,7 @@ up in the pool. That is a second input which can disagree with the extension
 whenever a caller finds the extension in one pool and holds a descriptor from
 another, which `get_option_value`'s `pool=` argument explicitly allows.
 `test_explicit_pool_holding_the_extension_resolves`
-(`tests/core/test_options.py:402`) reads a descriptor from one isolated pool
+(`tests/core/test_options.py:416`) reads a descriptor from one isolated pool
 through an extension from a second one.
 
 Binding on the extension also removes a second silent skip. The old helper
@@ -326,7 +326,9 @@ rule configured for the wrong element kind (a `FieldOptions` extension on
 does. That behaviour was pinned *before* the move by
 `TestOptionOfAnotherElementKind`
 (`tests/schema/lint/test_custom_rules_loader.py:447`), so the move could be shown
-not to turn it into a finding or a silent pass.
+not to turn it into a finding or a silent pass. Only the warning's wording changed:
+each backend used to word protobuf's own refusal differently, and the seam's
+message is the same on both.
 
 **The guard is by construction, and it says what it cannot catch.** "Builds a
 pool-bound options class" cannot be detected statically:
@@ -350,7 +352,7 @@ assert get_option_value(_ISO_FIELDS["annotated"], f"{_ISO_PKG}.limit") == 42
 assert get_option_value(_ISO_FIELDS["zeroed"], f"{_ISO_PKG}.limit") == 0
 ```
 
-`TestIsolatedPool` (`tests/core/test_options.py:337`) has ten such tests. Eight
+`TestIsolatedPool` (`tests/core/test_options.py:342`) has eleven such tests. Nine
 were red before the fix. The two that were green are
 `test_absent_extensions_return_none` and
 `test_option_of_another_options_type_is_absent`. **An `is None` assertion alone
@@ -406,7 +408,7 @@ to be corrected here, and one of them was in `docs/solutions/`.
 **7. Exercise every accepted descriptor kind, under both backends.** The
 `_owning_pool` sibling was found only because clause 5 called the helper on a
 `MethodDescriptor`. `test_accepts_service_method_and_oneof_descriptors`
-(`tests/core/test_options.py:566`) was red on upb and green on pure-Python before
+(`tests/core/test_options.py:580`) was red on upb and green on pure-Python before
 the fix. The attribute layout differs by backend, so a helper that accepts "any
 descriptor" needs one case per kind, run in both CI cells.
 

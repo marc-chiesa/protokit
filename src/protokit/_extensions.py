@@ -85,6 +85,10 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
             ``options`` (see :func:`extends`). Re-reading field options as
             method options would decode unrelated bytes, so this refuses, the
             way protobuf itself does.
+        google.protobuf.message.DecodeError: the bytes ``options`` holds for
+            an extension do not parse as that extension's type. The bootstrap
+            class keeps them opaque; this is the first read that interprets
+            them.
     """
     target = ext_desc.containing_type
     if options.DESCRIPTOR is target:

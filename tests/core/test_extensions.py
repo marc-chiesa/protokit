@@ -209,6 +209,12 @@ class TestConstructionGuard:
     that needs a custom option goes through :func:`rebind_options` or
     re-derives the whole construction from scratch, which no test can
     rule out and this one does not claim to.
+
+    A re-export counts as offering the class: binding protobuf's
+    ``GetMessageClass`` to a public name here hands it to every caller as
+    surely as defining a builder would, so a callable is counted wherever
+    it was defined. Only typing constructs, which build no messages, are
+    left out.
     """
 
     @staticmethod
@@ -218,7 +224,7 @@ class TestConstructionGuard:
             for name, value in vars(module).items()
             if not name.startswith("_")
             and callable(value)
-            and getattr(value, "__module__", None) == module.__name__
+            and getattr(value, "__module__", None) not in {"typing", "typing_extensions"}
         }
 
     def test_seam_exports_only_the_re_read(self) -> None:

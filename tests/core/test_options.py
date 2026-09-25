@@ -18,7 +18,9 @@ directly.
 
 from __future__ import annotations
 
+import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf.message import DecodeError
 
 from protokit._pools import build_pool, get_message_class
 from protokit.options import get_option_value
@@ -309,6 +311,9 @@ def _build_isolated_fixtures() -> tuple[
         (
             ("bare", b""),
             ("annotated", _annotated(limit=42, label="hi", tags=["a", "b"], cfg=9)),
+            # ``cfg`` (68204, length-delimited) holding one byte that no
+            # ``Cfg`` message can parse from: a corrupt descriptor set.
+            ("corrupt", bytes.fromhex("e2a62101ff")),
             ("zeroed", _annotated(limit=0)),
         ),
         start=1,
@@ -398,6 +403,15 @@ class TestIsolatedPool:
         assert field.GetOptions().deprecated is True
         assert get_option_value(field, f"{_ISO_PKG}.limit") == 0
         assert get_option_value(field, "pending") == b"later"
+
+    def test_corrupt_option_bytes_raise_instead_of_reading_absent(self) -> None:
+        """Bytes that cannot parse as the option's declared type are an
+        error, not an absence. The bootstrap class kept them as opaque
+        unknown fields, so before the re-read this read as ``None`` —
+        the silence V9 was about, reached through a different door.
+        """
+        with pytest.raises(DecodeError):
+            get_option_value(_ISO_FIELDS["corrupt"], f"{_ISO_PKG}.cfg")
 
     def test_explicit_pool_holding_the_extension_resolves(self) -> None:
         """``pool=`` names a pool other than the descriptor's own. The

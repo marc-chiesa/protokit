@@ -282,11 +282,16 @@ re-read by hand.
   worked under pure-Python; they now reach their pool through their service and
   message. `ServiceDescriptor` already worked and is now documented.
 
-*Upgrade impact:* no built-in command's output changes — no built-in check calls
-the helper, and the lint rules already read options this way. A differ hook or a
-checker plugin that gates on `get_option_value(...) is not None` over such a
+*Upgrade impact:* no built-in command's verdict or findings change — no built-in
+check calls the helper, and the lint rules already read options this way. One
+message does: a `custom/<suffix>` rule configured for an element kind its option
+cannot annotate still reports a `rule_exception` warning, but its text is now the
+same on both protobuf backends instead of each backend's own wording. A differ hook
+or a checker plugin that gates on `get_option_value(...) is not None` over such a
 schema starts firing on annotations it silently skipped until now. Those
-annotations were always there; the helper could not see them.
+annotations were always there; the helper could not see them. An option whose
+stored bytes do not parse as its declared type — a corrupt descriptor set — now
+raises `DecodeError` instead of reading as `None`.
 
 ### Fixed — `protokit diff` exit codes
 

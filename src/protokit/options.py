@@ -133,6 +133,12 @@ def get_option_value(
         whatever the syntax of the file that declares them.
         Repeated extensions have no presence bit, so an empty
         repeated extension is what reads as ``None``.
+
+    Raises:
+        google.protobuf.message.DecodeError: The option's stored
+            bytes do not parse as its declared type — a corrupt
+            descriptor set. They used to read as ``None``; an
+            unreadable option is not an absent one.
     """
     options = desc.GetOptions()
     if pool is None:
