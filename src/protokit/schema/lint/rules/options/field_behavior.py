@@ -53,13 +53,13 @@ numbers differently would extend this contract; the
 ``resolve_enum_value_for_comparison`` helper already returns the raw
 integer for unknown-number cases.
 
-**Extension-access path:** the rule re-uses the dynamic-pool
-re-parse helpers from
-:mod:`protokit.schema.lint._extension_access`
-(``get_pool_bound_options_class`` +
-``resolve_enum_value_for_comparison``) — the bootstrap-pool
-``Extensions[]`` accessor raises ``KeyError`` on dynamic-pool
-extension descriptors, so the re-parse workaround is mandatory.
+**Extension-access path:** the rule reads the extension through
+:func:`protokit._extensions.rebind_options` and normalizes enum
+numbers with
+:func:`protokit.schema.lint._extension_access.resolve_enum_value_for_comparison`
+— the bootstrap-pool ``Extensions[]`` accessor raises ``KeyError``
+on dynamic-pool extension descriptors, so the re-read is
+mandatory.
 When the user's compile set does NOT include
 ``google/api/field_behavior.proto``, ``pool.FindExtensionByName``
 raises ``KeyError``; the rule emits a deduplicated
@@ -110,10 +110,10 @@ from collections import Counter
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from protokit._extensions import rebind_options
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint._engine_run_state import engine_for_ctx, per_run_state
 from protokit.schema.lint._extension_access import (
-    get_pool_bound_options_class,
     resolve_enum_value_for_comparison,
 )
 from protokit.schema.lint.decorator import lint_rule
@@ -139,9 +139,6 @@ _PARAM_CAP = 500
 #: rule via ``[[tool.protokit.lint.custom_annotation_rules]]`` (D6d
 #: U1).
 _FIELD_BEHAVIOR_EXTENSION: str = "google.api.field_behavior"
-
-#: Fully-qualified options message the extension lives on.
-_FIELD_OPTIONS_FULL_NAME: str = "google.protobuf.FieldOptions"
 
 #: Rule_id constant — referenced from tests + the runtime warning
 #: emission site so the string is single-sourced.
@@ -302,15 +299,7 @@ def check_field_behavior_consistent(ctx: FieldLintContext) -> None:
         _emit_unresolved_extension(ctx)
         return
 
-    options_cls = get_pool_bound_options_class(pool, _FIELD_OPTIONS_FULL_NAME)
-    if options_cls is None:
-        # Pool missing ``descriptor.proto``-derived FieldOptions class.
-        # Non-actionable env condition; skip silently (matches U1
-        # synthetic-rule discipline).
-        return
-
-    parsed = options_cls()
-    parsed.MergeFromString(ctx.field.GetOptions().SerializeToString())
+    parsed = rebind_options(ctx.field.GetOptions(), ext_desc)
     raw_values = list(parsed.Extensions[ext_desc])
     if not raw_values:
         return

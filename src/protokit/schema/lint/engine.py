@@ -332,7 +332,7 @@ def _walk_cycle_forward(
 #
 # ``DecodeError`` is included because option-aware rules using the
 # dynamic-pool re-parse pattern
-# (``parsed.MergeFromString(descriptor.GetOptions().SerializeToString())``)
+# (``protokit._extensions.rebind_options``, which re-parses the options)
 # can encounter malformed serialized options bytes if a future protobuf
 # version, protoxy upgrade, or descriptor-set corruption surfaces them.
 # Without ``DecodeError`` in the tuple, the exception propagates uncaught

@@ -150,6 +150,7 @@ jobs:
         run: |
           python -m mypy \
             src/protokit/_cli_utils.py \
+            src/protokit/_extensions.py \
             src/protokit/_fieldview.py \
             src/protokit/_trust.py \
             src/protokit/forensics/ \
@@ -160,6 +161,7 @@ jobs:
             src/protokit/message/hamcrest.py \
             src/protokit/message/matchers.py \
             src/protokit/message/pytest_plugin.py \
+            src/protokit/options.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
             src/protokit/storage/ \
@@ -174,11 +176,11 @@ jobs:
   # =====================================================================
   #
   # The `test` matrix above always resolves protobuf's default backend,
-  # upb. Three audit defects (V1, V10, the V9 swallow) rely on an
-  # exception only upb raises; under the pure-Python runtime each
-  # degrades silently to a wrong value, and nothing exercised that
-  # runtime. This job runs the FULL suite (a tests/storage-scoped cell
-  # would miss every V34 and most V10 failures) with
+  # upb. Two audit defects (V1, V10) rely on an exception only upb
+  # raises; under the pure-Python runtime each degrades silently to a
+  # wrong value, and nothing exercised that runtime. (The V9 swallow,
+  # once listed here, measured the same on both.) This job runs the FULL
+  # suite (a tests/storage-scoped cell would miss every V34 and most V10 failures) with
   # PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python at job level.
   # Python 3.12 + apt protoc + `.[compiler,dev]`, mirroring the
   # storage-protobuf-floor install shape: the runtime backend is the

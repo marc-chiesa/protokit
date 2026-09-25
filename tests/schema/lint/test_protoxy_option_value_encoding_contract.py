@@ -27,6 +27,10 @@ Pinned contract:
    - ``enum`` extension → ``int`` (the enum NUMBER, not identifier)
    The synthetic-rule closure translates enum integers to identifier
    strings via ``ext_desc.enum_type.values_by_number[value].name``.
+5. The public ``protokit.options.get_option_value`` returns the same
+   values on the same pool, and ``None`` where the extension is unset
+   — it goes through the re-read in ``protokit._extensions`` rather
+   than the bootstrap accessor clause 1 pins as failing (U5 / V9).
 
 Updating this test in lockstep with the synthetic-rule closure
 implementation when protobuf / protoxy versions change is part of the
@@ -40,6 +44,7 @@ from pathlib import Path
 import pytest
 from google.protobuf import message_factory
 
+from protokit.options import get_option_value
 from protokit.schema.compile import compile_protos_to_result
 
 EXTENSION_PROTO = """\
@@ -128,7 +133,7 @@ class TestEncodingContract:
         get_message_class = getattr(message_factory, "GetMessageClass", None)
         assert get_message_class is not None, (
             "protobuf < 5.26 lacks GetMessageClass; the fallback path "
-            "in _custom_rules.py covers it but this regression test "
+            "in protokit/_extensions.py covers it but this regression test "
             "exercises the supported (5.26+) path."
         )
         cls = get_message_class(options_desc)
@@ -203,3 +208,24 @@ class TestEncodingContract:
         pool = compiled.pool
         with pytest.raises(KeyError):
             pool.FindExtensionByName("notinpool.totally.absent")
+
+
+class TestPublicHelperContract:
+    """Clause 5: the public helper reads what the re-read recovers."""
+
+    def test_get_option_value_matches_the_reparse(self, compiled) -> None:
+        method = compiled.pool.FindServiceByName("contract.S").FindMethodByName(
+            "Annotated",
+        )
+        assert get_option_value(method, "contract.s_ext") == "alpha"
+        assert get_option_value(method, "contract.i_ext") == -7
+        assert get_option_value(method, "contract.b_ext") is True
+        # Enum extensions return the NUMBER here too (HIGH = 2).
+        assert get_option_value(method, "contract.e_ext") == 2
+
+    def test_get_option_value_is_none_when_unset(self, compiled) -> None:
+        bare = compiled.pool.FindServiceByName("contract.S").FindMethodByName(
+            "Bare",
+        )
+        for option in ("s_ext", "i_ext", "b_ext", "e_ext"):
+            assert get_option_value(bare, f"contract.{option}") is None, option

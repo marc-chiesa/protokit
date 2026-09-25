@@ -1,15 +1,15 @@
 """Unit tests for ``protokit.options.get_option_value``.
 
-Tier 1 (``Extensions[]``) is exercised end-to-end by the Phase
-1.5 hook integration tests, where extensions are registered via
-real generated ``_pb2`` modules. Unit-level Tier 1 testing over a
-*custom* pool is blocked by protobuf's bootstrap-pool coupling
-(``GetOptions()`` always returns a default-pool-bound
-``FieldOptions`` instance, which doesn't recognize extensions from
-a custom pool) — so ``TestExtensionPresence`` registers its
-extensions in the DEFAULT pool instead, which is both the only
-in-process way to make tier 1 engage and the realistic trigger (a
-generated ``_pb2`` registers there on import).
+Tier 1 (``Extensions[]``) runs against two kinds of pool, because
+they fail differently. ``TestExtensionPresence`` registers its
+extensions in the DEFAULT pool — what a generated ``_pb2`` does on
+import. ``TestIsolatedPool`` builds a self-contained
+``FileDescriptorSet`` into a fresh pool with ``build_pool``, which is
+what every descriptor-set-loaded schema gets: there ``GetOptions()``
+still returns the bootstrap ``FieldOptions`` class, which refuses an
+isolated-pool extension by identity, so tier 1 engages only through
+``protokit._extensions`` (V9: before it, every such option read as
+``None``, indistinguishable from an absent one).
 
 Tier 2 (``uninterpreted_option``) is what we get when building a
 ``FieldDescriptorProto`` programmatically, so we can exercise it
@@ -18,8 +18,11 @@ directly.
 
 from __future__ import annotations
 
+import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf.message import DecodeError
 
+from protokit._pools import build_pool, get_message_class
 from protokit.options import get_option_value
 
 FD = descriptor_pb2.FieldDescriptorProto
@@ -227,6 +230,204 @@ class TestExtensionPresence:
         ) == 5
 
 
+_ISO_PKG = "pkoptiso"
+
+
+def _isolated_extension_file() -> descriptor_pb2.FileDescriptorProto:
+    """``pkoptiso_ext.proto``: custom options on two options types.
+
+    Five ``FieldOptions`` extensions cover the value shapes tier 1
+    returns (int, string, repeated, message, and a sub-field of that
+    message); ``mopt`` extends ``MethodOptions`` instead, so a field
+    can be asked for an option its options type never carries.
+    """
+    extf = descriptor_pb2.FileDescriptorProto(
+        name="pkoptiso_ext.proto", package=_ISO_PKG, syntax="proto2",
+    )
+    extf.dependency.append("google/protobuf/descriptor.proto")
+    cfg_msg = extf.message_type.add()
+    cfg_msg.name = "Cfg"
+    depth = cfg_msg.field.add()
+    depth.name, depth.number, depth.type = "depth", 1, FD.TYPE_INT32
+    depth.label = FD.LABEL_OPTIONAL
+    for name, number, ftype, label, extendee in (
+        ("limit", 68201, FD.TYPE_INT32, FD.LABEL_OPTIONAL, "FieldOptions"),
+        ("label", 68202, FD.TYPE_STRING, FD.LABEL_OPTIONAL, "FieldOptions"),
+        ("tags", 68203, FD.TYPE_STRING, FD.LABEL_REPEATED, "FieldOptions"),
+        ("cfg", 68204, FD.TYPE_MESSAGE, FD.LABEL_OPTIONAL, "FieldOptions"),
+        ("mopt", 68205, FD.TYPE_INT32, FD.LABEL_OPTIONAL, "MethodOptions"),
+    ):
+        ext = extf.extension.add()
+        ext.name, ext.number, ext.type, ext.label = name, number, ftype, label
+        ext.extendee = f".google.protobuf.{extendee}"
+        if ftype == FD.TYPE_MESSAGE:
+            ext.type_name = f".{_ISO_PKG}.Cfg"
+    return extf
+
+
+def _descriptor_proto_file() -> descriptor_pb2.FileDescriptorProto:
+    fdp = descriptor_pb2.FileDescriptorProto()
+    descriptor_pb2.DESCRIPTOR.CopyToProto(fdp)
+    return fdp
+
+
+def _build_isolated_fixtures() -> tuple[
+    descriptor_pool.DescriptorPool, dict[str, object],
+]:
+    """Build a self-contained ``FileDescriptorSet`` into a fresh pool.
+
+    Nothing touches the default pool: ``descriptor.proto`` travels in
+    the set, as it does in a ``protoc --include_imports`` output, and
+    ``build_pool`` builds every file into a brand-new pool. The
+    annotations are written through a class bound to a scratch pool
+    holding the same extension file, then carried into the message
+    file as serialized options bytes — the only form in which a
+    descriptor set can hold them.
+    """
+    scratch_set = descriptor_pb2.FileDescriptorSet()
+    scratch_set.file.extend([_descriptor_proto_file(), _isolated_extension_file()])
+    scratch = build_pool(scratch_set)
+    options_cls = get_message_class(scratch, "google.protobuf.FieldOptions")
+
+    def _annotated(**values: object) -> bytes:
+        opts = options_cls()
+        for name, value in values.items():
+            ext = scratch.FindExtensionByName(f"{_ISO_PKG}.{name}")
+            if name == "tags":
+                opts.Extensions[ext].extend(value)
+            elif name == "cfg":
+                opts.Extensions[ext].depth = value
+            else:
+                opts.Extensions[ext] = value
+        return bytes(opts.SerializeToString())
+
+    msgf = descriptor_pb2.FileDescriptorProto(
+        name="pkoptiso_msg.proto", package=_ISO_PKG, syntax="proto3",
+    )
+    msgf.dependency.append("pkoptiso_ext.proto")
+    mp = msgf.message_type.add()
+    mp.name = "M"
+    for number, (name, options_bytes) in enumerate(
+        (
+            ("bare", b""),
+            ("annotated", _annotated(limit=42, label="hi", tags=["a", "b"], cfg=9)),
+            # ``cfg`` (68204, length-delimited) holding one byte that no
+            # ``Cfg`` message can parse from: a corrupt descriptor set.
+            ("corrupt", bytes.fromhex("e2a62101ff")),
+            ("zeroed", _annotated(limit=0)),
+        ),
+        start=1,
+    ):
+        fp = mp.field.add()
+        fp.name, fp.number, fp.type = name, number, FD.TYPE_INT32
+        fp.label = FD.LABEL_OPTIONAL
+        if options_bytes:
+            fp.options.MergeFromString(options_bytes)
+    # A declared option and a still-uninterpreted one ride alongside
+    # the custom ones, so the re-read is shown to keep both.
+    fp.options.deprecated = True
+    uo = fp.options.uninterpreted_option.add()
+    uo.name.add(name_part="pending", is_extension=True)
+    uo.string_value = b"later"
+
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.file.extend([_descriptor_proto_file(), _isolated_extension_file(), msgf])
+    pool = build_pool(fds)
+    return pool, dict(pool.FindMessageTypeByName(f"{_ISO_PKG}.M").fields_by_name)
+
+
+_ISO_POOL, _ISO_FIELDS = _build_isolated_fixtures()
+
+
+class TestIsolatedPool:
+    """Tier 1 on a pool built from a descriptor set (V9).
+
+    Every option here was read as ``None`` before ``_extensions``
+    re-read the options through the pool that declares them — the
+    same answer an unannotated field gets, so a hook gating on
+    ``is not None`` silently never fired.
+    """
+
+    def test_scalar_int_extension_resolves(self) -> None:
+        assert get_option_value(
+            _ISO_FIELDS["annotated"], f"{_ISO_PKG}.limit",
+        ) == 42
+
+    def test_scalar_string_extension_resolves(self) -> None:
+        assert get_option_value(
+            _ISO_FIELDS["annotated"], f"{_ISO_PKG}.label",
+        ) == "hi"
+
+    def test_repeated_extension_resolves(self) -> None:
+        assert list(
+            get_option_value(_ISO_FIELDS["annotated"], f"{_ISO_PKG}.tags"),
+        ) == ["a", "b"]
+
+    def test_message_extension_resolves(self) -> None:
+        value = get_option_value(_ISO_FIELDS["annotated"], f"{_ISO_PKG}.cfg")
+        assert value is not None
+        assert value.depth == 9
+
+    def test_message_extension_sub_path_resolves(self) -> None:
+        assert get_option_value(
+            _ISO_FIELDS["annotated"], f"{_ISO_PKG}.cfg.depth",
+        ) == 9
+
+    def test_explicit_zero_is_not_mistaken_for_absent(self) -> None:
+        assert get_option_value(
+            _ISO_FIELDS["zeroed"], f"{_ISO_PKG}.limit",
+        ) == 0
+
+    def test_absent_extensions_return_none(self) -> None:
+        """Presence stays strict after the re-read: a registered but
+        unset extension reads as absent, in every shape.
+        """
+        for option in ("limit", "label", "tags", "cfg", "cfg.depth"):
+            assert get_option_value(
+                _ISO_FIELDS["bare"], f"{_ISO_PKG}.{option}",
+            ) is None, option
+
+    def test_option_of_another_options_type_is_absent(self) -> None:
+        """``mopt`` extends ``MethodOptions``, so no field can carry it.
+        That is an absent option, not an error.
+        """
+        assert get_option_value(
+            _ISO_FIELDS["annotated"], f"{_ISO_PKG}.mopt",
+        ) is None
+
+    def test_declared_and_uninterpreted_options_survive(self) -> None:
+        """The re-read keeps what the options message already held: a
+        declared field and the ``uninterpreted_option`` tier 2 scans.
+        """
+        field = _ISO_FIELDS["zeroed"]
+        assert field.GetOptions().deprecated is True
+        assert get_option_value(field, f"{_ISO_PKG}.limit") == 0
+        assert get_option_value(field, "pending") == b"later"
+
+    def test_corrupt_option_bytes_raise_instead_of_reading_absent(self) -> None:
+        """Bytes that cannot parse as the option's declared type are an
+        error, not an absence. The bootstrap class kept them as opaque
+        unknown fields, so before the re-read this read as ``None`` —
+        the silence V9 was about, reached through a different door.
+        """
+        with pytest.raises(DecodeError):
+            get_option_value(_ISO_FIELDS["corrupt"], f"{_ISO_PKG}.cfg")
+
+    def test_explicit_pool_holding_the_extension_resolves(self) -> None:
+        """``pool=`` names a pool other than the descriptor's own. The
+        re-read binds to the pool that declares the extension, so the
+        descriptor's own pool need not know it.
+        """
+        assert get_option_value(
+            _ISO_FIELDS["annotated"], f"{_ISO_PKG}.limit", pool=_ISO_POOL,
+        ) == 42
+        other_pool, other_fields = _build_isolated_fixtures()
+        assert other_pool is not _ISO_POOL
+        assert get_option_value(
+            other_fields["annotated"], f"{_ISO_PKG}.label", pool=_ISO_POOL,
+        ) == "hi"
+
+
 class TestUninterpretedOption:
     """Tier-2 path: options stored as ``uninterpreted_option`` entries."""
 
@@ -319,7 +520,7 @@ class TestUninterpretedOption:
 
 class TestDescriptorVariants:
     """The helper accepts any descriptor with ``GetOptions()`` that can
-    name its owning pool — which the five accepted types do differently.
+    name its owning pool — which the accepted types do differently.
     """
 
     def test_accepts_message_descriptor(self) -> None:
@@ -375,6 +576,40 @@ class TestDescriptorVariants:
         pool.Add(fdp)
         ev_desc = pool.FindEnumTypeByName("t.E").values_by_name["E_UNSPECIFIED"]
         assert get_option_value(ev_desc, "my_value_opt") == b"zero"
+
+    def test_accepts_service_method_and_oneof_descriptors(self) -> None:
+        """Under upb a ``MethodDescriptor`` reaches its file only through
+        its service, and a ``OneofDescriptor`` only through its message;
+        pure-python gives both a ``file``. Without the extra hops the
+        helper raised ``AttributeError`` on upb alone.
+        """
+        pool = descriptor_pool.DescriptorPool()
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="svcopt.proto", package="t", syntax="proto3",
+        )
+        mp = fdp.message_type.add()
+        mp.name = "M"
+        oneof = mp.oneof_decl.add()
+        oneof.name = "choice"
+        fp = mp.field.add()
+        fp.name, fp.number, fp.type = "x", 1, FD.TYPE_INT32
+        fp.label, fp.oneof_index = FD.LABEL_OPTIONAL, 0
+        sp = fdp.service.add()
+        sp.name = "S"
+        meth = sp.method.add()
+        meth.name, meth.input_type, meth.output_type = "Call", ".t.M", ".t.M"
+        for options, value in (
+            (sp.options, b"svc"), (meth.options, b"rpc"), (oneof.options, b"one"),
+        ):
+            uo = options.uninterpreted_option.add()
+            uo.name.add(name_part="my_opt", is_extension=True)
+            uo.string_value = value
+        pool.Add(fdp)
+        service = pool.FindServiceByName("t.S")
+        assert get_option_value(service, "my_opt") == b"svc"
+        assert get_option_value(service.FindMethodByName("Call"), "my_opt") == b"rpc"
+        m_desc = pool.FindMessageTypeByName("t.M")
+        assert get_option_value(m_desc.oneofs_by_name["choice"], "my_opt") == b"one"
 
     def test_raises_attribute_error_on_non_descriptor(self) -> None:
         """Passing something without ``GetOptions()`` is a bug — the
