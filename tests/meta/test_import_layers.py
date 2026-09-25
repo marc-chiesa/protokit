@@ -129,6 +129,7 @@ SEAM_MODULES = (
 # silently. It compares names already in SEAM_MODULES, so a seam that lands
 # under a spelling SEAM_MODULES does not list goes into SEAM_MODULES first.
 LANDED_SEAMS: frozenset[str] = frozenset({
+    "protokit._extensions",
     "protokit._fieldview",
     "protokit._trust",
 })

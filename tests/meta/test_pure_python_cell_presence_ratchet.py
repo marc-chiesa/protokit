@@ -1,8 +1,8 @@
 """Presence ratchet for the pure-Python protobuf CI cell (U2 / U23, KTD6 / KTD10).
 
-Three audit defects (V1, V10, the V9 swallow) rely on an exception only the
-upb backend raises; under the pure-Python runtime each degrades silently to a
-wrong value. The ``test-pure-python`` job in ``.github/workflows/ci.yml`` is
+Two audit defects (V1, V10) rely on an exception only the upb backend raises;
+under pure-Python each degrades silently to a wrong value (V9, once listed, fails
+alike on both). The ``test-pure-python`` job in ``.github/workflows/ci.yml`` is
 the systemic guard: the full suite under
 ``PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python``, red on any failure outside
 the committed known-failure inventory. A future edit that narrows the run to

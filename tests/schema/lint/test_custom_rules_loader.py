@@ -444,6 +444,35 @@ class TestUnresolvedExtension:
         assert unresolved[0].rule_id == "custom/phantom-multi"
 
 
+class TestOptionOfAnotherElementKind:
+    """An option configured for an element kind its extension cannot annotate.
+
+    ``example.field_tag`` extends ``FieldOptions``; asking it of a method
+    is a configuration mistake. It surfaces as a ``rule_exception`` on
+    every method — never a finding, and never a silent pass. Pinned
+    before the reparse moved into ``protokit._extensions`` (U5) so the
+    move is shown not to turn it into either.
+    """
+
+    def test_mismatched_extendee_is_a_rule_exception(
+        self, tmp_path: Path,
+    ) -> None:
+        result = _compile_fixture(tmp_path)
+        spec = CustomAnnotationRuleSpec(
+            rule_suffix="wrong-kind",
+            option="example.field_tag",
+            element_kinds=(ElementKind.METHOD,),
+        )
+        report = _run(result, [spec])
+        assert report.findings == ()
+        raised = [
+            w for w in report.runtime_warnings if w.category == "rule_exception"
+        ]
+        # One per method: ``Annotated`` and ``Bare``.
+        assert [w.rule_id for w in raised] == ["custom/wrong-kind"] * 2
+        assert all("MethodOptions" in w.message for w in raised)
+
+
 class TestSeverityOverride:
     """``[severities]`` table demotes synthetic-rule findings."""
 

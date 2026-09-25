@@ -43,9 +43,9 @@ The protobuf Python package ships two runtime backends, upb (C, the default)
 and pure-Python (`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`), and until
 PR #59 this suite's CI had only ever expressed upb's opinion: the `test` matrix
 in `.github/workflows/ci.yml` resolves protobuf's default backend on every cell
-(`.github/workflows/ci.yml:174-175`). Three audit defects (V1, V10, the V9
-swallow) rely on an exception only upb raises; under pure-Python each degrades
-silently to a wrong value, and nothing exercised that runtime
+(`.github/workflows/ci.yml:174-175`). Two audit defects (V1, V10) rely on an
+exception only upb raises (V9, first listed with them, fails alike on both); under
+pure-Python each degrades silently to a wrong value, and nothing exercised that runtime
 (`.github/workflows/ci.yml:175-178`). Plan decision KTD6 — backend behaviour is
 asserted, never inferred from an exception — needed a second cell that runs the
 whole suite under the other backend.

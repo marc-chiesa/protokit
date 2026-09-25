@@ -3,17 +3,18 @@
 Shared by the schema checker plugin system and the differ hook
 system. Reads a custom option from any descriptor that exposes
 ``GetOptions()`` and can name its owning pool — FieldDescriptor,
-Descriptor, EnumDescriptor, EnumValueDescriptor, FileDescriptor.
-Those five don't reach their pool the same way (see
-``_owning_pool``), so don't assume ``desc.file`` exists.
+Descriptor, EnumDescriptor, EnumValueDescriptor, FileDescriptor,
+ServiceDescriptor, MethodDescriptor, OneofDescriptor. They don't
+reach their pool the same way (see ``_owning_pool``), so don't
+assume ``desc.file`` exists.
 
 The helper has two access tiers:
 
 1. ``Extensions[]`` via ``pool.FindExtensionByName``. This is the
    happy path when the extension's ``FieldDescriptor`` is
-   registered in the pool (the typical case for runtime-loaded
-   generated ``_pb2`` modules and protoc-compiled descriptor sets
-   built with ``--include_imports``).
+   registered in the pool — a generated ``_pb2`` module, or a
+   descriptor set built with ``--include_imports`` and loaded into an
+   isolated pool, whose options ``protokit._extensions`` re-reads.
 2. ``uninterpreted_option`` linear scan. Always available — this
    is what ends up on the options message when a descriptor set is
    built programmatically (or loaded from a ``.descriptor_set``
@@ -32,7 +33,11 @@ presence guard in tier 1).
 
 from __future__ import annotations
 
+from typing import Any
+
 from google.protobuf import descriptor, descriptor_pool
+
+from protokit._extensions import extends, rebind_options
 
 _UOP_VALUE_FIELDS: tuple[str, ...] = (
     "identifier_value",
@@ -44,17 +49,19 @@ _UOP_VALUE_FIELDS: tuple[str, ...] = (
 )
 
 
-def _owning_pool(desc: object) -> descriptor_pool.DescriptorPool:
+def _owning_pool(desc: Any) -> descriptor_pool.DescriptorPool:
     """Resolve the descriptor pool that ``desc`` was loaded into.
 
     The accepted descriptor types don't agree on how to reach their
     file, and the disagreement is backend-specific. Under upb (the
     default backend) a ``FileDescriptor`` has no ``file`` — it *is*
-    the file, and exposes ``pool`` directly — while an
-    ``EnumValueDescriptor`` has neither and reaches its file only
-    through its enum type. Pure-python protobuf gives both a
-    ``file``, so ``file`` is tried first and the fallbacks only
-    engage where it is genuinely absent.
+    the file, and exposes ``pool`` directly — while a
+    ``MethodDescriptor``, a ``OneofDescriptor`` and an
+    ``EnumValueDescriptor`` have neither and reach their file only
+    through their service, message and enum type respectively.
+    Pure-python protobuf gives all of them a ``file``, so ``file`` is
+    tried first and the fallbacks only engage where it is genuinely
+    absent.
 
     ``file`` must be probed before ``type``: a ``FieldDescriptor``
     has a ``type`` attribute too, but it holds the wire type, not
@@ -66,13 +73,21 @@ def _owning_pool(desc: object) -> descriptor_pool.DescriptorPool:
     pool = getattr(desc, "pool", None)
     if pool is not None:
         return pool
-    # EnumValueDescriptor. A descriptor type with none of the three
-    # is a caller bug, so let the AttributeError propagate.
+    # Under upb a MethodDescriptor reaches its file only through its
+    # service, and a OneofDescriptor only through its message.
+    service = getattr(desc, "containing_service", None)
+    if service is not None:
+        return service.file.pool
+    message = getattr(desc, "containing_type", None)
+    if message is not None:
+        return message.file.pool
+    # EnumValueDescriptor. A descriptor type with none of these is a
+    # caller bug, so let the AttributeError propagate.
     return desc.type.file.pool
 
 
 def get_option_value(
-    desc: object,
+    desc: Any,
     option_path: str,
     pool: descriptor_pool.DescriptorPool | None = None,
 ) -> object | None:
@@ -130,27 +145,32 @@ def get_option_value(
             ext_desc = pool.FindExtensionByName(ext_name)
         except KeyError:
             continue
-        try:
-            # Presence guard. ``Extensions[]`` alone happily hands
-            # back the type default (or an empty sub-message) for an
-            # extension that is merely REGISTERED, which would make
-            # the caller's ``is not None`` test true on every
-            # unannotated descriptor in the schema. Extension fields
-            # always track explicit presence — in proto3 as much as
-            # proto2 — so ``HasExtension`` is authoritative for every
-            # singular extension; it is *unsupported* for repeated
-            # ones (raises), where emptiness is the only absence
-            # signal.
-            if ext_desc.label == descriptor.FieldDescriptor.LABEL_REPEATED:
-                ext_value = options.Extensions[ext_desc]
-                if len(ext_value) == 0:
-                    continue
-            else:
-                if not options.HasExtension(ext_desc):
-                    continue
-                ext_value = options.Extensions[ext_desc]
-        except (KeyError, ValueError):
+        # An extension of another options type (a method option asked
+        # of a field) cannot be set here, so it is absent — tested
+        # explicitly, never inferred from a ``KeyError``: that catch is
+        # what turned every isolated-pool option into ``None`` (V9).
+        if not extends(options, ext_desc):
             continue
+        readable = rebind_options(options, ext_desc)
+        # Presence guard. ``Extensions[]`` alone happily hands back
+        # the type default (or an empty sub-message) for an extension
+        # that is merely REGISTERED, which would make the caller's
+        # ``is not None`` test true on every unannotated descriptor in
+        # the schema. Extension fields always track explicit presence
+        # — in proto3 as much as proto2 — so ``HasExtension`` is
+        # authoritative for every singular extension; it is
+        # *unsupported* for repeated ones (raises), where emptiness is
+        # the only absence signal.
+        ext_value: object
+        if ext_desc.label == descriptor.FieldDescriptor.LABEL_REPEATED:
+            values = readable.Extensions[ext_desc]
+            if len(values) == 0:
+                continue
+            ext_value = values
+        else:
+            if not readable.HasExtension(ext_desc):
+                continue
+            ext_value = readable.Extensions[ext_desc]
         sub_parts = parts[split_at:]
         if not sub_parts:
             return ext_value
@@ -169,7 +189,8 @@ def get_option_value(
             continue
         for fld in _UOP_VALUE_FIELDS:
             if uop.HasField(fld):
-                return getattr(uop, fld)
+                value: object = getattr(uop, fld)
+                return value
         return None
 
     return None

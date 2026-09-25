@@ -15,39 +15,31 @@ rule_id).
 
 **Extension-resolution model** (per the Phase 0 empirical verification
 that landed alongside this loader, 2026-05-19).
-The naive ``protokit.options.get_option_value`` helper does NOT surface
-custom-extension values when the extension is registered through a
-``protoxy``-built ``DescriptorPool`` (rather than via a generated
-``_pb2`` module). The data is stored in the options message's
-serialized bytes, but ``GetOptions()`` returns a bootstrap-pool-bound
-options instance whose ``Extensions[]`` accessor raises ``KeyError``
-("Extension doesn't match") for the dynamic-pool extension descriptor.
+An extension registered through a ``protoxy``-built ``DescriptorPool``
+(rather than via a generated ``_pb2`` module) is stored in the options
+message's serialized bytes, but ``GetOptions()`` returns a
+bootstrap-pool-bound options instance whose ``Extensions[]`` accessor
+raises ``KeyError`` ("Extension doesn't match") for the dynamic-pool
+extension descriptor.
 
-The workaround used here:
+The resolution used here:
 
 1. Look up the extension descriptor via ``pool.FindExtensionByName(option)``.
    If ``KeyError`` is raised, emit a runtime warning
    (category ``custom_annotation_extension_unresolved``) and skip.
-2. Look up the options descriptor for the element kind
-   (``MethodOptions`` / ``FieldOptions`` / ``FileOptions`` / ...) in
-   the SAME pool — done by
-   :func:`protokit.schema.lint._extension_access.get_pool_bound_options_class`.
-3. Build a pool-bound options message class via
-   ``google.protobuf.message_factory.GetMessageClass(options_desc)``
-   (protobuf 5.26+; fall back to
-   ``MessageFactory(pool=pool).GetPrototype(options_desc)`` for
-   4.21–5.25 compatibility) — same helper.
-4. Re-parse the serialized bytes from
-   ``descriptor.GetOptions().SerializeToString()`` into the pool-
-   bound class. ``parsed.HasExtension(ext_desc)`` and
-   ``parsed.Extensions[ext_desc]`` now work correctly with proto2
-   presence semantics on the options message.
+2. Re-read the descriptor's options through
+   :func:`protokit._extensions.rebind_options`, which rebuilds them in
+   the class of the options message the extension extends, from the
+   extension's own pool. ``parsed.HasExtension(ext_desc)`` and
+   ``parsed.Extensions[ext_desc]`` then work with proto2 presence
+   semantics on the options message.
 
-Steps 2-3 (the pool-bound class lookup) and the enum-int → identifier
-normalization live in :mod:`protokit.schema.lint._extension_access`
-so built-in option-aware rules (such as
-``options/field-behavior-consistent``) reuse the same code path
-without depending on private symbols from this module.
+The re-read lives in :mod:`protokit._extensions` (U5), shared with
+:func:`protokit.options.get_option_value` and with built-in
+option-aware rules such as ``options/field-behavior-consistent``; the
+enum-int → identifier normalization stays in
+:mod:`protokit.schema.lint._extension_access`. None of them depends on
+private symbols from this module.
 
 For enum-typed extensions, the runtime value is the enum number
 (int). The closure translates to the identifier string via
@@ -102,10 +94,10 @@ from collections.abc import Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
+from protokit._extensions import rebind_options
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint._engine_run_state import per_run_state
 from protokit.schema.lint._extension_access import (
-    get_pool_bound_options_class,
     resolve_enum_value_for_comparison,
 )
 from protokit.schema.lint.model import (
@@ -145,22 +137,22 @@ def _dedup_seen_for_run(engine: LintEngine) -> set[tuple[str, str]]:
 
 #: Per-ElementKind metadata for the synthetic closure body.
 #:
-#: Maps the kind to a ``(ctx_attr, options_full_name)`` pair where
-#: ``ctx_attr`` is the name of the descriptor attribute on the lint
-#: context (e.g., ``"field"`` for FieldLintContext) and
-#: ``options_full_name`` is the fully-qualified options message name
-#: used to resolve a pool-bound options class. The lookup is centralized
-#: so the closure body stays kind-uniform (per the Phase 0 finding
-#: that landed alongside this loader).
-_KIND_DESCRIPTOR_TABLE: dict[ElementKind, tuple[str, str]] = {
-    ElementKind.FILE: ("file", "google.protobuf.FileOptions"),
-    ElementKind.SERVICE: ("service", "google.protobuf.ServiceOptions"),
-    ElementKind.METHOD: ("method", "google.protobuf.MethodOptions"),
-    ElementKind.ENUM: ("enum", "google.protobuf.EnumOptions"),
-    ElementKind.ENUM_VALUE: ("value", "google.protobuf.EnumValueOptions"),
-    ElementKind.MESSAGE: ("message", "google.protobuf.MessageOptions"),
-    ElementKind.FIELD: ("field", "google.protobuf.FieldOptions"),
-    ElementKind.ONEOF: ("oneof", "google.protobuf.OneofOptions"),
+#: Maps the kind to ``ctx_attr``, the name of the descriptor attribute
+#: on the lint context (e.g., ``"field"`` for FieldLintContext). The
+#: options class that reads the descriptor's options is not listed:
+#: :func:`protokit._extensions.rebind_options` derives it from the
+#: extension, which already names the options message it extends. The
+#: lookup is centralized so the closure body stays kind-uniform (per
+#: the Phase 0 finding that landed alongside this loader).
+_KIND_DESCRIPTOR_TABLE: dict[ElementKind, str] = {
+    ElementKind.FILE: "file",
+    ElementKind.SERVICE: "service",
+    ElementKind.METHOD: "method",
+    ElementKind.ENUM: "enum",
+    ElementKind.ENUM_VALUE: "value",
+    ElementKind.MESSAGE: "message",
+    ElementKind.FIELD: "field",
+    ElementKind.ONEOF: "oneof",
 }
 
 
@@ -189,16 +181,15 @@ def _make_synthetic_closure(
        ``engine.run()`` call (closes the original cross-run leak;
        see the matching per-engine-per-run-state learning under
        ``docs/solutions/``).
-    2. Resolves the pool-bound options class. On a missing
-       ``descriptor.proto`` pool entry (rare; minimal compile sets),
-       silently returns (no warning — this is a non-actionable env
-       condition, not a user config error).
-    3. Re-parses the serialized options bytes through the pool-bound
-       class so ``HasExtension`` and ``Extensions[]`` work for the
-       dynamic-pool extension descriptor.
-    4. Presence check: fires when ``HasExtension(ext_desc)`` is
+    2. Re-reads the descriptor's options through
+       :func:`protokit._extensions.rebind_options`, so
+       ``HasExtension`` and ``Extensions[]`` work for the dynamic-pool
+       extension descriptor. An option that extends another element
+       kind's options raises ``KeyError`` there, which the engine
+       records as a ``rule_exception`` warning.
+    3. Presence check: fires when ``HasExtension(ext_desc)`` is
        ``False`` (extension absent from this descriptor).
-    5. Value check (only when ``allowed_values`` is configured):
+    4. Value check (only when ``allowed_values`` is configured):
        fires when the resolved value (with enum-int→identifier
        translation) is not in the allowed set.
 
@@ -216,7 +207,7 @@ def _make_synthetic_closure(
         ``_lint_spec: LintRuleSpec`` matching the synthetic
         ``custom/<suffix>`` rule_id + the targeted ElementKind.
     """
-    ctx_attr, options_full_name = _KIND_DESCRIPTOR_TABLE[kind]
+    ctx_attr = _KIND_DESCRIPTOR_TABLE[kind]
     rule_id = spec.rule_id
     option = spec.option
     allowed_values = spec.allowed_values
@@ -247,16 +238,10 @@ def _make_synthetic_closure(
                 )
             return
 
-        options_cls = get_pool_bound_options_class(pool, options_full_name)
-        if options_cls is None:
-            # Pool missing ``descriptor.proto``-derived options class.
-            # Skip silently — non-actionable env condition.
-            return
-
+        # Raises ``KeyError`` when the option extends another element
+        # kind's options — surfaced by the engine as ``rule_exception``.
         descriptor = getattr(ctx, ctx_attr)
-        raw_options = descriptor.GetOptions()
-        parsed = options_cls()
-        parsed.MergeFromString(raw_options.SerializeToString())
+        parsed = rebind_options(descriptor.GetOptions(), ext_desc)
 
         if not parsed.HasExtension(ext_desc):
             # Presence violation. Compose a violation_kind that lets
