@@ -51,7 +51,7 @@ That is a fail-open gate — the 0.16.0 correctness programme's theme, applied t
 the programme's own tooling. `tests/meta/test_import_layers.py` (U21, PR #61)
 is the gate: it asserts `protokit` has zero module-load import cycles, and that
 the layer-0 seam modules Wave B hoists shared logic into import nothing from
-`protokit` at any scope (`tests/meta/test_import_layers.py:107-123`, asserted at lines 620-631). Every
+`protokit` at any scope (`tests/meta/test_import_layers.py:107-123`, asserted at lines 621-632). Every
 Wave B unit rests on that property, so the gate is load-bearing for work that
 has not landed yet — which makes a gate that silently passes worse than no gate
 at all.
@@ -154,7 +154,7 @@ to the package.
 
 **An import of `a.b.c` is additionally an edge to every package on that path
 the importer does not itself live under**
-(`tests/meta/test_import_layers.py:394-407`, applied at line 432):
+(`tests/meta/test_import_layers.py:394-407`, applied at line 433):
 
 ```python
 def _packages_on_path(target, importer_package, modules):
@@ -260,7 +260,7 @@ stalls the suite until the CI job cap and names nothing.
 Then pin the seam. Every deliberate over-approximation gets a test that asserts
 **both** verdicts — the gate's and the interpreter's — on the same synthetic
 package (`tests/meta/test_import_layers.py:853-885`, and the individually
-pinned boundaries at lines 835-850 and 886-902). A trade-off asserted in two
+pinned boundaries at lines 836-851 and 887-903). A trade-off asserted in two
 places is a decision; the same trade-off asserted in one place is a bug waiting
 to be "fixed" by someone who only saw the other half.
 
@@ -368,9 +368,9 @@ modules break — every module under `protokit.message` — but `import protokit
 still succeeds, so a developer who checks the top-level entry point sees
 nothing wrong.
 The synthetic form of the same shape is pinned at
-`tests/meta/test_import_layers.py:716-720` and asserted at lines 818-822, with
+`tests/meta/test_import_layers.py:716-720` and asserted at lines 819-823, with
 the two-package-deep version — the one a parent-only rule misses — at lines
-741-746 and 824-833:
+742-747 and 825-834:
 
 ```python
 _GRANDPARENT_PACKAGE_CYCLE = {
@@ -432,7 +432,7 @@ easy to get wrong:
 
 The rebound-name case is not merely a modelling nicety: it is carried into
 `test_gate_verdict_agrees_with_the_interpreter`
-(`tests/meta/test_import_layers.py:735-739, 852-884`), where the interpreter is
+(`tests/meta/test_import_layers.py:735-739, 853-885`), where the interpreter is
 asserted to fail with `partially initialized module` on the same source. A
 spelling-based walker calls all four `TYPE_CHECKING` and skips an import
 CPython runs.

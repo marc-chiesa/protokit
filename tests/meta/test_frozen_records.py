@@ -20,7 +20,24 @@ annotation, which is decidable:
 * ``dict[...]``: built from a dict the test then adds to, the record's dict
   did not change. It stays a ``dict`` because that is its public type.
 
-Optional fields (``X | None``) are checked for their collection arm.
+* ``Iterable[...]``, ``Collection[...]``, ``AbstractSet[...]`` and the other
+  abstract heads: a defect in itself. The annotation does not say which
+  container the record owns, so nothing here could decide what to probe for,
+  and readers of the record cannot rely on it being re-iterable or hashable.
+* ``list``, ``set``, ``dict``-like mutable heads (``MutableSequence``,
+  ``MutableMapping``, ``deque``, ...): a defect in itself.
+
+Each probed sequence field is also built from a ``str``, ``bytes`` and a
+``dict``: the record refuses each or stores it whole, and never keeps the
+characters, the integers or the keys alone.
+
+Optional and union fields (``X | None``, ``Optional[X]``, ``Union[X, Y]``,
+``Annotated[X, ...]``) are checked for their collection arms. A bare name that
+the record's module binds to a type alias rather than a class
+(``Paths = tuple[str, ...]``, a ``Union`` alias, a ``NewType``) is resolved and
+its arms classified the same way; a name the module does not bind at runtime
+(a ``TYPE_CHECKING`` import) is taken to be a class. An alias that cannot be
+read fails by name instead of classifying as "no collection".
 
 **What "public" means**, read from the code rather than from a list: a frozen
 dataclass that a package exports in ``__all__``, or one whose class name and
@@ -51,10 +68,12 @@ import ast
 import dataclasses
 import importlib
 import pkgutil
-from collections.abc import Callable, Iterator, Mapping, MutableMapping
+import sys
+import types
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any
+from typing import Annotated, Any, Literal, NewType, Optional, TypeVar, Union
 
 import pytest
 
@@ -66,14 +85,28 @@ _FROZENSET_HEADS = frozenset({"frozenset", "FrozenSet"})
 _MAPPING_HEADS = frozenset({"Mapping"})
 _DICT_HEADS = frozenset({"dict", "Dict"})
 # A mutable container annotation on a frozen record is a defect in itself.
-_MUTABLE_HEADS = frozenset({"list", "List", "set", "Set", "MutableMapping"})
+_MUTABLE_HEADS = frozenset({
+    "list", "List", "set", "Set", "MutableSequence", "MutableSet", "MutableMapping",
+    "deque", "Deque", "defaultdict", "DefaultDict", "OrderedDict", "Counter",
+})
+# So is an abstract one: it names no container the record could be checked
+# for owning, and promises its readers neither re-iteration nor hashing.
+_ABSTRACT_HEADS = frozenset({
+    "Iterable", "Iterator", "Collection", "Container", "Reversible", "AbstractSet",
+})
+# Heads whose arguments are the annotation's arms, not its elements.
+_UNION_HEADS = frozenset({"Optional", "Union"})
+_KNOWN_HEADS = (
+    _TUPLE_HEADS | _FROZENSET_HEADS | _MAPPING_HEADS | _DICT_HEADS
+    | _MUTABLE_HEADS | _ABSTRACT_HEADS | _UNION_HEADS | {"Annotated"}
+)
 
 
 @dataclass(frozen=True)
 class _Kind:
     """The container a field must hold, and what its elements are."""
 
-    head: str  # "tuple", "frozenset", "mapping", "dict" or "mutable"
+    head: str  # "tuple", "frozenset", "mapping", "dict", "mutable" or "abstract"
     nested_tuple: bool = False  # variadic tuple of variadic tuples
 
 
@@ -99,19 +132,75 @@ def _is_variadic_tuple(node: ast.expr) -> bool:
     )
 
 
-def _union_arms(node: ast.expr) -> Iterator[ast.expr]:
+def _alias_text(value: object) -> str | None:
+    """The annotation text a module-level binding stands for, or ``None``.
+
+    ``None`` means the binding is a class (or a ``TypeVar``, or not a typing
+    construct at all), whose name is its own annotation.
+    """
+    if isinstance(value, str):  # a quoted alias: ``Paths = "tuple[str, ...]"``
+        return value
+    if isinstance(value, (type, TypeVar)):
+        return None
+    supertype = getattr(value, "__supertype__", None)  # NewType
+    if supertype is not None:
+        return _alias_text(supertype) or getattr(supertype, "__name__", None)
+    alias_value = getattr(value, "__value__", None)  # ``type Paths = ...`` (3.12+)
+    if alias_value is not None:
+        return _alias_text(alias_value) or getattr(alias_value, "__name__", None)
+    if isinstance(value, (types.GenericAlias, types.UnionType)) or type(
+        value,
+    ).__module__ in {"typing", "typing_extensions"}:
+        return repr(value)
+    return None
+
+
+def _parse(annotation: str, what: str) -> ast.expr:
+    try:
+        return ast.parse(annotation, mode="eval").body
+    except SyntaxError:
+        raise ValueError(
+            f"cannot classify {what}: {annotation!r} is not an annotation this "
+            "guard can read; annotate the field with the container it stores",
+        ) from None
+
+
+def _union_arms(
+    node: ast.expr, namespace: Mapping[str, object], seen: frozenset[str],
+) -> Iterator[ast.expr]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        yield from _union_arms(node.left)
-        yield from _union_arms(node.right)
-    else:
-        yield node
+        yield from _union_arms(node.left, namespace, seen)
+        yield from _union_arms(node.right, namespace, seen)
+        return
+    head = _head_name(node)
+    if isinstance(node, ast.Subscript) and head in _UNION_HEADS | {"Annotated"}:
+        args = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+        for arg in args[:1] if head == "Annotated" else args:
+            yield from _union_arms(arg, namespace, seen)
+        return
+    if (
+        isinstance(node, ast.Name)
+        and node.id not in _KNOWN_HEADS
+        and node.id not in seen
+        and node.id in namespace
+    ):
+        text = _alias_text(namespace[node.id])
+        if text is not None:
+            alias = _parse(text, f"alias {node.id}")
+            yield from _union_arms(alias, namespace, seen | {node.id})
+            return
+    yield node
 
 
-def classify(annotation: str) -> list[_Kind]:
-    """Return the collection kinds among ``annotation``'s union arms."""
-    tree = ast.parse(annotation, mode="eval").body
+def classify(annotation: str, namespace: Mapping[str, object] | None = None) -> list[_Kind]:
+    """Return the collection kinds among ``annotation``'s union arms.
+
+    ``namespace`` is the globals of the module the annotation was written in;
+    a bare name it binds to a type alias is classified as the alias's value.
+    """
+    tree = _parse(annotation, "annotation")
     kinds: list[_Kind] = []
-    for arm in _union_arms(tree):
+    for arm in _union_arms(tree, namespace or {}, frozenset()):
         head = _head_name(arm)
         if head in _TUPLE_HEADS:
             nested = False
@@ -128,17 +217,23 @@ def classify(annotation: str) -> list[_Kind]:
             kinds.append(_Kind("dict"))
         elif head in _MUTABLE_HEADS:
             kinds.append(_Kind("mutable"))
+        elif head in _ABSTRACT_HEADS:
+            kinds.append(_Kind("abstract"))
     return kinds
 
 
 def collection_fields(cls: type) -> dict[str, list[_Kind]]:
     """Map each init field of ``cls`` holding a collection to its kinds."""
     found: dict[str, list[_Kind]] = {}
+    module = sys.modules.get(cls.__module__)
+    namespace = vars(module) if module is not None else {}
     for f in dataclasses.fields(cls):
         if not f.init:
             continue
-        annotation = f.type if isinstance(f.type, str) else repr(f.type)
-        kinds = classify(annotation)
+        annotation = f.type if isinstance(f.type, str) else (
+            _alias_text(f.type) or getattr(f.type, "__name__", repr(f.type))
+        )
+        kinds = classify(annotation, namespace)
         if kinds:
             found[f.name] = kinds
     return found
@@ -351,6 +446,9 @@ def _check(cls: type, recipe: Recipe, field_name: str, kind: _Kind) -> list[str]
     if kind.head == "mutable":
         return ["annotated as a mutable container; a frozen record stores tuple, "
                 "frozenset or Mapping"]
+    if kind.head == "abstract":
+        return ["annotated as an abstract collection; a frozen record annotates "
+                "the tuple, frozenset or Mapping it stores"]
     if kind.head == "tuple":
         return _check_sequence(cls, recipe, field_name, list, tuple, kind.nested_tuple)
     if kind.head == "frozenset":
@@ -378,20 +476,36 @@ def _check_sequence(
         )
     elif stored:
         problems.append(f"shares the caller's {source_type.__name__}")
-    try:
-        from_str = getattr(_build(cls, recipe, field_name, "ab"), field_name)
-    except TypeError:
-        pass
-    else:
-        if from_str == stored_type(("a", "b")):
-            problems.append("splits a str into its characters")
+    for probe, pieces, defect in _TAKEN_APART:
+        try:
+            from_probe = getattr(_build(cls, recipe, field_name, probe), field_name)
+        except TypeError:
+            continue
+        if from_probe == stored_type(pieces):
+            problems.append(defect)
     if nested:
         inner: list[object] = []
         stored = getattr(_build(cls, recipe, field_name, [inner]), field_name)
         inner.append(object())
         if type(stored[0]) is not tuple or stored[0]:
             problems.append("keeps the caller's inner list")
+        for probe, pieces, defect in _TAKEN_APART:
+            try:
+                from_probe = getattr(_build(cls, recipe, field_name, [probe]), field_name)
+            except TypeError:
+                continue
+            if from_probe == (tuple(pieces),):
+                problems.append(f"{defect}, one level down")
     return problems
+
+
+# Iterable, but iterating one takes it apart: a record must refuse each of
+# these or store it whole, never the pieces.
+_TAKEN_APART: tuple[tuple[object, tuple[object, ...], str], ...] = (
+    ("ab", ("a", "b"), "splits a str into its characters"),
+    (b"ab", (97, 98), "splits bytes into integers"),
+    ({"a": 1, "b": 2}, ("a", "b"), "keeps a mapping's keys alone"),
+)
 
 
 def _check_mapping(cls: type, recipe: Recipe, field_name: str, read_only: bool) -> list[str]:
@@ -486,6 +600,58 @@ class _FlatNested:
         object.__setattr__(self, "paths", as_tuple(self.paths, "paths"))
 
 
+@dataclass(frozen=True)
+class _SplitsNestedStrings:
+    paths: tuple[tuple[str, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        from protokit._records import as_tuple
+
+        paths = as_tuple(self.paths, "paths")
+        object.__setattr__(self, "paths", tuple(tuple(p) for p in paths))
+
+
+@dataclass(frozen=True)
+class _SplitsBytesAndMappings:
+    """The pre-U6 ``MatchPolicy._as_tuple``: a ``str`` is kept whole, the rest split."""
+
+    items: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        items = self.items
+        object.__setattr__(
+            self, "items", (items,) if isinstance(items, str) else tuple(items),
+        )
+
+
+@dataclass(frozen=True)
+class _OptionalTupleAliases:
+    items: Optional[tuple[int, ...]] = None  # noqa: UP045 -- the form under test
+
+
+@dataclass(frozen=True)
+class _UnionTupleAliases:
+    items: Union[int, tuple[int, ...]] = ()  # noqa: UP007 -- the form under test
+
+
+@dataclass(frozen=True)
+class _AnnotatedTupleAliases:
+    items: Annotated[tuple[int, ...], "meta"] = ()
+
+
+_Items = tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _AliasAliases:
+    items: _Items = ()
+
+
+@dataclass(frozen=True)
+class _AbstractAnnotation:
+    items: Iterable[int] = ()
+
+
 @pytest.mark.parametrize(
     ("cls", "expected"),
     [
@@ -494,6 +660,15 @@ class _FlatNested:
         (_SharesMapping, "shares the caller's dict"),
         (_MutableAnnotation, "annotated as a mutable container"),
         (_FlatNested, "keeps the caller's inner list"),
+        (_SplitsNestedStrings, "splits a str into its characters, one level down"),
+        (_SplitsNestedStrings, "splits bytes into integers, one level down"),
+        (_SplitsBytesAndMappings, "splits bytes into integers"),
+        (_SplitsBytesAndMappings, "keeps a mapping's keys alone"),
+        (_OptionalTupleAliases, "stores a list, not a tuple"),
+        (_UnionTupleAliases, "stores a list, not a tuple"),
+        (_AnnotatedTupleAliases, "stores a list, not a tuple"),
+        (_AliasAliases, "stores a list, not a tuple"),
+        (_AbstractAnnotation, "annotated as an abstract collection"),
     ],
 )
 def test_checks_catch_each_defect(cls: type, expected: str) -> None:
@@ -508,6 +683,45 @@ def test_classify_reads_union_optional_and_nested_annotations() -> None:
     assert classify("LintSeverity | dict[str, LintSeverity]") == [_Kind("dict")]
     assert classify("Literal['contradictory_disable_config']") == []
     assert classify("Verdict") == []
+
+
+def test_classify_reads_typing_unions_and_abstract_or_mutable_heads() -> None:
+    assert classify("Optional[tuple[str, ...]]") == [_Kind("tuple")]
+    assert classify("typing.Optional[Mapping[str, int]]") == [_Kind("mapping")]
+    assert classify("Union[int, tuple[str, ...]]") == [_Kind("tuple")]
+    assert classify("Union[frozenset[str], None] | int") == [_Kind("frozenset")]
+    assert classify("Annotated[tuple[str, ...], 'meta']") == [_Kind("tuple")]
+    assert classify("Iterable[str]") == [_Kind("abstract")]
+    assert classify("Collection[str] | None") == [_Kind("abstract")]
+    assert classify("collections.abc.AbstractSet[str]") == [_Kind("abstract")]
+    assert classify("MutableSequence[str]") == [_Kind("mutable")]
+    assert classify("MutableSet[str]") == [_Kind("mutable")]
+
+
+def test_classify_resolves_a_module_alias_to_its_arms() -> None:
+    namespace: dict[str, object] = {
+        "Paths": tuple[str, ...],
+        "MaybeNames": Optional[frozenset[str]],  # noqa: UP045 -- the form under test
+        "Quoted": "Mapping[str, int] | None",
+        "Ids": NewType("Ids", tuple[int, ...]),
+        "Level": Literal["info", "error"],
+        "Plugin": int,
+        "Loop": "Loop | None",
+    }
+    assert classify("Paths", namespace) == [_Kind("tuple")]
+    assert classify("MaybeNames | None", namespace) == [_Kind("frozenset")]
+    assert classify("Quoted", namespace) == [_Kind("mapping")]
+    assert classify("Ids", namespace) == [_Kind("tuple")]
+    assert classify("Level", namespace) == []
+    assert classify("Plugin", namespace) == []
+    assert classify("Loop", namespace) == []  # a self-referential alias terminates
+    # Without the module's namespace a bare name is taken to be a class.
+    assert classify("Paths") == []
+
+
+def test_classify_fails_by_name_on_an_alias_it_cannot_read() -> None:
+    with pytest.raises(ValueError, match="cannot classify alias Weird"):
+        classify("Weird", {"Weird": "tuple[str,"})
 
 
 def test_discovery_skips_private_records_and_keeps_exported_ones() -> None:

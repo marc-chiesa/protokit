@@ -5,9 +5,9 @@ Both findings live in the two *pre-flight* detectors that
 backend is invoked:
 
 * :func:`~protokit.schema.compile._detect_root_transitive_shadow`
-  (``compile.py:317``, loop head ``for root in paths:`` at ``:339``)
+  (``compile.py:318``, loop head ``for root in paths:`` at ``:352``)
 * :func:`~protokit.schema.compile._detect_same_basename_collision`
-  (``compile.py:368``)
+  (``compile.py:369``)
 
 Both guards reason about ``fd.name`` shadowing — but neither computes
 ``fd.name``. The module that does is two files over:
@@ -18,7 +18,7 @@ emit as ``fd.name`` (``_cli_utils.py:406-428``). The two detectors instead
 compare ``Path.name`` — the bare basename — so their verdicts diverge from
 the logical names they claim to protect.
 
-**U14-1** (``compile.py:354``, ``candidate = Path(inc) / root.name``). The
+**U14-1** (``compile.py:355``, ``candidate = Path(inc) / root.name``). The
 shadow guard's own docstring frames the hazard as the backend emitting "a
 ``FileDescriptorProto`` for that shadow instead of the root the user
 passed", i.e. a *logical-name* collision. Comparing basenames gets that
@@ -37,7 +37,7 @@ wrong in both directions:
   candidate probed is ``current/user.proto``, which does not exist — so the
   detector returns ``None`` and the guard never fires.
 
-**U14-2** (``compile.py:368-398``). ``_detect_same_basename_collision``
+**U14-2** (``compile.py:369-399``). ``_detect_same_basename_collision``
 takes only ``paths``; ``proto_paths`` is not a parameter and is never
 consulted, and ``compile_protos_to_result`` runs it *before*
 ``_detect_root_transitive_shadow`` and before any backend call, so ``-I``
@@ -184,7 +184,7 @@ class TestU141BasenameShadowDetection:
         strict=True,
         raises=AssertionError,
         reason=(
-            "U14-1: _detect_root_transitive_shadow (compile.py:354) probes "
+            "U14-1: _detect_root_transitive_shadow (compile.py:355) probes "
             "Path(inc) / root.name, so an include-path file that merely "
             "shares the root's BASENAME is reported as a shadow even when "
             "its logical fd.name (user.proto) cannot collide with the "
@@ -311,7 +311,7 @@ class TestU142SameBasenameCollisionIgnoresProtoPaths:
         strict=True,
         raises=AssertionError,
         reason=(
-            "U14-2: _detect_same_basename_collision (compile.py:368) takes "
+            "U14-2: _detect_same_basename_collision (compile.py:369) takes "
             "only `paths` — proto_paths is not a parameter — and "
             "compile_protos_to_result runs it before the shadow guard and "
             "before any backend, so -I /repo cannot rescue roots that "

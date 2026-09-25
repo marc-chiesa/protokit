@@ -37,6 +37,7 @@ from protokit.message import (
     expect_proto,
     proto_match,
 )
+from protokit.message._selector import FieldSelector
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -437,6 +438,60 @@ class TestMatchPolicyFrozen:
         assert MatchPolicy(ignore="outer.inner.leaf").ignore == ("outer.inner.leaf",)
         # An iterable of names still snapshots element-wise.
         assert MatchPolicy(ignore=["a", "b"]).ignore == ("a", "b")
+
+    @pytest.mark.parametrize("knob", ["ignore", "as_set"])
+    @pytest.mark.parametrize(
+        "value",
+        [b"name", bytearray(b"name"), {"a.b": 1}],
+        ids=["bytes", "bytearray", "dict"],
+    )
+    def test_bytes_or_mapping_selector_is_refused_naming_the_field(
+        self, knob: str, value: object
+    ) -> None:
+        """``bytes`` and a mapping are refused, not taken apart.
+
+        The single-selector shortcut covers ``str``, a callable and a
+        :class:`FieldSelector`; everything else used to fall through to a bare
+        ``tuple(spec)``, so ``MatchPolicy(ignore=b"name").ignore`` was
+        ``(110, 97, 109, 101)`` and ``MatchPolicy(as_set={"a.b": 1}).as_set``
+        was ``("a.b",)`` — integers that match no field, and a mapping reduced
+        to its keys. Either way the comparison silently differed from the
+        one asked for.
+        """
+        with pytest.raises(TypeError, match=rf"^MatchPolicy\.{knob} must be"):
+            MatchPolicy(**{knob: value})
+
+    @pytest.mark.parametrize("knob", ["ignore", "as_set"])
+    @pytest.mark.parametrize(
+        "value", [b"name", {"a.b": 1}], ids=["bytes", "dict"],
+    )
+    def test_proto_match_refuses_bytes_or_mapping_naming_its_kwarg(
+        self, knob: str, value: object
+    ) -> None:
+        b = _user_builder()
+        cls = b.get_message_class("test.User")
+        m = cls(name="Alice")
+        with pytest.raises(TypeError, match=rf"^proto_match\({knob}=\.\.\.\) must be"):
+            proto_match(m, m, **{knob: value})
+
+    def test_single_selectors_and_selector_lists_are_still_accepted(self) -> None:
+        """Guards against a fix that refuses the single-selector shortcut."""
+
+        def pred(field: Any, path: Any) -> bool:
+            return False
+
+        sel = FieldSelector.of("outer.inner")
+        for knob in ("ignore", "as_set"):
+            assert getattr(MatchPolicy(**{knob: "name"}), knob) == ("name",)
+            assert getattr(MatchPolicy(**{knob: pred}), knob) == (pred,)
+            assert getattr(MatchPolicy(**{knob: sel}), knob) == (sel,)
+            assert getattr(MatchPolicy(**{knob: ["a", pred, sel]}), knob) == (
+                "a", pred, sel,
+            )
+            # A generator is an iterable of selectors like any other.
+            assert getattr(MatchPolicy(**{knob: (s for s in ("a", "b"))}), knob) == (
+                "a", "b",
+            )
 
     def test_contradictory_presence_raises_at_construction(self) -> None:
         with pytest.raises(MatcherError, match="presence must be a MessageFieldComparison"):

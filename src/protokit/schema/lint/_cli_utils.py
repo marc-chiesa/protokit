@@ -414,7 +414,7 @@ def _load_descriptor_sets_to_result(
                 # protobuf-python's C++ runtime raises TypeError for
                 # the documented failure shapes (missing-imports,
                 # duplicate-symbol). The (TypeError, ValueError) catch
-                # mirrors compile.py:415's defensive over-catch — if a
+                # mirrors compile.py:663-665's defensive over-catch — if a
                 # future protobuf release narrows or widens the
                 # exception type, lint's stable-prefix path stays
                 # intact rather than letting ValueError escape to
@@ -472,7 +472,7 @@ def _load_descriptor_sets_to_result(
         pool_file_names=tuple(pool_names),
         # CompileResult.__post_init__ wraps the dict in MappingProxyType
         # per the U1-established pattern at
-        # src/protokit/schema/compile.py:236-240. We pass a plain dict
+        # src/protokit/schema/compile.py:307-315. We pass a plain dict
         # here; the wrap is automatic.
         source_info_descriptors=source_info_descriptors,
         diagnostics=tuple(duplicates),

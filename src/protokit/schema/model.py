@@ -14,7 +14,7 @@ from typing import Any
 
 from protokit import _trust
 from protokit._records import one_of, own_tuples
-from protokit.message.model import _DIAGNOSTIC_LEVELS, Diagnostic, FieldPath
+from protokit.message.model import _DIAGNOSTIC_LEVELS, Diagnostic, DiagnosticLevel, FieldPath
 
 
 class Severity(Enum):
@@ -334,7 +334,7 @@ class CommitDiagnostic:
     """
 
     commit: str
-    level: str
+    level: DiagnosticLevel
     path: str | None
     message: str
 

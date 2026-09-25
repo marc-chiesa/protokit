@@ -176,8 +176,8 @@ class MatchPolicy:
         # asked to ignore gets compared anyway, with no error to notice. The
         # front-ends already coerce through `_as_tuple`; this makes direct
         # construction agree with them.
-        object.__setattr__(self, "as_set", _as_tuple(self.as_set))
-        object.__setattr__(self, "ignore", _as_tuple(self.ignore))
+        object.__setattr__(self, "as_set", _as_tuple(self.as_set, "MatchPolicy.as_set"))
+        object.__setattr__(self, "ignore", _as_tuple(self.ignore, "MatchPolicy.ignore"))
         # approx_overlays holds (selector, Approx) PAIRS, not bare selectors,
         # so it takes the records seam's snapshot, which refuses a string
         # rather than splitting it into one-character "pairs".
@@ -337,25 +337,34 @@ def _approx_from_kwargs(
     return Approx.from_optional(margin, fraction)
 
 
-def _as_tuple(spec: SelectorSpec | Iterable[SelectorSpec] | None) -> tuple[SelectorSpec, ...]:
+def _as_tuple(
+    spec: SelectorSpec | Iterable[SelectorSpec] | None, field_name: str,
+) -> tuple[SelectorSpec, ...]:
     """Normalize a selector kwarg into a tuple of specs.
 
     A single spec (string, predicate, or :class:`FieldSelector`) and an
     iterable of specs are both accepted for ergonomics; ``None`` yields the
     empty tuple. A bare string is treated as one spec, not iterated
-    character-by-character.
+    character-by-character. Anything else goes through the records seam's
+    :func:`~protokit._records.as_tuple`, which refuses what iterating would
+    take apart: ``bytes`` (into integers) and a mapping (into its keys).
 
     Args:
         spec: ``None``, a single selector spec, or an iterable of specs.
+        field_name: What the caller passed ``spec`` as, for the error message.
 
     Returns:
         A tuple of selector specs.
+
+    Raises:
+        TypeError: ``spec`` is ``bytes``, a ``bytearray`` or a mapping, or is
+            not iterable.
     """
     if spec is None:
         return ()
     if isinstance(spec, str) or callable(spec) or isinstance(spec, FieldSelector):
         return (spec,)
-    return tuple(spec)
+    return as_tuple(spec, field_name)
 
 
 def proto_match(
@@ -410,8 +419,8 @@ def proto_match(
     resolved_approx = _approx_from_kwargs(approx, margin, fraction)
     policy = MatchPolicy(
         partial=partial,
-        as_set=_as_tuple(as_set),
-        ignore=_as_tuple(ignore),
+        as_set=_as_tuple(as_set, "proto_match(as_set=...)"),
+        ignore=_as_tuple(ignore, "proto_match(ignore=...)"),
         presence=MessageFieldComparison.EQUIVALENT if presence is None else presence,
         approx=resolved_approx,
     )
