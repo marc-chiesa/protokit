@@ -141,6 +141,10 @@ def _alias_text(value: object) -> str | None:
     """
     if isinstance(value, str):  # a quoted alias: ``Paths = "tuple[str, ...]"``
         return value
+    # Before the ``type`` check: on Python 3.10 ``isinstance(tuple[int, ...], type)``
+    # is true, so a generic alias would otherwise read as a class.
+    if isinstance(value, (types.GenericAlias, types.UnionType)):
+        return repr(value)
     if isinstance(value, (type, TypeVar)):
         return None
     supertype = getattr(value, "__supertype__", None)  # NewType

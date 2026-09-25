@@ -623,7 +623,8 @@ class TestPostInitExceptionContainment:
 
         from protokit.schema import compile as compile_module
 
-        def fake_protoxy(
+        # The protoc arm, so the test runs on the has_protoxy=false cell too.
+        def fake_protoc(
             paths,  # type: ignore[no-untyped-def]
             ip,
             *,
@@ -631,9 +632,9 @@ class TestPostInitExceptionContainment:
         ):
             return descriptor_pool.DescriptorPool(), "demo.proto", None, ()
 
-        monkeypatch.setattr(compile_module, "_has_protoxy", lambda: True)
+        monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
         monkeypatch.setattr(
-            compile_module, "_compile_with_protoxy", fake_protoxy,
+            compile_module, "_compile_with_protoc", fake_protoc,
         )
 
         proto = _write_proto(tmp_path, "demo.proto", _PROTO_WITH_COMMENTS)
