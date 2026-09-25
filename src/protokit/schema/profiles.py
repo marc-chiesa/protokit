@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from google.protobuf import descriptor_pool
 
-from protokit._records import own_tuples
+from protokit._records import own_tuples, own_tuples_of_tuples
 from protokit.schema.model import (
     CompatibilityLevel,
     CompatibilityReport,
@@ -142,15 +142,15 @@ class CompatibilityPolicy:
     ignore_paths: Sequence[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        """Freeze caller-supplied sequences into immutable tuples.
+        """Freeze caller-supplied sequences, and each rule pair, into tuples.
 
-        The dataclass is ``frozen=True``, but callers can still pass
-        a ``list`` for ``custom_rules`` / ``message_rules`` /
-        ``ignore_paths`` and mutate it later to change policy
-        behavior after construction. We snapshot into tuples here so
-        the frozen guarantee is real.
+        The dataclass is ``frozen=True``, but callers can still pass a
+        ``list`` for ``custom_rules`` / ``message_rules`` / ``ignore_paths``
+        (or a list as a rule pair) and mutate it later to change policy
+        behavior after construction. See ``protokit._records``.
         """
-        own_tuples(self, "custom_rules", "message_rules", "ignore_paths")
+        own_tuples_of_tuples(self, "custom_rules", "message_rules")
+        own_tuples(self, "ignore_paths")
 
     def check(
         self,

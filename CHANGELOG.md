@@ -309,12 +309,17 @@ keep it that way.
   built from a list flipped `is_compatible` the same way; `hash()` of either
   raised `TypeError`. Every collection field of a public frozen record is now
   stored as a tuple (a frozenset for `LintProfile.rule_ids`, a read-only
-  mapping for the `Mapping` fields), whatever the caller passed. The records
-  covered are `DiffResult`, `Difference`, `FieldPath`, `MatchPolicy`,
+  mapping for the `Mapping` fields, the record's own copy for the `dict`
+  fields), whatever the caller passed. Where the elements are pairs or paths —
+  `MatchPolicy.approx_overlays`, `CompatibilityPolicy.custom_rules` and
+  `message_rules`, `CompiledSelection.paths` — each element is owned as a tuple
+  too, so a caller's inner list is not shared either. The records covered are
+  `DiffResult`, `Difference`, `FieldPath`, `MatchPolicy`,
   `CompatibilityReport`, `HistoryReport`, `BisectReport`,
   `CompatibilityPolicy`, `CompileResult`, `LintCompileDiagnostic`,
-  `LintReport`, `LintProfile`, `LintRuleSpec`, `CycleEdge`, the lint contexts,
-  `DriftReport`, `MatchReport`, `FidelityReport` and `CompiledSelection`.
+  `LintFinding`, `LintReport`, `LintProfile`, `LintRuleSpec`, `CycleEdge`, the
+  lint contexts, `DriftReport`, `MatchReport`, `FidelityReport` and
+  `CompiledSelection`.
 - **A string where a collection belongs is refused, not split** (V11).
   `HistoryReport(entries="abc")` was accepted as three one-character entries
   and crashed later, in `history_report_to_dict`; `MatchPolicy`'s
@@ -322,7 +327,9 @@ keep it that way.
   mapping (which iterates as its keys alone) in a collection field now raises
   `TypeError` naming the field. Every other iterable — a generator, a set, a
   `range` — is still accepted. `MatchPolicy`'s `ignore` and `as_set` still take
-  a single selector string, as before.
+  a single selector string, as before. A mapping field (`Mapping` or `dict`)
+  refuses anything that is not a mapping: `LintFinding(params=["ab"])` used to
+  store `{"a": "b"}`.
 - **`Diagnostic.level` must be `"info"`, `"warning"` or `"error"`** (V7).
   `Diagnostic(level="fatal")` was accepted and then counted in neither
   `DiffResult.warnings` nor `DiffResult.errors`, so a report carrying it read
@@ -342,7 +349,9 @@ or a mapping in a collection field raises `TypeError`, an unknown `level`
 raises `ValueError`, and so does a half-set `BisectReport`. A field that used
 to hand back the caller's own list now returns a tuple, so code that appended
 to `report.findings` after construction gets an `AttributeError` instead of a
-silently changed report. A rule pack declaring `@lint_rule(profiles="name")`
+silently changed report. `LintFinding.params` and
+`LintProfile.rule_severity_overrides` no longer accept a list of key/value
+pairs; pass a dict. A rule pack declaring `@lint_rule(profiles="name")`
 with a single string now fails at import; pass `profiles=("name",)`. The
 string used to be kept as it was and matched profile names as a substring.
 A `Mapping` field keeps a `MappingProxyType` it is given without copying it,

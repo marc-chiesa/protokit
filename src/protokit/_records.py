@@ -13,7 +13,7 @@ collection field, nine converted some of theirs and sixteen none.
 
 This module is the single owner of that conversion (R5). A record's
 ``__post_init__`` passes each collection field through :func:`as_tuple`,
-:func:`as_frozenset` or :func:`as_mapping`, and each closed-vocabulary string
+:func:`as_frozenset`, :func:`as_mapping` or :func:`as_dict`, and each closed-vocabulary string
 field through :func:`one_of`.
 
 **What is accepted.** Any iterable, including a generator, a set or a
@@ -113,6 +113,26 @@ def own_tuples(record: object, *names: str) -> None:
         object.__setattr__(record, name, value)
 
 
+def own_tuples_of_tuples(record: object, *names: str) -> None:
+    """Like :func:`own_tuples`, and convert each element to a tuple too.
+
+    For fields of pairs or of paths (``MatchPolicy.approx_overlays``,
+    ``CompatibilityPolicy.custom_rules``, ``CompiledSelection.paths``): a
+    caller's inner list would otherwise stay shared with the record. An
+    element that is a ``str`` is refused like any other, naming
+    ``Record.field[]``.
+
+    Args:
+        record: The dataclass instance being initialised.
+        *names: The fields to convert.
+    """
+    owner = type(record).__name__
+    for name in names:
+        outer = as_tuple(getattr(record, name), f"{owner}.{name}")
+        inner = f"{owner}.{name}[]"
+        object.__setattr__(record, name, tuple(as_tuple(i, inner) for i in outer))
+
+
 def as_frozenset(value: Iterable[_T], field_name: str) -> frozenset[_T]:
     """Return ``value`` as a frozenset; refuses what :func:`as_tuple` refuses.
 
@@ -161,6 +181,31 @@ def as_mapping(value: Mapping[_K, _V], field_name: str) -> Mapping[_K, _V]:
             f"{field_name} must be a mapping, not a {type(value).__name__}",
         )
     return MappingProxyType(dict(value))
+
+
+def as_dict(value: Mapping[_K, _V], field_name: str) -> dict[_K, _V]:
+    """Return a copy of ``value`` as a ``dict`` the caller holds no handle on.
+
+    For fields whose public type is ``dict`` (``LintFinding.params``): the
+    record keeps a ``dict``, but its own one. "Mapping" means what
+    :func:`as_mapping` means by it; a list of pairs, which ``dict()`` would
+    accept, is refused, because ``dict(["ab"])`` is ``{"a": "b"}``.
+
+    Args:
+        value: A mapping.
+        field_name: ``Record.field``, for the error message.
+
+    Returns:
+        A new ``dict`` with ``value``'s items.
+
+    Raises:
+        TypeError: ``value`` has no ``keys()``.
+    """
+    if not isinstance(value, Mapping) and not hasattr(value, "keys"):
+        raise TypeError(
+            f"{field_name} must be a mapping, not a {type(value).__name__}",
+        )
+    return dict(value)
 
 
 def one_of(value: str, allowed: frozenset[str], field_name: str) -> str:

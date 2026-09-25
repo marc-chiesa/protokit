@@ -31,7 +31,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from protokit._records import as_tuple
+from protokit._records import as_tuple, own_tuples_of_tuples
 from protokit.message._selector import FieldSelector, SelectorSpec
 from protokit.message.comparators import FloatComparison, MessageFieldComparison
 from protokit.message.differ import MessageDifferencer
@@ -178,14 +178,10 @@ class MatchPolicy:
         # construction agree with them.
         object.__setattr__(self, "as_set", _as_tuple(self.as_set, "MatchPolicy.as_set"))
         object.__setattr__(self, "ignore", _as_tuple(self.ignore, "MatchPolicy.ignore"))
-        # approx_overlays holds (selector, Approx) PAIRS, not bare selectors,
-        # so it takes the records seam's snapshot, which refuses a string
-        # rather than splitting it into one-character "pairs".
-        object.__setattr__(
-            self,
-            "approx_overlays",
-            as_tuple(self.approx_overlays, "MatchPolicy.approx_overlays"),
-        )
+        # approx_overlays holds (selector, Approx) PAIRS, not bare selectors:
+        # the records seam owns the outer tuple and each pair, and refuses a
+        # string rather than splitting it into one-character "pairs".
+        own_tuples_of_tuples(self, "approx_overlays")
 
         # Paired-field invariant: ``presence`` discriminates how float/message
         # presence is compared; an unrecognized value would silently behave as

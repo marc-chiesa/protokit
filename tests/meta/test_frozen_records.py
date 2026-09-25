@@ -107,7 +107,8 @@ class _Kind:
     """The container a field must hold, and what its elements are."""
 
     head: str  # "tuple", "frozenset", "mapping", "dict", "mutable" or "abstract"
-    nested_tuple: bool = False  # variadic tuple of variadic tuples
+    nested_tuple: bool = False  # a tuple whose elements are tuples too
+    inner_len: int = 0  # element arity: 0 for ``tuple[X, ...]``, n for a fixed n-tuple
 
 
 def _head_name(node: ast.expr) -> str | None:
@@ -178,6 +179,23 @@ def _union_arms(
         for arg in args[:1] if head == "Annotated" else args:
             yield from _union_arms(arg, namespace, seen)
         return
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # A quoted annotation under ``from __future__ import annotations``
+        # arrives as a string inside the string: read the inner one.
+        yield from _union_arms(_parse(node.value, "quoted annotation"), namespace, seen)
+        return
+    resolved = _resolve_alias(node, namespace, seen)
+    if resolved is not None:
+        alias, name = resolved
+        yield from _union_arms(alias, namespace, seen | {name})
+        return
+    yield node
+
+
+def _resolve_alias(
+    node: ast.expr, namespace: Mapping[str, object], seen: frozenset[str],
+) -> tuple[ast.expr, str] | None:
+    """The parsed value of a bare name the module binds to a type alias."""
     if (
         isinstance(node, ast.Name)
         and node.id not in _KNOWN_HEADS
@@ -186,10 +204,36 @@ def _union_arms(
     ):
         text = _alias_text(namespace[node.id])
         if text is not None:
-            alias = _parse(text, f"alias {node.id}")
-            yield from _union_arms(alias, namespace, seen | {node.id})
-            return
-    yield node
+            return _parse(text, f"alias {node.id}"), node.id
+    return None
+
+
+def _element_tuple(
+    arm: ast.Subscript, namespace: Mapping[str, object],
+) -> tuple[bool, int]:
+    """Whether a sequence annotation's elements are tuples, and their arity.
+
+    ``tuple[tuple[str, ...], ...]`` has variadic tuple elements (arity 0);
+    ``Sequence[tuple[str, Plugin]]`` or ``tuple[Pair, ...]`` with
+    ``Pair = tuple[str, Approx]`` has pairs (arity 2).
+    """
+    if _is_variadic_tuple(arm):
+        assert isinstance(arm.slice, ast.Tuple)
+        element = arm.slice.elts[0]
+    elif _head_name(arm) == "Sequence":
+        element = arm.slice
+    else:
+        return False, 0
+    seen: frozenset[str] = frozenset()
+    while (resolved := _resolve_alias(element, namespace, seen)) is not None:
+        element, name = resolved
+        seen |= {name}
+    if not (isinstance(element, ast.Subscript) and _head_name(element) in {"tuple", "Tuple"}):
+        return False, 0
+    if _is_variadic_tuple(element):
+        return True, 0
+    args = element.slice
+    return True, len(args.elts) if isinstance(args, ast.Tuple) else 1
 
 
 def classify(annotation: str, namespace: Mapping[str, object] | None = None) -> list[_Kind]:
@@ -203,12 +247,11 @@ def classify(annotation: str, namespace: Mapping[str, object] | None = None) -> 
     for arm in _union_arms(tree, namespace or {}, frozenset()):
         head = _head_name(arm)
         if head in _TUPLE_HEADS:
-            nested = False
-            if _is_variadic_tuple(arm):
-                assert isinstance(arm, ast.Subscript)
-                assert isinstance(arm.slice, ast.Tuple)
-                nested = _is_variadic_tuple(arm.slice.elts[0])
-            kinds.append(_Kind("tuple", nested))
+            nested, inner_len = (
+                _element_tuple(arm, namespace or {})
+                if isinstance(arm, ast.Subscript) else (False, 0)
+            )
+            kinds.append(_Kind("tuple", nested, inner_len))
         elif head in _FROZENSET_HEADS:
             kinds.append(_Kind("frozenset"))
         elif head in _MAPPING_HEADS:
@@ -271,15 +314,36 @@ def public_frozen_records(modules: list[ModuleType]) -> dict[str, type]:
             exported.add(id(getattr(module, name, None)))
     records: dict[str, type] = {}
     for module in modules:
-        for obj in vars(module).values():
-            if not _is_frozen_dataclass(obj) or obj.__module__ != module.__name__:
+        module_public = not any(p.startswith("_") for p in module.__name__.split("."))
+        for cls in _classes_defined_in(module):
+            if not _is_frozen_dataclass(cls):
                 continue
-            named_public = not obj.__name__.startswith("_") and not any(
-                part.startswith("_") for part in module.__name__.split(".")
+            named_public = module_public and not any(
+                part.startswith("_") for part in cls.__qualname__.split(".")
             )
-            if named_public or id(obj) in exported:
-                records[_qualname(obj)] = obj
+            if named_public or id(cls) in exported:
+                records[_qualname(cls)] = cls
     return records
+
+
+def _classes_defined_in(module: ModuleType) -> Iterator[type]:
+    """Every class ``module`` defines, including classes nested in them."""
+    pending = [
+        obj for obj in vars(module).values()
+        if isinstance(obj, type) and obj.__module__ == module.__name__
+    ]
+    seen: set[int] = set()
+    while pending:
+        cls = pending.pop()
+        if id(cls) in seen:
+            continue
+        seen.add(id(cls))
+        yield cls
+        pending.extend(
+            obj for obj in vars(cls).values()
+            if isinstance(obj, type) and obj.__module__ == module.__name__
+            and obj.__qualname__.startswith(cls.__qualname__ + ".")
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -450,9 +514,13 @@ def _check(cls: type, recipe: Recipe, field_name: str, kind: _Kind) -> list[str]
         return ["annotated as an abstract collection; a frozen record annotates "
                 "the tuple, frozenset or Mapping it stores"]
     if kind.head == "tuple":
-        return _check_sequence(cls, recipe, field_name, list, tuple, kind.nested_tuple)
+        return _check_sequence(
+            cls, recipe, field_name, list, tuple, kind.nested_tuple, kind.inner_len,
+        )
     if kind.head == "frozenset":
-        return _check_sequence(cls, recipe, field_name, set, frozenset, nested=False)
+        return _check_sequence(
+            cls, recipe, field_name, set, frozenset, nested=False, inner_len=0,
+        )
     return _check_mapping(cls, recipe, field_name, read_only=kind.head == "mapping")
 
 
@@ -463,6 +531,7 @@ def _check_sequence(
     source_type: type,
     stored_type: type,
     nested: bool,
+    inner_len: int,
 ) -> list[str]:
     problems: list[str] = []
     source: Any = source_type()
@@ -484,10 +553,10 @@ def _check_sequence(
         if from_probe == stored_type(pieces):
             problems.append(defect)
     if nested:
-        inner: list[object] = []
+        inner: list[object] = [object() for _ in range(inner_len)]
         stored = getattr(_build(cls, recipe, field_name, [inner]), field_name)
         inner.append(object())
-        if type(stored[0]) is not tuple or stored[0]:
+        if type(stored[0]) is not tuple or len(stored[0]) != inner_len:
             problems.append("keeps the caller's inner list")
         for probe, pieces, defect in _TAKEN_APART:
             try:
@@ -517,6 +586,14 @@ def _check_mapping(cls: type, recipe: Recipe, field_name: str, read_only: bool) 
         problems.append("shares the caller's dict")
     if read_only and isinstance(stored, MutableMapping):
         problems.append(f"stores a mutable {type(stored).__name__}")
+    # ``dict(["ab"])`` is ``{"a": "b"}``: a mapping field must refuse what is
+    # not a mapping rather than let ``dict()`` pair up its pieces.
+    for probe in (["ab"], [("a", 1)]):
+        try:
+            _build(cls, recipe, field_name, probe)
+        except TypeError:
+            continue
+        problems.append(f"builds a mapping from a {type(probe[0]).__name__} list")
     return problems
 
 
@@ -652,6 +729,29 @@ class _AbstractAnnotation:
     items: Iterable[int] = ()
 
 
+@dataclass(frozen=True)
+class _QuotedAnnotation:
+    items: "tuple[int, ...]" = ()  # noqa: UP037 -- the form under test
+
+
+@dataclass(frozen=True)
+class _SharesInnerPairs:
+    pairs: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        from protokit._records import as_tuple
+
+        object.__setattr__(self, "pairs", as_tuple(self.pairs, "pairs"))
+
+
+@dataclass(frozen=True)
+class _DictFromPairs:
+    table: dict[str, int] = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "table", dict(self.table))
+
+
 @pytest.mark.parametrize(
     ("cls", "expected"),
     [
@@ -669,6 +769,9 @@ class _AbstractAnnotation:
         (_AnnotatedTupleAliases, "stores a list, not a tuple"),
         (_AliasAliases, "stores a list, not a tuple"),
         (_AbstractAnnotation, "annotated as an abstract collection"),
+        (_QuotedAnnotation, "stores a list, not a tuple"),
+        (_SharesInnerPairs, "keeps the caller's inner list"),
+        (_DictFromPairs, "builds a mapping from a str list"),
     ],
 )
 def test_checks_catch_each_defect(cls: type, expected: str) -> None:
@@ -679,7 +782,7 @@ def test_checks_catch_each_defect(cls: type, expected: str) -> None:
 def test_classify_reads_union_optional_and_nested_annotations() -> None:
     assert classify("tuple[str, ...] | None") == [_Kind("tuple")]
     assert classify("tuple[tuple[str, ...], ...]") == [_Kind("tuple", nested_tuple=True)]
-    assert classify("Sequence[tuple[str, 'Plugin']]") == [_Kind("tuple")]
+    assert classify("Sequence[tuple[str, 'Plugin']]") == [_Kind("tuple", True, 2)]
     assert classify("LintSeverity | dict[str, LintSeverity]") == [_Kind("dict")]
     assert classify("Literal['contradictory_disable_config']") == []
     assert classify("Verdict") == []
@@ -732,3 +835,21 @@ def test_discovery_skips_private_records_and_keeps_exported_ones() -> None:
     assert "protokit.storage.cli._ScanReport" not in names
     # Underscore module, but exported from ``protokit.forensics``: public.
     assert "protokit.forensics._drift.DriftReport" in names
+
+
+def test_discovery_descends_into_classes() -> None:
+    """A public frozen record nested in a public class is still a record."""
+    module = types.ModuleType("protokit.example_nested")
+
+    class Outer:
+        @dataclass(frozen=True)
+        class Nested:
+            items: tuple[int, ...] = ()
+
+    for cls in (Outer, Outer.Nested):
+        cls.__module__ = module.__name__
+    Outer.__qualname__ = "Outer"
+    Outer.Nested.__qualname__ = "Outer.Nested"
+    module.Outer = Outer  # type: ignore[attr-defined]
+    found = public_frozen_records([module])
+    assert "protokit.example_nested.Outer.Nested" in found

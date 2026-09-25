@@ -12,7 +12,15 @@ from types import MappingProxyType
 
 import pytest
 
-from protokit._records import as_frozenset, as_mapping, as_tuple, one_of, own_tuples
+from protokit._records import (
+    as_dict,
+    as_frozenset,
+    as_mapping,
+    as_tuple,
+    one_of,
+    own_tuples,
+    own_tuples_of_tuples,
+)
 
 
 class TestAsTuple:
@@ -132,3 +140,38 @@ class TestOwnTuples:
 
         with pytest.raises(TypeError, match=r"Record\.items"):
             own_tuples(Record(), "items")
+
+
+class TestAsDict:
+    def test_a_dict_is_copied_and_stays_a_dict(self) -> None:
+        source = {"a": 1}
+        result = as_dict(source, "R.f")
+        source["b"] = 2
+        assert result == {"a": 1}
+        assert type(result) is dict
+
+    @pytest.mark.parametrize("value", [["ab"], [("a", 1)], "ab"])
+    def test_what_dict_would_pair_up_is_refused(self, value: object) -> None:
+        # dict(["ab"]) is {"a": "b"}: a list of pairs is not a mapping.
+        with pytest.raises(TypeError, match=r"R\.f must be a mapping"):
+            as_dict(value, "R.f")  # type: ignore[arg-type]
+
+
+class TestOwnTuplesOfTuples:
+    def test_each_element_is_owned_as_a_tuple(self) -> None:
+        class Record:
+            pairs: object = None
+
+        pair = ["x", 1]
+        record = Record()
+        record.pairs = [pair]
+        own_tuples_of_tuples(record, "pairs")
+        pair[0] = "y"
+        assert record.pairs == (("x", 1),)
+
+    def test_a_string_element_is_refused_naming_the_position(self) -> None:
+        class Record:
+            pairs: object = ["ab"]
+
+        with pytest.raises(TypeError, match=r"Record\.pairs\[\]"):
+            own_tuples_of_tuples(Record(), "pairs")

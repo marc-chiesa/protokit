@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
-from protokit._records import as_frozenset, as_mapping, own_tuples
+from protokit._records import as_dict, as_frozenset, as_mapping, own_tuples
 
 if TYPE_CHECKING:
     # ``FileDescriptorProto`` is referenced only by the 5 ElementKind
@@ -368,7 +368,7 @@ class LintFinding:
         findings whose params alias to the LAST set of values. Snapshot
         via ``dict(...)`` so each finding owns its params.
         """
-        object.__setattr__(self, "params", dict(self.params))
+        object.__setattr__(self, "params", as_dict(self.params, "LintFinding.params"))
 
 
 @dataclass(frozen=True)
@@ -791,16 +791,16 @@ class LintProfile:
     rule_severity_overrides: dict[str, LintSeverity] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Snapshot caller-supplied dict so the frozen guarantee is real.
+        """Own both collections, so the frozen guarantee is real.
 
-        Same rationale as :class:`LintFinding` and :class:`LintReport`:
-        ``frozen=True`` does not prevent nested mutation of a passed-in
-        dict. Profiles passed across deliveries / plugin boundaries
-        could otherwise be mutated post-construction and corrupt the
-        composition.
+        ``frozen=True`` does not stop a caller mutating a passed-in dict
+        or set; profiles cross delivery and plugin boundaries, where that
+        would corrupt the composition. See ``protokit._records``.
         """
         object.__setattr__(
-            self, "rule_severity_overrides", dict(self.rule_severity_overrides),
+            self,
+            "rule_severity_overrides",
+            as_dict(self.rule_severity_overrides, "LintProfile.rule_severity_overrides"),
         )
         object.__setattr__(
             self, "rule_ids", as_frozenset(self.rule_ids, "LintProfile.rule_ids"),

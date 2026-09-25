@@ -752,13 +752,13 @@ def compile_protos_to_result(
         )
     except Exception as exc:  # noqa: BLE001 — see comment above
         diagnostics.append(_diagnostic_unexpected(exc))
-        # Re-build with cleared source_info_descriptors AND pool_file_names
-        # so the second attempt can't trip the same __post_init__ failure
-        # (e.g., a pool_file_names_invariant violation would re-fire if we
-        # re-passed the same value).
+        # Re-build with every field __post_init__ converts cleared, so the
+        # second attempt can't trip the same failure: a root_files the
+        # records seam refuses, or a pool_file_names_invariant violation,
+        # would re-fire if we re-passed the same value.
         return CompileResult(
             pool=pool,
-            root_files=root_files,
+            root_files=(),
             pool_file_names=(),
             diagnostics=tuple(diagnostics),
             source_info_descriptors=None,
