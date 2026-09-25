@@ -40,6 +40,7 @@ from protokit._cli_utils import (
 )
 from protokit._pools import DescriptorPoolError
 from protokit._records import as_mapping, as_tuple, one_of, own_tuples
+from protokit.message.model import _DIAGNOSTIC_LEVELS, DiagnosticLevel
 
 if TYPE_CHECKING:
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
@@ -65,9 +66,6 @@ Agents and formatters should branch on this rather than on
 ``Exception`` subclass name reaches category ``"unexpected"``);
 this Literal is the stable, exhaustive discriminator.
 """
-
-
-_LEVELS: frozenset[str] = frozenset({"info", "warning", "error"})
 
 
 @dataclass(frozen=True)
@@ -138,7 +136,7 @@ class LintCompileDiagnostic:
             Use ``category`` for closed-set branching.
     """
 
-    level: Literal["info", "warning", "error"]
+    level: DiagnosticLevel
     message: str
     category: DiagnosticCategory = "unexpected"
     command: tuple[str, ...] | None = None
@@ -148,7 +146,7 @@ class LintCompileDiagnostic:
 
     def __post_init__(self) -> None:
         """Refuse a ``level`` the ``== "error"`` readers would miss; own ``command``."""
-        one_of(self.level, _LEVELS, "LintCompileDiagnostic.level")
+        one_of(self.level, _DIAGNOSTIC_LEVELS, "LintCompileDiagnostic.level")
         if self.command is not None:
             object.__setattr__(
                 self,

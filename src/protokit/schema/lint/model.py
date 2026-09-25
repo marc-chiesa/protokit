@@ -48,7 +48,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from google.protobuf import descriptor as proto_descriptor
@@ -1080,7 +1080,7 @@ class _LintContextEmitMixin:
         """Make each of ``_MAPPING_FIELDS`` read-only at its top level."""
         for name in self._MAPPING_FIELDS:
             value = getattr(self, name, None)
-            if value is not None:
+            if value is not None and type(value) is not MappingProxyType:
                 object.__setattr__(
                     self, name, as_mapping(value, f"{type(self).__name__}.{name}"),
                 )

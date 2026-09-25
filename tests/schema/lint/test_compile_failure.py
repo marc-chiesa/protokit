@@ -320,3 +320,25 @@ class TestCompileFailureCategories:
 
         with pytest.raises(exc_cls):
             compile_protos_to_result([demo_proto_file])
+
+
+class TestLintCompileDiagnosticValidation:
+    """U6: the V7 level check and the V11 collection check on this record too.
+
+    Every reader of ``LintCompileDiagnostic.level`` tests ``== "error"``, so an
+    off-ladder level made a failed compile read as clean; ``command`` split a
+    string into one-character argv entries.
+    """
+
+    @pytest.mark.parametrize("level", ["fatal", "ERROR", ""])
+    def test_a_level_outside_the_ladder_is_refused(self, level: str) -> None:
+        with pytest.raises(ValueError, match=r"LintCompileDiagnostic\.level"):
+            LintCompileDiagnostic(level=level, message="m")  # type: ignore[arg-type]
+
+    def test_command_is_owned_and_a_string_is_refused(self) -> None:
+        argv = ["protoc", "a.proto"]
+        diag = LintCompileDiagnostic(level="error", message="m", command=argv)  # type: ignore[arg-type]
+        argv.append("--extra")
+        assert diag.command == ("protoc", "a.proto")
+        with pytest.raises(TypeError, match=r"LintCompileDiagnostic\.command"):
+            LintCompileDiagnostic(level="error", message="m", command="protoc a.proto")  # type: ignore[arg-type]

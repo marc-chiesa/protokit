@@ -10,13 +10,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, get_args
+from typing import Any
 
 from protokit import _trust
 from protokit._records import one_of, own_tuples
-from protokit.message.model import Diagnostic, DiagnosticLevel, FieldPath
-
-_COMMIT_LEVELS: frozenset[str] = frozenset(get_args(DiagnosticLevel))
+from protokit.message.model import _DIAGNOSTIC_LEVELS, Diagnostic, FieldPath
 
 
 class Severity(Enum):
@@ -342,7 +340,7 @@ class CommitDiagnostic:
 
     def __post_init__(self) -> None:
         """Refuse a ``level`` every ``== "error"`` reader would pass over (V7)."""
-        one_of(self.level, _COMMIT_LEVELS, "CommitDiagnostic.level")
+        one_of(self.level, _DIAGNOSTIC_LEVELS, "CommitDiagnostic.level")
 
 
 @dataclass(frozen=True)
