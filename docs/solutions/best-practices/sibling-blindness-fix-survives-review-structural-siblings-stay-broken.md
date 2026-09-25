@@ -1,7 +1,7 @@
 ---
 title: "Sibling blindness: a fix at one call site survives the review built to catch it while structural siblings stay broken"
 date: 2026-08-30
-last_updated: 2026-09-20
+last_updated: 2026-09-25
 category: docs/solutions/best-practices
 module: protokit.schema
 problem_type: best_practice
@@ -32,7 +32,7 @@ tags:
 
 ## Context
 
-**This is the tenth documented recurrence of a pattern this codebase named,
+**This is the eleventh documented recurrence of a pattern this codebase named,
 and wrote three prevention rules for, four months ago. That is the finding.**
 
 The shape: a fix is applied at the call site the bug report happened to name,
@@ -82,7 +82,7 @@ site), and an honest account of **what actually caught these** — iterative
 independent falsification review — versus what did not. If you take one thing:
 the control is a process you run, not a rule you know.
 
-Three sibling learnings cover the specific defects used below as
+Four sibling learnings cover the specific defects used below as
 illustrations; this one is about the meta-pattern and deliberately does not
 re-explain their mechanics:
 
@@ -92,6 +92,8 @@ re-explain their mechanics:
   (V33 — a swallowed rule exception that never reached the exit verdict)
 - [[trust-boundary-enforcement-points-derived-from-code-not-the-findings-wording]]
   (#76 — the compat rule-pack dispatch guard blind to `SystemExit`; instance 4)
+- [[swallowed-keyerror-read-present-custom-options-as-absent-on-isolated-pools]]
+  (#82 — V9, custom options read as absent on isolated pools; instance 5)
 
 Instance 3 (the stderr sanitizer applied to `check`/`ci` but not `history`/
 `bisect`) is captured here and nowhere else — at release time it existed only
@@ -662,6 +664,36 @@ $ echo $?
 ```
 
 The run no longer claims to have finished. Closed by #76.
+
+### Instance 5 — the public owner that never adopted its sibling's fix (Shape A, inverted)
+
+The usual Shape A has the fix at the reported site and the siblings left
+behind. Here the siblings had the fix and the owner did not.
+`protokit.options.get_option_value` is the public helper for reading a custom
+option. It returned `None` for every custom option on an isolated descriptor
+pool, the same answer as an unset option (V9). The lint package had solved the
+same identity refusal months earlier, by hand at two call sites, and nothing
+routed the public helper through that code.
+
+Three things kept it hidden, each one covered by a section above:
+
+- **A written "cannot test" claim** (§7). The helper's test module said
+  tier-1 testing on a custom pool was "blocked by protobuf's bootstrap-pool
+  coupling" and moved its fixtures to the default pool. That coupling was the
+  defect.
+- **A contract test that re-implemented the fix** (§4). The lint package's
+  regression contract hand-rolled the working re-read in five tests and never
+  called the public helper, so it stayed green while the helper was broken.
+- **A site set taken from a plan's wording** (§6). The remediation plan said to
+  hoist the re-read from a module that held only the class builder. The re-read
+  itself lived at two lint sites the plan's file list omitted.
+
+§5 held too. An independent cross-model refuter, run against the fix, bypassed
+the new seam's own construction guard twice: first with a re-export of
+protobuf's builder, then with that builder wrapped in a `typing` alias.
+Mechanics and the fix are in
+[[swallowed-keyerror-read-present-custom-options-as-absent-on-isolated-pools]].
+Closed by #82.
 
 ## Limits — what this procedure cannot do
 
