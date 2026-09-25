@@ -255,6 +255,39 @@ every input. All four are worth checking before upgrading. `protokit lint`'s
 `analysis-incomplete` gate itself shipped in 0.15.1; what changed here is its
 reach, which now includes an all-excluded run.
 
+### Fixed — BREAKING (U5: custom options on descriptor-set schemas)
+
+`protokit.options.get_option_value` could not read a custom option from a schema
+loaded out of a descriptor set or compiled into its own pool — which is every
+schema protokit builds itself. `desc.GetOptions()` returns protobuf's built-in
+options class, and that class refuses an extension declared in any pool but the
+default one. The helper caught the refusal and returned `None`: the same answer
+as an option that is not there. A new internal module, `protokit._extensions`,
+now re-reads the options through the pool that declares the extension, and the
+helper shares it with the option-aware lint rules, which had been doing the
+re-read by hand.
+
+- **`get_option_value` returns custom options on isolated pools** (audit finding
+  V9). Scalar, string, repeated and message-typed extensions, and dotted
+  sub-field paths into them, now resolve on a pool built from a
+  `FileDescriptorSet` — including `FieldHookContext.left_pool` / `right_pool`
+  when the differ compares descriptor-set-loaded messages — instead of reading
+  as `None`. Presence is unchanged: a registered but unset extension still reads
+  as `None`, and so does an extension of another options type (a method option
+  asked of a field), now decided by an explicit check instead of a caught
+  `KeyError`.
+- **`get_option_value` accepts service, method and oneof descriptors on both
+  protobuf backends.** Under upb a `MethodDescriptor` and a `OneofDescriptor`
+  expose no `file`, so the helper raised `AttributeError` for them there and
+  worked under pure-Python; they now reach their pool through their service and
+  message. `ServiceDescriptor` already worked and is now documented.
+
+*Upgrade impact:* no built-in command's output changes — no built-in check calls
+the helper, and the lint rules already read options this way. A differ hook or a
+checker plugin that gates on `get_option_value(...) is not None` over such a
+schema starts firing on annotations it silently skipped until now. Those
+annotations were always there; the helper could not see them.
+
 ### Fixed — `protokit diff` exit codes
 
 - **A malformed selector now exits 2, not 1** (audit finding U15-6). `--ignore`,
@@ -313,6 +346,15 @@ under the pure-Python runtime with no known-failure list, and the
   could not — its `is_extension` filter was vestigial, because
   `Descriptor.fields` never contains extensions in the first place. Both are
   private APIs; no supported surface changes.
+- Custom-option reads have a single owner, `protokit._extensions` (layer 0). It
+  re-reads a descriptor's options through the class of the options message an
+  extension extends, and `protokit.options.get_option_value`, the synthetic
+  `custom/<suffix>` lint rules and `options/field-behavior-consistent` all go
+  through it. The lint package's two hand-written copies of that re-read are
+  gone, and so is `protokit.schema.lint._extension_access.get_pool_bound_options_class`,
+  the class builder they used; the builder is now private to the seam. Both
+  modules are private APIs; no supported surface changes. `protokit/options.py`
+  and the new module join the ruff and `mypy --strict` ratchets.
 - The `test-pure-python` CI cell is a required check on `main` (U23, the
   tighten step the cell was landed with in U2). Its job-level
   `continue-on-error` and advisory banner are gone, the presence ratchet
