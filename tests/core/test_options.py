@@ -18,9 +18,9 @@ directly.
 
 from __future__ import annotations
 
-from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from google.protobuf import descriptor_pb2, descriptor_pool
 
-from protokit._pools import build_pool
+from protokit._pools import build_pool, get_message_class
 from protokit.options import get_option_value
 
 FD = descriptor_pb2.FieldDescriptorProto
@@ -285,9 +285,7 @@ def _build_isolated_fixtures() -> tuple[
     scratch_set = descriptor_pb2.FileDescriptorSet()
     scratch_set.file.extend([_descriptor_proto_file(), _isolated_extension_file()])
     scratch = build_pool(scratch_set)
-    options_cls = message_factory.GetMessageClass(
-        scratch.FindMessageTypeByName("google.protobuf.FieldOptions"),
-    )
+    options_cls = get_message_class(scratch, "google.protobuf.FieldOptions")
 
     def _annotated(**values: object) -> bytes:
         opts = options_cls()

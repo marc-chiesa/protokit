@@ -35,8 +35,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from google.protobuf import descriptor, descriptor_pool
+from google.protobuf import descriptor_pool
 
+from protokit._descriptors import is_repeated
 from protokit._extensions import extends, rebind_options
 
 _UOP_VALUE_FIELDS: tuple[str, ...] = (
@@ -162,7 +163,7 @@ def get_option_value(
         # *unsupported* for repeated ones (raises), where emptiness is
         # the only absence signal.
         ext_value: object
-        if ext_desc.label == descriptor.FieldDescriptor.LABEL_REPEATED:
+        if is_repeated(ext_desc):
             values = readable.Extensions[ext_desc]
             if len(values) == 0:
                 continue

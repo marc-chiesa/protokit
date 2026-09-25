@@ -220,7 +220,7 @@ imports nothing from `protokit`, so `protokit.options` (core) and
             continue
 ```
 
-**After**, `src/protokit/options.py:152-173` (anchor `if not extends(options,
+**After**, `src/protokit/options.py:153-174` (anchor `if not extends(options,
 ext_desc)`):
 
 ```python
@@ -228,7 +228,7 @@ ext_desc)`):
             continue
         readable = rebind_options(options, ext_desc)
         ext_value: object
-        if ext_desc.label == descriptor.FieldDescriptor.LABEL_REPEATED:
+        if is_repeated(ext_desc):
             values = readable.Extensions[ext_desc]
             if len(values) == 0:
                 continue
@@ -277,7 +277,7 @@ Both lint sites now call the seam and nothing else:
 as the plan's seam table had it. A re-export would have left a second public
 way to get the class.
 
-**The sibling fix**, `src/protokit/options.py:76-83` (anchor `Under upb a
+**The sibling fix**, `src/protokit/options.py:77-84` (anchor `Under upb a
 MethodDescriptor reaches its file only through`): after `file` and `pool`,
 `_owning_pool` tries `containing_service.file.pool` and then
 `containing_type.file.pool`, and only then falls back to `desc.type.file.pool`
@@ -294,7 +294,7 @@ up in the pool. That is a second input which can disagree with the extension
 whenever a caller finds the extension in one pool and holds a descriptor from
 another, which `get_option_value`'s `pool=` argument explicitly allows.
 `test_explicit_pool_holding_the_extension_resolves`
-(`tests/core/test_options.py:404`) reads a descriptor from one isolated pool
+(`tests/core/test_options.py:402`) reads a descriptor from one isolated pool
 through an extension from a second one.
 
 Binding on the extension also removes a second silent skip. The old helper
@@ -335,7 +335,7 @@ pool-bound options class" cannot be detected statically:
 (`src/protokit/_pools.py:251`), so a name-match ratchet would fire on day one.
 Instead the builder is private, and the only exported entry points are
 `rebind_options` and `extends`. `TestConstructionGuard`
-(`tests/core/test_extensions.py:203`) pins both modules' exported surfaces. Its
+(`tests/core/test_extensions.py:200`) pins both modules' exported surfaces. Its
 docstring says a from-scratch hand-roll is outside what it can rule out.
 
 ## Prevention
@@ -350,7 +350,7 @@ assert get_option_value(_ISO_FIELDS["annotated"], f"{_ISO_PKG}.limit") == 42
 assert get_option_value(_ISO_FIELDS["zeroed"], f"{_ISO_PKG}.limit") == 0
 ```
 
-`TestIsolatedPool` (`tests/core/test_options.py:339`) has ten such tests. Eight
+`TestIsolatedPool` (`tests/core/test_options.py:337`) has ten such tests. Eight
 were red before the fix. The two that were green are
 `test_absent_extensions_return_none` and
 `test_option_of_another_options_type_is_absent`. **An `is None` assertion alone
@@ -360,7 +360,7 @@ positive check for all eight options types.
 
 **2. Pin the premise, so its removal is visible.**
 `test_bootstrap_options_are_refused_by_identity`
-(`tests/core/test_extensions.py:146`), parametrized over the eight options
+(`tests/core/test_extensions.py:143`), parametrized over the eight options
 types, asserts `pytest.raises(KeyError)` on `GetOptions().HasExtension(ext)`. If
 a protobuf release stops refusing, this is the test that says the seam can go.
 
@@ -406,7 +406,7 @@ to be corrected here, and one of them was in `docs/solutions/`.
 **7. Exercise every accepted descriptor kind, under both backends.** The
 `_owning_pool` sibling was found only because clause 5 called the helper on a
 `MethodDescriptor`. `test_accepts_service_method_and_oneof_descriptors`
-(`tests/core/test_options.py:568`) was red on upb and green on pure-Python before
+(`tests/core/test_options.py:566`) was red on upb and green on pure-Python before
 the fix. The attribute layout differs by backend, so a helper that accepts "any
 descriptor" needs one case per kind, run in both CI cells.
 

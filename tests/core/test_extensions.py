@@ -16,10 +16,10 @@ with ``build_pool`` from a self-contained set; the default pool is not touched.
 from __future__ import annotations
 
 import pytest
-from google.protobuf import descriptor_pb2, message_factory
+from google.protobuf import descriptor_pb2
 
 from protokit._extensions import extends, rebind_options
-from protokit._pools import build_pool
+from protokit._pools import build_pool, get_message_class
 
 FD = descriptor_pb2.FieldDescriptorProto
 _PKG = "pkextseam"
@@ -67,10 +67,7 @@ def _build() -> dict[str, object]:
     scratch = build_pool(scratch_set)
 
     def annotate(options: object, ext_name: str, extendee: str, value: int) -> None:
-        cls = message_factory.GetMessageClass(
-            scratch.FindMessageTypeByName(f"google.protobuf.{extendee}"),
-        )
-        bound = cls()
+        bound = get_message_class(scratch, f"google.protobuf.{extendee}")()
         bound.Extensions[scratch.FindExtensionByName(f"{_PKG}.{ext_name}")] = value
         options.MergeFromString(bound.SerializeToString())
 
