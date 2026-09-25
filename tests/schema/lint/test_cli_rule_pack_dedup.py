@@ -590,7 +590,7 @@ class TestR9bCliInteractionRegression:
         extension defined on ``MethodOptions``. Without disable,
         the ``METHOD`` closure fires a finding (annotation absent)
         AND the ``FIELD`` closure emits ``rule_exception`` warnings
-        (``HasExtension`` raises ``KeyError`` because
+        (the options re-read raises ``KeyError`` because
         ``example.dual_thing`` extends ``MethodOptions``, not
         ``FieldOptions``). With bare-prefix
         ``--disable-rule custom/dual-thing``, BOTH closures are
