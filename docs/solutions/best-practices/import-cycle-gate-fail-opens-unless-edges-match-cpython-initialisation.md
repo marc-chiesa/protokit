@@ -117,7 +117,7 @@ route.
 **Shape two: `TYPE_CHECKING` recognised by spelling is not recognised at all.**
 An import under `if TYPE_CHECKING:` never executes, so excluding it is correct
 and necessary — the codebase uses exactly that break
-(`src/protokit/schema/profiles.py:16` imports `TYPE_CHECKING`, and lines 28-29
+(`src/protokit/schema/profiles.py:17` imports `TYPE_CHECKING`, and lines 30-31
 gate the plugin import behind it). But "the test is a `Name` whose `id` is `TYPE_CHECKING`" is a
 guess about a string, not a fact about the module. Each of these hides an
 import CPython really executes: `from typing import TYPE_CHECKING as X`
@@ -146,7 +146,7 @@ Two rules together, neither sufficient alone.
 
 **A `from <pkg> import <name>` is an edge to the submodule `<pkg>.<name>` when
 that is a module in the tree, and to `<pkg>` otherwise**
-(`tests/meta/test_import_layers.py:386-390`). This is what kills the phantom
+(`tests/meta/test_import_layers.py:387-391`). This is what kills the phantom
 `formatters` cycle: the submodule edge is the one the interpreter follows. A
 `from <pkg> import <attr>` where `<attr>` is a name the package's `__init__`
 binds *is* a dependency on `<pkg>` having finished running, so it stays an edge
@@ -154,7 +154,7 @@ to the package.
 
 **An import of `a.b.c` is additionally an edge to every package on that path
 the importer does not itself live under**
-(`tests/meta/test_import_layers.py:393-406`, applied at line 432):
+(`tests/meta/test_import_layers.py:394-407`, applied at line 432):
 
 ```python
 def _packages_on_path(target, importer_package, modules):
@@ -180,7 +180,7 @@ Be explicit that this rounds toward false positives. `import P.sub` requires
 interpreter tolerates is still reported as a cycle. That is a deliberate
 fail-closed trade, taken because dropping the rule to silence it reopens the
 real load-order failure above — and it is pinned as such, not left to be
-rediscovered (`tests/meta/test_import_layers.py:835-850`).
+rediscovered (`tests/meta/test_import_layers.py:836-851`).
 
 ### 2. Read the `TYPE_CHECKING` guard off the module's own bindings
 
@@ -191,7 +191,7 @@ was built to reject, and the fix is to key on the resolved binding. What
 follows is that rule's import-graph instance.
 
 Recognise the guard by what the module bound, not by how the token is spelled
-(`tests/meta/test_import_layers.py:263-316`). Collect names bound by
+(`tests/meta/test_import_layers.py:264-317`). Collect names bound by
 `from typing import TYPE_CHECKING [as X]` and module aliases bound by
 `import typing [as T]` (`typing_extensions` counts for both), then subtract
 every name the module rebinds or deletes:
@@ -207,14 +207,14 @@ return cls(
 Two details carry the correctness.
 
 **Module scope only.** `_module_scope_nodes`
-(`tests/meta/test_import_layers.py:198-211`) enters compound statements,
+(`tests/meta/test_import_layers.py:199-212`) enters compound statements,
 because their bodies run as the module loads, but yields without entering a
 `def`, `async def`, `class` or `lambda` — those are namespaces of their own, so
 a `TYPE_CHECKING` imported inside a function is invisible to a module-level
 `if`.
 
 **Over-collect the rebound set on purpose.** `_rebound_at_module_scope`
-(`tests/meta/test_import_layers.py:214-260`) counts comprehension targets and
+(`tests/meta/test_import_layers.py:215-261`) counts comprehension targets and
 `global` declarations it arguably should not, and the docstring says why: a
 dropped guard name costs a false positive, a stale one costs a missed import
 CPython executes. Round the same direction everywhere, and write the direction
@@ -224,17 +224,17 @@ Everything the gate does not recognise as the guard is a plain `if` and both
 arms are entered — `Flags.TYPE_CHECKING` on some other receiver, a compound
 `TYPE_CHECKING or X`, a `TYPE_CHECKING` never imported at all. The negated form
 `if not TYPE_CHECKING:` counts its body and skips its `else`
-(`tests/meta/test_import_layers.py:343-346`).
+(`tests/meta/test_import_layers.py:344-347`).
 
 The rest of the execution model falls out of the same question — *does this run
 at import?* A `def`, `async def` or nested `def` body does not
-(`tests/meta/test_import_layers.py:151`, and `async def` is easy to omit); a
+(`tests/meta/test_import_layers.py:152`, and `async def` is easy to omit); a
 `try` body, an `except` arm, a `try`/`else`, a `finally`, an `if`/`elif`/`else`,
 a `with`, a `for`, a `while`, a `match` arm and a class body all do. Resolve
 relative imports against the importer's `__package__`, which is the module
 itself for a package `__init__` and its parent otherwise
-(`tests/meta/test_import_layers.py:425`). And parse from bytes, not text
-(`tests/meta/test_import_layers.py:423`): a BOM or a PEP 263 coding cookie the
+(`tests/meta/test_import_layers.py:426`). And parse from bytes, not text
+(`tests/meta/test_import_layers.py:424`): a BOM or a PEP 263 coding cookie the
 interpreter accepts would otherwise error the whole gate on a file whose
 imports are not the problem.
 
@@ -247,19 +247,19 @@ cycle does not raise at all — the half-initialised module is simply bound — 
 a runtime sweep alone would miss the cycles the gate exists to find.
 
 The gate is not complete either. `test_every_module_imports_in_a_fresh_interpreter`
-(`tests/meta/test_import_layers.py:641-664`) imports every module of the tree in
+(`tests/meta/test_import_layers.py:642-665`) imports every module of the tree in
 its own subprocess and is the runtime complement — it catches the module-level
 call, the `importlib` string, and the module `__getattr__` the `ast` walk cannot
 see. It is cheap enough not to be an excuse: 78 modules across eight threads,
 and the whole file (80 tests) runs in about two seconds locally. Bound each
-subprocess on wall clock (`tests/meta/test_import_layers.py:480`) and turn the
+subprocess on wall clock (`tests/meta/test_import_layers.py:481`) and turn the
 timeout into an ordinary named failure row
-(`tests/meta/test_import_layers.py:503-517`), or a module that blocks on load
+(`tests/meta/test_import_layers.py:504-518`), or a module that blocks on load
 stalls the suite until the CI job cap and names nothing.
 
 Then pin the seam. Every deliberate over-approximation gets a test that asserts
 **both** verdicts — the gate's and the interpreter's — on the same synthetic
-package (`tests/meta/test_import_layers.py:852-884`, and the individually
+package (`tests/meta/test_import_layers.py:853-885`, and the individually
 pinned boundaries at lines 835-850 and 886-902). A trade-off asserted in two
 places is a decision; the same trade-off asserted in one place is a bug waiting
 to be "fixed" by someone who only saw the other half.
@@ -269,11 +269,11 @@ to be "fixed" by someone who only saw the other half.
 With no `src` anchor for `scripts/mutation_check.py`, the substitute is a
 self-test class that runs the real walk over synthetic `pkg` / `pkg.sub`
 packages with one violation injected each, and asserts the failure names it
-(`tests/meta/test_import_layers.py:756-1252`). Add a coverage guard so the
+(`tests/meta/test_import_layers.py:757-1253`). Add a coverage guard so the
 cycle assertion cannot pass on a graph that is not the package's: every module
 is a node, the node count equals the `.py` count, known modules are present, and
 no edge points outside the tree
-(`tests/meta/test_import_layers.py:555-569`).
+(`tests/meta/test_import_layers.py:556-570`).
 
 The self-tests only work if someone actively tries to write a passing wrong
 implementation. That is the practice, not the file: for each rule, write the
@@ -368,7 +368,7 @@ modules break — every module under `protokit.message` — but `import protokit
 still succeeds, so a developer who checks the top-level entry point sees
 nothing wrong.
 The synthetic form of the same shape is pinned at
-`tests/meta/test_import_layers.py:715-719` and asserted at lines 818-822, with
+`tests/meta/test_import_layers.py:716-720` and asserted at lines 818-822, with
 the two-package-deep version — the one a parent-only rule misses — at lines
 741-746 and 824-833:
 
@@ -393,13 +393,13 @@ that is how narrow the accident is. The real rule records
 `protokit.formatters -> {_builtin_bisect, _builtin_compat, _builtin_diff,
 _builtin_history, _junit_xml, _registry, _sarif_json}` and no back-edges, and
 `test_formatters_package_init_shape_is_present_and_not_a_cycle`
-(`tests/meta/test_import_layers.py:600-618`) asserts both halves — that the
+(`tests/meta/test_import_layers.py:601-619`) asserts both halves — that the
 shape is still there, and that no `_builtin_*` module imports the package
 itself, which would be the genuine back-edge the submodule rule does not
 excuse.
 
 The minimal form, as the self-tests write it
-(`tests/meta/test_import_layers.py:726-730`):
+(`tests/meta/test_import_layers.py:727-731`):
 
 ```python
 _PACKAGE_INIT_SHAPE = {
@@ -412,7 +412,7 @@ _PACKAGE_INIT_SHAPE = {
 
 ### Guard spellings that are not the guard
 
-Ten parametrised cases at `tests/meta/test_import_layers.py:988-1051` each
+Ten parametrised cases at `tests/meta/test_import_layers.py:989-1052` each
 assert the *cycle is reported* — the fail-closed direction. The four that are
 easy to get wrong:
 
@@ -432,7 +432,7 @@ easy to get wrong:
 
 The rebound-name case is not merely a modelling nicety: it is carried into
 `test_gate_verdict_agrees_with_the_interpreter`
-(`tests/meta/test_import_layers.py:734-738, 852-884`), where the interpreter is
+(`tests/meta/test_import_layers.py:735-739, 852-884`), where the interpreter is
 asserted to fail with `partially initialized module` on the same source. A
 spelling-based walker calls all four `TYPE_CHECKING` and skips an import
 CPython runs.
@@ -448,12 +448,12 @@ _SIBLING_PACKAGE_SHAPE = {
 ```
 
 `test_cycle_through_a_sibling_package_init_is_a_deliberate_over_approximation`
-(`tests/meta/test_import_layers.py:835-850`) asserts the gate reports
+(`tests/meta/test_import_layers.py:836-851`) asserts the gate reports
 `{pkg._a, pkg.sub}` **and** that a fresh interpreter imports `pkg._a`,
 `pkg.sub` and `pkg.sub._c` with return code 0. Both facts are true, the test
 says so, and the comment says which one the project chose to live with. The
 boundary on the other side gets the same treatment
-(`tests/meta/test_import_layers.py:886-902`): the gate reports no cycle for an
+(`tests/meta/test_import_layers.py:887-903`): the gate reports no cycle for an
 import executed by a module-level `register()` call while the interpreter
 fails, and the test asserts *both*, so extending the walker to follow
 module-level calls is a visible, deliberate update to this pin rather than a
@@ -474,15 +474,15 @@ which is what added the test that now catches it:
 
 The deferred-import pins are the same idea applied to the real tree rather than
 to synthetic packages: `DEFERRED_EDGES`
-(`tests/meta/test_import_layers.py:140-143`) names the two function-level
+(`tests/meta/test_import_layers.py:141-144`) names the two function-level
 imports that exist to break a load-time cycle —
 `src/protokit/schema/profiles.py:192-193` importing `SchemaChecker` inside a
 method, against `src/protokit/schema/checker.py:76`'s top-level
 `from protokit.schema.profiles import filter_for_level`; and
 `src/protokit/message/pytest_plugin.py:585-586` importing `matchers` inside
-`ProtoMatcherFactory.__call__`, against `src/protokit/message/matchers.py:37`'s
+`ProtoMatcherFactory.__call__`, against `src/protokit/message/matchers.py:38`'s
 top-level `from protokit.message.pytest_plugin import render_diff_lines`. The
-test (`tests/meta/test_import_layers.py:580-598`) asserts each edge is **absent**
+test (`tests/meta/test_import_layers.py:581-599`) asserts each edge is **absent**
 from the load-time graph, **present** in the deferred graph, and that the
 reverse top-level edge still exists — so "top-level only" is proven on the real
 tree, and a future hoist of either import into module scope fails with a message
@@ -495,7 +495,7 @@ naming the pair.
   deliberately does not reuse that `_tarjan_scc`: a meta gate must not depend
   on a module a later decomposition moves, and `graphlib.TopologicalSorter`'s
   `CycleError` already carries the cycle path
-  (`tests/meta/test_import_layers.py:438-450`).
+  (`tests/meta/test_import_layers.py:439-451`).
 - [`circular-import-type-checking-cycle-break-2026-05-11.md`](circular-import-type-checking-cycle-break-2026-05-11.md)
   — the other side of the same coin: how to *use* `TYPE_CHECKING` to break a
   cycle. This doc is the gate that must not be fooled by it, and by every

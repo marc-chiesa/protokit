@@ -52,6 +52,7 @@ from google.protobuf.message import Message
 
 from protokit import _descriptors
 from protokit._fieldview import FieldView
+from protokit._records import as_tuple
 from protokit.storage.source import StorageError
 
 
@@ -76,6 +77,15 @@ class CompiledSelection:
     """
 
     paths: tuple[tuple[str, ...], ...]
+
+    def __post_init__(self) -> None:
+        """Own ``paths`` and each path in it; a dotted string is refused, not split."""
+        paths = as_tuple(self.paths, "CompiledSelection.paths")
+        object.__setattr__(
+            self,
+            "paths",
+            tuple(as_tuple(path, "CompiledSelection.paths[]") for path in paths),
+        )
 
 
 class FieldSelectionError(StorageError):

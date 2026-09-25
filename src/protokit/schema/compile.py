@@ -29,7 +29,6 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf import descriptor_pool
@@ -40,6 +39,7 @@ from protokit._cli_utils import (
     _has_protoxy,
 )
 from protokit._pools import DescriptorPoolError
+from protokit._records import as_mapping, as_tuple, one_of, own_tuples
 
 if TYPE_CHECKING:
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
@@ -65,6 +65,9 @@ Agents and formatters should branch on this rather than on
 ``Exception`` subclass name reaches category ``"unexpected"``);
 this Literal is the stable, exhaustive discriminator.
 """
+
+
+_LEVELS: frozenset[str] = frozenset({"info", "warning", "error"})
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,16 @@ class LintCompileDiagnostic:
     exit_code: int | None = None
     stderr: str | None = None
     exception_type: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a ``level`` the ``== "error"`` readers would miss; own ``command``."""
+        one_of(self.level, _LEVELS, "LintCompileDiagnostic.level")
+        if self.command is not None:
+            object.__setattr__(
+                self,
+                "command",
+                as_tuple(self.command, "LintCompileDiagnostic.command"),
+            )
 
     def __str__(self) -> str:
         """Render as a deterministic single-line human form.
@@ -262,9 +275,7 @@ class CompileResult:
         for the paired-field invariant pattern this check applies to
         ``(pool_file_names, root_files)``.
         """
-        object.__setattr__(self, "root_files", tuple(self.root_files))
-        object.__setattr__(self, "pool_file_names", tuple(self.pool_file_names))
-        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        own_tuples(self, "root_files", "pool_file_names", "diagnostics")
         # pool_file_names invariant check (after the tuple snapshots
         # above so we operate on the immutable forms). ce:review
         # follow-up (Finding #10): also
@@ -299,7 +310,10 @@ class CompileResult:
             object.__setattr__(
                 self,
                 "source_info_descriptors",
-                MappingProxyType(dict(self.source_info_descriptors)),
+                as_mapping(
+                    self.source_info_descriptors,
+                    "CompileResult.source_info_descriptors",
+                ),
             )
 
 

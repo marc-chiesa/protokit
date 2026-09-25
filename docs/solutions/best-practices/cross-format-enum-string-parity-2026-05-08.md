@@ -206,7 +206,7 @@ sibling-parity discipline.
 
 ### Anchor: the U4b severity-casing bug
 
-`LintSeverity` definition (`src/protokit/schema/lint/model.py:75`):
+`LintSeverity` definition (`src/protokit/schema/lint/model.py:77`):
 
 ```python
 class LintSeverity(Enum):

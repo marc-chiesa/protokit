@@ -152,6 +152,7 @@ jobs:
             src/protokit/_cli_utils.py \
             src/protokit/_extensions.py \
             src/protokit/_fieldview.py \
+            src/protokit/_records.py \
             src/protokit/_trust.py \
             src/protokit/forensics/ \
             src/protokit/formatters/_builtin_lint.py \
@@ -160,10 +161,13 @@ jobs:
             src/protokit/message/_setmatch.py \
             src/protokit/message/hamcrest.py \
             src/protokit/message/matchers.py \
+            src/protokit/message/model.py \
             src/protokit/message/pytest_plugin.py \
             src/protokit/options.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
+            src/protokit/schema/model.py \
+            src/protokit/schema/profiles.py \
             src/protokit/storage/ \
             scripts/check_dependency_drift.py \
             scripts/check_docs_test_refs.py

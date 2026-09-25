@@ -12,11 +12,13 @@ means using ``SchemaChecker`` directly.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterable, Sequence
+from typing import TYPE_CHECKING
 
 from google.protobuf import descriptor_pool
 
+from protokit._records import own_tuples
 from protokit.schema.model import (
     CompatibilityLevel,
     CompatibilityReport,
@@ -135,8 +137,8 @@ class CompatibilityPolicy:
     """
 
     base: CompatibilityLevel = CompatibilityLevel.CONSUMER_SAFE
-    custom_rules: Sequence[tuple[str, "FieldPlugin"]] = field(default_factory=tuple)
-    message_rules: Sequence[tuple[str, "MessagePlugin"]] = field(default_factory=tuple)
+    custom_rules: Sequence[tuple[str, FieldPlugin]] = field(default_factory=tuple)
+    message_rules: Sequence[tuple[str, MessagePlugin]] = field(default_factory=tuple)
     ignore_paths: Sequence[str] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -148,9 +150,7 @@ class CompatibilityPolicy:
         behavior after construction. We snapshot into tuples here so
         the frozen guarantee is real.
         """
-        object.__setattr__(self, "custom_rules", tuple(self.custom_rules))
-        object.__setattr__(self, "message_rules", tuple(self.message_rules))
-        object.__setattr__(self, "ignore_paths", tuple(self.ignore_paths))
+        own_tuples(self, "custom_rules", "message_rules", "ignore_paths")
 
     def check(
         self,
@@ -195,8 +195,8 @@ class CompatibilityPolicy:
         checker = SchemaChecker(level=self.base)
         for rule_id, plugin_fn in self.custom_rules:
             checker.register_field_rule(rule_id, plugin_fn)
-        for rule_id, plugin_fn in self.message_rules:
-            checker.register_message_rule(rule_id, plugin_fn)
+        for rule_id, message_fn in self.message_rules:
+            checker.register_message_rule(rule_id, message_fn)
         for path in self.ignore_paths:
             checker.ignore(path)
         return checker.check(old_pool, old_type, new_pool, new_type)

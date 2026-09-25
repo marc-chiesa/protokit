@@ -131,6 +131,7 @@ SEAM_MODULES = (
 LANDED_SEAMS: frozenset[str] = frozenset({
     "protokit._extensions",
     "protokit._fieldview",
+    "protokit._records",
     "protokit._trust",
 })
 

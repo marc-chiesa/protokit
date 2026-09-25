@@ -227,3 +227,24 @@ class TestParenthesisedExtensionSegment:
         assert FieldPath.parse("inner.(x.tag)").matches_selector(FieldPath.parse("inner.(x.tag)"))
         assert not FieldPath.parse("(x.tag)").matches_selector(FieldPath.parse("inner.(x.tag)"))
         assert not FieldPath.parse("(x.tag)").matches_selector(FieldPath.parse("(x.rank)"))
+
+
+class TestFieldPathFromAList:
+    """Adjacent behavior to U6: the docstring's ``FieldPath([...])`` form.
+
+    ``FieldPath.parse`` documents its result as ``FieldPath([PathSegment(...)])``,
+    so a list must still build a path — now one that owns a tuple, compares
+    and hashes like the tuple-built path, and does not follow the list.
+    """
+
+    def test_a_list_builds_the_same_path_as_a_tuple(self) -> None:
+        segments = [PathSegment("user"), PathSegment("name")]
+        from_list = FieldPath(segments)  # type: ignore[arg-type]
+        segments.append(PathSegment("extra"))
+        assert from_list == FieldPath.parse("user.name")
+        assert hash(from_list) == hash(FieldPath.parse("user.name"))
+        assert type(from_list.segments) is tuple
+
+    def test_a_dotted_string_is_refused_rather_than_split(self) -> None:
+        with pytest.raises(TypeError, match=r"FieldPath\.segments"):
+            FieldPath("user.name")  # type: ignore[arg-type]

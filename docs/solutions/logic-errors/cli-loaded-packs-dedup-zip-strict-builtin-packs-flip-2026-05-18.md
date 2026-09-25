@@ -56,7 +56,7 @@ This analysis was **technically correct at the engine layer** — the engine doe
 loaded_packs.append(_load_user_rule_pack(module_name, engine))
 ```
 
-The `_load_user_rule_pack(...)` call returns the user-pack module object even when the engine's internal load is a no-op. The `loaded_packs.append(...)` then unconditionally inserts a duplicate REFERENCE into the list, regardless of whether the engine performed any registration. The frozenset-union mechanism in `LintProfile.compose` (`model.py:717-719`) absorbs duplicate rule IDs at profile-composition time, which **masked the list-length mismatch at the rule-set layer** — but the `zip(strict=True)` at the R25 provenance line sees raw list lengths, not rule IDs, so no union semantics protected it.
+The `_load_user_rule_pack(...)` call returns the user-pack module object even when the engine's internal load is a no-op. The `loaded_packs.append(...)` then unconditionally inserts a duplicate REFERENCE into the list, regardless of whether the engine performed any registration. The frozenset-union mechanism in `LintProfile.compose` (`model.py:719-721`) absorbs duplicate rule IDs at profile-composition time, which **masked the list-length mismatch at the rule-set layer** — but the `zip(strict=True)` at the R25 provenance line sees raw list lengths, not rule IDs, so no union semantics protected it.
 
 The three-mechanism analysis (engine idempotency + CLI accumulator + frozenset union) had a gap in the middle: the CLI accumulator was assumed to inherit the engine's dedup semantics, but it doesn't.
 

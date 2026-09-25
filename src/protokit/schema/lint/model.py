@@ -48,11 +48,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from types import MappingProxyType, ModuleType
-from typing import TYPE_CHECKING, Any, Literal
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
+
+from protokit._records import as_frozenset, as_mapping, own_tuples
 
 if TYPE_CHECKING:
     # ``FileDescriptorProto`` is referenced only by the 5 ElementKind
@@ -751,15 +753,13 @@ class LintReport:
         are already tuple-immutable; ``specs`` would otherwise allow
         ``report.specs[k] = v`` post-construction).
         """
-        object.__setattr__(self, "findings", tuple(self.findings))
-        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
-        object.__setattr__(self, "profiles_run", tuple(self.profiles_run))
-        object.__setattr__(self, "rules_run", tuple(self.rules_run))
-        object.__setattr__(
-            self, "runtime_warnings", tuple(self.runtime_warnings),
+        own_tuples(
+            self,
+            "findings", "diagnostics", "profiles_run", "rules_run",
+            "runtime_warnings",
         )
         object.__setattr__(
-            self, "specs", MappingProxyType(dict(self.specs)),
+            self, "specs", as_mapping(self.specs, "LintReport.specs"),
         )
 
 
@@ -801,6 +801,9 @@ class LintProfile:
         """
         object.__setattr__(
             self, "rule_severity_overrides", dict(self.rule_severity_overrides),
+        )
+        object.__setattr__(
+            self, "rule_ids", as_frozenset(self.rule_ids, "LintProfile.rule_ids"),
         )
 
     @classmethod
@@ -1006,6 +1009,7 @@ class LintRuleSpec:
             object.__setattr__(self, "severity", dict(severity))
         if isinstance(template, dict):
             object.__setattr__(self, "message_template", dict(template))
+        own_tuples(self, "profiles")
 
     def severity_for(self, violation_kind: str) -> LintSeverity:
         """Return the effective default severity for ``violation_kind``.
@@ -1065,6 +1069,21 @@ class _LintContextEmitMixin:
     # the mixin would force the dataclass field ordering and conflict
     # with the "engine-injected fields LAST" rule per pass-2 codex
     # correction.
+
+    # The context's Mapping fields, made read-only at construction. The
+    # engine already hands over ``MappingProxyType`` values, which
+    # ``as_mapping`` passes through without copying — this runs once per
+    # schema element per rule.
+    _MAPPING_FIELDS: ClassVar[tuple[str, ...]] = ("source_info_descriptors",)
+
+    def __post_init__(self) -> None:
+        """Make each of ``_MAPPING_FIELDS`` read-only at its top level."""
+        for name in self._MAPPING_FIELDS:
+            value = getattr(self, name, None)
+            if value is not None:
+                object.__setattr__(
+                    self, name, as_mapping(value, f"{type(self).__name__}.{name}"),
+                )
 
     def emit(
         self,
@@ -1163,6 +1182,10 @@ class CycleEdge:
     cycle_path: tuple[str, ...]
     line: int | None = None
     column: int | None = None
+
+    def __post_init__(self) -> None:
+        """Own ``cycle_path``; a package name is refused, not split."""
+        own_tuples(self, "cycle_path")
 
 
 @dataclass(frozen=True)
@@ -1270,6 +1293,13 @@ class FileLintContext(_LintContextEmitMixin):
     # check_package_no_import_cycle); does not need a dual-view
     # accumulator since cross-file dispatch is single-keyed.
     import_cycles: Mapping[str, tuple[CycleEdge, ...]] | None = None
+
+    _MAPPING_FIELDS: ClassVar[tuple[str, ...]] = (
+        "package_options",
+        "directory_packages",
+        "directory_packages_by_dir",
+        "import_cycles",
+    )
 
     def location(self) -> LintLocation:
         """Return ``FileLocation(file=self.file.name)``."""

@@ -1449,7 +1449,7 @@ class LintEngine:
 
         ``finding.severity`` is already the effective severity — set
         inside ``_LintContextEmitMixin.emit()`` via the engine-injected
-        ``_effective_severity`` closure (see ``model.py:643-646``). This
+        ``_effective_severity`` closure (see ``model.py:645-648``). This
         callback's job is the min-severity gate only.
         """
         # ``_current_profile`` is set at ``run()`` entry and cleared in the

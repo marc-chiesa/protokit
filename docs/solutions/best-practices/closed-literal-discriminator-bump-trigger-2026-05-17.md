@@ -228,7 +228,7 @@ The presence-ratchet test (`tests/schema/lint/test_model_dataclass_changes.py`) 
 
 ### The same lesson at the field site
 
-`LintRuntimeWarning` docstring (after U5, at `src/protokit/schema/lint/model.py:354-510`) enumerates per-category contracts that make the closed-discriminator nature obvious:
+`LintRuntimeWarning` docstring (after U5, at `src/protokit/schema/lint/model.py:356-512`) enumerates per-category contracts that make the closed-discriminator nature obvious:
 
 ```
 1. ``"rule_exception"`` — populates exception_type + descriptor_path
