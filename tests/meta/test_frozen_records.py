@@ -225,7 +225,13 @@ def _element_tuple(
     else:
         return False, 0
     seen: frozenset[str] = frozenset()
-    while (resolved := _resolve_alias(element, namespace, seen)) is not None:
+    while True:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            element = _parse(element.value, "quoted element annotation")
+            continue
+        resolved = _resolve_alias(element, namespace, seen)
+        if resolved is None:
+            break
         element, name = resolved
         seen |= {name}
     if not (isinstance(element, ast.Subscript) and _head_name(element) in {"tuple", "Tuple"}):
@@ -745,6 +751,16 @@ class _SharesInnerPairs:
 
 
 @dataclass(frozen=True)
+class _SharesQuotedInnerPairs:
+    pairs: 'tuple["tuple[str, int]", ...]' = ()  # noqa: UP037 -- the form under test
+
+    def __post_init__(self) -> None:
+        from protokit._records import as_tuple
+
+        object.__setattr__(self, "pairs", as_tuple(self.pairs, "pairs"))
+
+
+@dataclass(frozen=True)
 class _DictFromPairs:
     table: dict[str, int] = dataclasses.field(default_factory=dict)
 
@@ -771,6 +787,7 @@ class _DictFromPairs:
         (_AbstractAnnotation, "annotated as an abstract collection"),
         (_QuotedAnnotation, "stores a list, not a tuple"),
         (_SharesInnerPairs, "keeps the caller's inner list"),
+        (_SharesQuotedInnerPairs, "keeps the caller's inner list"),
         (_DictFromPairs, "builds a mapping from a str list"),
     ],
 )

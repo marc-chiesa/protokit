@@ -993,22 +993,22 @@ class LintRuleSpec:
            hit a clear failure rather than a runtime KeyError at first
            render.
         """
+        # Anything else is the multi-kind arm: a mapping, never a list stored as-is.
         severity = self.severity
+        if not isinstance(severity, LintSeverity):
+            severity = as_dict(severity, "LintRuleSpec.severity")
         template = self.message_template
-        severity_is_dict = isinstance(severity, dict)
-        template_is_dict = isinstance(template, dict)
-        if severity_is_dict != template_is_dict:
+        if not isinstance(template, str):
+            template = as_dict(template, "LintRuleSpec.message_template")
+        if isinstance(severity, dict) != isinstance(template, dict):
             raise TypeError(
-                f"LintRuleSpec({self.rule_id!r}): severity and "
-                f"message_template must share the same shape "
-                f"(both single-kind, or both dict for multi-kind); "
-                f"got severity={type(severity).__name__}, "
+                f"LintRuleSpec({self.rule_id!r}): severity and message_template "
+                f"must share the same shape (both single-kind, or both dict for "
+                f"multi-kind); got severity={type(severity).__name__}, "
                 f"message_template={type(template).__name__}."
             )
-        if isinstance(severity, dict):
-            object.__setattr__(self, "severity", dict(severity))
-        if isinstance(template, dict):
-            object.__setattr__(self, "message_template", dict(template))
+        object.__setattr__(self, "severity", severity)
+        object.__setattr__(self, "message_template", template)
         own_tuples(self, "profiles")
 
     def severity_for(self, violation_kind: str) -> LintSeverity:

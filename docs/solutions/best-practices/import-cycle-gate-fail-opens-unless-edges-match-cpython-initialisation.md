@@ -51,7 +51,7 @@ That is a fail-open gate — the 0.16.0 correctness programme's theme, applied t
 the programme's own tooling. `tests/meta/test_import_layers.py` (U21, PR #61)
 is the gate: it asserts `protokit` has zero module-load import cycles, and that
 the layer-0 seam modules Wave B hoists shared logic into import nothing from
-`protokit` at any scope (`tests/meta/test_import_layers.py:107-123`, asserted at lines 621-632). Every
+`protokit` at any scope (`tests/meta/test_import_layers.py:107-123`, asserted at lines 625-636). Every
 Wave B unit rests on that property, so the gate is load-bearing for work that
 has not landed yet — which makes a gate that silently passes worse than no gate
 at all.
@@ -154,7 +154,7 @@ to the package.
 
 **An import of `a.b.c` is additionally an edge to every package on that path
 the importer does not itself live under**
-(`tests/meta/test_import_layers.py:398-411`, applied at line 433):
+(`tests/meta/test_import_layers.py:398-411`, applied at line 437):
 
 ```python
 def _packages_on_path(target, importer_package, modules):

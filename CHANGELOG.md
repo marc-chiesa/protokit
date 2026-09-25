@@ -351,7 +351,8 @@ to hand back the caller's own list now returns a tuple, so code that appended
 to `report.findings` after construction gets an `AttributeError` instead of a
 silently changed report. `LintFinding.params` and
 `LintProfile.rule_severity_overrides` no longer accept a list of key/value
-pairs; pass a dict. A rule pack declaring `@lint_rule(profiles="name")`
+pairs, and neither does the multi-kind form of `LintRuleSpec.severity` /
+`message_template` (a list there was stored as-is); pass a dict. A rule pack declaring `@lint_rule(profiles="name")`
 with a single string now fails at import; pass `profiles=("name",)`. The
 string used to be kept as it was and matched profile names as a substring.
 A `Mapping` field keeps a `MappingProxyType` it is given without copying it,
