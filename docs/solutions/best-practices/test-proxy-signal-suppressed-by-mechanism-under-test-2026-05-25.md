@@ -1,6 +1,7 @@
 ---
 title: "Test proxy signal must be independent of the suppression mechanism under test"
 date: 2026-05-25
+last_updated: 2026-09-25
 category: docs/solutions/best-practices
 module: tests/schema/lint
 problem_type: best_practice
@@ -207,7 +208,7 @@ def test_multi_kind_custom_prefix_expansion_via_cli_no_duplication(self, tmp_pat
 ```python
     # Part 2 — Real extension declared on MethodOptions only.
     # METHOD closure: resolves and fires (annotation absent → finding).
-    # FIELD closure:  HasExtension raises KeyError (wrong extendee)
+    # FIELD closure:  the options re-read raises KeyError (wrong extendee)
     #                 → rule_exception warning with rule_id="custom/dual-thing__field".
     # BOTH observables are in the disable's blast radius — both drop to zero
     # when bare-prefix expansion correctly suppresses both rule_ids.
