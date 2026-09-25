@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from google.protobuf import message_factory
+from google.protobuf import message, message_factory
 
 
 def extends(options: Any, ext_desc: Any) -> bool:
@@ -99,7 +99,12 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
             f"not {options.DESCRIPTOR.full_name!r}"
         )
     rebound = _options_class(target)()
-    rebound.MergeFromString(options.SerializeToString())
+    try:
+        rebound.MergeFromString(options.SerializeToString())
+    except UnicodeDecodeError as exc:
+        # Pure-python validates proto3 string UTF-8 while parsing and raises
+        # this where upb raises DecodeError; callers get one type on both.
+        raise message.DecodeError(f"{ext_desc.full_name}: {exc}") from exc
     return rebound
 
 

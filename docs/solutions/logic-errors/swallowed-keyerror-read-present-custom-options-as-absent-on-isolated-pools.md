@@ -242,7 +242,7 @@ ext_desc)`):
 The presence guard is unchanged: `HasExtension` for singular extensions,
 emptiness for repeated ones. The `except` is gone.
 
-**The re-read**, `src/protokit/_extensions.py:65-103` (anchor `def
+**The re-read**, `src/protokit/_extensions.py:65-108` (anchor `def
 rebind_options`):
 
 ```python
@@ -255,7 +255,12 @@ rebind_options`):
             f"not {options.DESCRIPTOR.full_name!r}"
         )
     rebound = _options_class(target)()
-    rebound.MergeFromString(options.SerializeToString())
+    try:
+        rebound.MergeFromString(options.SerializeToString())
+    except UnicodeDecodeError as exc:
+        # Pure-python validates proto3 string UTF-8 while parsing and raises
+        # this where upb raises DecodeError; callers get one type on both.
+        raise message.DecodeError(f"{ext_desc.full_name}: {exc}") from exc
     return rebound
 ```
 
@@ -264,7 +269,7 @@ extends`), compares `options.DESCRIPTOR.full_name` with
 `ext_desc.containing_type.full_name`. It compares by name because the two sides
 usually come from different pools.
 
-`_options_class` (`src/protokit/_extensions.py:106-118`) calls
+`_options_class` (`src/protokit/_extensions.py:111-123`) calls
 `message_factory.GetMessageClass` and falls back to
 `MessageFactory(pool).GetPrototype`. `GetMessageClass` is absent from protobuf
 4.21, the declared floor, and present by 4.25, the floor CI runs.
@@ -337,8 +342,11 @@ pool-bound options class" cannot be detected statically:
 (`src/protokit/_pools.py:251`), so a name-match ratchet would fire on day one.
 Instead the builder is private, and the only exported entry points are
 `rebind_options` and `extends`. `TestConstructionGuard`
-(`tests/core/test_extensions.py:200`) pins both modules' exported surfaces. Its
-docstring says a from-scratch hand-roll is outside what it can rule out.
+(`tests/core/test_extensions.py:230`) pins both modules' exported surfaces, and
+counts a builder re-exported from protobuf or wrapped in a `typing` alias as
+exported: the first version checked only locally defined functions, and a
+cross-model refuter bypassed it both ways. Its docstring says a from-scratch
+hand-roll is outside what it can rule out.
 
 ## Prevention
 
@@ -362,7 +370,7 @@ positive check for all eight options types.
 
 **2. Pin the premise, so its removal is visible.**
 `test_bootstrap_options_are_refused_by_identity`
-(`tests/core/test_extensions.py:143`), parametrized over the eight options
+(`tests/core/test_extensions.py:146`), parametrized over the eight options
 types, asserts `pytest.raises(KeyError)` on `GetOptions().HasExtension(ext)`. If
 a protobuf release stops refusing, this is the test that says the seam can go.
 

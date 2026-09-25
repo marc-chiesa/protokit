@@ -15,8 +15,11 @@ with ``build_pool`` from a self-contained set; the default pool is not touched.
 
 from __future__ import annotations
 
+import typing
+
 import pytest
 from google.protobuf import descriptor_pb2
+from google.protobuf.message import DecodeError
 
 from protokit._extensions import extends, rebind_options
 from protokit._pools import build_pool, get_message_class
@@ -177,6 +180,33 @@ class TestRebindOptions:
         assert options.SerializeToString() == before
         assert type(options) is descriptor_pb2.FieldOptions
 
+    def test_invalid_utf8_string_option_raises_decode_error(self) -> None:
+        """A proto3 string option holding invalid UTF-8 raises one type on
+        both backends. Pure-python validates while parsing and raises
+        ``UnicodeDecodeError``, upb raises ``DecodeError``; callers are told
+        to expect the latter.
+        """
+        f = descriptor_pb2.FileDescriptorProto(
+            name="pkextseam_utf8.proto", package=_PKG, syntax="proto3",
+        )
+        f.dependency.append("google/protobuf/descriptor.proto")
+        ext = f.extension.add()
+        ext.name, ext.number, ext.type = "text_opt", 68309, FD.TYPE_STRING
+        ext.label, ext.extendee = FD.LABEL_OPTIONAL, ".google.protobuf.FieldOptions"
+        fld = f.message_type.add(name="U").field.add()
+        fld.name, fld.number, fld.type = "a", 1, FD.TYPE_INT32
+        fld.label = FD.LABEL_OPTIONAL
+        # 68309 as a length-delimited field holding the lone byte 0xff.
+        fld.options.MergeFromString(bytes.fromhex("aaad2101ff"))
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.extend([_descriptor_proto_file(), f])
+        pool = build_pool(fds)
+        field = pool.FindMessageTypeByName(f"{_PKG}.U").fields_by_name["a"]
+        with pytest.raises(DecodeError):
+            rebind_options(
+                field.GetOptions(), pool.FindExtensionByName(f"{_PKG}.text_opt"),
+            )
+
     def test_extension_of_another_options_type_raises(self) -> None:
         """A method option asked of a field's options is a caller error the
         lint rules surface as ``rule_exception`` — it must not read as absent
@@ -213,8 +243,9 @@ class TestConstructionGuard:
     A re-export counts as offering the class: binding protobuf's
     ``GetMessageClass`` to a public name here hands it to every caller as
     surely as defining a builder would, so a callable is counted wherever
-    it was defined. Only typing constructs, which build no messages, are
-    left out.
+    it was defined. Only ``typing.Any`` itself is left out, by identity: a
+    ``typing`` alias can wrap a working builder, so the ``typing`` module
+    is not an exemption.
     """
 
     @staticmethod
@@ -224,7 +255,7 @@ class TestConstructionGuard:
             for name, value in vars(module).items()
             if not name.startswith("_")
             and callable(value)
-            and getattr(value, "__module__", None) not in {"typing", "typing_extensions"}
+            and value is not typing.Any
         }
 
     def test_seam_exports_only_the_re_read(self) -> None:
