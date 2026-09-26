@@ -182,7 +182,7 @@ class TestListFormatters:
     def test_returns_built_ins_when_no_user_formatters(self) -> None:
         # Built-ins for DIFF / COMPAT / COMPAT_HISTORY / COMPAT_BISECT
         # are registered at ``protokit.formatters`` import (eager-load
-        # tuple at ``__init__.py:60-71``). Each ships at least
+        # tuple at ``__init__.py:67-74``). Each ships at least
         # ``human`` and ``json`` (Phase 1.5b).
         #
         # ``LINT_REPORT`` is intentionally NOT in the eager-load tuple

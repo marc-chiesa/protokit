@@ -102,10 +102,10 @@ That is ordinary package initialisation.
 and each of those does `from protokit.formatters import _junit_xml as junit`
 (`src/protokit/formatters/_builtin_bisect.py:14-15`, and the same pair in
 `_builtin_compat.py:18-19`, `_builtin_diff.py:25`,
-`_builtin_history.py:15-16`). The from-import resolves through `sys.modules` to
-the sibling module, never to the half-constructed package namespace — the
-package's own comment says so at
-`src/protokit/formatters/__init__.py:59-66`. An earlier audit reported this
+`_builtin_history.py:15-16`). The from-import names a submodule, so on first use
+the import system loads that sibling fresh; it never reads the half-constructed
+package namespace. That stays safe while no submodule imports the package back,
+as `src/protokit/formatters/__init__.py:59-66` states. An earlier audit reported this
 shape as a real cycle, and the plan review that specified this unit caught the
 naive rule before any code existed: a reviewer ran it against the tree and
 returned the five-module `formatters` cycle as an actionable finding, which is
@@ -394,9 +394,9 @@ that is how narrow the accident is. The real rule records
 _builtin_history, _junit_xml, _registry, _sarif_json}` and no back-edges, and
 `test_formatters_package_init_shape_is_present_and_not_a_cycle`
 (`tests/meta/test_import_layers.py:605-623`) asserts both halves — that the
-shape is still there, and that no `_builtin_*` module imports the package
-itself, which would be the genuine back-edge the submodule rule does not
-excuse.
+shape is still there, and that no submodule of the package, shared helpers
+included, imports the package itself, which would be the genuine back-edge the
+submodule rule does not excuse.
 
 The minimal form, as the self-tests write it
 (`tests/meta/test_import_layers.py:731-735`):
