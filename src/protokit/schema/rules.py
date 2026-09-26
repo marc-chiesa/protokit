@@ -122,12 +122,12 @@ def _wire_compatible(old_type: int, new_type: int) -> bool:
 # findings on a 200-message chain with exactly 100). Holding the descriptor
 # keeps its id unreusable while the entry lives — the same pin
 # ``_descriptors``' file-proto cache uses — and the hit path checks identity.
-_PROTO3_OPTIONAL_CACHE: contextvars.ContextVar[
-    dict[int, tuple[proto_descriptor.Descriptor, frozenset[str]]] | None
-] = contextvars.ContextVar("_proto3_optional_cache", default=None)
+_CacheSlot = dict[int, tuple[proto_descriptor.Descriptor, frozenset[str]]] | None
+_PROTO3_OPTIONAL_CACHE: contextvars.ContextVar[_CacheSlot] = contextvars.ContextVar(
+    "_proto3_optional_cache", default=None)
 
 
-def _open_caches() -> contextvars.Token:
+def _open_caches() -> contextvars.Token[_CacheSlot]:
     """Enter a per-check cache scope; returns a token for :func:`_close_caches`.
 
     Caller must pair this with ``_close_caches(token)`` in a
@@ -136,7 +136,7 @@ def _open_caches() -> contextvars.Token:
     return _PROTO3_OPTIONAL_CACHE.set({})
 
 
-def _close_caches(token: contextvars.Token) -> None:
+def _close_caches(token: contextvars.Token[_CacheSlot]) -> None:
     """Exit the per-check cache scope opened by :func:`_open_caches`."""
     _PROTO3_OPTIONAL_CACHE.reset(token)
 
@@ -203,7 +203,7 @@ def _real_containing_oneof(fd: proto_descriptor.FieldDescriptor) -> str | None:
         return None
     if _is_synthetic_oneof(oneof):
         return None
-    return oneof.name
+    return str(oneof.name)
 
 
 # ---------------------------------------------------------------------------

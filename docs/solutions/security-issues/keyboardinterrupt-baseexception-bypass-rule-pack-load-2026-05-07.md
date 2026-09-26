@@ -541,11 +541,11 @@ for the standalone learning.
   fails the test loudly rather than silently returning `[]`.
 - Carried into code (2026-09-20): `docs/solutions/security-issues/trust-boundary-enforcement-points-derived-from-code-not-the-findings-wording.md`.
   PR #76 closed the last unguarded load surface — compat's
-  `_load_rule_packs` (`src/protokit/schema/cli.py:194-216`) now catches
+  `_load_rule_packs` (`src/protokit/schema/cli.py:192-214`) now catches
   `KeyboardInterrupt` and `(Exception, SystemExit)` at both its import and
   `RULES`-iteration boundaries, making this doc's "General Python pattern"
   split four-for-four in code: `SystemExit` and `KeyboardInterrupt` at both
-  *load* surfaces (`src/protokit/schema/cli.py:194-216`,
+  *load* surfaces (`src/protokit/schema/cli.py:192-214`,
   `src/protokit/schema/lint/_cli_utils.py:534-552`); `SystemExit` alone at
   both *dispatch* surfaces (`src/protokit/schema/checker.py:112-115`, and
   `run_formatter_safely` at `src/protokit/_cli_utils.py:964-970`, which has
@@ -555,5 +555,5 @@ for the standalone learning.
   `_PLUGIN_DISPATCH_EXCEPTIONS` in `src/protokit/schema/checker.py:104-107`
   names this doc's "General Python pattern" section to justify omitting
   `KeyboardInterrupt` from the dispatch guard, and
-  `src/protokit/schema/cli.py:166-169` cites it as having walked back the
+  `src/protokit/schema/cli.py:164-167` cites it as having walked back the
   "Ctrl-C is the operator speaking" rationale for this class of surface.

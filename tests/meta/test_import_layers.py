@@ -605,18 +605,18 @@ class TestImportLayers:
     def test_formatters_package_init_shape_is_present_and_not_a_cycle(
         self, graph: dict[str, set[str]]
     ) -> None:
-        # ``formatters/__init__`` imports its ``_builtin_*`` submodules at top
-        # level and each of those does ``from protokit.formatters import
-        # <sibling>``. That resolves to the sibling module, never to the
-        # package, so the shape is acyclic *because of* the submodule rule.
+        # ``formatters/__init__`` imports its ``_builtin_*`` submodules, which do
+        # ``from protokit.formatters import <sibling>``: an edge to the sibling (the
+        # submodule rule). That is safe only while no submodule has a back-edge.
         package = f"{PACKAGE}.formatters"
-        builtins = sorted(m for m in graph if m.startswith(f"{package}._builtin_"))
-        assert builtins, "expected protokit.formatters._builtin_* modules in the tree"
-        assert graph[package] & set(builtins), (
+        submodules = sorted(m for m in graph if m.startswith(f"{package}."))
+        helpers = {f"{package}.{name}" for name in ("_junit_xml", "_registry", "_sarif_json")}
+        assert helpers <= set(submodules), f"shared helpers missing: {helpers - set(submodules)}"
+        assert graph[package] & {m for m in submodules if "._builtin_" in m}, (
             "protokit.formatters no longer imports its _builtin_* submodules at "
             "module load; the package-init shape this test documents has moved"
         )
-        back_edges = [m for m in builtins if package in graph[m]]
+        back_edges = [m for m in submodules if package in graph[m]]
         assert not back_edges, (
             f"{back_edges} import the protokit.formatters package itself at module "
             "load — that is the genuine back-edge the submodule rule does not excuse"

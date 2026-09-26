@@ -356,3 +356,23 @@ class TestRegistrationConflict:
         d.treat_as_map("items", key="id")
         # No raise: a predicate cannot be conflict-checked at registration.
         d.treat_as_set(lambda fd, path: fd.name == "items")
+
+
+class TestSelectorExceptionsPropagate:
+    def test_stop_iteration_from_a_predicate_is_not_rewrapped(self) -> None:
+        """A selector's own ``StopIteration`` reaches the caller unchanged.
+
+        Matching selectors inside a generator (``any(...)``) would turn it into
+        ``RuntimeError`` under PEP 479, so the lookup stays a plain loop.
+        """
+        b = _tags_builder()
+        msg1 = b.build("test.Msg", tags=["x"])
+        msg2 = b.build("test.Msg", tags=["y"])
+
+        def exhausted(fd: object, path: object) -> bool:
+            raise StopIteration("selector exhausted")
+
+        d = MessageDifferencer()
+        d.treat_as_set(FieldSelector.from_predicate(exhausted))
+        with pytest.raises(StopIteration, match="selector exhausted"):
+            d.compare(msg1, msg2)

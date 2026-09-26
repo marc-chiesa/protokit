@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from typing import Any
+from typing import Any, cast
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pb2, descriptor_pool
@@ -56,7 +56,7 @@ def is_repeated(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     This helper keeps the call sites readable and gives a single
     place to revisit if the API shifts again.
     """
-    return field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REPEATED
+    return cast(bool, field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REPEATED)
 
 
 def is_required(field_desc: proto_descriptor.FieldDescriptor) -> bool:
@@ -66,7 +66,7 @@ def is_required(field_desc: proto_descriptor.FieldDescriptor) -> bool:
     Protobuf 5.x dropped ``fd.is_required`` from the upb binding so
     the label comparison is the portable form.
     """
-    return field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED
+    return cast(bool, field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED)
 
 
 def label_name(field_desc: proto_descriptor.FieldDescriptor) -> str:
@@ -78,10 +78,10 @@ def label_name(field_desc: proto_descriptor.FieldDescriptor) -> str:
     ``Difference`` reports a cardinality change so the output
     carries the actual label, not a hard-coded guess.
     """
-    FD = proto_descriptor.FieldDescriptor
-    if field_desc.label == FD.LABEL_REPEATED:
+    fd_class = proto_descriptor.FieldDescriptor
+    if field_desc.label == fd_class.LABEL_REPEATED:
         return "LABEL_REPEATED"
-    if field_desc.label == FD.LABEL_REQUIRED:
+    if field_desc.label == fd_class.LABEL_REQUIRED:
         return "LABEL_REQUIRED"
     return "LABEL_OPTIONAL"
 
@@ -275,7 +275,7 @@ def has_presence(fd: proto_descriptor.FieldDescriptor) -> bool:
         True if the field supports ``HasField`` (proto2 fields, proto3
         ``optional`` fields, oneof members, and message fields).
     """
-    return fd.has_presence
+    return cast(bool, fd.has_presence)
 
 
 def format_key(key: Any) -> str:

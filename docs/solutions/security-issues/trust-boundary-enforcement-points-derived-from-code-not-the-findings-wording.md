@@ -97,15 +97,15 @@ form the load-time half of this finding was originally written up with
 
 ## What Didn't Work
 
-The first fix hardened `_load_rule_packs` (`src/protokit/schema/cli.py:147`)
+The first fix hardened `_load_rule_packs` (`src/protokit/schema/cli.py:145`)
 and stopped there. It named `SystemExit` at the import
-(`src/protokit/schema/cli.py:200`) and at `checker.load_rule_pack`
-(`src/protokit/schema/cli.py:212`), added the `KeyboardInterrupt` arm at both
-(`:195`, `:207`), and shipped a docstring that reads, accurately:
+(`src/protokit/schema/cli.py:198`) and at `checker.load_rule_pack`
+(`src/protokit/schema/cli.py:210`), added the `KeyboardInterrupt` arm at both
+(`:193`, `:205`), and shipped a docstring that reads, accurately:
 
 > A rule pack is arbitrary third-party Python, so both boundaries catch
 > broadly and translate to exit 2 -- "the tool could not run"
-> — `src/protokit/schema/cli.py:150-151`
+> — `src/protokit/schema/cli.py:148-149`
 
 Three things made that read as complete.
 
@@ -261,7 +261,7 @@ seam for "can this report be read as success?" — `_compat_signals`
 (`src/protokit/_trust.py:197-198`) makes every error diagnostic a reason, and
 `is_trustworthy` (`:457-469`) is false while any reason exists — and the CLI's
 gate reads it: `if not _trust.is_trustworthy(report) or report.diagnostics:`
-(`src/protokit/schema/cli.py:828`; the same shape at `:1445` and `:1692` for
+(`src/protokit/schema/cli.py:827`; the same shape at `:1444` and `:1691` for
 `history` and `bisect`). One crashed rule therefore produces exit 2 *through
 the report*, with no second predicate growing beside the seam, and library
 callers see the same fact on `report.diagnostics` without a CLI in the picture.
@@ -276,8 +276,8 @@ as success.
 *exceptions*. A pack calling `os._exit` takes the process down with its own
 code and no Python-level guard can see it; `os.write(1, …)` still reaches the
 real stdout because `redirect_stdout` only rebinds `sys.stdout`. Both limits
-are stated at their sites (`src/protokit/schema/cli.py:152-154` and
-`:347-357`), having been found by a cross-model falsification pass against
+are stated at their sites (`src/protokit/schema/cli.py:150-152` and
+`:345-355`), having been found by a cross-model falsification pass against
 docstrings that had implied otherwise. Closing that class means running packs
 out of process.
 
@@ -299,10 +299,10 @@ symptom you just fixed:
 ```console
 $ grep -rn "importlib.import_module" src/protokit/ | grep -v '``'
 src/protokit/_cli_utils.py:726:            module = importlib.import_module(name)
-src/protokit/schema/cli.py:194:            module = importlib.import_module(name)
+src/protokit/schema/cli.py:192:            module = importlib.import_module(name)
 src/protokit/schema/lint/_cli_utils.py:534:        module = importlib.import_module(module_name)
 
-$ grep -rn "plugin_fn(ctx)\|rule_fn(\|_invoke_rule\|fn(report" src/protokit/ | grep -v "def \|#"
+$ grep -rn "plugin_fn(ctx)\|rule_fn(\|_invoke_rule\|fn(report" src/protokit/ | grep -vE 'def |:[0-9]+:[[:space:]]*#'
 src/protokit/_cli_utils.py:964:            output = fn(report, ctx)
 src/protokit/_trust.py:388:                    s._replace(text=one_line(s.text)) for s in fn(report)
 src/protokit/schema/checker.py:598:                findings.extend(rule_fn(old_m, new_m, path))
@@ -310,8 +310,8 @@ src/protokit/schema/checker.py:662:                findings.extend(rule_fn(old_f
 src/protokit/schema/checker.py:675:                    findings.extend(rule_fn(
 src/protokit/schema/checker.py:736:            findings.extend(rule_fn(old_value, new_value, value_path))
 src/protokit/schema/checker.py:747:                findings.extend(rule_fn(
-src/protokit/schema/checker.py:786:            result = plugin_fn(ctx)
-src/protokit/schema/checker.py:829:            result = plugin_fn(ctx)
+src/protokit/schema/checker.py:786:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
+src/protokit/schema/checker.py:829:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
 src/protokit/schema/lint/engine.py:1322:            self._invoke_rule(spec, ctx)
 src/protokit/schema/lint/engine.py:1327:                self._invoke_rule(spec, ctx_svc)
 src/protokit/schema/lint/engine.py:1333:                    self._invoke_rule(spec, ctx_m)
@@ -403,7 +403,7 @@ normally, the old drain ran, and **the test could no longer fail even with the
 stdout bug reintroduced.**
 
 Demonstrated by re-introducing the drain bug (drop the `try`/`finally` at
-`src/protokit/schema/cli.py:367-373`) and running each lever:
+`src/protokit/schema/cli.py:365-371`) and running each lever:
 
 | lever a rule uses | drain bug present | verdict |
 | --- | --- | --- |

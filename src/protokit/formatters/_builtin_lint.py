@@ -820,19 +820,6 @@ def _lint_rules_catalog(
     return out
 
 
-def _protokit_version() -> str:
-    """Best-effort lookup of the installed protokit version for SARIF.
-
-    Thin wrapper around ``protokit._cli_utils._get_protokit_version``;
-    kept as a function (not a direct import alias) so the
-    ``tool.driver.version`` call site stays readable. Three independent
-    copies of the same try/except-PackageNotFoundError block were
-    collapsed during a code-review pass.
-    """
-    from protokit._cli_utils import _get_protokit_version
-    return _get_protokit_version()
-
-
 #: Categories whose SARIF propertyBag includes a ``rule_id`` field
 #: for wire-format parity with the JSON formatter. Only the two
 #: newest categories are listed here; pre-existing rule-scoped
@@ -924,6 +911,9 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
     - ``properties.runtime_warnings``: present only when
       ``report.runtime_warnings`` is non-empty.
     """
+    # Deferred: ``protokit._cli_utils`` imports this package at module load.
+    from protokit._cli_utils import _get_protokit_version
+
     del _ctx
     error_diags = [d for d in report.diagnostics if d.level == "error"]
     warning_diags = [d for d in report.diagnostics if d.level != "error"]
@@ -969,7 +959,7 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
         "tool": {
             "driver": {
                 "name": sarif.TOOL_NAME,
-                "version": _protokit_version(),
+                "version": _get_protokit_version(),
                 "informationUri": sarif.TOOL_INFORMATION_URI,
                 "rules": rules,
             },

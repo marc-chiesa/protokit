@@ -26,18 +26,16 @@ from google.protobuf.message import DecodeError, Message
 from protokit import _trust
 from protokit._cli_utils import (
     _safe_for_stderr,
-    compile_proto as _compile_proto,
-    error_exit as _error,
-    load_descriptor_pool as _load_descriptor_pool,
     load_formatter_packs,
     reject_quiet_plus_structured,
     resolve_and_validate_formatter,
     run_formatter_safely,
 )
-from protokit._pools import (
-    MessageTypeNotFoundError as _MessageTypeNotFoundError,
-    get_message_class as _resolve_message_class,
-)
+from protokit._cli_utils import compile_proto as _compile_proto
+from protokit._cli_utils import error_exit as _error
+from protokit._cli_utils import load_descriptor_pool as _load_descriptor_pool
+from protokit._pools import MessageTypeNotFoundError as _MessageTypeNotFoundError
+from protokit._pools import get_message_class as _resolve_message_class
 from protokit.formatters import FormatterContext, FormatterKind
 from protokit.message.differ import MessageDifferencer
 from protokit.message.model import DiffResult
@@ -264,18 +262,30 @@ def _diff_exit_code(result: DiffResult) -> int:
 @click.argument("left_file", type=click.Path(exists=True, dir_okay=False))
 @click.argument("right_file", type=click.Path(exists=True, dir_okay=False))
 # Group A: same-schema
-@click.option("--desc", type=click.Path(exists=True), help="Descriptor set file (same-schema mode).")
+@click.option(
+    "--desc", type=click.Path(exists=True),
+    help="Descriptor set file (same-schema mode).",
+)
 @click.option("--message-type", help="Fully-qualified message type name.")
 # Group B: cross-schema
-@click.option("--left-desc", type=click.Path(exists=True), help="Left descriptor set (cross-schema mode).")
-@click.option("--right-desc", type=click.Path(exists=True), help="Right descriptor set (cross-schema mode).")
+@click.option(
+    "--left-desc", type=click.Path(exists=True),
+    help="Left descriptor set (cross-schema mode).",
+)
+@click.option(
+    "--right-desc", type=click.Path(exists=True),
+    help="Right descriptor set (cross-schema mode).",
+)
 @click.option("--left-type", help="Left message type (cross-schema mode).")
 @click.option("--right-type", help="Right message type (cross-schema mode).")
 # Group C: .proto
 @click.option("--proto", type=click.Path(exists=True), help=".proto file (requires protoc).")
 @click.option("--proto-path", multiple=True, help="Import path for protoc (-I). Repeatable.")
 # Input format
-@click.option("--text-format", "use_text_format", is_flag=True, help="Parse input as protobuf text format.")
+@click.option(
+    "--text-format", "use_text_format", is_flag=True,
+    help="Parse input as protobuf text format.",
+)
 @click.option("--json", "use_json", is_flag=True, help="Parse input as JSON-encoded protobuf.")
 # Output format
 @click.option(
@@ -298,10 +308,22 @@ def _diff_exit_code(result: DiffResult) -> int:
 @click.option("--quiet", is_flag=True, help="Suppress output, exit code only.")
 @click.option("--verbose", is_flag=True, help="Show warnings even when messages are equal.")
 # Diff options
-@click.option("--filter", "filter_path", help="Filter diffs by path prefix; a proto2 extension segment is written (pkg.ext).")
-@click.option("--ignore", multiple=True, help="Ignore field: bare name, dotted path, or (pkg.ext) for a proto2 extension. Repeatable.")
-@click.option("--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY", help="Treat repeated field FIELD (bare name, dotted path, or (pkg.ext)) as map with KEY.")
-@click.option("--float-mode", type=click.Choice(["exact", "approximate"]), default="exact", help="Float comparison mode.")
+@click.option(
+    "--filter", "filter_path",
+    help="Filter diffs by path prefix; a proto2 extension segment is written (pkg.ext).",
+)
+@click.option(
+    "--ignore", multiple=True,
+    help="Ignore field: bare name, dotted path, or (pkg.ext) for a proto2 extension. Repeatable.",
+)
+@click.option(
+    "--treat-as-map", multiple=True, nargs=2, metavar="FIELD KEY",
+    help="Treat repeated field FIELD (bare name, dotted path, or (pkg.ext)) as map with KEY.",
+)
+@click.option(
+    "--float-mode", type=click.Choice(["exact", "approximate"]), default="exact",
+    help="Float comparison mode.",
+)
 # IntRange(min=0) matches every other numeric option in the CLI surface, and
 # here it also protects the exit-code contract: a negative depth truncates the
 # ROOT work item (depth 0), so two differing messages would compare as equal

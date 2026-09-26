@@ -53,10 +53,10 @@ def _get_protokit_version() -> str:
     (e.g., the SARIF ``tool.driver.version`` field or the
     ``protokit lint --version`` output), not on every CLI invocation.
 
-    Single source of truth for what were previously three independent
-    copies (``_builtin_compat._protokit_version``,
-    ``_builtin_lint._protokit_version``, and the lint subcommand's
-    ``--version`` callback), collapsed during a code-review pass.
+    The single source of truth: the lint subcommand's ``--version``
+    callback and every built-in SARIF formatter call this directly.
+    Formatters import it inside the function, because this module
+    imports ``protokit.formatters`` at module load.
     """
     from importlib.metadata import PackageNotFoundError, version
     try:

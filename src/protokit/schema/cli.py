@@ -54,7 +54,6 @@ from protokit.schema.git import (
     ShallowRepoError,
     commit_subject,
     commits_affecting_dep_tree,
-    commits_in_range,
     extract_pool_from_ref,
     merge_base,
     resolve_default_base,
@@ -70,7 +69,6 @@ from protokit.schema.model import (
     HistoryEntry,
     HistoryReport,
 )
-
 
 # ---------------------------------------------------------------------------
 # Level parsing
@@ -279,7 +277,7 @@ def _resolve_types(
             "Use --type for same-name checks or --old-type + --new-type "
             "for cross-type checks."
         )
-    if has_single:
+    if type_flag is not None:
         return type_flag, type_flag
     if has_cross:
         if old_type_flag is None or new_type_flag is None:
@@ -533,6 +531,7 @@ def _load_pools_git(
     _validate_git_mode_flags(
         since=since, against_base=against_base, proto_file=proto_file,
     )
+    assert proto_file is not None
 
     if since is not None:
         if not verify_ref(since, cwd=cwd):
@@ -1409,8 +1408,8 @@ def history(
         old_sha=old_endpoint,
         new_sha=new_endpoint,
         commits_walked=len(commits),
-        entries=entries,
-        diagnostics=aggregated_diagnostics,
+        entries=tuple(entries),
+        diagnostics=tuple(aggregated_diagnostics),
     )
 
     if not quiet:
@@ -1686,8 +1685,8 @@ def bisect(
             new_sha=new_sha,
             breaking_commit=breaking_commit,
             commits_walked=commits_walked,
-            breaking_findings=breaking_findings,
-            diagnostics=diagnostics,
+            breaking_findings=tuple(breaking_findings),
+            diagnostics=tuple(diagnostics),
         )
         if not _trust.is_trustworthy(bisect_report):
             exit_code = 2

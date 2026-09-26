@@ -56,14 +56,14 @@ from protokit.formatters._registry import (
 #: custom formatter" section).
 FORMATTER_LOG_NAMESPACE: str = "protokit.formatters"
 
-# Shared helpers (_junit_xml, _sarif_json) and built-in modules
-# (_builtin_compat, _builtin_diff, _builtin_history, _builtin_lint)
-# all import via __init__'s tuple. Within this tuple, ordering does
-# not matter because Python resolves submodule references via
-# sys.modules — when _builtin_compat does
-# `from protokit.formatters import _junit_xml as junit`, the import
-# returns the cached module from sys.modules even if __init__'s own
-# namespace is still under construction.
+# Ordering within this tuple does not matter. `from protokit.formatters import
+# _junit_xml` in a _builtin_* module names a submodule, so on first use the
+# import system loads that submodule fresh; it never reads a name this __init__
+# has yet to bind. That holds only while no submodule imports this package
+# itself: the shared helpers (_junit_xml, _sarif_json, _registry) are leaves,
+# and no _builtin_* module has a back-edge either. One that did would see the
+# package half-built. test_formatters_package_init_shape_is_present_and_not_a_cycle
+# (tests/meta/test_import_layers.py) fails if any submodule gains that import.
 from protokit.formatters import (  # noqa: F401, E402
     _builtin_bisect,
     _builtin_compat,
