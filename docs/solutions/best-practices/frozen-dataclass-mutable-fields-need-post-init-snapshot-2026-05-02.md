@@ -1,6 +1,7 @@
 ---
 title: "Frozen dataclasses with mutable fields need a __post_init__ snapshot"
 date: 2026-05-02
+last_updated: 2026-09-26
 category: docs/solutions/best-practices
 module: python/frozen-dataclasses
 problem_type: best_practice
@@ -36,6 +37,8 @@ The Python docs phrase this honestly — "emulate read-only frozen instances" �
 
 This pattern was introduced after a `ce:review` adversarial pass on `protokit.schema.lint.model` flagged that `LintFinding.params: dict[str, Any]`, `LintProfile.rule_severity_overrides: dict[str, LintSeverity]`, and `LintRuleSpec.severity` (dict variant) all carried the leak.
 
+**Updated after U6 (#84).** protokit now does these conversions in one place, the layer-0 module `protokit._records`, and the recipe below calls it. The earlier recipe, a bare `tuple()`, `dict()` or `frozenset()` copy, fixed the aliasing but accepted inputs it should refuse; see *What a bare conversion silently accepts*. Why a guard over every record needed the same widening is in [[frozen-record-reflection-guard-only-as-good-as-classifier-and-probes]].
+
 ## Guidance
 
 ### The pattern
@@ -45,6 +48,8 @@ In every `@dataclass(frozen=True)` that has a mutable container field, add a `__
 ```python
 from dataclasses import dataclass, field
 from typing import Any
+
+from protokit._records import as_dict
 
 
 @dataclass(frozen=True)
@@ -62,29 +67,41 @@ class LintFinding:
         params dict across multiple emits would otherwise produce
         findings whose params alias to the LAST set of values.
         """
-        object.__setattr__(self, "params", dict(self.params))
+        object.__setattr__(self, "params", as_dict(self.params, "LintFinding.params"))
 ```
 
 The key elements:
 
-- **`object.__setattr__(self, "params", dict(self.params))`** — bypasses the frozen guard (which routes through the dataclass's overridden `__setattr__`) and rebinds the field to a fresh dict that the caller doesn't hold a reference to.
-- **`dict(self.params)`** — shallow copy. For nested-dict shapes use `copy.deepcopy(self.params)` or build the right immutable structure.
+- **`object.__setattr__(self, "params", ...)`** — bypasses the frozen guard (which routes through the dataclass's overridden `__setattr__`) and rebinds the field to a fresh dict that the caller doesn't hold a reference to.
+- **`as_dict(self.params, "LintFinding.params")`** — a shallow copy that also refuses a non-mapping with a `TypeError` naming the field. For nested-dict shapes use `copy.deepcopy(self.params)` or build the right immutable structure.
 - **The docstring documents the WHY.** Frozen + post-init looks like ceremony to a reader who doesn't know the trap; the docstring earns its keep by naming the exact failure mode.
 
 ### Per-field shape choices
 
-| Field type | Snapshot call | Notes |
+| Field type | Snapshot call (`protokit._records`) | Notes |
 |---|---|---|
-| `dict[K, V]` | `dict(self.field)` | Shallow copy. Sufficient when V is immutable (str, int, enum, tuple). |
-| `list[T]` | `tuple(self.field)` | Convert to tuple — eliminates the mutability AND makes equality stable. Update the type annotation to `tuple[T, ...]`. |
-| `set[T]` | `frozenset(self.field)` | Same pattern: convert to immutable. Update annotation to `frozenset[T]`. |
+| `dict[K, V]` (public type stays `dict`) | `as_dict(self.field, "Record.field")` | Shallow copy. Sufficient when V is immutable (str, int, enum, tuple). |
+| `Mapping[K, V]` | `as_mapping(self.field, "Record.field")` | Read-only `MappingProxyType` over a top-level copy; an existing proxy passes through uncopied. |
+| `list[T]` | `as_tuple(self.field, "Record.field")`, or `own_tuples(self, "field", ...)` for several fields | Convert to tuple — eliminates the mutability AND makes equality stable. Update the type annotation to `tuple[T, ...]`. |
+| `tuple[tuple[...], ...]` (pairs, paths) | `own_tuples_of_tuples(self, "field")` | Copying the outer container leaves a caller's inner lists shared; this converts each element too. |
+| `set[T]` | `as_frozenset(self.field, "Record.field")` | Same pattern: convert to immutable. Update annotation to `frozenset[T]`. |
 | `dict[K, dict[K2, V]]` | `copy.deepcopy(self.field)` | Shallow copy isn't enough; nested dict still aliases. Or restructure the type to avoid the nesting. |
 
-Prefer converting to immutable types (`tuple`, `frozenset`) over snapshotting mutables. The immutable type is self-enforcing — no future contributor can accidentally drop the `__post_init__` and reintroduce the bug.
+Prefer converting to immutable types (`tuple`, `frozenset`) over snapshotting mutables, and convert even when the annotation is already immutable. An annotation enforces nothing at runtime: a field annotated `tuple[...]` stores the list a caller passes, which is how `DiffResult` changed verdict after construction (audit finding V6, fixed in #84).
+
+### What a bare conversion silently accepts
+
+A bare `tuple()`, `frozenset()` or `dict()` copies correctly, but it also accepts inputs it should refuse, and the result looks valid:
+
+- `tuple("abc")` is `("a", "b", "c")`. A string passed where a collection belongs becomes one-character entries that fail later, far from the constructor.
+- `tuple({"a": 1})` is `("a",)`. A mapping keeps its keys and silently drops its values.
+- `dict(["ab"])` is `{"a": "b"}`. A list of two-character strings, or of pairs, becomes a mapping.
+
+The `_records` helpers refuse each of these with a `TypeError` naming the field. Any other iterable (a generator, a set, a `range`) is still accepted. `tests/meta/test_frozen_records.py` probes every public frozen record with exactly these inputs.
 
 ### When the field is `Union | dict`
 
-Some dataclasses carry a discriminated field like `severity: LintSeverity | dict[str, LintSeverity]` (single-kind vs multi-kind). Only snapshot when the runtime value is a dict:
+Some dataclasses carry a discriminated field like `severity: LintSeverity | dict[str, LintSeverity]` (single-kind vs multi-kind). Test for the scalar arm and send everything else through the mapping converter. Testing for the `dict` arm lets a third type through: a list is neither a `LintSeverity` nor a `dict`, so it used to pass both checks and was stored, and shared, as-is.
 
 ```python
 @dataclass(frozen=True)
@@ -101,17 +118,19 @@ class LintRuleSpec:
         # perspective, so reading self.severity again would lose the
         # narrowing.
         severity = self.severity
+        if not isinstance(severity, LintSeverity):
+            severity = as_dict(severity, "LintRuleSpec.severity")
         template = self.message_template
-        if isinstance(severity, dict):
-            object.__setattr__(self, "severity", dict(severity))
-        if isinstance(template, dict):
-            object.__setattr__(self, "message_template", dict(template))
+        if not isinstance(template, str):
+            template = as_dict(template, "LintRuleSpec.message_template")
+        object.__setattr__(self, "severity", severity)
+        object.__setattr__(self, "message_template", template)
 ```
 
 Two notes on this shape:
 
-- **Bind to a local before isinstance.** Mypy's narrowing applies to the local, not to subsequent reads of `self.severity`. Without the local, mypy strict mode flags `dict(self.severity)` because it can't prove the value is a dict.
-- **Snapshot only when needed.** The single-kind case (`LintSeverity` enum value) is already immutable; no copy required.
+- **Bind to a local before isinstance.** Mypy's narrowing applies to the local, not to subsequent reads of `self.severity`. Without the local, mypy strict mode cannot carry the `isinstance` result to the next read of `self.severity`, so it rejects the call that follows.
+- **Branch on the scalar arm.** The single-kind case (a `LintSeverity` enum value, a `str` template) is already immutable and passes through; anything else must be a mapping, and a list or other non-mapping is refused.
 
 ## Why This Matters
 
@@ -134,7 +153,7 @@ Don't bother when:
 
 - The field type is immutable (`int`, `str`, `tuple[immutable, ...]`, `frozenset[immutable]`, `LintSeverity` enum, etc.).
 - The dataclass is a private record only constructed and consumed within a single function — the leak is theoretically possible but not exploitable.
-- You can use an immutable container type instead (`tuple` instead of `list`, `frozenset` instead of `set`). Prefer this — no `__post_init__` needed.
+- The field holds a scalar or other immutable value (not a container). A container field needs the conversion even when its annotation is `tuple` or `frozenset`, because the annotation does not stop a caller passing a list.
 
 ## Examples
 
@@ -171,7 +190,7 @@ class LintFinding:
     params: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "params", dict(self.params))
+        object.__setattr__(self, "params", as_dict(self.params, "LintFinding.params"))
 
 
 shared = {"key": "first"}
@@ -204,14 +223,14 @@ class LintReport:
     def __post_init__(self) -> None:
         # Still need the snapshot to coerce list-shaped inputs to
         # tuples (callers may pass list literals for ergonomics).
-        object.__setattr__(self, "findings", tuple(self.findings))
-        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        own_tuples(self, "findings", "diagnostics")
 ```
 
-Tuples are immutable end-to-end. Even if a future contributor drops the `__post_init__`, the type annotation forces callers to pass tuples (or fail mypy strict mode), and tuples can't be mutated. Belt-and-suspenders.
+Tuples can't be mutated once stored. The annotation alone does not get them stored: it is checked by mypy for code that runs mypy, not by Python at runtime, so a caller outside the type-checked paths can still pass a list. The `__post_init__` conversion is what makes the guarantee hold.
 
 ## Related
 
+- [[frozen-record-reflection-guard-only-as-good-as-classifier-and-probes]] — why a reflection guard over every public frozen record needed the probes above, and the three structural siblings (dict fields, a union's dict arm, inner pairs) a record list missed. Written for U6 (#84), which moved these conversions into `protokit._records`.
 - [`frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md`](frozen-dataclass-paired-field-invariant-post-init-2026-05-11.md) — sibling `__post_init__` discipline for *semantic* integrity (paired-field invariants between a payload and its source discriminator). This learning covers *structural* integrity (snapshotting mutable container inputs). Both belong on the same hook and stack cleanly: snapshot first, then invariant-check. Together they cover the menu of `__post_init__` duties on a frozen dataclass with source-attributed fields.
 - [`no-raise-contract-extends-to-post-init-failures-2026-05-14.md`](no-raise-contract-extends-to-post-init-failures-2026-05-14.md) — when this snapshot pattern is used on a frozen dataclass returned from a function with a "never raises" dispatch contract, the snapshot itself can raise (e.g., `dict(self.field)` on a Mapping whose `__iter__` raises). The dispatch tree must wrap the final `DataClass(...)` construction too, or the no-raise contract has a silent hole. Surfaced by the D6b U1 `ce:review` of `CompileResult`.
 - `docs/solutions/best-practices/pytest-static-analysis-gate-ratchet-2026-05-02.md` — the static-analysis gate that catches mypy strict-mode regressions; relevant because `__post_init__` uses `object.__setattr__` which mypy strict has its own opinions about (use a local for narrowing, as shown above).
