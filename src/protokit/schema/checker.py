@@ -53,7 +53,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import replace as _dataclass_replace
 from types import ModuleType
-from typing import Iterable
+from typing import Any
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
@@ -500,7 +500,7 @@ class SchemaChecker:
         instead (see ``truncated`` below).
         """
         findings: list[Finding] = []
-        stack: list = [("visit", root_old, root_new, FieldPath(segments=()))]
+        stack: list[tuple[Any, ...]] = [("visit", root_old, root_new, FieldPath(segments=()))]
         in_progress: set[tuple[str, str]] = set()
         # The same pairs as ``in_progress``, in DFS-path order, so a
         # cycle cut can name exactly the pairs it truncated.
@@ -648,7 +648,7 @@ class SchemaChecker:
         new_pool: descriptor_pool.DescriptorPool,
         findings: list[Finding],
         warnings_sink: list[Diagnostic],
-        stack: list,
+        stack: list[tuple[Any, ...]],
     ) -> None:
         old_fields = FieldView.of(old_m).by_name
         new_fields = FieldView.of(new_m).by_name
@@ -707,7 +707,7 @@ class SchemaChecker:
         new_pool: descriptor_pool.DescriptorPool,
         findings: list[Finding],
         warnings_sink: list[Diagnostic],
-        stack: list,
+        stack: list[tuple[Any, ...]],
     ) -> None:
         """Dispatch field rules + push recursion for a map's value sub-field.
 
@@ -783,7 +783,7 @@ class SchemaChecker:
             _emit_fn=emit,
         )
         try:
-            result = plugin_fn(ctx)
+            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
         except _PLUGIN_DISPATCH_EXCEPTIONS as exc:
             self._record_plugin_failure(
                 rule_id, exc, path, warnings_sink,
@@ -826,7 +826,7 @@ class SchemaChecker:
             _emit_fn=emit,
         )
         try:
-            result = plugin_fn(ctx)
+            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
         except _PLUGIN_DISPATCH_EXCEPTIONS as exc:
             self._record_plugin_failure(
                 rule_id, exc, path, warnings_sink,
@@ -907,7 +907,7 @@ class SchemaChecker:
     # Post-processing
     # ------------------------------------------------------------------
 
-    def _apply_ignore(self, findings: Iterable[Finding]) -> list[Finding]:
+    def _apply_ignore(self, findings: list[Finding]) -> list[Finding]:
         if not self._ignore_paths:
             return list(findings)
         ignored = self._ignore_paths

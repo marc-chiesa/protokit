@@ -298,7 +298,7 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
 
     errors, warnings = sarif.collect_diagnostics_from_report(report)
     errors.extend((None, reason) for reason in _reasons_not_shown(report))
-    findings_with_context = [
+    findings_with_context: list[tuple[Finding, str | None, dict[str, str] | None]] = [
         (f, ctx.proto_file, None) for f in report.findings
     ]
     run = sarif.build_run(

@@ -271,4 +271,5 @@ def serialize(root: ET.Element) -> str:
     :func:`xml_safe_text` or one of the ``make_*`` /
     ``append_*`` helpers).
     """
-    return ET.tostring(root, xml_declaration=True, encoding="utf-8").decode("utf-8")
+    data: bytes = ET.tostring(root, xml_declaration=True, encoding="utf-8")
+    return data.decode("utf-8")

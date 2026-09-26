@@ -50,24 +50,23 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # ``test_lint_gate_discovers_every_test_module`` is what closes that.
 _LINT_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
+    "src/protokit/_descriptors.py",
     "src/protokit/_extensions.py",
     "src/protokit/_fieldview.py",
+    "src/protokit/_pools.py",
     "src/protokit/_records.py",
     "src/protokit/_trust.py",
-    "src/protokit/formatters/_builtin_lint.py",
-    "src/protokit/message/_presence.py",
-    "src/protokit/message/_selector.py",
-    "src/protokit/message/_setmatch.py",
-    "src/protokit/message/hamcrest.py",
-    "src/protokit/message/matchers.py",
-    "src/protokit/message/model.py",
-    "src/protokit/message/pytest_plugin.py",
+    "src/protokit/formatters",
+    "src/protokit/message",
     "src/protokit/options.py",
     "src/protokit/forensics",
+    "src/protokit/schema/checker.py",
+    "src/protokit/schema/cli.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/schema/model.py",
     "src/protokit/schema/profiles.py",
+    "src/protokit/schema/rules.py",
     "src/protokit/storage",
     "tests",
     "scripts/check_dependency_drift.py",
@@ -80,24 +79,23 @@ _LINT_PATHS: tuple[str, ...] = (
 # enforces that — this list alone is not the gate.
 _TYPE_CHECK_PATHS: tuple[str, ...] = (
     "src/protokit/_cli_utils.py",
+    "src/protokit/_descriptors.py",
     "src/protokit/_extensions.py",
     "src/protokit/_fieldview.py",
+    "src/protokit/_pools.py",
     "src/protokit/_records.py",
     "src/protokit/_trust.py",
     "src/protokit/forensics",
-    "src/protokit/formatters/_builtin_lint.py",
-    "src/protokit/message/_presence.py",
-    "src/protokit/message/_selector.py",
-    "src/protokit/message/_setmatch.py",
-    "src/protokit/message/hamcrest.py",
-    "src/protokit/message/matchers.py",
-    "src/protokit/message/model.py",
-    "src/protokit/message/pytest_plugin.py",
+    "src/protokit/formatters",
+    "src/protokit/message",
     "src/protokit/options.py",
+    "src/protokit/schema/checker.py",
+    "src/protokit/schema/cli.py",
     "src/protokit/schema/compile.py",
     "src/protokit/schema/lint",
     "src/protokit/schema/model.py",
     "src/protokit/schema/profiles.py",
+    "src/protokit/schema/rules.py",
     "src/protokit/storage",
     "scripts/check_dependency_drift.py",
     "scripts/check_docs_test_refs.py",
@@ -260,8 +258,8 @@ def test_mypy_strict_clean_on_gated_paths() -> None:
     """``mypy --strict`` (config in pyproject.toml) on the D1 surface.
 
     Mirrors the scoped CI step. Strict-mode mypy is configured
-    repo-wide but only enforced on these paths today; the broader
-    codebase has ~30 pre-existing strict-mode errors that future
+    repo-wide but only enforced on these paths today; a few modules
+    outside them still carry strict-mode errors that later
     deliveries can clean up incrementally.
     """
     if not _module_available("mypy"):

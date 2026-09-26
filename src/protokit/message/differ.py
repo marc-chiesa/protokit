@@ -7,6 +7,7 @@ for cross-descriptor-pool comparison and schema evolution detection.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,11 +22,9 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
-from protokit._fieldview import (
-    FieldView,
-    field_present as _fieldview_field_present,
-    field_value as _fieldview_field_value,
-)
+from protokit._fieldview import FieldView
+from protokit._fieldview import field_present as _fieldview_field_present
+from protokit._fieldview import field_value as _fieldview_field_value
 from protokit.message._presence import PresenceVerdict, presence_verdict
 from protokit.message._selector import FieldSelector, SelectorSpec
 from protokit.message._setmatch import greedy_multiset_pairing
@@ -70,15 +69,19 @@ LABEL_REPEATED = FD.LABEL_REPEATED
 
 def _hook_name(hook: object) -> str:
     """Best-effort display name for a hook in warning messages."""
-    return getattr(hook, "__qualname__", None) or getattr(
+    return str(getattr(hook, "__qualname__", None) or getattr(
         hook, "__name__", repr(hook),
-    )
+    ))
 
 
 # The value and presence accessors live beside the enumeration seam so every
 # reader an extension descriptor can reach — here and in ``_presence`` — has
-# one owner (KTD1). Local aliases keep the call sites unchanged.
-_field_value = _fieldview_field_value
+# one owner (KTD1). Local aliases keep the call sites unchanged. The seam returns
+# ``object``; this module indexes and iterates what it reads — protobuf's untyped
+# repeated and map containers — so its alias types the value as ``Any``.
+_field_value: Callable[[Message, proto_descriptor.FieldDescriptor], Any] = (
+    _fieldview_field_value
+)
 _field_present = _fieldview_field_present
 
 
@@ -185,9 +188,7 @@ def _types_compatible(left_type: int, right_type: int) -> bool:
         return True
     if left_type in _INTEGER_TYPES and right_type in _INTEGER_TYPES:
         return True
-    if left_type in _FLOAT_TYPES and right_type in _FLOAT_TYPES:
-        return True
-    return False
+    return left_type in _FLOAT_TYPES and right_type in _FLOAT_TYPES
 
 
 def _same_pool(left_msg: Message, right_msg: Message) -> bool:
@@ -866,12 +867,12 @@ class MessageDifferencer:
         implicit field's zero value; built lazily if not supplied.
         """
         if left_fd.label == left_fd.LABEL_REPEATED:  # repeated + map
-            return len(_field_value(msg, left_fd)) > 0  # type: ignore[arg-type]
+            return len(_field_value(msg, left_fd)) > 0
         if left_fd.has_presence:
             return _field_present(msg, left_fd)
         if default_msg is None:
             default_msg = type(msg)()
-        return _field_value(msg, left_fd) != _field_value(default_msg, left_fd)
+        return bool(_field_value(msg, left_fd) != _field_value(default_msg, left_fd))
 
     def set_message_field_comparison(
         self, mode: MessageFieldComparison
@@ -1127,10 +1128,15 @@ class MessageDifferencer:
                 all_names = left_fields.keys() | right_fields.keys()
 
                 # Sort by left-side field number for deterministic ordering
-                def _sort_key(name: str) -> tuple[int, int, str]:
-                    if name in left_fields:
-                        return (0, left_fields[name].number, name)
-                    return (1, right_fields[name].number, name)
+                # Default-bound: the loop rebinds both maps per message pair.
+                def _sort_key(
+                    name: str,
+                    left: dict[str, proto_descriptor.FieldDescriptor] = left_fields,
+                    right: dict[str, proto_descriptor.FieldDescriptor] = right_fields,
+                ) -> tuple[int, int, str]:
+                    if name in left:
+                        return (0, left[name].number, name)
+                    return (1, right[name].number, name)
 
                 # Process in reverse order since we're using a stack (LIFO)
                 sorted_names = sorted(all_names, key=_sort_key, reverse=True)
@@ -1345,14 +1351,15 @@ class MessageDifferencer:
             ))
 
         # Type change (skip for message->message)
-        if left_fd.type != right_fd.type:
-            if not (left_fd.type == TYPE_MESSAGE and right_fd.type == TYPE_MESSAGE):
-                diffs.append(Difference(
-                    path=path,
-                    change_type=ChangeType.TYPE_CHANGED,
-                    left_type=type_name(left_fd.type),
-                    right_type=type_name(right_fd.type),
-                ))
+        if left_fd.type != right_fd.type and not (
+            left_fd.type == TYPE_MESSAGE and right_fd.type == TYPE_MESSAGE
+        ):
+            diffs.append(Difference(
+                path=path,
+                change_type=ChangeType.TYPE_CHANGED,
+                left_type=type_name(left_fd.type),
+                right_type=type_name(right_fd.type),
+            ))
 
         # Cardinality change
         if is_repeated(left_fd) != is_repeated(right_fd):
@@ -2414,8 +2421,8 @@ class MessageDifferencer:
             warnings: Accumulator list for Diagnostic objects.
             same_pool: True if both messages share a descriptor pool.
         """
-        left_list = list(_field_value(left_msg, left_fd))  # type: ignore[call-overload]
-        right_list = list(_field_value(right_msg, right_fd))  # type: ignore[call-overload]
+        left_list = list(_field_value(left_msg, left_fd))
+        right_list = list(_field_value(right_msg, right_fd))
 
         def _equal(left_elem: Any, right_elem: Any) -> bool:
             return self._set_elements_equal(
@@ -2629,10 +2636,9 @@ class MessageDifferencer:
         Returns:
             True if any configured ``treat_as_set`` selector matches.
         """
-        for selector in self._treat_as_set_selectors:
-            if selector.matches(fd, field_path):
-                return True
-        return False
+        return any(
+            selector.matches(fd, field_path) for selector in self._treat_as_set_selectors
+        )
 
     def _emit_all_fields(
         self,

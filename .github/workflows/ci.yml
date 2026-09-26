@@ -135,8 +135,8 @@ jobs:
           "
 
       - name: Run mypy (scoped to ratcheted surface)
-        # Strict-mode mypy is configured in pyproject.toml but the
-        # broader codebase has ~30 pre-existing strict-mode errors.
+        # Strict-mode mypy is configured in pyproject.toml, but a few
+        # modules outside the ratchet still carry strict-mode errors.
         # This step gates ONLY the modules currently in
         # tests/meta/test_static_analysis.py:_TYPE_CHECK_PATHS. The
         # lockstep is enforced by
@@ -150,24 +150,23 @@ jobs:
         run: |
           python -m mypy \
             src/protokit/_cli_utils.py \
+            src/protokit/_descriptors.py \
             src/protokit/_extensions.py \
             src/protokit/_fieldview.py \
+            src/protokit/_pools.py \
             src/protokit/_records.py \
             src/protokit/_trust.py \
             src/protokit/forensics/ \
-            src/protokit/formatters/_builtin_lint.py \
-            src/protokit/message/_presence.py \
-            src/protokit/message/_selector.py \
-            src/protokit/message/_setmatch.py \
-            src/protokit/message/hamcrest.py \
-            src/protokit/message/matchers.py \
-            src/protokit/message/model.py \
-            src/protokit/message/pytest_plugin.py \
+            src/protokit/formatters/ \
+            src/protokit/message/ \
             src/protokit/options.py \
+            src/protokit/schema/checker.py \
+            src/protokit/schema/cli.py \
             src/protokit/schema/compile.py \
             src/protokit/schema/lint/ \
             src/protokit/schema/model.py \
             src/protokit/schema/profiles.py \
+            src/protokit/schema/rules.py \
             src/protokit/storage/ \
             scripts/check_dependency_drift.py \
             scripts/check_docs_test_refs.py

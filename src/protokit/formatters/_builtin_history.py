@@ -244,14 +244,14 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     #
     # Counted from the entries' own diagnostics above, not from the flattened
     # message lists, because it is those lists that lost the path.
-    for d in report.diagnostics:
-        level = "error" if d.level == "error" else "warning"
-        key = (level, d.commit, d.path, d.message)
+    for agg in report.diagnostics:
+        level = "error" if agg.level == "error" else "warning"
+        key = (level, agg.commit, agg.path, agg.message)
         if per_entry[key]:
             per_entry[key] -= 1
             continue
-        target = error_messages if d.level == "error" else warning_messages
-        target.append((d.commit, d.message))
+        target = error_messages if agg.level == "error" else warning_messages
+        target.append((agg.commit, agg.message))
 
     # Unlike ``history_junit``, this renderer already emits a notification for
     # every aggregate diagnostic above, so it excludes entry-level AND

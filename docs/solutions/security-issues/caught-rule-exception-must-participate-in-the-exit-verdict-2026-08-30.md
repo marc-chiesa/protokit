@@ -256,4 +256,4 @@ verdict. There it was never caught at all — the dispatch guard read
 could reach a verdict, and the rule's own exit code became the process's. Both
 now resolve through the same seam: lint at
 `src/protokit/schema/lint/cli.py:1533`, compat at
-`src/protokit/schema/cli.py:828`.
+`src/protokit/schema/cli.py:827`.
