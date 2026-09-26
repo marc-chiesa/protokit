@@ -442,6 +442,28 @@ under the pure-Python runtime with no known-failure list, and the
   `test-pure-python` while no longer listing `parity`, which ci.yml has
   always said must not be required. A pure-Python-only failure now blocks a
   merge the same way a upb failure does.
+- The installed-version lookup has a single owner,
+  `protokit._cli_utils._get_protokit_version` (audit finding V3). The two
+  byte-identical `_protokit_version` wrappers in the lint and compat
+  formatters are gone, and the history and bisect SARIF renderers no longer
+  import the compat one, so the built-in formatters are no longer coupled to
+  each other for a version string. `tests/meta/test_version_lookup_single_owner.py`
+  fails if a module other than the owner reads `importlib.metadata`, imports
+  the lookup from anywhere else, or wraps it again.
+- The comment in `protokit/formatters/__init__.py` now gives the real reason
+  its eager-load order is safe (audit finding V4). Each
+  `from protokit.formatters import <helper>` loads that submodule fresh, and
+  no submodule imports the package back. The old comment credited the
+  `sys.modules` cache. The import-layer test that pinned this shape checked
+  only the `_builtin_*` modules; it now covers every submodule, including the
+  shared `_junit_xml`, `_sarif_json` and `_registry` helpers.
+- The ruff and `mypy --strict` ratchets now cover every module this release
+  touched: `_descriptors.py`, `_pools.py`, `schema/checker.py`,
+  `schema/rules.py`, `schema/cli.py`, and the whole `formatters/` and
+  `message/` packages, including `message/differ.py`. The two packages
+  replace their per-file entries. The cleanup changes no behaviour. The one
+  change a user could see, rewrapping `protokit diff`'s option declarations,
+  leaves `--help` byte-identical.
 
 ## 0.15.1 — 2026-08-30
 
