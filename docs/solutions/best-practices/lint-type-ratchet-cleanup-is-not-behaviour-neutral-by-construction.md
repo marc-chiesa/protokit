@@ -50,7 +50,8 @@ backend. Two kinds of edit made to satisfy the tools broke that contract:
 
 1. **ruff SIM110's suggested rewrite.** `MessageDifferencer._is_treat_as_set`
    looped over the configured selectors and returned on the first match. SIM110
-   suggests collapsing that into
+   (as of ruff 0.15.12, the version in use when this was written) suggests
+   collapsing that into
    `return any(selector.matches(fd, field_path) for selector in self._treat_as_set_selectors)`.
    `selector.matches` calls a user-supplied predicate. Under PEP 479, a
    `StopIteration` raised inside a generator body is converted to
