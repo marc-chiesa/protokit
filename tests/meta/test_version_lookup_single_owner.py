@@ -12,10 +12,17 @@ A deletion has no branch to mutate, so this is the presence ratchet that
 proves it (KTD3). Each predicate is decided from the syntax tree alone:
 
 * only ``_cli_utils`` imports ``importlib.metadata`` (by either import form)
-  or reaches it as ``importlib.metadata``;
-* every import of ``_get_protokit_version`` names ``protokit._cli_utils``;
+  or reaches it as ``<importlib>.metadata``, including through
+  ``import importlib as m``;
+* every import of ``_get_protokit_version`` names ``protokit._cli_utils``,
+  whatever it is imported as;
 * no function outside the owner is a wrapper, meaning a body that, past its
-  docstring and imports, is just ``return _get_protokit_version()``.
+  docstring and imports, is just ``return`` of a call to the lookup, whether
+  by its name, by a local alias of it, or through a module
+  (``_cli_utils._get_protokit_version()``).
+
+A call routed through ``getattr`` or a string is outside what a syntax tree
+can decide; those shapes are not claimed.
 """
 
 from __future__ import annotations
@@ -29,9 +36,44 @@ _OWNER_PATH = _SRC / "_cli_utils.py"
 _LOOKUP = "_get_protokit_version"
 
 
+def _bound_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Return the local names re-spelling ``importlib`` and the lookup.
+
+    A wrapper can import either one under an alias (``import importlib as m``,
+    ``from protokit._cli_utils import _get_protokit_version as lookup``), so
+    the caller needs to recognize the alias, not just the canonical spelling.
+    """
+    importlib_aliases = {"importlib"}
+    lookup_aliases = {_LOOKUP}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    importlib_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == _OWNER_MODULE:
+            for alias in node.names:
+                if alias.name == _LOOKUP:
+                    lookup_aliases.add(alias.asname or alias.name)
+    return importlib_aliases, lookup_aliases
+
+
+def _calls_lookup(func: ast.expr, lookup_aliases: set[str]) -> bool:
+    """Is ``func`` a call target that reaches the lookup, however spelled?
+
+    Either the bare name (or an alias bound to it, e.g. ``lookup()`` after
+    ``import ... as lookup``), or a qualified attribute access ending in the
+    lookup's name (``_cli_utils._get_protokit_version()``,
+    ``protokit._cli_utils._get_protokit_version()``, and the like).
+    """
+    if isinstance(func, ast.Name):
+        return func.id in lookup_aliases
+    return isinstance(func, ast.Attribute) and func.attr == _LOOKUP
+
+
 def _violations(source: str, *, is_owner: bool) -> list[str]:
     """Return a description of each single-owner violation in ``source``."""
     tree = ast.parse(source)
+    importlib_aliases, lookup_aliases = _bound_names(tree)
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -56,7 +98,7 @@ def _violations(source: str, *, is_owner: bool) -> list[str]:
                 not is_owner
                 and node.attr == "metadata"
                 and isinstance(node.value, ast.Name)
-                and node.value.id == "importlib"
+                and node.value.id in importlib_aliases
             ):
                 found.append(f"line {node.lineno}: reaches importlib.metadata")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -78,8 +120,7 @@ def _violations(source: str, *, is_owner: bool) -> list[str]:
                 len(body) == 1
                 and isinstance(body[0], ast.Return)
                 and isinstance(body[0].value, ast.Call)
-                and isinstance(body[0].value.func, ast.Name)
-                and body[0].value.func.id == _LOOKUP
+                and _calls_lookup(body[0].value.func, lookup_aliases)
             ):
                 found.append(f"line {node.lineno}: {node.name}() wraps {_LOOKUP}")
     return found
@@ -145,6 +186,42 @@ class TestViolationDetector:
         ):
             assert _violations(source, is_owner=False), source
             assert _violations(source, is_owner=True) == [], source
+
+    def test_a_module_qualified_wrapper_is_named(self) -> None:
+        variants = (
+            (
+                "from protokit import _cli_utils\n"
+                "def _protokit_version():\n"
+                f"    return _cli_utils.{_LOOKUP}()\n"
+            ),
+            (
+                f"import {_OWNER_MODULE} as cu\n"
+                "def _protokit_version():\n"
+                f"    return cu.{_LOOKUP}()\n"
+            ),
+            (
+                f"import {_OWNER_MODULE}\n"
+                "def _protokit_version():\n"
+                f"    return {_OWNER_MODULE}.{_LOOKUP}()\n"
+            ),
+        )
+        for source in variants:
+            assert _violations(source, is_owner=False) == [
+                f"line 2: _protokit_version() wraps {_LOOKUP}"
+            ], source
+
+    def test_an_aliased_import_wrapper_is_named(self) -> None:
+        source = (
+            f"from {_OWNER_MODULE} import {_LOOKUP} as lookup\n"
+            "def w():\n"
+            "    return lookup()\n"
+        )
+        assert _violations(source, is_owner=False) == [f"line 2: w() wraps {_LOOKUP}"]
+
+    def test_an_aliased_importlib_route_is_named(self) -> None:
+        source = "import importlib as metadata_api\nv = metadata_api.metadata.version('protokit')\n"
+        assert _violations(source, is_owner=False), source
+        assert _violations(source, is_owner=True) == [], source
 
     def test_a_second_definition_is_named(self) -> None:
         source = f"def {_LOOKUP}() -> str:\n    return '0'\n"

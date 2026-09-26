@@ -302,7 +302,7 @@ src/protokit/_cli_utils.py:726:            module = importlib.import_module(name
 src/protokit/schema/cli.py:192:            module = importlib.import_module(name)
 src/protokit/schema/lint/_cli_utils.py:534:        module = importlib.import_module(module_name)
 
-$ grep -rn "plugin_fn(ctx)\|rule_fn(\|_invoke_rule\|fn(report" src/protokit/ | grep -v "def \|#"
+$ grep -rn "plugin_fn(ctx)\|rule_fn(\|_invoke_rule\|fn(report" src/protokit/ | grep -vE 'def |:[0-9]+:[[:space:]]*#'
 src/protokit/_cli_utils.py:964:            output = fn(report, ctx)
 src/protokit/_trust.py:388:                    s._replace(text=one_line(s.text)) for s in fn(report)
 src/protokit/schema/checker.py:598:                findings.extend(rule_fn(old_m, new_m, path))
@@ -310,8 +310,8 @@ src/protokit/schema/checker.py:662:                findings.extend(rule_fn(old_f
 src/protokit/schema/checker.py:675:                    findings.extend(rule_fn(
 src/protokit/schema/checker.py:736:            findings.extend(rule_fn(old_value, new_value, value_path))
 src/protokit/schema/checker.py:747:                findings.extend(rule_fn(
-src/protokit/schema/checker.py:786:            result = plugin_fn(ctx)
-src/protokit/schema/checker.py:829:            result = plugin_fn(ctx)
+src/protokit/schema/checker.py:786:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
+src/protokit/schema/checker.py:829:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
 src/protokit/schema/lint/engine.py:1322:            self._invoke_rule(spec, ctx)
 src/protokit/schema/lint/engine.py:1327:                self._invoke_rule(spec, ctx_svc)
 src/protokit/schema/lint/engine.py:1333:                    self._invoke_rule(spec, ctx_m)

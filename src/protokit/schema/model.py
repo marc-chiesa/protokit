@@ -411,7 +411,7 @@ class HistoryReport:
     def __post_init__(self) -> None:
         """Own both collections; a string is refused, not split (V11).
 
-        The CLI builds this from lists, which is why it converts at all.
+        A library caller may still pass lists; converting gives the record its own.
         """
         own_tuples(self, "entries", "diagnostics")
 
