@@ -21,8 +21,10 @@ proves it (KTD3). Each predicate is decided from the syntax tree alone:
   by its name, by a local alias of it, or through a module
   (``_cli_utils._get_protokit_version()``).
 
-A call routed through ``getattr`` or a string is outside what a syntax tree
-can decide; those shapes are not claimed.
+Names are followed through imports and plain name assignments only. A value
+routed through ``getattr``, a string, or an attribute or container store
+(``box.f = lookup``) needs data-flow analysis, which a syntax tree cannot
+decide; those shapes are not claimed.
 """
 
 from __future__ import annotations

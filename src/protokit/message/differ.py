@@ -873,7 +873,7 @@ class MessageDifferencer:
             return _field_present(msg, left_fd)
         if default_msg is None:
             default_msg = type(msg)()
-        return bool(_field_value(msg, left_fd) != _field_value(default_msg, left_fd))
+        return cast(bool, _field_value(msg, left_fd) != _field_value(default_msg, left_fd))
 
     def set_message_field_comparison(
         self, mode: MessageFieldComparison
