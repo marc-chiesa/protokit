@@ -112,7 +112,7 @@ class TestRulePackExplicitLoadIsIdempotent:
        Prevents the engine from registering the same pack's rules
        twice (which would raise ``DuplicateRuleError``). Independent
        of the CLI guard above — applies to any caller, not just CLI.
-    3. **Profile-level frozenset union** at ``model.py:717-719``:
+    3. **Profile-level frozenset union** at ``model.py:853-855``:
        :meth:`LintProfile.compose` uses ``frozenset().union(*(p.rule_ids
        for p in profiles))``. Backstop that absorbs duplicate
        per-pack profiles even if the upper-layer dedup were

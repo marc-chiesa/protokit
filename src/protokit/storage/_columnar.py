@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Literal
 from google.protobuf.descriptor import Descriptor, FieldDescriptor, FileDescriptor
 from google.protobuf.message import Message
 
+from protokit._records import own_tuples
 from protokit.storage._fidelity_probe import (
     unmodeled_byte_delta as _unmodeled_byte_delta,
 )
@@ -329,6 +330,10 @@ class FidelityReport:
     unmodeled_records: int
     unmodeled_bytes: int
     dropped_extensions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Own ``dropped_extensions``; one name is refused, not split."""
+        own_tuples(self, "dropped_extensions")
 
 
 def _require_parquet() -> None:

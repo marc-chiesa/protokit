@@ -607,3 +607,40 @@ class TestPostInitExceptionContainment:
         unexpected = [d for d in result.diagnostics if d.category == "unexpected"]
         assert len(unexpected) == 1
         assert unexpected[0].exception_type == "RuntimeError"
+
+    def test_refused_root_files_on_the_rebuild_path_stays_a_diagnostic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A ``root_files`` the records seam refuses must not escape (U6).
+
+        ``CompileResult`` refuses a bare ``str`` for ``root_files`` rather
+        than splitting it into characters. The recovery construction used to
+        re-pass ``root_files`` unchanged, so the second ``__post_init__``
+        raised the same ``TypeError`` out of a function documented never to
+        raise on a backend failure.
+        """
+        from google.protobuf import descriptor_pool
+
+        from protokit.schema import compile as compile_module
+
+        # The protoc arm, so the test runs on the has_protoxy=false cell too.
+        def fake_protoc(
+            paths,  # type: ignore[no-untyped-def]
+            ip,
+            *,
+            include_source_info: bool = False,
+        ):
+            return descriptor_pool.DescriptorPool(), "demo.proto", None, ()
+
+        monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
+        monkeypatch.setattr(
+            compile_module, "_compile_with_protoc", fake_protoc,
+        )
+
+        proto = _write_proto(tmp_path, "demo.proto", _PROTO_WITH_COMMENTS)
+        result = compile_protos_to_result([proto])
+
+        assert result.root_files == ()
+        unexpected = [d for d in result.diagnostics if d.category == "unexpected"]
+        assert len(unexpected) == 1
+        assert unexpected[0].exception_type == "TypeError"

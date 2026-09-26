@@ -26,6 +26,7 @@ from typing import Literal
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import DecodeError, Message
 
+from protokit._records import own_tuples
 from protokit.forensics._drift import compatibility_score
 from protokit.forensics._wire import WalkError, walk_top_level
 from protokit.message.model import Diagnostic
@@ -89,6 +90,10 @@ class MatchReport:
     #: for a kind it does not recognise, and a report kind carrying no
     #: ``diagnostics`` at all is one the seam must refuse outright.
     diagnostics: tuple[Diagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Own both collections (see ``protokit._records``)."""
+        own_tuples(self, "ranked", "diagnostics")
 
 
 def _present_declared_field_count(message: Message) -> int:

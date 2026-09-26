@@ -17,6 +17,7 @@ from typing import Literal
 from google.protobuf.descriptor import Descriptor, FieldDescriptor
 
 from protokit import _descriptors
+from protokit._records import own_tuples
 from protokit.forensics._wire import WIRETYPE_LEN, WireObservation, walk_top_level
 from protokit.message.model import Diagnostic
 from protokit.storage.schema_source import ResolvedSchema, SchemaSource
@@ -71,6 +72,10 @@ class DriftReport:
     #: so nothing populates this today and the gate it feeds is closed ahead
     #: of a producer rather than after one.
     diagnostics: tuple[Diagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Own both collections (see ``protokit._records``)."""
+        own_tuples(self, "divergences", "diagnostics")
 
 
 def _declared_numbers(

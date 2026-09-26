@@ -29,7 +29,6 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from google.protobuf import descriptor_pool
@@ -40,6 +39,8 @@ from protokit._cli_utils import (
     _has_protoxy,
 )
 from protokit._pools import DescriptorPoolError
+from protokit._records import as_mapping, as_tuple, one_of, own_tuples
+from protokit.message.model import _DIAGNOSTIC_LEVELS, DiagnosticLevel
 
 if TYPE_CHECKING:
     from google.protobuf.descriptor_pb2 import FileDescriptorProto
@@ -135,13 +136,23 @@ class LintCompileDiagnostic:
             Use ``category`` for closed-set branching.
     """
 
-    level: Literal["info", "warning", "error"]
+    level: DiagnosticLevel
     message: str
     category: DiagnosticCategory = "unexpected"
     command: tuple[str, ...] | None = None
     exit_code: int | None = None
     stderr: str | None = None
     exception_type: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a ``level`` the ``== "error"`` readers would miss; own ``command``."""
+        one_of(self.level, _DIAGNOSTIC_LEVELS, "LintCompileDiagnostic.level")
+        if self.command is not None:
+            object.__setattr__(
+                self,
+                "command",
+                as_tuple(self.command, "LintCompileDiagnostic.command"),
+            )
 
     def __str__(self) -> str:
         """Render as a deterministic single-line human form.
@@ -262,9 +273,7 @@ class CompileResult:
         for the paired-field invariant pattern this check applies to
         ``(pool_file_names, root_files)``.
         """
-        object.__setattr__(self, "root_files", tuple(self.root_files))
-        object.__setattr__(self, "pool_file_names", tuple(self.pool_file_names))
-        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        own_tuples(self, "root_files", "pool_file_names", "diagnostics")
         # pool_file_names invariant check (after the tuple snapshots
         # above so we operate on the immutable forms). ce:review
         # follow-up (Finding #10): also
@@ -299,7 +308,10 @@ class CompileResult:
             object.__setattr__(
                 self,
                 "source_info_descriptors",
-                MappingProxyType(dict(self.source_info_descriptors)),
+                as_mapping(
+                    self.source_info_descriptors,
+                    "CompileResult.source_info_descriptors",
+                ),
             )
 
 
@@ -740,13 +752,13 @@ def compile_protos_to_result(
         )
     except Exception as exc:  # noqa: BLE001 — see comment above
         diagnostics.append(_diagnostic_unexpected(exc))
-        # Re-build with cleared source_info_descriptors AND pool_file_names
-        # so the second attempt can't trip the same __post_init__ failure
-        # (e.g., a pool_file_names_invariant violation would re-fire if we
-        # re-passed the same value).
+        # Re-build with every field __post_init__ converts cleared, so the
+        # second attempt can't trip the same failure: a root_files the
+        # records seam refuses, or a pool_file_names_invariant violation,
+        # would re-fire if we re-passed the same value.
         return CompileResult(
             pool=pool,
-            root_files=root_files,
+            root_files=(),
             pool_file_names=(),
             diagnostics=tuple(diagnostics),
             source_info_descriptors=None,

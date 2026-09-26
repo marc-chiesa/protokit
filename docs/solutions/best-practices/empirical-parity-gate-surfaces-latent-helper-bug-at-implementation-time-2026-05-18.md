@@ -164,7 +164,7 @@ if user_pack.__name__ not in {p.__name__ for p in loaded_packs}:
 
 1. **CLI-level dedup at cli.py:841-846** — load-bearing guard against the `zip(strict=True)` ValueError.
 2. **Engine-level idempotent load at engine.py:241-242** — `if module.__name__ in self._loaded_module_names: return` — guard against `DuplicateRuleError`.
-3. **Profile-level frozenset union at model.py:717-719** — defense-in-depth backstop that absorbs duplicate rule_ids at composition time.
+3. **Profile-level frozenset union at model.py:853-855** — defense-in-depth backstop that absorbs duplicate rule_ids at composition time.
 
 ### Case 3 — Cofire-ordering unit invariant pin surfaces engine pack-load-order bug at U2 (D6c U2, 2026-05-19)
 

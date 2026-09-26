@@ -191,3 +191,27 @@ class TestWalkPathInternalGuard:
         """Guards against a fix that rejects everything."""
         chain = _walk_path("n", event_cls.DESCRIPTOR, spec="<internal>")
         assert [f.name for f in chain] == ["n"]
+
+
+class TestCompiledSelectionOwnsItsPaths:
+    """``CompiledSelection`` refuses a string where a path belongs, and owns each path.
+
+    ``compile_fields`` only ever hands it tuples of names, so these pin the
+    public constructor: a dotted string inside ``paths`` used to be split into
+    one-character segments that name no field.
+    """
+
+    @pytest.mark.parametrize("path", ["ab", b"ab"], ids=["str", "bytes"])
+    def test_string_inside_paths_is_refused_naming_the_field(self, path: object) -> None:
+        with pytest.raises(TypeError, match=r"CompiledSelection\.paths\[\]"):
+            CompiledSelection(paths=[path])  # type: ignore[arg-type]
+
+    def test_list_of_lists_is_owned_as_tuples(self) -> None:
+        inner = ["header", "code"]
+        outer = [inner]
+        selection = CompiledSelection(paths=outer)  # type: ignore[arg-type]
+        inner.append("extra")
+        outer.append(["n"])
+        assert selection.paths == (("header", "code"),)
+        assert type(selection.paths) is tuple
+        assert type(selection.paths[0]) is tuple

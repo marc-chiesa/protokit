@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import re
 import warnings
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
+from typing import TYPE_CHECKING, Literal, get_args
+
+from protokit._records import as_tuple, one_of, own_tuples
 
 if TYPE_CHECKING:  # pragma: no cover — typing-only imports
     from google.protobuf import descriptor as proto_descriptor
@@ -19,6 +22,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing-only imports
 
 
 DiagnosticLevel = Literal["info", "warning", "error"]
+_DIAGNOSTIC_LEVELS: frozenset[str] = frozenset(get_args(DiagnosticLevel))
 
 
 class ChangeType(Enum):
@@ -114,6 +118,10 @@ class Diagnostic:
     path: str | None
     message: str
     level: DiagnosticLevel = "warning"
+
+    def __post_init__(self) -> None:
+        """Refuse a ``level`` that ``warnings`` and ``errors`` would both miss (V7)."""
+        one_of(self.level, _DIAGNOSTIC_LEVELS, "Diagnostic.level")
 
     def __str__(self) -> str:
         """Render as ``path: message`` (or just ``message`` when path is None).
@@ -254,6 +262,14 @@ class FieldPath:
 
     segments: tuple[PathSegment, ...]
 
+    def __post_init__(self) -> None:
+        """Own ``segments``, so a list the caller keeps cannot move the path."""
+        # The differ builds one path per visited field: a tuple skips the call.
+        if type(self.segments) is not tuple:
+            object.__setattr__(
+                self, "segments", as_tuple(self.segments, "FieldPath.segments"),
+            )
+
     @staticmethod
     def parse(path_str: str) -> FieldPath:
         """Parse a dotted path string into a FieldPath.
@@ -340,7 +356,7 @@ class FieldPath:
         """
         if len(self.segments) > len(other.segments):
             return False
-        for self_seg, other_seg in zip(self.segments, other.segments):
+        for self_seg, other_seg in zip(self.segments, other.segments, strict=False):
             if not self_seg.matches(other_seg, exact=False):
                 return False
         return True
@@ -357,7 +373,7 @@ class FieldPath:
         """
         if len(self.segments) != len(other.segments):
             return False
-        for self_seg, other_seg in zip(self.segments, other.segments):
+        for self_seg, other_seg in zip(self.segments, other.segments, strict=True):
             if not self_seg.matches(other_seg, exact=True):
                 return False
         return True
@@ -387,7 +403,8 @@ class FieldPath:
         if len(self.segments) != len(other.segments):
             return False
         return all(
-            s.name == o.name for s, o in zip(self.segments, other.segments)
+            s.name == o.name
+            for s, o in zip(self.segments, other.segments, strict=True)
         )
 
     def __str__(self) -> str:
@@ -528,6 +545,15 @@ class Difference:
     # Phase 1.5 differ hook annotations
     annotations: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Own ``annotations``; a bare string is refused, not split (V11)."""
+        if type(self.annotations) is not tuple:
+            object.__setattr__(
+                self,
+                "annotations",
+                as_tuple(self.annotations, "Difference.annotations"),
+            )
+
     @property
     def old_value(self) -> object | None:  # PROTO_1_0_REMOVE
         """Deprecated read-only alias for :attr:`left_value`.
@@ -615,6 +641,10 @@ class DiffResult:
     differences: tuple[Difference, ...]
     diagnostics: tuple[Diagnostic, ...] = ()
     truncated_paths: tuple[FieldPath, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Own every collection, so the caller's list cannot change the verdict (V6)."""
+        own_tuples(self, "differences", "diagnostics", "truncated_paths")
 
     @property
     def is_complete(self) -> bool:
@@ -884,14 +914,14 @@ class FieldHookContext:
     """
 
     path: FieldPath
-    left_fd: "proto_descriptor.FieldDescriptor | None"
-    right_fd: "proto_descriptor.FieldDescriptor | None"
+    left_fd: proto_descriptor.FieldDescriptor | None
+    right_fd: proto_descriptor.FieldDescriptor | None
     left_value: object | None
     right_value: object | None
-    left_msg: "Message | None"
-    right_msg: "Message | None"
-    left_pool: "descriptor_pool.DescriptorPool"
-    right_pool: "descriptor_pool.DescriptorPool"
+    left_msg: Message | None
+    right_msg: Message | None
+    left_pool: descriptor_pool.DescriptorPool
+    right_pool: descriptor_pool.DescriptorPool
     # Engine-managed scratch; hook code touches this via methods only.
     _state: _FieldHookState = field(
         default_factory=_FieldHookState, compare=False, repr=False,
@@ -1009,10 +1039,10 @@ class MessageHookContext:
     """
 
     path: FieldPath
-    left_msg: "Message | None"
-    right_msg: "Message | None"
-    left_pool: "descriptor_pool.DescriptorPool"
-    right_pool: "descriptor_pool.DescriptorPool"
+    left_msg: Message | None
+    right_msg: Message | None
+    left_pool: descriptor_pool.DescriptorPool
+    right_pool: descriptor_pool.DescriptorPool
     _state: _MessageHookState = field(
         default_factory=_MessageHookState, compare=False, repr=False,
     )

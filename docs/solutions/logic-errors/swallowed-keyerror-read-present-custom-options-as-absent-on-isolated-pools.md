@@ -41,7 +41,7 @@ tags:
 `protokit.options.get_option_value(desc, option_path, pool=None)` is the public
 helper that differ hooks and checker plugins use to read a custom option. The
 differ hands hooks `left_pool` / `right_pool` for exactly this purpose
-(`src/protokit/message/model.py:878-880`, anchor `left_pool: Descriptor pool`). The helper returned `None` for
+(`src/protokit/message/model.py:908-910`, anchor `left_pool: Descriptor pool`). The helper returned `None` for
 **every** custom option on an isolated `DescriptorPool`: any pool built by
 `protokit._pools.build_pool` from a `FileDescriptorSet`, and any protoxy compile
 pool. In practice that is every schema protokit builds itself. An annotated field

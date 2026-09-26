@@ -49,10 +49,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType, ModuleType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
+
+from protokit._records import as_dict, as_frozenset, as_mapping, own_tuples
 
 if TYPE_CHECKING:
     # ``FileDescriptorProto`` is referenced only by the 5 ElementKind
@@ -366,7 +368,7 @@ class LintFinding:
         findings whose params alias to the LAST set of values. Snapshot
         via ``dict(...)`` so each finding owns its params.
         """
-        object.__setattr__(self, "params", dict(self.params))
+        object.__setattr__(self, "params", as_dict(self.params, "LintFinding.params"))
 
 
 @dataclass(frozen=True)
@@ -751,15 +753,13 @@ class LintReport:
         are already tuple-immutable; ``specs`` would otherwise allow
         ``report.specs[k] = v`` post-construction).
         """
-        object.__setattr__(self, "findings", tuple(self.findings))
-        object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
-        object.__setattr__(self, "profiles_run", tuple(self.profiles_run))
-        object.__setattr__(self, "rules_run", tuple(self.rules_run))
-        object.__setattr__(
-            self, "runtime_warnings", tuple(self.runtime_warnings),
+        own_tuples(
+            self,
+            "findings", "diagnostics", "profiles_run", "rules_run",
+            "runtime_warnings",
         )
         object.__setattr__(
-            self, "specs", MappingProxyType(dict(self.specs)),
+            self, "specs", as_mapping(self.specs, "LintReport.specs"),
         )
 
 
@@ -791,16 +791,19 @@ class LintProfile:
     rule_severity_overrides: dict[str, LintSeverity] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Snapshot caller-supplied dict so the frozen guarantee is real.
+        """Own both collections, so the frozen guarantee is real.
 
-        Same rationale as :class:`LintFinding` and :class:`LintReport`:
-        ``frozen=True`` does not prevent nested mutation of a passed-in
-        dict. Profiles passed across deliveries / plugin boundaries
-        could otherwise be mutated post-construction and corrupt the
-        composition.
+        ``frozen=True`` does not stop a caller mutating a passed-in dict
+        or set; profiles cross delivery and plugin boundaries, where that
+        would corrupt the composition. See ``protokit._records``.
         """
         object.__setattr__(
-            self, "rule_severity_overrides", dict(self.rule_severity_overrides),
+            self,
+            "rule_severity_overrides",
+            as_dict(self.rule_severity_overrides, "LintProfile.rule_severity_overrides"),
+        )
+        object.__setattr__(
+            self, "rule_ids", as_frozenset(self.rule_ids, "LintProfile.rule_ids"),
         )
 
     @classmethod
@@ -990,22 +993,23 @@ class LintRuleSpec:
            hit a clear failure rather than a runtime KeyError at first
            render.
         """
+        # Anything else is the multi-kind arm: a mapping, never a list stored as-is.
         severity = self.severity
+        if not isinstance(severity, LintSeverity):
+            severity = as_dict(severity, "LintRuleSpec.severity")
         template = self.message_template
-        severity_is_dict = isinstance(severity, dict)
-        template_is_dict = isinstance(template, dict)
-        if severity_is_dict != template_is_dict:
+        if not isinstance(template, str):
+            template = as_dict(template, "LintRuleSpec.message_template")
+        if isinstance(severity, dict) != isinstance(template, dict):
             raise TypeError(
-                f"LintRuleSpec({self.rule_id!r}): severity and "
-                f"message_template must share the same shape "
-                f"(both single-kind, or both dict for multi-kind); "
-                f"got severity={type(severity).__name__}, "
+                f"LintRuleSpec({self.rule_id!r}): severity and message_template "
+                f"must share the same shape (both single-kind, or both dict for "
+                f"multi-kind); got severity={type(severity).__name__}, "
                 f"message_template={type(template).__name__}."
             )
-        if isinstance(severity, dict):
-            object.__setattr__(self, "severity", dict(severity))
-        if isinstance(template, dict):
-            object.__setattr__(self, "message_template", dict(template))
+        object.__setattr__(self, "severity", severity)
+        object.__setattr__(self, "message_template", template)
+        own_tuples(self, "profiles")
 
     def severity_for(self, violation_kind: str) -> LintSeverity:
         """Return the effective default severity for ``violation_kind``.
@@ -1065,6 +1069,21 @@ class _LintContextEmitMixin:
     # the mixin would force the dataclass field ordering and conflict
     # with the "engine-injected fields LAST" rule per pass-2 codex
     # correction.
+
+    # The context's Mapping fields, made read-only at construction. The
+    # engine already hands over ``MappingProxyType`` values, which
+    # ``as_mapping`` passes through without copying — this runs once per
+    # schema element per rule.
+    _MAPPING_FIELDS: ClassVar[tuple[str, ...]] = ("source_info_descriptors",)
+
+    def __post_init__(self) -> None:
+        """Make each of ``_MAPPING_FIELDS`` read-only at its top level."""
+        for name in self._MAPPING_FIELDS:
+            value = getattr(self, name, None)
+            if value is not None and type(value) is not MappingProxyType:
+                object.__setattr__(
+                    self, name, as_mapping(value, f"{type(self).__name__}.{name}"),
+                )
 
     def emit(
         self,
@@ -1163,6 +1182,10 @@ class CycleEdge:
     cycle_path: tuple[str, ...]
     line: int | None = None
     column: int | None = None
+
+    def __post_init__(self) -> None:
+        """Own ``cycle_path``; a package name is refused, not split."""
+        own_tuples(self, "cycle_path")
 
 
 @dataclass(frozen=True)
@@ -1270,6 +1293,13 @@ class FileLintContext(_LintContextEmitMixin):
     # check_package_no_import_cycle); does not need a dual-view
     # accumulator since cross-file dispatch is single-keyed.
     import_cycles: Mapping[str, tuple[CycleEdge, ...]] | None = None
+
+    _MAPPING_FIELDS: ClassVar[tuple[str, ...]] = (
+        "package_options",
+        "directory_packages",
+        "directory_packages_by_dir",
+        "import_cycles",
+    )
 
     def location(self) -> LintLocation:
         """Return ``FileLocation(file=self.file.name)``."""

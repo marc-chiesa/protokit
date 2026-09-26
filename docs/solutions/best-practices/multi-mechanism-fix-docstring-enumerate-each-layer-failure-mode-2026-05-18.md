@@ -28,7 +28,7 @@ tags:
 
 When a single bug fix involves coupled mechanisms across distinct code layers, the test docstring or module comment that documents the fix can become misleading even when each statement in it is individually correct. The danger is not that any single mechanism is wrong — each may be individually documented accurately. The danger is that a future maintainer sees one mechanism (often the most visible, high-level one) and infers that other mechanisms are therefore redundant simplification candidates.
 
-D6b U7 demonstrated this concretely. The CLI rule-pack dedup bug (see [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]]) was fixed by adding a CLI-level dedup guard. The `TestRulePackExplicitLoadIsIdempotent` test class docstring originally described only TWO mechanisms: engine-level idempotent load (`engine.py:241-242`) and profile-level frozenset union (`model.py:717-719`). The docstring stated:
+D6b U7 demonstrated this concretely. The CLI rule-pack dedup bug (see [[cli-loaded-packs-dedup-zip-strict-builtin-packs-flip-2026-05-18]]) was fixed by adding a CLI-level dedup guard. The `TestRulePackExplicitLoadIsIdempotent` test class docstring originally described only TWO mechanisms: engine-level idempotent load (`engine.py:241-242`) and profile-level frozenset union (`model.py:853-855`). The docstring stated:
 
 > "The CLI does NOT de-dup loaded_packs (cli.py:831 unconditionally appends): an explicit --rule-pack for a pack already in BUILTIN_PACKS produces a doubled list entry; the downstream compose frozenset-union eats the duplicate."
 
@@ -104,7 +104,7 @@ class TestRulePackExplicitLoadIsIdempotent:
     The CLI does NOT de-dup loaded_packs (cli.py:831 unconditionally
     appends): an explicit --rule-pack for a pack already in BUILTIN_PACKS
     produces a doubled list entry; the downstream LintProfile.compose
-    frozenset-union at model.py:717-719 absorbs the duplicate rule_ids.
+    frozenset-union at model.py:853-855 absorbs the duplicate rule_ids.
     """
 ```
 
@@ -142,7 +142,7 @@ class TestRulePackExplicitLoadIsIdempotent:
        (which would raise DuplicateRuleError). Independent of the CLI
        guard above — applies to any caller, not just CLI.
 
-    3. **Profile-level frozenset union at model.py:717-719**
+    3. **Profile-level frozenset union at model.py:853-855**
        (defense-in-depth):
        LintProfile.compose uses
        `frozenset().union(*(p.rule_ids for p in profiles))`.

@@ -1096,3 +1096,31 @@ class TestEnumValues:
             "field",
             "oneof",
         }
+
+
+class TestLintRuleSpecMultiKindArmIsAMapping:
+    """U6: the ``dict`` arm of ``severity`` / ``message_template`` is owned.
+
+    Neither arm type-checked anything but ``dict``, so a list of pairs on both
+    passed the shape check and was stored, and shared with the caller, as-is.
+    """
+
+    def test_lists_of_pairs_are_refused(self) -> None:
+        with pytest.raises(TypeError, match=r"LintRuleSpec\.severity"):
+            LintRuleSpec(
+                rule_id="R",
+                severity=[("kind", LintSeverity.ERROR)],  # type: ignore[arg-type]
+                profiles=("default",),
+                message_template=[("kind", "m")],  # type: ignore[arg-type]
+            )
+
+    def test_a_mapping_arm_is_owned(self) -> None:
+        severities = {"kind": LintSeverity.ERROR}
+        spec = LintRuleSpec(
+            rule_id="R",
+            severity=severities,
+            profiles=("default",),
+            message_template={"kind": "m"},
+        )
+        severities["other"] = LintSeverity.WARNING
+        assert spec.severity == {"kind": LintSeverity.ERROR}

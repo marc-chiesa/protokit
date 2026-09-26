@@ -293,6 +293,72 @@ annotations were always there; the helper could not see them. An option whose
 stored bytes do not parse as its declared type — a corrupt descriptor set — now
 raises `DecodeError` instead of reading as `None`.
 
+### Fixed — BREAKING (U6: frozen result types stay frozen)
+
+protokit's result types are frozen dataclasses annotated `tuple[...]`, but
+`frozen=True` only stops attribute rebinding: a record handed a list stored the
+caller's list. Of the 25 public records with a collection field, nine converted
+some of theirs, each its own way, and sixteen converted none. A new internal
+module, `protokit._records`, now does the conversion for all of them, and a
+reflection test builds every public frozen record from lists, sets and dicts to
+keep it that way.
+
+- **A result built from a list no longer changes when the list does** (audit
+  findings V6, V11). `DiffResult(differences=items)` followed by
+  `items.append(d)` used to flip `bool(result)`, and a `CompatibilityReport`
+  built from a list flipped `is_compatible` the same way; `hash()` of either
+  raised `TypeError`. Every collection field of a public frozen record is now
+  stored as a tuple (a frozenset for `LintProfile.rule_ids`, a read-only
+  mapping for the `Mapping` fields, the record's own copy for the `dict`
+  fields), whatever the caller passed. Where the elements are pairs or paths —
+  `MatchPolicy.approx_overlays`, `CompatibilityPolicy.custom_rules` and
+  `message_rules`, `CompiledSelection.paths` — each element is owned as a tuple
+  too, so a caller's inner list is not shared either. The records covered are
+  `DiffResult`, `Difference`, `FieldPath`, `MatchPolicy`,
+  `CompatibilityReport`, `HistoryReport`, `BisectReport`,
+  `CompatibilityPolicy`, `CompileResult`, `LintCompileDiagnostic`,
+  `LintFinding`, `LintReport`, `LintProfile`, `LintRuleSpec`, `CycleEdge`, the
+  lint contexts, `DriftReport`, `MatchReport`, `FidelityReport` and
+  `CompiledSelection`.
+- **A string where a collection belongs is refused, not split** (V11).
+  `HistoryReport(entries="abc")` was accepted as three one-character entries
+  and crashed later, in `history_report_to_dict`; `MatchPolicy`'s
+  `approx_overlays` did the same to a string. A `str`, `bytes`, `bytearray` or
+  mapping (which iterates as its keys alone) in a collection field now raises
+  `TypeError` naming the field. Every other iterable — a generator, a set, a
+  `range` — is still accepted. `MatchPolicy`'s `ignore` and `as_set` still take
+  a single selector string, as before. A mapping field (`Mapping` or `dict`)
+  refuses anything that is not a mapping: `LintFinding(params=["ab"])` used to
+  store `{"a": "b"}`.
+- **`Diagnostic.level` must be `"info"`, `"warning"` or `"error"`** (V7).
+  `Diagnostic(level="fatal")` was accepted and then counted in neither
+  `DiffResult.warnings` nor `DiffResult.errors`, so a report carrying it read
+  as clean. It now raises `ValueError`, and so do `CommitDiagnostic.level` and
+  `LintCompileDiagnostic.level`, whose readers test for `"error"` the same way.
+  No built-in emitter passes a computed level, so this hardens the public
+  constructors; it fixes no built-in output.
+- **`BisectReport` takes `breaking_commit` and `breaking_findings` together**
+  (V11). A report naming no breaking commit while carrying breaking findings
+  read as "no break" to a consumer keying on `breaking_commit`. Setting one
+  without the other now raises `ValueError`. `protokit compat bisect` always
+  sets both.
+
+*Upgrade impact:* no built-in command's output changes. Code that constructs
+these records itself can now see errors it did not see before: a string, bytes
+or a mapping in a collection field raises `TypeError`, an unknown `level`
+raises `ValueError`, and so does a half-set `BisectReport`. A field that used
+to hand back the caller's own list now returns a tuple, so code that appended
+to `report.findings` after construction gets an `AttributeError` instead of a
+silently changed report. `LintFinding.params` and
+`LintProfile.rule_severity_overrides` no longer accept a list of key/value
+pairs, and neither does the multi-kind form of `LintRuleSpec.severity` /
+`message_template` (a list there was stored as-is); pass a dict. A rule pack declaring `@lint_rule(profiles="name")`
+with a single string now fails at import; pass `profiles=("name",)`. The
+string used to be kept as it was and matched profile names as a substring.
+A `Mapping` field keeps a `MappingProxyType` it is given without copying it,
+so a caller who wraps their own dict in one still shares that dict; any other
+mapping is copied.
+
 ### Fixed — `protokit diff` exit codes
 
 - **A malformed selector now exits 2, not 1** (audit finding U15-6). `--ignore`,
@@ -360,6 +426,14 @@ under the pure-Python runtime with no known-failure list, and the
   the class builder they used; the builder is now private to the seam. Both
   modules are private APIs; no supported surface changes. `protokit/options.py`
   and the new module join the ruff and `mypy --strict` ratchets.
+- Collection fields on frozen records have a single owner, `protokit._records`
+  (layer 0). `tests/meta/test_frozen_records.py` discovers every public frozen
+  dataclass (exported in an `__all__`, or with no underscore in its class or
+  module name) and checks each collection field by building the record from a
+  list, a set and a dict it then mutates. A new public record that the test
+  cannot build fails by name. `message/model.py`, `schema/model.py`,
+  `schema/profiles.py` and the new module join the ruff and `mypy --strict`
+  ratchets.
 - The `test-pure-python` CI cell is a required check on `main` (U23, the
   tighten step the cell was landed with in U2). Its job-level
   `continue-on-error` and advisory banner are gone, the presence ratchet

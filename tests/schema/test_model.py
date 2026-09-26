@@ -320,3 +320,83 @@ class TestBisectReport:
         with pytest.raises(dataclasses.FrozenInstanceError):
             r.breaking_commit = "x"  # type: ignore[misc]
 
+
+
+class TestReportsOwnTheirCollections:
+    """V11: every schema report converts its collections, and refuses a string.
+
+    Two of these reports converted with a bare ``tuple(x)``, which split
+    ``entries="abc"`` into three one-character entries that crashed later in
+    ``history_report_to_dict``; the others did not convert at all, so a
+    report built from a list changed verdict when the list did.
+    """
+
+    def test_compatibility_report_does_not_alias_the_callers_list(self) -> None:
+        items: list[Finding] = []
+        r = CompatibilityReport(level=CompatibilityLevel.STRICT, findings=items)
+        items.append(_make_finding())
+        assert r.is_compatible is True
+        assert r.findings == ()
+        hash(r)
+
+    def test_history_report_refuses_a_string_of_entries(self) -> None:
+        with pytest.raises(TypeError, match=r"HistoryReport\.entries"):
+            HistoryReport(
+                range_spec="r", old_sha="a", new_sha="b", commits_walked=0,
+                entries="abc",  # type: ignore[arg-type]
+            )
+
+    def test_bisect_report_refuses_a_string_of_findings(self) -> None:
+        with pytest.raises(TypeError, match=r"BisectReport\.breaking_findings"):
+            BisectReport(
+                range_spec="r", old_sha="a", new_sha="b",
+                breaking_commit="x", commits_walked=1,
+                breaking_findings="abc",  # type: ignore[arg-type]
+            )
+
+    def test_a_generator_is_still_accepted(self) -> None:
+        # Every iterable that worked before keeps working; only the inputs a
+        # conversion would take apart are refused.
+        finding = _make_finding()
+        r = CompatibilityReport(
+            level=CompatibilityLevel.STRICT, findings=(f for f in [finding]),
+        )
+        assert r.findings == (finding,)
+
+
+class TestBisectReportBreakPairing:
+    """V11: ``breaking_commit`` and ``breaking_findings`` are both set or neither.
+
+    A report naming no breaking commit while carrying breaking findings reads
+    as "no break" to a consumer keying on ``breaking_commit`` — a silent
+    false negative on the CI verdict path. The inverse names a break with
+    nothing to show for it.
+    """
+
+    def test_findings_without_a_commit_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="breaking_commit"):
+            BisectReport(
+                range_spec="r", old_sha="a", new_sha="b",
+                breaking_commit=None, commits_walked=1,
+                breaking_findings=(_make_finding(),),
+            )
+
+    def test_a_commit_without_findings_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="breaking_findings"):
+            BisectReport(
+                range_spec="r", old_sha="a", new_sha="b",
+                breaking_commit="x", commits_walked=1,
+            )
+
+
+class TestCommitDiagnosticLevelIsValidated:
+    """The V7 shape on ``CommitDiagnostic``: its ``level`` is a plain ``str``.
+
+    Every reader tests ``level == "error"``, so ``"ERROR"`` or ``"fatal"``
+    would make a failed commit read as a clean one.
+    """
+
+    @pytest.mark.parametrize("level", ["fatal", "ERROR", ""])
+    def test_a_level_outside_the_ladder_is_refused(self, level: str) -> None:
+        with pytest.raises(ValueError, match=r"CommitDiagnostic\.level"):
+            CommitDiagnostic(commit="x", level=level, path=None, message="m")

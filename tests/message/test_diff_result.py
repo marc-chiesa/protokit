@@ -1,5 +1,7 @@
 """Tests for DiffResult filtering and querying."""
 
+import pytest
+
 from protokit.message.model import (
     ChangeType,
     Difference,
@@ -196,3 +198,53 @@ class TestDiagnosticLevels:
         r = DiffResult(differences=(), truncated_paths=(tp,))
         assert not r.is_complete
         assert len(r.truncated_paths) == 1
+
+
+class TestDiffResultOwnsItsCollections:
+    """V6: a frozen result must not alias the caller's list.
+
+    ``frozen=True`` blocks rebinding only, so a ``DiffResult`` built from a
+    list the caller still holds changed verdict when the caller appended to
+    it, and could not be hashed.
+    """
+
+    def test_appending_to_the_callers_list_does_not_change_the_result(self) -> None:
+        items: list[Difference] = []
+        r = DiffResult(differences=items)
+        items.append(_diff("user.name"))
+        assert not r
+        assert r.differences == ()
+
+    def test_every_collection_field_is_a_tuple(self) -> None:
+        tp = FieldPath.parse("deep")
+        r = DiffResult(
+            differences=[_diff("a")],
+            diagnostics=[Warning(path=None, message="m")],
+            truncated_paths=[tp],
+        )
+        assert type(r.differences) is tuple
+        assert type(r.diagnostics) is tuple
+        assert r.truncated_paths == (tp,)
+        hash(r)
+
+    def test_a_string_is_refused_rather_than_split_into_characters(self) -> None:
+        with pytest.raises(TypeError, match=r"DiffResult\.truncated_paths"):
+            DiffResult(differences=(), truncated_paths="deep")  # type: ignore[arg-type]
+
+
+class TestDiagnosticLevelIsValidated:
+    """V7: a level outside the ladder was invisible to both accessors.
+
+    ``Diagnostic(level="fatal")`` was accepted, and the result then reported
+    it in neither ``warnings`` nor ``errors`` — a crash that reads as clean.
+    Internal emitters always pass a literal, so this is public-API hardening.
+    """
+
+    @pytest.mark.parametrize("level", ["fatal", "ERROR", "Warning", ""])
+    def test_a_level_outside_the_ladder_is_refused(self, level: str) -> None:
+        with pytest.raises(ValueError, match=r"Diagnostic\.level"):
+            Warning(path=None, message="m", level=level)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("level", ["info", "warning", "error"])
+    def test_every_level_on_the_ladder_is_accepted(self, level: str) -> None:
+        assert Warning(path=None, message="m", level=level).level == level  # type: ignore[arg-type]

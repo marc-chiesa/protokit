@@ -7,12 +7,14 @@ module free of descriptor traversal or filtering logic.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterator
+from typing import Any
 
 from protokit import _trust
-from protokit.message.model import Diagnostic, FieldPath
+from protokit._records import one_of, own_tuples
+from protokit.message.model import _DIAGNOSTIC_LEVELS, Diagnostic, DiagnosticLevel, FieldPath
 
 
 class Severity(Enum):
@@ -203,6 +205,10 @@ class CompatibilityReport:
     findings: tuple[Finding, ...] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Own both collections, so ``is_compatible`` cannot flip later (V11)."""
+        own_tuples(self, "findings", "diagnostics")
+
     @property
     def is_compatible(self) -> bool:
         """Whether the report is free of any (post-filter) findings.
@@ -328,9 +334,13 @@ class CommitDiagnostic:
     """
 
     commit: str
-    level: str
+    level: DiagnosticLevel
     path: str | None
     message: str
+
+    def __post_init__(self) -> None:
+        """Refuse a ``level`` every ``== "error"`` reader would pass over (V7)."""
+        one_of(self.level, _DIAGNOSTIC_LEVELS, "CommitDiagnostic.level")
 
 
 @dataclass(frozen=True)
@@ -399,16 +409,11 @@ class HistoryReport:
     diagnostics: tuple[CommitDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
-        """Coerce list inputs to tuples so frozen invariants hold.
+        """Own both collections; a string is refused, not split (V11).
 
-        Callers constructing from CLI processing typically pass
-        lists. Frozen dataclasses do not coerce, so we do it here
-        to keep the API ergonomic while preserving immutability.
+        The CLI builds this from lists, which is why it converts at all.
         """
-        if not isinstance(self.entries, tuple):
-            object.__setattr__(self, "entries", tuple(self.entries))
-        if not isinstance(self.diagnostics, tuple):
-            object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
+        own_tuples(self, "entries", "diagnostics")
 
 
 @dataclass(frozen=True)
@@ -446,13 +451,20 @@ class BisectReport:
     diagnostics: tuple[CommitDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
-        """Coerce list inputs to tuples. See ``HistoryReport.__post_init__``."""
-        if not isinstance(self.breaking_findings, tuple):
-            object.__setattr__(
-                self, "breaking_findings", tuple(self.breaking_findings),
+        """Own both collections and refuse a break with one half missing (V11).
+
+        A consumer keying on ``breaking_commit`` would read findings without a
+        commit as "no break"; a commit without findings names a break with
+        nothing behind it. The CLI sets both from the same commit.
+        """
+        own_tuples(self, "breaking_findings", "diagnostics")
+        if (self.breaking_commit is None) != (not self.breaking_findings):
+            raise ValueError(
+                "BisectReport.breaking_commit and BisectReport.breaking_findings "
+                "must be set together or not at all; got breaking_commit="
+                f"{self.breaking_commit!r} with {len(self.breaking_findings)} "
+                "breaking_findings",
             )
-        if not isinstance(self.diagnostics, tuple):
-            object.__setattr__(self, "diagnostics", tuple(self.diagnostics))
 
 
 # ---------------------------------------------------------------------------
