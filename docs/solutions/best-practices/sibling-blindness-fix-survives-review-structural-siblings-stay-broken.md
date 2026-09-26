@@ -1,7 +1,7 @@
 ---
 title: "Sibling blindness: a fix at one call site survives the review built to catch it while structural siblings stay broken"
 date: 2026-08-30
-last_updated: 2026-09-25
+last_updated: 2026-09-26
 category: docs/solutions/best-practices
 module: protokit.schema
 problem_type: best_practice
@@ -32,7 +32,7 @@ tags:
 
 ## Context
 
-**This is the eleventh documented recurrence of a pattern this codebase named,
+**This is the twelfth documented recurrence of a pattern this codebase named,
 and wrote three prevention rules for, four months ago. That is the finding.**
 
 The shape: a fix is applied at the call site the bug report happened to name,
@@ -82,7 +82,7 @@ site), and an honest account of **what actually caught these** — iterative
 independent falsification review — versus what did not. If you take one thing:
 the control is a process you run, not a rule you know.
 
-Four sibling learnings cover the specific defects used below as
+Five sibling learnings cover the specific defects used below as
 illustrations; this one is about the meta-pattern and deliberately does not
 re-explain their mechanics:
 
@@ -94,6 +94,8 @@ re-explain their mechanics:
   (#76 — the compat rule-pack dispatch guard blind to `SystemExit`; instance 4)
 - [[swallowed-keyerror-read-present-custom-options-as-absent-on-isolated-pools]]
   (#82 — V9, custom options read as absent on isolated pools; instance 5)
+- [[frozen-record-reflection-guard-only-as-good-as-classifier-and-probes]]
+  (#84 — V6/V7/V11, frozen result records that aliased or split caller input; instance 6)
 
 Instance 3 (the stderr sanitizer applied to `check`/`ci` but not `history`/
 `bisect`) is captured here and nowhere else — at release time it existed only
@@ -694,6 +696,39 @@ protobuf's builder, then with that builder wrapped in a `typing` alias.
 Mechanics and the fix are in
 [[swallowed-keyerror-read-present-custom-options-as-absent-on-isolated-pools]].
 Closed by #82.
+
+### Instance 6 — siblings that did not look like the reported site (Shape A)
+
+The audit found that frozen result records kept the caller's list: a
+`DiffResult` built from a list changed its verdict when the list did, and a
+report that did convert used a bare `tuple(x)`, which split a string into
+characters (V6, V11). It named six records. The fix was one owner module,
+`protokit._records`, which every public frozen record now calls from
+`__post_init__`.
+
+The site set came from a list twice, and both lists were short (§6):
+
+- **The list of records.** The audit and the plan named six. Deriving the set
+  from the code (every frozen dataclass exported in an `__all__` or with no
+  underscore in its class or module name) found 25 with a collection field.
+- **The list of shapes.** The plan's guard was to find "each field annotated
+  `tuple[...]`". The same failure, a record keeping caller-owned or
+  caller-split data, also sat in three other shapes: `dict` fields copied with
+  a bare `dict()`, which turns `["ab"]` into `{"a": "b"}`; the `dict` arm of a
+  union (`LintRuleSpec.severity`), where a list passed both `isinstance` checks
+  and was stored as-is; and fields of pairs, where copying the outer tuple
+  left each inner pair shared.
+
+What found the shapes was probing each field with what the converter silently
+accepts (a string, bytes, a dict, a list of pairs, a caller-held inner list)
+rather than with the input the report described. §5 held again: code review
+found `MatchPolicy`'s selectors still splitting bytes and dicts, an independent
+cross-model pass found the `dict` fields and the inner pairs plus two gaps in
+the new guard itself (quoted annotations, nested classes), and a refuter pass
+over those fixes found the union arm. Mechanics and each widening of the guard
+are in
+[[frozen-record-reflection-guard-only-as-good-as-classifier-and-probes]].
+Closed by #84.
 
 ## Limits — what this procedure cannot do
 
