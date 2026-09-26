@@ -281,19 +281,6 @@ def compat_junit(report: CompatibilityReport, ctx: FormatterContext) -> str:
     return junit.serialize(_build_compat_testsuite(report, ctx))
 
 
-def _protokit_version() -> str:
-    """Best-effort lookup of the installed protokit version for SARIF.
-
-    Thin wrapper around ``protokit._cli_utils._get_protokit_version``;
-    kept as a function (not a direct import alias) so the
-    ``tool.driver.version`` call site stays readable. Three independent
-    copies of the same try/except-PackageNotFoundError block were
-    collapsed during a code-review pass.
-    """
-    from protokit._cli_utils import _get_protokit_version
-    return _get_protokit_version()
-
-
 def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
     """Render a CompatibilityReport as SARIF 2.1.0 JSON.
 
@@ -306,6 +293,9 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
     proto file as ``physicalLocation.artifactLocation.uri``
     when ``ctx.proto_file`` is set.
     """
+    # Deferred: ``protokit._cli_utils`` imports this package at module load.
+    from protokit._cli_utils import _get_protokit_version
+
     errors, warnings = sarif.collect_diagnostics_from_report(report)
     errors.extend((None, reason) for reason in _reasons_not_shown(report))
     findings_with_context = [
@@ -315,7 +305,7 @@ def compat_sarif(report: CompatibilityReport, ctx: FormatterContext) -> str:
         findings_with_context=findings_with_context,
         error_messages=errors,
         warning_messages=warnings,
-        protokit_version=_protokit_version(),
+        protokit_version=_get_protokit_version(),
     )
     return json.dumps(sarif.build_document(runs=[run]), indent=2)
 

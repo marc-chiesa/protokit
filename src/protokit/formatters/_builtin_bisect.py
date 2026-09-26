@@ -187,10 +187,8 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
     commits_walked) flows into ``run.properties`` for
     downstream consumption.
     """
-    from protokit.formatters._builtin_compat import (
-        _protokit_version,
-        _reasons_not_shown,
-    )
+    from protokit._cli_utils import _get_protokit_version
+    from protokit.formatters._builtin_compat import _reasons_not_shown
 
     findings_with_context: list[
         tuple[Finding, str | None, dict[str, str] | None]
@@ -222,7 +220,7 @@ def bisect_sarif(report: BisectReport, ctx: FormatterContext) -> str:
             "breaking_commit": report.breaking_commit,
             "commits_walked": report.commits_walked,
         },
-        protokit_version=_protokit_version(),
+        protokit_version=_get_protokit_version(),
     )
     return json.dumps(sarif.build_document(runs=[run]), indent=2)
 

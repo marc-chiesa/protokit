@@ -193,10 +193,8 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
     ``HistoryReport.diagnostics`` are also surfaced under their
     commit key, minus any that merely restate a per-entry one.
     """
-    from protokit.formatters._builtin_compat import (
-        _protokit_version,
-        _reasons_not_shown,
-    )
+    from protokit._cli_utils import _get_protokit_version
+    from protokit.formatters._builtin_compat import _reasons_not_shown
 
     findings_with_context: list[
         tuple[Finding, str | None, dict[str, str] | None]
@@ -269,7 +267,7 @@ def history_sarif(report: HistoryReport, ctx: FormatterContext) -> str:
             "new_sha": report.new_sha,
             "commits_walked": report.commits_walked,
         },
-        protokit_version=_protokit_version(),
+        protokit_version=_get_protokit_version(),
     )
     return json.dumps(sarif.build_document(runs=[run]), indent=2)
 
