@@ -1018,3 +1018,33 @@ class TestContextPoolAccess:
         left_pool, right_pool = seen[0]
         assert left_pool is left.DESCRIPTOR.file.pool
         assert right_pool is right.DESCRIPTOR.file.pool
+
+
+class TestHookNameInDiagnostics:
+    def test_qualname_is_rendered_as_given_not_through_str(self) -> None:
+        """The diagnostic names a hook by its ``__qualname__`` object itself.
+
+        A ``str`` subclass with its own ``__str__`` keeps its value, as it did
+        before ``_hook_name`` was typed; converting with ``str()`` would not.
+        """
+
+        class Name(str):
+            def __str__(self) -> str:
+                return "converted"
+
+        class Hook:
+            def __init__(self) -> None:
+                self.__qualname__ = Name("original")
+
+            def __call__(self, ctx: FieldHookContext) -> None:
+                raise ValueError("boom")
+
+        b = ProtoBuilder()
+        b.message("test.Msg", {"n": (T.TYPE_INT32, 1)})
+        differ = MessageDifferencer()
+        differ.register_validate_hook(Hook())
+        result = differ.compare(b.build("test.Msg", n=1), b.build("test.Msg", n=2))
+
+        assert [e.message for e in result.errors] == [
+            "hook 'original' raised ValueError during VALIDATE: boom"
+        ]

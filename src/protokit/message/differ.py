@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf.message import Message
@@ -69,7 +69,8 @@ LABEL_REPEATED = FD.LABEL_REPEATED
 
 def _hook_name(hook: object) -> str:
     """Best-effort display name for a hook in warning messages."""
-    return str(getattr(hook, "__qualname__", None) or getattr(
+    # cast, not str(): a __qualname__ that is a str subclass renders as given.
+    return cast(str, getattr(hook, "__qualname__", None) or getattr(
         hook, "__name__", repr(hook),
     ))
 
@@ -2636,9 +2637,12 @@ class MessageDifferencer:
         Returns:
             True if any configured ``treat_as_set`` selector matches.
         """
-        return any(
-            selector.matches(fd, field_path) for selector in self._treat_as_set_selectors
-        )
+        # A plain loop, not any(genexpr): inside a generator a selector's own
+        # StopIteration would surface as RuntimeError (PEP 479).
+        for selector in self._treat_as_set_selectors:  # noqa: SIM110
+            if selector.matches(fd, field_path):
+                return True
+        return False
 
     def _emit_all_fields(
         self,

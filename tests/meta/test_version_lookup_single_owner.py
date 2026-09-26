@@ -54,6 +54,27 @@ def _bound_names(tree: ast.AST) -> tuple[set[str], set[str]]:
             for alias in node.names:
                 if alias.name == _LOOKUP:
                     lookup_aliases.add(alias.asname or alias.name)
+    # A plain assignment re-spells either one too (``lookup = _get_protokit_version``);
+    # follow those until no new name appears, so chains of aliases resolve.
+    assigns = [
+        (node.value, [t.id for t in node.targets if isinstance(t, ast.Name)])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+    ]
+    grew = True
+    while grew:
+        grew = False
+        for value, targets in assigns:
+            if isinstance(value, ast.Name) and value.id in importlib_aliases:
+                bound = importlib_aliases
+            elif _calls_lookup(value, lookup_aliases):
+                bound = lookup_aliases
+            else:
+                continue
+            for name in targets:
+                if name not in bound:
+                    bound.add(name)
+                    grew = True
     return importlib_aliases, lookup_aliases
 
 
@@ -217,6 +238,24 @@ class TestViolationDetector:
             "    return lookup()\n"
         )
         assert _violations(source, is_owner=False) == [f"line 2: w() wraps {_LOOKUP}"]
+
+    def test_an_assignment_alias_wrapper_is_named(self) -> None:
+        for binding in (_LOOKUP, f"_cli_utils.{_LOOKUP}"):
+            source = (
+                f"from {_OWNER_MODULE} import {_LOOKUP}\n"
+                "from protokit import _cli_utils\n"
+                f"first = {binding}\n"
+                "lookup = first\n"
+                "def wrapper():\n"
+                "    return lookup()\n"
+            )
+            assert _violations(source, is_owner=False) == [
+                f"line 5: wrapper() wraps {_LOOKUP}"
+            ], source
+
+    def test_an_assigned_importlib_route_is_named(self) -> None:
+        source = "import importlib\nm = importlib\nv = m.metadata.version('protokit')\n"
+        assert _violations(source, is_owner=False), source
 
     def test_an_aliased_importlib_route_is_named(self) -> None:
         source = "import importlib as metadata_api\nv = metadata_api.metadata.version('protokit')\n"
