@@ -375,6 +375,26 @@ class TestErrorCodes:
         # still routes correctly).
         assert "synthetic novel TypeError text" in captured.err
 
+    def test_descriptor_the_runtime_rejects_routes_to_pool_conflict(
+        self, tmp_path: Path,
+    ) -> None:
+        """A set that parses but names an out-of-range public dependency.
+
+        upb rejects it with ``TypeError``. The pure-Python runtime raises
+        ``IndexError`` from its own descriptor checks, which the loader's
+        catch used to miss, so lint crashed with a traceback and exit 1
+        instead of routing to a stable ``error[lint-...]`` code.
+        """
+        fds = descriptor_pb2.FileDescriptorSet()
+        fdp = fds.file.add(name="r.proto", package="r", syntax="proto3")
+        fdp.message_type.add(name="M")
+        fdp.public_dependency.append(0)
+        bad = tmp_path / "rejected.descriptor_set"
+        bad.write_bytes(fds.SerializeToString())
+        result = CliRunner().invoke(lint_main, [str(bad)])
+        assert result.exit_code == 2, result.output
+        assert "error[lint-pool-conflict]:" in result.stderr
+
     def test_proto_mode_syntax_error_routes_to_compile_failed(
         self, tmp_path: Path,
     ) -> None:

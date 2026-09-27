@@ -394,6 +394,17 @@ backend-neutral rather than merely fixed (KTD6).
 - **The storage fidelity probe reports "cannot measure" (`None`), not a byte
   delta of `0`, for a proto2 message missing a required field.** It no longer
   depends on the `EncodeError` only upb raises (V1).
+- **A descriptor set the pure-Python runtime rejects now fails cleanly.** A set
+  that parses but that the runtime refuses to build (an unreadable field
+  default, an out-of-range `public_dependency` or `oneof_index`) raised a raw
+  `ValueError`, `IndexError` or `AttributeError` under the pure-Python runtime,
+  where upb raises a typed error. `protokit lint` crashed with a traceback and
+  exit 1 instead of `error[lint-pool-conflict]` and exit 2, and `protokit
+  forensics` crashed the same way. Both descriptor-pool population sites now
+  convert any exception from building a file, so the result is the same on
+  both runtimes. The pure-Python runtime still accepts some sets that upb
+  rejects, such as duplicate field numbers; protokit does not add its own
+  validation for those.
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
 under the pure-Python runtime with no known-failure list, and the
@@ -470,8 +481,11 @@ under the pure-Python runtime with no known-failure list, and the
     raises `NameError` unless `LintCompileDiagnostic` is passed in `localns`.
     The comment now says that, and the limitation is kept on purpose so the
     cold-import contract holds.
-  - `load_pool_from_path` promised a protobuf parse exception for a malformed
-    file. It raises `DescriptorPoolError`, as `load_pool_from_bytes` does.
+  - `load_pool_from_path` and the CLI loader built on it promised a protobuf
+    parse exception for a malformed file. A file that does not parse or build
+    raises `DescriptorPoolError`, as `load_pool_from_bytes` does, and an
+    unreadable path raises `OSError` (on the pure-Python runtime this needed
+    the fix under "Fixed — pure-Python protobuf runtime").
   - The lint package's `_cli_utils` module said it was loaded only with the
     CLI. The lint engine, the config and custom-rule loaders, and some
     built-in rules import it at module load. `import protokit.schema` and

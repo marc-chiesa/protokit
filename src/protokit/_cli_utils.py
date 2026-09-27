@@ -181,9 +181,9 @@ def load_descriptor_pool(desc_path: Path) -> descriptor_pool.DescriptorPool:
     unknown-dependency errors (``protoc --descriptor_set_out`` emits sorted
     sets, but embedded/arbitrary sets may not be).
 
-    The caller is responsible for validating the path exists; a malformed
-    file surfaces as a protobuf parse exception, and an incomplete set
-    raises :class:`protokit._pools.MissingDependencyError`.
+    A file that does not parse or build raises the typed
+    :class:`protokit._pools.DescriptorPoolError` family (an incomplete set
+    as its ``MissingDependencyError``); an unreadable path raises ``OSError``.
 
     Args:
         desc_path: Path to a compiled ``.descriptor_set`` file.

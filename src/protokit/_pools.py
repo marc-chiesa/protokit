@@ -27,9 +27,6 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
-from google.protobuf.descriptor_database import (
-    DescriptorDatabaseConflictingDefinitionError,
-)
 from google.protobuf.message import DecodeError
 
 
@@ -161,9 +158,9 @@ def add_and_resolve(
       its own shape again: ``DescriptorDatabaseConflictingDefinitionError``
       from ``Add`` itself, where upb raises ``TypeError``.
 
-    ``FindFileByName`` forces it here on both. Every exception shape is
-    re-raised as :class:`DescriptorPoolError` so the documented "typed library
-    exceptions, never raw" contract holds for every caller on either backend.
+    ``FindFileByName`` forces it here on both. Pure-Python's own descriptor checks
+    add more shapes (``ValueError``, ``IndexError``, ``AttributeError``), so any
+    exception from the two calls is re-raised as :class:`DescriptorPoolError`.
 
     One product site does not use this helper on purpose: the lint
     descriptor-set loader (``schema/lint/_cli_utils.py``) repeats the
@@ -178,10 +175,13 @@ def add_and_resolve(
     Raises:
         DescriptorPoolError: If the file cannot be resolved into the pool.
     """
+    # Broad on purpose: the try holds only the two protobuf calls, and their
+    # rejection shapes vary by backend and version (see above). BaseException
+    # (KeyboardInterrupt, SystemExit) is not caught and still propagates.
     try:
         pool.Add(fd)
         pool.FindFileByName(fd.name)
-    except (TypeError, KeyError, DescriptorDatabaseConflictingDefinitionError) as exc:
+    except Exception as exc:
         raise DescriptorPoolError(
             f"could not build file {fd.name!r} into the descriptor pool: {exc}"
         ) from exc
@@ -226,8 +226,8 @@ def load_pool_from_bytes(data: bytes) -> descriptor_pool.DescriptorPool:
 def load_pool_from_path(path: Path) -> descriptor_pool.DescriptorPool:
     """Read a ``.descriptor_set`` file and build an isolated pool.
 
-    A malformed file raises ``DescriptorPoolError``, exactly as
-    :func:`load_pool_from_bytes`; an unreadable path raises ``OSError``.
+    A file that does not parse or build raises ``DescriptorPoolError``, as
+    :func:`load_pool_from_bytes` does; an unreadable path raises ``OSError``.
     """
     return load_pool_from_bytes(Path(path).read_bytes())
 

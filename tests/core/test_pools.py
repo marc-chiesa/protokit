@@ -214,3 +214,49 @@ class TestAddAndResolveDuplicateFile:
         _pools.add_and_resolve(pool, first)
         with pytest.raises(_pools.DescriptorPoolError):
             _pools.add_and_resolve(pool, second)
+
+
+def _rejected_by_pure_python(shape: str) -> descriptor_pb2.FileDescriptorProto:
+    """A proto2 file that parses, and that pure-Python rejects with a builtin exception."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="r.proto", package="r", syntax="proto2")
+    field = fdp.message_type.add(name="M").field.add(
+        name="x", number=1, type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+        label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+    )
+    if shape == "unparseable-default":
+        field.default_value = "abc"
+    elif shape == "public-dependency-out-of-range":
+        fdp.public_dependency.append(0)
+    elif shape == "oneof-index-out-of-range":
+        field.oneof_index = 5
+    elif shape == "no-field-type":
+        field.ClearField("type")
+    return fdp
+
+
+class TestAddAndResolveBackendValidation:
+    """A descriptor the runtime rejects raises the typed error on both backends.
+
+    upb rejects the first three shapes with ``TypeError`` from ``Add``. Pure-Python's
+    own descriptor checks raise ``ValueError`` or ``IndexError`` instead, and those
+    escaped raw to callers that catch only the typed family, such as the forensics CLI.
+    """
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["unparseable-default", "public-dependency-out-of-range", "oneof-index-out-of-range"],
+    )
+    def test_rejected_descriptor_raises_the_typed_error(self, shape: str) -> None:
+        data = _fds(_rejected_by_pure_python(shape)).SerializeToString()
+        with pytest.raises(_pools.DescriptorPoolError) as excinfo:
+            _pools.load_pool_from_bytes(data)
+        assert excinfo.value.__cause__ is not None
+
+    def test_a_shape_only_pure_python_rejects_never_escapes_raw(self) -> None:
+        # upb accepts a field with no type; pure-Python raises AttributeError
+        # while building it. Either outcome is fine, a raw exception is not.
+        data = _fds(_rejected_by_pure_python("no-field-type")).SerializeToString()
+        try:
+            _pools.load_pool_from_bytes(data)
+        except _pools.DescriptorPoolError as exc:
+            assert exc.__cause__ is not None

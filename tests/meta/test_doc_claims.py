@@ -44,10 +44,7 @@ from __future__ import annotations
 
 import builtins
 import json
-import os
 import re
-import subprocess
-import sys
 import typing
 from pathlib import Path
 
@@ -56,11 +53,18 @@ from google.protobuf import descriptor_pb2
 
 import protokit._pools as pools
 import protokit.schema.lint._cli_utils as cli_utils
+from protokit._cli_utils import load_descriptor_pool
 from protokit._pools import DescriptorPoolError, load_pool_from_path
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.lint.model import LintReport
-from tests.meta.test_import_layers import _REPO_ROOT, _SRC_ROOT, PACKAGE, build_import_graph
+from tests.meta.test_import_layers import (
+    _REPO_ROOT,
+    _SRC_ROOT,
+    PACKAGE,
+    build_import_graph,
+    import_in_fresh_interpreter,
+)
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -90,23 +94,15 @@ def _loaded_by_fresh_import(importing: str, *modules: str) -> dict[str, bool]:
 
     Run in a subprocess because the test process has already imported most
     of ``protokit``, so ``sys.modules`` here says nothing about what one
-    import pulls in. The environment matches ``import_in_fresh_interpreter``'s
-    sweep of the real tree, so ``protokit`` resolves from ``src`` rather than
-    from whatever is installed.
+    import pulls in. It runs through ``import_in_fresh_interpreter``, as the
+    sweep of the real tree does, so ``protokit`` resolves from ``src`` rather
+    than from whatever is installed.
     """
     code = (
         f"import json, sys\nimport {importing}\n"
         f"print(json.dumps({{m: m in sys.modules for m in {list(modules)!r}}}))"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=_REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(_SRC_ROOT), "PYTHONSAFEPATH": "1"},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
+    result = import_in_fresh_interpreter(importing, src_root=_SRC_ROOT, cwd=_REPO_ROOT, code=code)
     assert result.returncode == 0, result.stderr
     loaded: dict[str, bool] = json.loads(result.stdout)
     return loaded
@@ -260,49 +256,86 @@ def _unbuildable_set() -> bytes:
     return fds.SerializeToString()
 
 
+def _runtime_rejected_set() -> bytes:
+    """A set that parses and sorts, but whose int32 default the runtime cannot read."""
+    fds = descriptor_pb2.FileDescriptorSet()
+    fdp = fds.file.add(name="a.proto", package="a", syntax="proto2")
+    fdp.message_type.add(name="M").field.add(
+        name="x", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL, default_value="abc"
+    )
+    return fds.SerializeToString()
+
+
+_WHERE_POOLS = "load_pool_from_path's docstring"
+
+
 class TestLoadPoolFromPathDocstring:
-    """Every failure the docstring names is one the function raises, and vice versa.
+    """Each failure the docstring names raises the exception it names there.
 
     The docstring used to promise "a protobuf parse exception" for a malformed
     file. ``load_pool_from_bytes`` converts ``DecodeError`` to
     ``DescriptorPoolError``, so a caller catching the protobuf exception
-    caught nothing.
+    caught nothing. The prose checks tie each failure to its exception, so a
+    docstring that swapped the two would fail.
     """
 
     @pytest.mark.parametrize(
         "data",
         [
-            pytest.param(b"\xff\xff\xff", id="not-a-descriptor-set"),
-            pytest.param(_unbuildable_set(), id="parses-but-cannot-build"),
+            pytest.param(b"\xff\xff\xff", id="does-not-parse"),
+            pytest.param(_unbuildable_set(), id="missing-dependency"),
+            pytest.param(_runtime_rejected_set(), id="rejected-by-the-runtime"),
         ],
     )
-    def test_malformed_file_raises_a_documented_exception(
+    def test_file_that_does_not_parse_or_build_raises_the_typed_error(
         self, tmp_path: Path, data: bytes
     ) -> None:
+        # Pure-Python rejects the last case with ValueError and upb with
+        # TypeError; both must reach the caller as DescriptorPoolError.
         path = tmp_path / "schema.descriptor_set"
         path.write_bytes(data)
-        with pytest.raises(DescriptorPoolError) as excinfo:
+        with pytest.raises(DescriptorPoolError):
             load_pool_from_path(path)
-        documented = tuple(_documented_exceptions())
-        assert isinstance(excinfo.value, documented), (
-            f"load_pool_from_path raised {type(excinfo.value).__name__} for a malformed "
-            f"file; its docstring names only {sorted(c.__name__ for c in documented)}"
-        )
 
-    def test_unreadable_path_raises_a_documented_exception(self, tmp_path: Path) -> None:
-        with pytest.raises(OSError) as excinfo:
+    def test_unreadable_path_raises_oserror(self, tmp_path: Path) -> None:
+        with pytest.raises(OSError):
             load_pool_from_path(tmp_path / "absent.descriptor_set")
-        assert isinstance(excinfo.value, tuple(_documented_exceptions()))
 
-    def test_docstring_names_exactly_the_raised_exceptions(self) -> None:
-        # The two cases above check that what is raised is documented; this
-        # checks that nothing documented is stale, and fails on the original
-        # docstring, which named no exception class at all.
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "does not parse or build raises ``DescriptorPoolError``",
+            "an unreadable path raises ``OSError``",
+        ],
+    )
+    def test_docstring_ties_each_failure_to_its_exception(self, phrase: str) -> None:
+        assert phrase in _prose(load_pool_from_path.__doc__), _missing(phrase, _WHERE_POOLS)
+
+    def test_docstring_names_no_other_exception(self) -> None:
+        # Fails on the original docstring, which named no exception class at
+        # all, and on one that adds a class the function does not raise.
         documented = _documented_exceptions()
         assert documented == {DescriptorPoolError, OSError}, (
             f"load_pool_from_path's docstring names {sorted(c.__name__ for c in documented)} "
-            "as the exceptions it raises; it raises DescriptorPoolError for a malformed "
-            "file and OSError for an unreadable path"
+            "as the exceptions it raises; it raises DescriptorPoolError for a file that "
+            "does not parse or build and OSError for an unreadable path"
+        )
+
+    @pytest.mark.parametrize(
+        "function",
+        [load_pool_from_path, load_descriptor_pool],
+        ids=["load_pool_from_path", "_cli_utils.load_descriptor_pool"],
+    )
+    def test_docstring_does_not_promise_a_protobuf_exception(
+        self, function: typing.Callable[..., object]
+    ) -> None:
+        # load_descriptor_pool delegates to load_pool_from_path and repeated
+        # the same promise.
+        phrase = "protobuf parse exception"
+        assert phrase not in _prose(function.__doc__), _returned(
+            phrase,
+            f"{function.__qualname__}'s docstring",
+            "a DecodeError is converted to DescriptorPoolError",
         )
 
 

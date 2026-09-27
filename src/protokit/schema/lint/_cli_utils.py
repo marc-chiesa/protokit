@@ -410,17 +410,17 @@ def _load_descriptor_sets_to_result(
                 # Add emits first is a side effect, not the signal — do not
                 # build a warnings-capture path on it.
                 pool.FindFileByName(fd.name)
-            except (TypeError, ValueError, KeyError) as exc:
-                # protobuf-python's C++ runtime raises TypeError for
-                # the documented failure shapes (missing-imports,
-                # duplicate-symbol). The (TypeError, ValueError) catch
-                # mirrors compile.py:663-665's defensive over-catch — if a
-                # future protobuf release narrows or widens the
-                # exception type, lint's stable-prefix path stays
-                # intact rather than letting ValueError escape to
-                # click as exit 1 + traceback (no error[lint-...]
-                # prefix). KeyError joins them for the pure-Python
-                # resolution probe above.
+            except Exception as exc:
+                # upb raises TypeError for every shape it rejects. The
+                # pure-Python runtime raises KeyError from the resolution
+                # probe above, and its own descriptor checks raise
+                # ValueError, IndexError or AttributeError. The catch is
+                # broad so that no shape, on either backend or a future
+                # protobuf release, escapes to click as exit 1 + a
+                # traceback with no error[lint-...] prefix; the try holds
+                # only the two protobuf calls. BaseException (Ctrl-C) is
+                # not caught. Routing below is unchanged: KeyError or a
+                # missing-import marker, else pool-conflict.
                 msg = str(exc)
                 # A KeyError from the probe IS the missing-import signal on the
                 # pure-Python backend, and it carries the unresolvable symbol
