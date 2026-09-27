@@ -27,7 +27,7 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
-from google.protobuf.message import DecodeError
+from google.protobuf.message import DecodeError, Message
 
 
 class DescriptorPoolError(Exception):
@@ -197,7 +197,7 @@ def build_pool(
     same fully-qualified type without collision.
     """
     pool = descriptor_pool.DescriptorPool()
-    for fd in sort_files_by_dependency(list(fds.file)):
+    for fd in sort_files_by_dependency(list(require_decodable_strings(fds).file)):
         # Files are added in dependency order above, so a forward reference
         # within this set is already satisfied by the time its referrer is
         # added and the eager resolution below cannot false-positive.
@@ -250,3 +250,35 @@ def get_message_class(
     # mypy's warn_return_any under strict mode (protobuf ships no stubs).
     cls: type = message_factory.GetMessageClass(desc)
     return cls
+
+
+def require_decodable_strings(
+    fds: descriptor_pb2.FileDescriptorSet,
+) -> descriptor_pb2.FileDescriptorSet:
+    """Return ``fds`` unchanged, or raise if any string in it is not UTF-8.
+
+    The two runtimes disagree about when an undecodable string fails. The
+    pure-Python runtime rejects it while parsing (``UnicodeDecodeError``).
+    upb parses it and hands the field back as ``bytes``; a bad package or
+    type name then fails at ``Add``, but a bad file *name* survives ``Add``
+    and only raises ``UnicodeDecodeError`` later, wherever something reads
+    the descriptor's ``name``. Checking every string field here makes upb
+    fail at the same boundary pure-Python does.
+
+    Raises:
+        DescriptorPoolError: A string field holds bytes that are not UTF-8.
+    """
+    from protokit._descriptors import is_repeated
+
+    stack: list[Message] = [fds]  # iterative: descriptor sets can nest deeply
+    while stack:
+        message = stack.pop()
+        for field, value in message.ListFields():
+            for item in value if is_repeated(field) else (value,):
+                if field.type == field.TYPE_STRING and isinstance(item, bytes):
+                    raise DescriptorPoolError(
+                        f"{field.full_name} is not valid UTF-8: {item[:64]!r}"
+                    )
+                if field.type == field.TYPE_MESSAGE:
+                    stack.append(item)
+    return fds

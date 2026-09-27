@@ -23,10 +23,9 @@ import click
 from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.message import DecodeError
 
-# ``_safe_for_stderr`` uses the redundant-``as`` form: that is the
-# explicit re-export mypy strict's ``no_implicit_reexport`` requires, and
-# the ~20 lint-subpackage modules importing it from HERE (its original
-# home, before it moved down to ``protokit._cli_utils`` — see the note
+# ``_safe_for_stderr`` uses the redundant-``as`` form: that is the explicit re-export mypy
+# strict's ``no_implicit_reexport`` requires, and the ~20 lint-subpackage modules importing it
+# from HERE (its original home, before it moved down to ``protokit._cli_utils`` — see the note
 # where it used to live) keep working unchanged.
 from protokit._cli_utils import (
     _safe_for_stderr as _safe_for_stderr,
@@ -35,6 +34,7 @@ from protokit._cli_utils import (
     _scrub_exc_message,
     run_formatter_safely,
 )
+from protokit._pools import DescriptorPoolError, require_decodable_strings
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 
 if TYPE_CHECKING:
@@ -345,15 +345,15 @@ def _load_descriptor_sets_to_result(
     # documented descriptor-set-mode caveat). Mirrors the
     # capture-around-Add pattern at src/protokit/_cli_utils.py:264-267
     # (_populate_pool_with_capture).
-    source_info_descriptors: dict[
-        str, descriptor_pb2.FileDescriptorProto,
-    ] = {}
+    source_info_descriptors: dict[str, descriptor_pb2.FileDescriptorProto] = {}
 
     for input_path in paths:
         try:
             data = input_path.read_bytes()
-            fds = descriptor_pb2.FileDescriptorSet.FromString(data)
-        except (OSError, DecodeError, UnicodeDecodeError, RecursionError) as exc:
+            fds = require_decodable_strings(descriptor_pb2.FileDescriptorSet.FromString(data))
+        except (
+            OSError, DecodeError, UnicodeDecodeError, RecursionError, DescriptorPoolError
+        ) as exc:
             error_exit_with_code(
                 "bad-input",
                 f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",

@@ -282,9 +282,12 @@ class TestLoadPoolFromBytesParseFailures:
     """Bytes the runtime cannot parse raise the typed error on both backends.
 
     The parse catch covered only ``DecodeError``. Pure-Python raises
-    ``UnicodeDecodeError`` for a file name that is not UTF-8, and
-    ``RecursionError`` for deep nesting; upb keeps the undecodable name as
-    ``bytes``, which then broke the dependency-cycle message with ``TypeError``.
+    ``UnicodeDecodeError`` for a string that is not UTF-8, and
+    ``RecursionError`` for deep nesting. upb parses a non-UTF-8 string and
+    returns it as ``bytes``: a bad file name then survived ``Add`` and failed
+    later, wherever the name was read, and in a cycle it broke the error
+    message with ``TypeError``. ``require_decodable_strings`` now rejects it
+    at the boundary, so both backends fail in the same place.
     """
 
     @pytest.mark.parametrize(
@@ -292,13 +295,24 @@ class TestLoadPoolFromBytesParseFailures:
         [
             pytest.param(bytes.fromhex("0a030a01ff"), id="name-not-utf8"),
             pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="name-not-utf8-in-a-cycle"),
+            pytest.param(
+                bytes.fromhex("0a0e0a07612e70726f746f2203" "0a01ff"),
+                id="message-name-not-utf8",
+            ),
             pytest.param(_deeply_nested_set(), id="nested-too-deep"),
         ],
     )
-    def test_unparseable_bytes_never_escape_raw(self, data: bytes) -> None:
-        # upb accepts a non-UTF-8 name on its own (proto2 strings are not
-        # checked), so a clean load is allowed; a raw exception is not.
-        try:
+    def test_unparseable_bytes_raise_the_typed_error(self, data: bytes) -> None:
+        with pytest.raises(_pools.DescriptorPoolError):
             _pools.load_pool_from_bytes(data)
-        except _pools.DescriptorPoolError as exc:
-            assert exc.__cause__ is not None or "cyclic" in str(exc)
+
+    @skip_under_pure_python(
+        "premise holds only on upb: its parser keeps a non-UTF-8 string as bytes, "
+        "while the pure-Python parser rejects it before this check can run"
+    )
+    def test_a_non_utf8_file_name_is_rejected_before_it_reaches_a_descriptor(
+        self,
+    ) -> None:
+        fds = descriptor_pb2.FileDescriptorSet.FromString(bytes.fromhex("0a030a01ff"))
+        with pytest.raises(_pools.DescriptorPoolError, match="not valid UTF-8"):
+            _pools.require_decodable_strings(fds)

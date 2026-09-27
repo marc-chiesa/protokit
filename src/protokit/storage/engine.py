@@ -315,7 +315,7 @@ class ScanResult:
             message = resolved.message_class()
             try:
                 message.MergeFromString(bytes(raw))
-            except DecodeError as exc:
+            except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
                 self._dispatch(
                     FrameError(
                         stream_id,
