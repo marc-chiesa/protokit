@@ -273,12 +273,23 @@ def require_decodable_strings(
     stack: list[Message] = [fds]  # iterative: descriptor sets can nest deeply
     while stack:
         message = stack.pop()
+        # ListFields includes registered extensions, so custom options are
+        # walked too; an unregistered one stays as unparsed unknown bytes.
         for field, value in message.ListFields():
-            for item in value if is_repeated(field) else (value,):
-                if field.type == field.TYPE_STRING and isinstance(item, bytes):
+            entry = field.message_type
+            if entry is not None and entry.GetOptions().map_entry:
+                # Iterating a map yields its keys; check keys and values.
+                key, val = entry.fields_by_name["key"], entry.fields_by_name["value"]
+                items = [(key, k) for k in value] + [(val, v) for v in value.values()]
+            elif is_repeated(field):
+                items = [(field, item) for item in value]
+            else:
+                items = [(field, value)]
+            for item_field, item in items:
+                if item_field.type == item_field.TYPE_STRING and isinstance(item, bytes):
                     raise DescriptorPoolError(
-                        f"{field.full_name} is not valid UTF-8: {item[:64]!r}"
+                        f"{item_field.full_name} is not valid UTF-8: {item[:64]!r}"
                     )
-                if field.type == field.TYPE_MESSAGE:
+                if item_field.type in (item_field.TYPE_MESSAGE, item_field.TYPE_GROUP):
                     stack.append(item)
     return fds

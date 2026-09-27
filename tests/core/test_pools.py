@@ -316,3 +316,83 @@ class TestLoadPoolFromBytesParseFailures:
         fds = descriptor_pb2.FileDescriptorSet.FromString(bytes.fromhex("0a030a01ff"))
         with pytest.raises(_pools.DescriptorPoolError, match="not valid UTF-8"):
             _pools.require_decodable_strings(fds)
+
+
+# Custom options are only walked when their extension is registered in the
+# default pool, so these scenarios run in a fresh interpreter: registering an
+# extension on ``FileOptions`` here would leak into every later test.
+_CUSTOM_OPTION_SCENARIO = """
+import sys
+from google.protobuf import descriptor_pb2 as d, descriptor_pool as dp, struct_pb2
+from protokit import _pools
+
+f = d.FileDescriptorProto(
+    name="opt.proto", package="opt", syntax="proto2",
+    dependency=["google/protobuf/descriptor.proto", "google/protobuf/struct.proto"],
+)
+f.message_type.add(name="Opt").field.add(name="s", number=1, label=1, type=9)
+f.extension.add(name="map_opt", number=50000, label=1, type=11,
+                type_name=".google.protobuf.Struct", extendee=".google.protobuf.FileOptions")
+f.extension.add(name="group_opt", number=50001, label=1, type=10,
+                type_name=".opt.Opt", extendee=".google.protobuf.FileOptions")
+dp.Default().Add(f)
+fds = d.FileDescriptorSet()
+d.DESCRIPTOR.CopyToProto(fds.file.add())
+struct_pb2.DESCRIPTOR.CopyToProto(fds.file.add())
+if sys.argv[1] == "map":
+    fds.file.add().CopyFrom(f)
+    ext = dp.Default().FindExtensionByName("opt.map_opt")
+    fds.file[-1].options.Extensions[ext].fields["caf\\u00e9"].string_value = "\\u4f60\\u597d"
+    data = fds.SerializeToString()
+else:
+    # Pure-Python decodes an extension only once it has been looked up.
+    dp.Default().FindExtensionByName("opt.group_opt")
+
+    def varint(n):
+        out = bytearray()
+        while n > 0x7F:
+            out.append((n & 0x7F) | 0x80)
+            n >>= 7
+        out.append(n)
+        return bytes(out)
+    group = varint(50001 * 8 + 3) + b"\\x0a\\x01\\xff" + varint(50001 * 8 + 4)
+    body = f.SerializeToString() + b"\\x42" + varint(len(group)) + group
+    data = fds.SerializeToString() + b"\\x0a" + varint(len(body)) + body
+try:
+    _pools.load_pool_from_bytes(data)
+except _pools.DescriptorPoolError as exc:
+    print("typed-error", exc)
+else:
+    print("loaded")
+"""
+
+
+def _custom_option_outcome(case: str) -> str:
+    # Imported here, not at the top: published docs cite lines 68-74 of this file.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, "-c", _CUSTOM_OPTION_SCENARIO, case],
+        capture_output=True, text=True, check=False, timeout=120,
+        env={**os.environ, "PYTHONPATH": str(Path(_pools.__file__).parents[1])},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+class TestRequireDecodableStringsCustomOptions:
+    def test_a_valid_map_valued_option_still_loads(self) -> None:
+        # Iterating a protobuf map yields its keys, and the first version of
+        # the walk pushed those strings as messages and crashed on a valid set.
+        assert _custom_option_outcome("map") == "loaded"
+
+    def test_a_non_utf8_string_inside_a_group_option_is_rejected(self) -> None:
+        # The walk descended only into TYPE_MESSAGE, so a group-typed option
+        # carried a non-UTF-8 string past upb. Pure-Python rejects it while
+        # parsing, and load_pool_from_bytes converts that to the typed error.
+        outcome = _custom_option_outcome("group")
+        # Naming the field proves the string was what failed, not the set.
+        assert outcome.startswith("typed-error") and "opt.Opt.s" in outcome, outcome
