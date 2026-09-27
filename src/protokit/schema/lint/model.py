@@ -68,11 +68,11 @@ if TYPE_CHECKING:
     # TYPE_CHECKING is False at runtime, so this import is invisible
     # to ``import protokit.schema.lint.model`` and preserves the
     # cold-import contract for ``protokit compat`` (compile.py is not
-    # transitively loaded). Without this import, ``LintReport.diagnostics``
-    # is a string forward ref to ``LintCompileDiagnostic`` that
-    # ``typing.get_type_hints(LintReport)`` cannot resolve — breaking
-    # downstream tooling (Sphinx autodoc with autodoc_typehints,
-    # JSON-schema generators, pydantic adapters, mypy plugins).
+    # transitively loaded). It serves static type checkers only: at
+    # runtime ``typing.get_type_hints(LintReport)`` raises ``NameError``
+    # for ``LintCompileDiagnostic``, even after ``protokit.schema.compile``
+    # is imported. Runtime tooling passes the class in ``localns``. This
+    # limitation is accepted; the cold-import contract outweighs it.
     from protokit.schema.compile import LintCompileDiagnostic
 
 # Engine-injected closure that records a ``LintFinding`` into the

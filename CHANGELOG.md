@@ -457,6 +457,27 @@ under the pure-Python runtime with no known-failure list, and the
   `sys.modules` cache. The import-layer test that pinned this shape checked
   only the `_builtin_*` modules; it now covers every submodule, including the
   shared `_junit_xml`, `_sarif_json` and `_registry` helpers.
+- Four comments and docstrings that stated something false now state what
+  the code does (audit finding D6), and `tests/meta/test_doc_claims.py`
+  checks each one against the running library:
+  - The map-key docstring in the compat checker said a map's key "is always
+    a scalar and not user-visible". The user declares the key type, and the
+    checker never compares it. The docstring now says so, and names the gap
+    that follows from it: changing a map's key type passes at every level
+    (audit finding V20, fixed in a later release).
+  - `protokit.schema.lint.model` credited its `TYPE_CHECKING` import with
+    making `typing.get_type_hints(LintReport)` work. It does not: the call
+    raises `NameError` unless `LintCompileDiagnostic` is passed in `localns`.
+    The comment now says that, and the limitation is kept on purpose so the
+    cold-import contract holds.
+  - `load_pool_from_path` promised a protobuf parse exception for a malformed
+    file. It raises `DescriptorPoolError`, as `load_pool_from_bytes` does.
+  - The lint package's `_cli_utils` module said it was loaded only with the
+    CLI. The lint engine, the config and custom-rule loaders, and some
+    built-in rules import it at module load. `import protokit.schema` and
+    `import protokit.schema.lint` still do not.
+
+  All four modules are private; no behaviour changes.
 - The ruff and `mypy --strict` ratchets now cover every module this release
   touched: `_descriptors.py`, `_pools.py`, `schema/checker.py`,
   `schema/rules.py`, `schema/cli.py`, and the whole `formatters/` and

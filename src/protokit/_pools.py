@@ -226,8 +226,8 @@ def load_pool_from_bytes(data: bytes) -> descriptor_pool.DescriptorPool:
 def load_pool_from_path(path: Path) -> descriptor_pool.DescriptorPool:
     """Read a ``.descriptor_set`` file and build an isolated pool.
 
-    The caller is responsible for validating the path exists; a malformed
-    file surfaces as a protobuf parse exception.
+    A malformed file raises ``DescriptorPoolError``, exactly as
+    :func:`load_pool_from_bytes`; an unreadable path raises ``OSError``.
     """
     return load_pool_from_bytes(Path(path).read_bytes())
 

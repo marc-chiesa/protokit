@@ -4,11 +4,11 @@ Internal extraction point for the ``protokit.schema.lint.cli`` click
 subcommand. The ``_`` prefix marks the module as not-public-API —
 consumers invoke the CLI, they do not import from here.
 
-This module is loaded only when ``protokit.schema.lint.cli`` itself
-is loaded, which happens at ``protokit.cli`` import time (i.e., on
-every ``protokit ...`` CLI invocation, regardless of subcommand).
-The cold-import contract from D1 is preserved because
-``protokit.schema`` does NOT import ``protokit.cli``.
+Loading is not CLI-only: the lint engine, the config and custom-rule
+loaders, and some built-in rules import it at module load, so
+``import protokit.schema.lint.engine`` loads it without the CLI.
+The cold-import contract from D1 still holds: neither ``import
+protokit.schema`` nor ``import protokit.schema.lint`` loads it.
 """
 
 from __future__ import annotations
