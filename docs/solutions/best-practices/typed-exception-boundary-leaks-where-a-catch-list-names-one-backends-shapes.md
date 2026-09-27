@@ -83,8 +83,9 @@ goes through `add_and_resolve` or `build_pool`.
 
 ### 2. Know which shapes each backend raises
 
-These were observed on protobuf 5.27.5, and the regression tests named below
-pin them.
+(provenance — observed on protobuf 5.27.5 under both backends; the exception
+types can change between releases, and what stays re-asserted on both backends
+is the outcome, a typed error or a clean load, by the regression tests named below.)
 
 | Site kind | Input | upb | pure-Python |
 |---|---|---|---|
@@ -167,7 +168,8 @@ Every parse site gives all three shapes the same handling it gives
 ### 5. upb needs a UTF-8 walk at the boundary
 
 On a proto2 descriptor set, upb doesn't check UTF-8 while parsing. It returns the
-string field as `bytes`. A bad package or type name then fails at `Add`, which is
+string field as `bytes` (provenance — protobuf 5.27.5 upb; the outcome is
+re-asserted by the upb-only test named under Examples). A bad package or type name then fails at `Add`, which is
 already converted. A bad **file name** gets through `Add` and only raises
 `UnicodeDecodeError` later, when something reads `.name`. In lint that read
 happened inside a rule, and again inside the engine's `rule_exception` handler.
