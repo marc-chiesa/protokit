@@ -260,3 +260,45 @@ class TestAddAndResolveBackendValidation:
             _pools.load_pool_from_bytes(data)
         except _pools.DescriptorPoolError as exc:
             assert exc.__cause__ is not None
+
+
+def _deeply_nested_set(depth: int = 2000) -> bytes:
+    """A set whose one message nests ``depth`` message types, deeper than pure-Python parses."""
+    def field(tag: int, payload: bytes) -> bytes:
+        size, length = len(payload), b""
+        while True:
+            length += bytes([(size & 0x7F) | (0x80 if size > 0x7F else 0)])
+            size >>= 7
+            if not size:
+                return bytes([tag]) + length + payload
+
+    nested = b""
+    for _ in range(depth):
+        nested = field(26, nested)  # DescriptorProto.nested_type
+    return field(10, field(10, b"a.proto") + field(34, nested))
+
+
+class TestLoadPoolFromBytesParseFailures:
+    """Bytes the runtime cannot parse raise the typed error on both backends.
+
+    The parse catch covered only ``DecodeError``. Pure-Python raises
+    ``UnicodeDecodeError`` for a file name that is not UTF-8, and
+    ``RecursionError`` for deep nesting; upb keeps the undecodable name as
+    ``bytes``, which then broke the dependency-cycle message with ``TypeError``.
+    """
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(bytes.fromhex("0a030a01ff"), id="name-not-utf8"),
+            pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="name-not-utf8-in-a-cycle"),
+            pytest.param(_deeply_nested_set(), id="nested-too-deep"),
+        ],
+    )
+    def test_unparseable_bytes_never_escape_raw(self, data: bytes) -> None:
+        # upb accepts a non-UTF-8 name on its own (proto2 strings are not
+        # checked), so a clean load is allowed; a raw exception is not.
+        try:
+            _pools.load_pool_from_bytes(data)
+        except _pools.DescriptorPoolError as exc:
+            assert exc.__cause__ is not None or "cyclic" in str(exc)

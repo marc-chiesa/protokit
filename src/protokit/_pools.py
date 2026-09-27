@@ -132,7 +132,7 @@ def sort_files_by_dependency(
         placed = {fd.name for fd in ordered}
         remaining = [f.name for f in files if f.name not in placed]
         raise DescriptorPoolError(
-            f"cyclic file dependency among: {', '.join(remaining)}"
+            f"cyclic file dependency among: {', '.join(map(repr, remaining))}"
         )
     return ordered
 
@@ -216,7 +216,7 @@ def load_pool_from_bytes(data: bytes) -> descriptor_pool.DescriptorPool:
     fds = descriptor_pb2.FileDescriptorSet()
     try:
         fds.ParseFromString(data)
-    except DecodeError as exc:
+    except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise DescriptorPoolError(
             f"could not parse FileDescriptorSet bytes: {exc}"
         ) from exc

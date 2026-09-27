@@ -251,7 +251,7 @@ def _load_descriptor_sets_to_result(
 
     1. Iterate ``paths`` in argv order.
     2. For each path, ``read_bytes()`` and ``FileDescriptorSet.FromString()``.
-       OSError or DecodeError → exit 2 via ``lint-bad-input``.
+       OSError or a parse failure → exit 2 via ``lint-bad-input``.
     3. Iterate ``fds.file`` in protobuf parse order. For each ``fd``:
 
        - If ``fd.name`` was already seen, append a ``LintCompileDiagnostic``
@@ -353,7 +353,7 @@ def _load_descriptor_sets_to_result(
         try:
             data = input_path.read_bytes()
             fds = descriptor_pb2.FileDescriptorSet.FromString(data)
-        except (OSError, DecodeError) as exc:
+        except (OSError, DecodeError, UnicodeDecodeError, RecursionError) as exc:
             error_exit_with_code(
                 "bad-input",
                 f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",

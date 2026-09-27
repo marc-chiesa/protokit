@@ -283,6 +283,7 @@ class TestLoadPoolFromPathDocstring:
         "data",
         [
             pytest.param(b"\xff\xff\xff", id="does-not-parse"),
+            pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="name-not-utf8-in-a-cycle"),
             pytest.param(_unbuildable_set(), id="missing-dependency"),
             pytest.param(_runtime_rejected_set(), id="rejected-by-the-runtime"),
         ],

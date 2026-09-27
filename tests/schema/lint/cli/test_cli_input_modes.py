@@ -395,6 +395,22 @@ class TestErrorCodes:
         assert result.exit_code == 2, result.output
         assert "error[lint-pool-conflict]:" in result.stderr
 
+    def test_file_name_that_is_not_utf8_routes_to_an_error_code(
+        self, tmp_path: Path,
+    ) -> None:
+        """A set whose file name is not UTF-8 and imports itself.
+
+        The pure-Python runtime rejects the name with ``UnicodeDecodeError``
+        while parsing, which the loader's ``DecodeError`` catch used to miss,
+        so lint crashed with a traceback and exit 1. upb parses it and fails
+        later; either way the run must end on a stable ``error[lint-...]``.
+        """
+        bad = tmp_path / "not_utf8.descriptor_set"
+        bad.write_bytes(bytes.fromhex("0a060a01ff1a01ff"))
+        result = CliRunner().invoke(lint_main, [str(bad)])
+        assert result.exit_code == 2, result.output
+        assert "error[lint-" in result.stderr
+
     def test_proto_mode_syntax_error_routes_to_compile_failed(
         self, tmp_path: Path,
     ) -> None:
