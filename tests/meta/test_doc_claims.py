@@ -43,6 +43,8 @@ Each behavioural half was proven by breaking the behaviour it measures: the
 from __future__ import annotations
 
 import builtins
+import json
+import os
 import re
 import subprocess
 import sys
@@ -58,7 +60,7 @@ from protokit._pools import DescriptorPoolError, load_pool_from_path
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.lint.model import LintReport
-from tests.meta.test_import_layers import _SRC_ROOT, PACKAGE, build_import_graph
+from tests.meta.test_import_layers import _REPO_ROOT, _SRC_ROOT, PACKAGE, build_import_graph
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -83,26 +85,31 @@ def _returned(phrase: str, where: str, why: str) -> str:
     return f"{where} says {phrase!r} again, the claim this test exists to keep out: {why}"
 
 
-def _loads_in_fresh_interpreter(importing: str, loaded: str) -> bool:
-    """Whether ``import <importing>`` puts ``<loaded>`` in ``sys.modules``.
+def _loaded_by_fresh_import(importing: str, *modules: str) -> dict[str, bool]:
+    """For each of ``modules``, whether ``import <importing>`` puts it in ``sys.modules``.
 
     Run in a subprocess because the test process has already imported most
     of ``protokit``, so ``sys.modules`` here says nothing about what one
-    import pulls in.
+    import pulls in. The environment matches ``import_in_fresh_interpreter``'s
+    sweep of the real tree, so ``protokit`` resolves from ``src`` rather than
+    from whatever is installed.
     """
+    code = (
+        f"import json, sys\nimport {importing}\n"
+        f"print(json.dumps({{m: m in sys.modules for m in {list(modules)!r}}}))"
+    )
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            f"import sys\nimport {importing}\nprint({loaded!r} in sys.modules)",
-        ],
+        [sys.executable, "-c", code],
+        cwd=_REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(_SRC_ROOT), "PYTHONSAFEPATH": "1"},
         capture_output=True,
         text=True,
         check=False,
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    return result.stdout.strip() == "True"
+    loaded: dict[str, bool] = json.loads(result.stdout)
+    return loaded
 
 
 # ---------------------------------------------------------------------------
@@ -345,12 +352,12 @@ class TestLintCliUtilsDocstring:
         )
 
     def test_engine_loads_it_without_the_cli(self) -> None:
-        assert _loads_in_fresh_interpreter(f"{_LINT}.engine", _CLI_UTILS)
-        assert not _loads_in_fresh_interpreter(f"{_LINT}.engine", f"{_LINT}.cli")
+        loaded = _loaded_by_fresh_import(f"{_LINT}.engine", _CLI_UTILS, f"{_LINT}.cli")
+        assert loaded == {_CLI_UTILS: True, f"{_LINT}.cli": False}
 
     @pytest.mark.parametrize("importing", [f"{PACKAGE}.schema", _LINT])
     def test_cold_import_does_not_load_it(self, importing: str) -> None:
-        assert not _loads_in_fresh_interpreter(importing, _CLI_UTILS)
+        assert _loaded_by_fresh_import(importing, _CLI_UTILS) == {_CLI_UTILS: False}
 
     @pytest.mark.parametrize(
         "phrase",
