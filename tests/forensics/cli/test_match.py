@@ -185,6 +185,33 @@ def test_malformed_desc_exits_2(runner: CliRunner, tmp_path: Path) -> None:
     assert "Error:" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(bytes.fromhex("0a030a01ff"), id="file-name-not-utf8"),
+        pytest.param(b"\x13" * 500 + b"\x14" * 500, id="groups-nested-too-deep"),
+    ],
+)
+def test_desc_the_runtime_cannot_parse_exits_2(
+    runner: CliRunner, tmp_path: Path, data: bytes
+) -> None:
+    # The pure-Python runtime raises UnicodeDecodeError and RecursionError for
+    # these, not DecodeError; both escaped as a traceback. upb rejects the
+    # second and parses the first, which then fails later as an unknown type.
+    (tmp_path / "bad.desc").write_bytes(data)
+    write_message(tmp_path / "msg.bin", fdp({"x": 1}), {"x": 5})
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"v={tmp_path / 'bad.desc'}",
+        "--type", "a.A",
+    )
+
+    assert result.exit_code == 2
+    assert "Error:" in result.stderr
+
+
 def test_match_with_proto_sources_compiles_and_ranks(
     runner: CliRunner, tmp_path: Path
 ) -> None:

@@ -133,7 +133,7 @@ def _build_candidate(
         fds = descriptor_pb2.FileDescriptorSet()
         try:
             fds.ParseFromString(raw)
-        except DecodeError as exc:
+        except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
             raise CandidateSpecError(
                 f"--schema {label}={path}: not a valid FileDescriptorSet ({exc})"
             ) from exc
