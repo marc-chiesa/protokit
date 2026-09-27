@@ -123,7 +123,7 @@ def _parse_message(
             json_format.Parse(data.decode("utf-8"), msg)
         else:
             msg.ParseFromString(data)
-    except (DecodeError, UnicodeDecodeError) as e:
+    except (DecodeError, UnicodeDecodeError, RecursionError) as e:
         _error(f"Failed to parse {filename}: {e}")
     except (json_format.ParseError, text_format.ParseError) as e:
         _error(f"Failed to parse {filename}: {e}")

@@ -27,10 +27,7 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
-from google.protobuf.descriptor_database import (
-    DescriptorDatabaseConflictingDefinitionError,
-)
-from google.protobuf.message import DecodeError
+from google.protobuf.message import DecodeError, Message
 
 
 class DescriptorPoolError(Exception):
@@ -135,7 +132,7 @@ def sort_files_by_dependency(
         placed = {fd.name for fd in ordered}
         remaining = [f.name for f in files if f.name not in placed]
         raise DescriptorPoolError(
-            f"cyclic file dependency among: {', '.join(remaining)}"
+            f"cyclic file dependency among: {', '.join(map(repr, remaining))}"
         )
     return ordered
 
@@ -161,9 +158,9 @@ def add_and_resolve(
       its own shape again: ``DescriptorDatabaseConflictingDefinitionError``
       from ``Add`` itself, where upb raises ``TypeError``.
 
-    ``FindFileByName`` forces it here on both. Every exception shape is
-    re-raised as :class:`DescriptorPoolError` so the documented "typed library
-    exceptions, never raw" contract holds for every caller on either backend.
+    ``FindFileByName`` forces it here on both. Pure-Python's own descriptor checks
+    add more shapes (``ValueError``, ``IndexError``, ``AttributeError``), so any
+    exception from the two calls is re-raised as :class:`DescriptorPoolError`.
 
     One product site does not use this helper on purpose: the lint
     descriptor-set loader (``schema/lint/_cli_utils.py``) repeats the
@@ -178,10 +175,13 @@ def add_and_resolve(
     Raises:
         DescriptorPoolError: If the file cannot be resolved into the pool.
     """
+    # Broad on purpose: the try holds only the two protobuf calls, and their
+    # rejection shapes vary by backend and version (see above). BaseException
+    # (KeyboardInterrupt, SystemExit) is not caught and still propagates.
     try:
         pool.Add(fd)
         pool.FindFileByName(fd.name)
-    except (TypeError, KeyError, DescriptorDatabaseConflictingDefinitionError) as exc:
+    except Exception as exc:
         raise DescriptorPoolError(
             f"could not build file {fd.name!r} into the descriptor pool: {exc}"
         ) from exc
@@ -197,7 +197,7 @@ def build_pool(
     same fully-qualified type without collision.
     """
     pool = descriptor_pool.DescriptorPool()
-    for fd in sort_files_by_dependency(list(fds.file)):
+    for fd in sort_files_by_dependency(list(require_decodable_strings(fds).file)):
         # Files are added in dependency order above, so a forward reference
         # within this set is already satisfied by the time its referrer is
         # added and the eager resolution below cannot false-positive.
@@ -216,7 +216,7 @@ def load_pool_from_bytes(data: bytes) -> descriptor_pool.DescriptorPool:
     fds = descriptor_pb2.FileDescriptorSet()
     try:
         fds.ParseFromString(data)
-    except DecodeError as exc:
+    except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise DescriptorPoolError(
             f"could not parse FileDescriptorSet bytes: {exc}"
         ) from exc
@@ -226,8 +226,8 @@ def load_pool_from_bytes(data: bytes) -> descriptor_pool.DescriptorPool:
 def load_pool_from_path(path: Path) -> descriptor_pool.DescriptorPool:
     """Read a ``.descriptor_set`` file and build an isolated pool.
 
-    The caller is responsible for validating the path exists; a malformed
-    file surfaces as a protobuf parse exception.
+    A file that does not parse or build raises ``DescriptorPoolError``, as
+    :func:`load_pool_from_bytes` does; an unreadable path raises ``OSError``.
     """
     return load_pool_from_bytes(Path(path).read_bytes())
 
@@ -250,3 +250,46 @@ def get_message_class(
     # mypy's warn_return_any under strict mode (protobuf ships no stubs).
     cls: type = message_factory.GetMessageClass(desc)
     return cls
+
+
+def require_decodable_strings(
+    fds: descriptor_pb2.FileDescriptorSet,
+) -> descriptor_pb2.FileDescriptorSet:
+    """Return ``fds`` unchanged, or raise if any string in it is not UTF-8.
+
+    The two runtimes disagree about when an undecodable string fails. The
+    pure-Python runtime rejects it while parsing (``UnicodeDecodeError``).
+    upb parses it and hands the field back as ``bytes``; a bad package or
+    type name then fails at ``Add``, but a bad file *name* survives ``Add``
+    and only raises ``UnicodeDecodeError`` later, wherever something reads
+    the descriptor's ``name``. Checking every string field here makes upb
+    fail at the same boundary pure-Python does.
+
+    Raises:
+        DescriptorPoolError: A string field holds bytes that are not UTF-8.
+    """
+    from protokit._descriptors import is_repeated
+
+    stack: list[Message] = [fds]  # iterative: descriptor sets can nest deeply
+    while stack:
+        message = stack.pop()
+        # ListFields includes registered extensions, so custom options are
+        # walked too; an unregistered one stays as unparsed unknown bytes.
+        for field, value in message.ListFields():
+            entry = field.message_type
+            if entry is not None and entry.GetOptions().map_entry:
+                # Iterating a map yields its keys; check keys and values.
+                key, val = entry.fields_by_name["key"], entry.fields_by_name["value"]
+                items = [(key, k) for k in value] + [(val, v) for v in value.values()]
+            elif is_repeated(field):
+                items = [(field, item) for item in value]
+            else:
+                items = [(field, value)]
+            for item_field, item in items:
+                if item_field.type == item_field.TYPE_STRING and isinstance(item, bytes):
+                    raise DescriptorPoolError(
+                        f"{item_field.full_name} is not valid UTF-8: {item[:64]!r}"
+                    )
+                if item_field.type in (item_field.TYPE_MESSAGE, item_field.TYPE_GROUP):
+                    stack.append(item)
+    return fds

@@ -313,7 +313,7 @@ def _build_schema_source(
         fds = descriptor_pb2.FileDescriptorSet()
         try:
             fds.ParseFromString(desc.read_bytes())
-        except (OSError, DecodeError) as exc:
+        except (OSError, DecodeError, UnicodeDecodeError, RecursionError) as exc:
             error_exit(f"failed to read descriptor set ({desc}): {exc}")
         return FileDescriptorSetSchema(fds, type_name)
     assert proto is not None

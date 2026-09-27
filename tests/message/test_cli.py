@@ -808,3 +808,38 @@ class TestExtensionPathRoundTrip:
         assert result.exit_code == 2, result.output
         error_lines = [line for line in result.output.splitlines() if line.startswith("Error:")]
         assert len(error_lines) == 1, result.output
+
+
+class TestUnparseableInput:
+    def test_a_message_nested_too_deep_exits_2(
+        self, runner: CliRunner, tmp_path: Path,
+    ) -> None:
+        """upb rejects deep nesting with ``DecodeError``; pure-Python raised
+        ``RecursionError``, which escaped the parse catch as a traceback."""
+        file_proto = descriptor_pb2.FileDescriptorProto(
+            name="n.proto", package="n", syntax="proto3",
+        )
+        msg = file_proto.message_type.add(name="N")
+        msg.field.add(
+            name="child", number=1, type=T.TYPE_MESSAGE, label=T.LABEL_OPTIONAL,
+            type_name=".n.N",
+        )
+        desc = tmp_path / "n.descriptor_set"
+        desc.write_bytes(descriptor_pb2.FileDescriptorSet(file=[file_proto]).SerializeToString())
+        payload = b""
+        for _ in range(2000):
+            size, length = len(payload), b""
+            while True:
+                length += bytes([(size & 0x7F) | (0x80 if size > 0x7F else 0)])
+                size >>= 7
+                if not size:
+                    break
+            payload = b"\x0a" + length + payload
+        deep = tmp_path / "deep.pb"
+        deep.write_bytes(payload)
+
+        result = runner.invoke(main, [
+            str(deep), str(deep), "--desc", str(desc), "--message-type", "n.N",
+        ])
+        assert result.exit_code == 2, result.output
+        assert "Failed to parse" in result.output

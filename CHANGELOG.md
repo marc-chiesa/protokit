@@ -394,6 +394,33 @@ backend-neutral rather than merely fixed (KTD6).
 - **The storage fidelity probe reports "cannot measure" (`None`), not a byte
   delta of `0`, for a proto2 message missing a required field.** It no longer
   depends on the `EncodeError` only upb raises (V1).
+- **A descriptor set the pure-Python runtime rejects now fails cleanly.** A set
+  that parses but that the runtime refuses to build (an unreadable field
+  default, an out-of-range `public_dependency` or `oneof_index`) raised a raw
+  `ValueError`, `IndexError` or `AttributeError` under the pure-Python runtime,
+  where upb raises a typed error. So did a set the runtime cannot parse at all:
+  a string that is not UTF-8 raised `UnicodeDecodeError`, and very deep nesting
+  raised `RecursionError`. `protokit lint` crashed with a traceback and exit 1
+  instead of an `error[lint-...]` code and exit 2, and `protokit forensics` and
+  `protokit storage --desc` crashed the same way. Both descriptor-pool
+  population sites and every descriptor-set parse site now convert these
+  failures, so each command exits 2 with an error message on both runtimes. The
+  pure-Python runtime still accepts some sets that upb rejects, such as
+  duplicate field numbers; protokit does not add its own validation for those.
+- **A descriptor set with a file name that is not UTF-8 no longer crashes
+  `protokit lint` under upb.** upb parses such a string and returns it as
+  bytes, so the file loaded and a lint rule later failed reading its name,
+  taking the engine's error handler down with it (traceback, exit 1). protokit
+  now rejects any non-UTF-8 string in a descriptor set when it loads it, which
+  is where the pure-Python runtime already rejected it; lint reports
+  `error[lint-bad-input]` and exits 2.
+- **A message the pure-Python runtime cannot parse is a decode failure, not a
+  crash.** A proto3 string that is not UTF-8 raises `UnicodeDecodeError` there,
+  and very deep nesting raises `RecursionError`, where upb raises
+  `DecodeError` for both. `protokit diff` crashed on such an input,
+  `protokit forensics match` crashed instead of ranking the candidate as
+  `decode_error`, and `protokit storage` let the exception escape past
+  `--on-error`. All three now treat it exactly as a `DecodeError`.
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
 under the pure-Python runtime with no known-failure list, and the
@@ -457,6 +484,30 @@ under the pure-Python runtime with no known-failure list, and the
   `sys.modules` cache. The import-layer test that pinned this shape checked
   only the `_builtin_*` modules; it now covers every submodule, including the
   shared `_junit_xml`, `_sarif_json` and `_registry` helpers.
+- Four comments and docstrings that stated something false now state what
+  the code does (audit finding D6), and `tests/meta/test_doc_claims.py`
+  checks each one against the running library:
+  - The map-key docstring in the compat checker said a map's key "is always
+    a scalar and not user-visible". The user declares the key type, and the
+    checker never compares it. The docstring now says so, and names the gap
+    that follows from it: changing a map's key type passes at every level
+    (audit finding V20, fixed in a later release).
+  - `protokit.schema.lint.model` credited its `TYPE_CHECKING` import with
+    making `typing.get_type_hints(LintReport)` work. It does not: the call
+    raises `NameError` unless `LintCompileDiagnostic` is passed in `localns`.
+    The comment now says that, and the limitation is kept on purpose so the
+    cold-import contract holds.
+  - `load_pool_from_path` and the CLI loader built on it promised a protobuf
+    parse exception for a malformed file. A file that does not parse or build
+    raises `DescriptorPoolError`, as `load_pool_from_bytes` does, and an
+    unreadable path raises `OSError` (on the pure-Python runtime this needed
+    the fix under "Fixed — pure-Python protobuf runtime").
+  - The lint package's `_cli_utils` module said it was loaded only with the
+    CLI. The lint engine, the config and custom-rule loaders, and some
+    built-in rules import it at module load. `import protokit.schema` and
+    `import protokit.schema.lint` still do not.
+
+  All four modules are private; no behaviour changes.
 - The ruff and `mypy --strict` ratchets now cover every module this release
   touched: `_descriptors.py`, `_pools.py`, `schema/checker.py`,
   `schema/rules.py`, `schema/cli.py`, and the whole `formatters/` and

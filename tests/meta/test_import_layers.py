@@ -486,20 +486,20 @@ FRESH_IMPORT_TIMEOUT_SECONDS = 120.0
 
 
 def import_in_fresh_interpreter(
-    module: str, *, src_root: Path, cwd: Path, timeout: float = FRESH_IMPORT_TIMEOUT_SECONDS
+    module: str, *, src_root: Path, cwd: Path, timeout: float = FRESH_IMPORT_TIMEOUT_SECONDS,
+    code: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """``import <module>`` in a fresh interpreter that finds it through ``src_root`` alone.
 
-    ``PYTHONSAFEPATH`` keeps ``cwd`` off ``sys.path`` (3.11+; an older
-    interpreter ignores it). The caller reads ``returncode`` and ``stderr``,
-    and handles the ``TimeoutExpired`` an import that never returns raises.
+    ``code``, when given, runs in place of ``import <module>``. ``PYTHONSAFEPATH`` keeps ``cwd``
+    off ``sys.path`` (3.11+; an older interpreter ignores it). The caller reads ``returncode``
+    and ``stderr``, and handles the ``TimeoutExpired`` an import that never returns raises.
     """
     return subprocess.run(
-        [sys.executable, "-c", f"import {module}"],
+        [sys.executable, "-c", f"import {module}" if code is None else code],
         cwd=cwd,
         env={**os.environ, "PYTHONPATH": str(src_root), "PYTHONSAFEPATH": "1"},
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
         check=False,
         timeout=timeout,
     )

@@ -536,3 +536,43 @@ class TestTeardownVersusAbort:
         assert [r.message.x for r in records] == [1]  # partial, no exception
         with pytest.raises(RuntimeError, match="aborted"):
             _ = result.errors
+
+
+def _nested_payload(depth: int) -> bytes:
+    """``depth`` levels of field 1 as a nested message, innermost empty."""
+    payload = b""
+    for _ in range(depth):
+        payload = b"\x0a" + _varint(len(payload)) + payload
+    return payload
+
+
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    while n > 0x7F:
+        out.append((n & 0x7F) | 0x80)
+        n >>= 7
+    out.append(n)
+    return bytes(out)
+
+
+class TestPayloadsTheRuntimeCannotParse:
+    """A record the runtime rejects is a decode fault on both backends.
+
+    upb raises ``DecodeError`` for both shapes below. The pure-Python runtime
+    raises ``UnicodeDecodeError`` for a proto3 string that is not UTF-8 and
+    ``RecursionError`` for very deep nesting, and the engine's ``DecodeError``
+    catch let both escape past ``on_error`` as raw exceptions.
+    """
+
+    def test_a_string_that_is_not_utf8_is_a_frame_error(self) -> None:
+        fdp = file_proto("s.proto", "s", message="S", field_name="s", field_type=_TYPE_STRING)
+        registry, _ = _registry_and_class("s", "s.S", fdp)
+        with pytest.raises(FrameError) as exc:
+            list(scan(iter([("s", b"\x0a\x01\xff")]), registry))
+        assert exc.value.record_index == 0
+
+    def test_nesting_too_deep_is_a_frame_error(self) -> None:
+        fdp = file_proto("n.proto", "n", message="N", ref_type=".n.N")
+        registry, _ = _registry_and_class("n", "n.N", fdp)
+        with pytest.raises(FrameError):
+            list(scan(iter([("n", _nested_payload(2000))]), registry))

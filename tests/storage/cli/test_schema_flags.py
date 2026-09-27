@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from protokit.cli import main
@@ -114,6 +115,26 @@ def test_malformed_descriptor_set_is_exit_2(
 ) -> None:
     desc = tmp_path / "bad.desc"
     desc.write_bytes(b"\xff\xff not a descriptor set \x00")
+    data = data_file_factory([])
+    result = _run(runner, ["storage", "count", str(data), "--desc", str(desc), "--type", "a.A"])
+    assert result.exit_code == 2
+    assert "Error:" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(bytes.fromhex("0a030a01ff"), id="file-name-not-utf8"),
+        pytest.param(b"\x13" * 500 + b"\x14" * 500, id="groups-nested-too-deep"),
+    ],
+)
+def test_descriptor_set_the_runtime_cannot_parse_is_exit_2(
+    runner: CliRunner, tmp_path: Path, data_file_factory: Callable[..., Path], raw: bytes
+) -> None:
+    # The pure-Python runtime raises UnicodeDecodeError and RecursionError for
+    # these, not DecodeError, and both escaped as a traceback.
+    desc = tmp_path / "bad.desc"
+    desc.write_bytes(raw)
     data = data_file_factory([])
     result = _run(runner, ["storage", "count", str(data), "--desc", str(desc), "--type", "a.A"])
     assert result.exit_code == 2

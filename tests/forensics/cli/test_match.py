@@ -185,6 +185,33 @@ def test_malformed_desc_exits_2(runner: CliRunner, tmp_path: Path) -> None:
     assert "Error:" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(bytes.fromhex("0a030a01ff"), id="file-name-not-utf8"),
+        pytest.param(b"\x13" * 500 + b"\x14" * 500, id="groups-nested-too-deep"),
+    ],
+)
+def test_desc_the_runtime_cannot_parse_exits_2(
+    runner: CliRunner, tmp_path: Path, data: bytes
+) -> None:
+    # The pure-Python runtime raises UnicodeDecodeError and RecursionError for
+    # these, not DecodeError; both escaped as a traceback. upb rejects the
+    # second and parses the first, which then fails later as an unknown type.
+    (tmp_path / "bad.desc").write_bytes(data)
+    write_message(tmp_path / "msg.bin", fdp({"x": 1}), {"x": 5})
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"v={tmp_path / 'bad.desc'}",
+        "--type", "a.A",
+    )
+
+    assert result.exit_code == 2
+    assert "Error:" in result.stderr
+
+
 def test_match_with_proto_sources_compiles_and_ranks(
     runner: CliRunner, tmp_path: Path
 ) -> None:
@@ -430,6 +457,17 @@ def _bytes_field_schema() -> object:
     return f
 
 
+
+def _string_field_schema() -> object:
+    """``a.A { string x = 1; }`` -- a proto3 string must hold UTF-8."""
+    f = descriptor_pb2.FileDescriptorProto(name="a.proto", package="a", syntax="proto3")
+    mt = f.message_type.add()
+    mt.name = "A"
+    fl = mt.field.add()
+    fl.name, fl.number = "x", 1
+    fl.type, fl.label = FieldProto.TYPE_STRING, FieldProto.LABEL_OPTIONAL
+    return f
+
 def _submessage_field_schema() -> object:
     """``a.A { Inner x = 1; }`` -- reads the same payload as a nested message."""
     f = descriptor_pb2.FileDescriptorProto(name="a.proto", package="a", syntax="proto3")
@@ -479,3 +517,28 @@ def test_a_candidate_that_does_not_decode_still_exits_0(
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "Error:" not in result.stderr
     assert "decode_error" in result.stdout  # the candidate WAS ranked, and lost
+
+
+def test_a_candidate_whose_string_is_not_utf8_is_ranked_not_crashed(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """Reading ``0xFF`` as a proto3 string is a decode failure, not a crash.
+
+    upb raises ``DecodeError``; the pure-Python runtime raises
+    ``UnicodeDecodeError``, which escaped the ranking's ``DecodeError`` catch
+    as a traceback. Both must rank the candidate as ``decode_error``.
+    """
+    write_desc(tmp_path / "ok.desc", _bytes_field_schema())
+    write_desc(tmp_path / "str.desc", _string_field_schema())
+    (tmp_path / "msg.bin").write_bytes(b"\x0a\x01\xff")
+
+    result = _invoke(
+        runner,
+        str(tmp_path / "msg.bin"),
+        "--schema", f"ok={tmp_path / 'ok.desc'}",
+        "--schema", f"str={tmp_path / 'str.desc'}",
+        "--type", "a.A",
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "decode_error" in result.stdout

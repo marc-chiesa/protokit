@@ -712,9 +712,9 @@ class SchemaChecker:
         """Dispatch field rules + push recursion for a map's value sub-field.
 
         The synthetic ``MapEntry`` message has ``key`` and ``value``
-        fields. ``key`` is always a scalar and not user-visible, but
-        ``value`` carries the user's declared map value type — so we
-        treat it like any other field for rule dispatch. If the
+        fields, and the user declares both types (``map<int32, string>``).
+        Rules are dispatched on ``value`` only: ``key`` is never compared,
+        so a key-type change passes at every level (known gap, V20). If the
         value is itself a message, we also push its message_type
         onto the stack so the engine recurses into it.
 

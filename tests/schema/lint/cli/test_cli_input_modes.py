@@ -375,6 +375,50 @@ class TestErrorCodes:
         # still routes correctly).
         assert "synthetic novel TypeError text" in captured.err
 
+    def test_descriptor_the_runtime_rejects_routes_to_pool_conflict(
+        self, tmp_path: Path,
+    ) -> None:
+        """A set that parses but names an out-of-range public dependency.
+
+        upb rejects it with ``TypeError``. The pure-Python runtime raises
+        ``IndexError`` from its own descriptor checks, which the loader's
+        catch used to miss, so lint crashed with a traceback and exit 1
+        instead of routing to a stable ``error[lint-...]`` code.
+        """
+        fds = descriptor_pb2.FileDescriptorSet()
+        fdp = fds.file.add(name="r.proto", package="r", syntax="proto3")
+        fdp.message_type.add(name="M")
+        fdp.public_dependency.append(0)
+        bad = tmp_path / "rejected.descriptor_set"
+        bad.write_bytes(fds.SerializeToString())
+        result = CliRunner().invoke(lint_main, [str(bad)])
+        assert result.exit_code == 2, result.output
+        assert "error[lint-pool-conflict]:" in result.stderr
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(bytes.fromhex("0a030a01ff"), id="name-only"),
+            pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="name-that-imports-itself"),
+        ],
+    )
+    def test_file_name_that_is_not_utf8_routes_to_bad_input(
+        self, tmp_path: Path, raw: bytes,
+    ) -> None:
+        """A set whose file name is not UTF-8.
+
+        The pure-Python runtime rejects the name with ``UnicodeDecodeError``
+        while parsing, which the loader's ``DecodeError`` catch used to miss.
+        upb parses it and returns the name as bytes; the name-only set then
+        crashed a lint rule reading the file name. Both used to end in a
+        traceback and exit 1.
+        """
+        bad = tmp_path / "not_utf8.descriptor_set"
+        bad.write_bytes(raw)
+        result = CliRunner().invoke(lint_main, [str(bad)])
+        assert result.exit_code == 2, result.output
+        assert "error[lint-bad-input]:" in result.stderr
+
     def test_proto_mode_syntax_error_routes_to_compile_failed(
         self, tmp_path: Path,
     ) -> None:

@@ -130,7 +130,7 @@ def fit_candidate(
     message = resolved.message_class()
     try:
         message.MergeFromString(message_bytes)
-    except DecodeError as exc:
+    except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
         return CandidateFit(
             label=candidate.label,
             tier=ParseTier.FAULT,

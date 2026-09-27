@@ -214,3 +214,185 @@ class TestAddAndResolveDuplicateFile:
         _pools.add_and_resolve(pool, first)
         with pytest.raises(_pools.DescriptorPoolError):
             _pools.add_and_resolve(pool, second)
+
+
+def _rejected_by_pure_python(shape: str) -> descriptor_pb2.FileDescriptorProto:
+    """A proto2 file that parses, and that pure-Python rejects with a builtin exception."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="r.proto", package="r", syntax="proto2")
+    field = fdp.message_type.add(name="M").field.add(
+        name="x", number=1, type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+        label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+    )
+    if shape == "unparseable-default":
+        field.default_value = "abc"
+    elif shape == "public-dependency-out-of-range":
+        fdp.public_dependency.append(0)
+    elif shape == "oneof-index-out-of-range":
+        field.oneof_index = 5
+    elif shape == "no-field-type":
+        field.ClearField("type")
+    return fdp
+
+
+class TestAddAndResolveBackendValidation:
+    """A descriptor the runtime rejects raises the typed error on both backends.
+
+    upb rejects the first three shapes with ``TypeError`` from ``Add``. Pure-Python's
+    own descriptor checks raise ``ValueError`` or ``IndexError`` instead, and those
+    escaped raw to callers that catch only the typed family, such as the forensics CLI.
+    """
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["unparseable-default", "public-dependency-out-of-range", "oneof-index-out-of-range"],
+    )
+    def test_rejected_descriptor_raises_the_typed_error(self, shape: str) -> None:
+        data = _fds(_rejected_by_pure_python(shape)).SerializeToString()
+        with pytest.raises(_pools.DescriptorPoolError) as excinfo:
+            _pools.load_pool_from_bytes(data)
+        assert excinfo.value.__cause__ is not None
+
+    def test_a_shape_only_pure_python_rejects_never_escapes_raw(self) -> None:
+        # upb accepts a field with no type; pure-Python raises AttributeError
+        # while building it. Either outcome is fine, a raw exception is not.
+        data = _fds(_rejected_by_pure_python("no-field-type")).SerializeToString()
+        try:
+            _pools.load_pool_from_bytes(data)
+        except _pools.DescriptorPoolError as exc:
+            assert exc.__cause__ is not None
+
+
+def _deeply_nested_set(depth: int = 2000) -> bytes:
+    """A set whose one message nests ``depth`` message types, deeper than pure-Python parses."""
+    def field(tag: int, payload: bytes) -> bytes:
+        size, length = len(payload), b""
+        while True:
+            length += bytes([(size & 0x7F) | (0x80 if size > 0x7F else 0)])
+            size >>= 7
+            if not size:
+                return bytes([tag]) + length + payload
+
+    nested = b""
+    for _ in range(depth):
+        nested = field(26, nested)  # DescriptorProto.nested_type
+    return field(10, field(10, b"a.proto") + field(34, nested))
+
+
+class TestLoadPoolFromBytesParseFailures:
+    """Bytes the runtime cannot parse raise the typed error on both backends.
+
+    The parse catch covered only ``DecodeError``. Pure-Python raises
+    ``UnicodeDecodeError`` for a string that is not UTF-8, and
+    ``RecursionError`` for deep nesting. upb parses a non-UTF-8 string and
+    returns it as ``bytes``: a bad file name then survived ``Add`` and failed
+    later, wherever the name was read, and in a cycle it broke the error
+    message with ``TypeError``. ``require_decodable_strings`` now rejects it
+    at the boundary, so both backends fail in the same place.
+    """
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(bytes.fromhex("0a030a01ff"), id="name-not-utf8"),
+            pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="name-not-utf8-in-a-cycle"),
+            pytest.param(
+                bytes.fromhex("0a0e0a07612e70726f746f2203" "0a01ff"),
+                id="message-name-not-utf8",
+            ),
+            pytest.param(_deeply_nested_set(), id="nested-too-deep"),
+        ],
+    )
+    def test_unparseable_bytes_raise_the_typed_error(self, data: bytes) -> None:
+        with pytest.raises(_pools.DescriptorPoolError):
+            _pools.load_pool_from_bytes(data)
+
+    @skip_under_pure_python(
+        "premise holds only on upb: its parser keeps a non-UTF-8 string as bytes, "
+        "while the pure-Python parser rejects it before this check can run"
+    )
+    def test_a_non_utf8_file_name_is_rejected_before_it_reaches_a_descriptor(
+        self,
+    ) -> None:
+        fds = descriptor_pb2.FileDescriptorSet.FromString(bytes.fromhex("0a030a01ff"))
+        with pytest.raises(_pools.DescriptorPoolError, match="not valid UTF-8"):
+            _pools.require_decodable_strings(fds)
+
+
+# Custom options are only walked when their extension is registered in the
+# default pool, so these scenarios run in a fresh interpreter: registering an
+# extension on ``FileOptions`` here would leak into every later test.
+_CUSTOM_OPTION_SCENARIO = """
+import sys
+from google.protobuf import descriptor_pb2 as d, descriptor_pool as dp, struct_pb2
+from protokit import _pools
+
+f = d.FileDescriptorProto(
+    name="opt.proto", package="opt", syntax="proto2",
+    dependency=["google/protobuf/descriptor.proto", "google/protobuf/struct.proto"],
+)
+f.message_type.add(name="Opt").field.add(name="s", number=1, label=1, type=9)
+f.extension.add(name="map_opt", number=50000, label=1, type=11,
+                type_name=".google.protobuf.Struct", extendee=".google.protobuf.FileOptions")
+f.extension.add(name="group_opt", number=50001, label=1, type=10,
+                type_name=".opt.Opt", extendee=".google.protobuf.FileOptions")
+dp.Default().Add(f)
+fds = d.FileDescriptorSet()
+d.DESCRIPTOR.CopyToProto(fds.file.add())
+struct_pb2.DESCRIPTOR.CopyToProto(fds.file.add())
+if sys.argv[1] == "map":
+    fds.file.add().CopyFrom(f)
+    ext = dp.Default().FindExtensionByName("opt.map_opt")
+    fds.file[-1].options.Extensions[ext].fields["caf\\u00e9"].string_value = "\\u4f60\\u597d"
+    data = fds.SerializeToString()
+else:
+    # Pure-Python decodes an extension only once it has been looked up.
+    dp.Default().FindExtensionByName("opt.group_opt")
+
+    def varint(n):
+        out = bytearray()
+        while n > 0x7F:
+            out.append((n & 0x7F) | 0x80)
+            n >>= 7
+        out.append(n)
+        return bytes(out)
+    group = varint(50001 * 8 + 3) + b"\\x0a\\x01\\xff" + varint(50001 * 8 + 4)
+    body = f.SerializeToString() + b"\\x42" + varint(len(group)) + group
+    data = fds.SerializeToString() + b"\\x0a" + varint(len(body)) + body
+try:
+    _pools.load_pool_from_bytes(data)
+except _pools.DescriptorPoolError as exc:
+    print("typed-error", exc)
+else:
+    print("loaded")
+"""
+
+
+def _custom_option_outcome(case: str) -> str:
+    # Imported here, not at the top: published docs cite lines 68-74 of this file.
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, "-c", _CUSTOM_OPTION_SCENARIO, case],
+        capture_output=True, text=True, check=False, timeout=120,
+        env={**os.environ, "PYTHONPATH": str(Path(_pools.__file__).parents[1])},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+class TestRequireDecodableStringsCustomOptions:
+    def test_a_valid_map_valued_option_still_loads(self) -> None:
+        # Iterating a protobuf map yields its keys, and the first version of
+        # the walk pushed those strings as messages and crashed on a valid set.
+        assert _custom_option_outcome("map") == "loaded"
+
+    def test_a_non_utf8_string_inside_a_group_option_is_rejected(self) -> None:
+        # The walk descended only into TYPE_MESSAGE, so a group-typed option
+        # carried a non-UTF-8 string past upb. Pure-Python rejects it while
+        # parsing, and load_pool_from_bytes converts that to the typed error.
+        outcome = _custom_option_outcome("group")
+        # Naming the field proves the string was what failed, not the set.
+        assert outcome.startswith("typed-error") and "opt.Opt.s" in outcome, outcome

@@ -4,11 +4,11 @@ Internal extraction point for the ``protokit.schema.lint.cli`` click
 subcommand. The ``_`` prefix marks the module as not-public-API —
 consumers invoke the CLI, they do not import from here.
 
-This module is loaded only when ``protokit.schema.lint.cli`` itself
-is loaded, which happens at ``protokit.cli`` import time (i.e., on
-every ``protokit ...`` CLI invocation, regardless of subcommand).
-The cold-import contract from D1 is preserved because
-``protokit.schema`` does NOT import ``protokit.cli``.
+Loading is not CLI-only: the lint engine, the config and custom-rule
+loaders, and some built-in rules import it at module load, so
+``import protokit.schema.lint.engine`` loads it without the CLI.
+The cold-import contract from D1 still holds: neither ``import
+protokit.schema`` nor ``import protokit.schema.lint`` loads it.
 """
 
 from __future__ import annotations
@@ -23,10 +23,9 @@ import click
 from google.protobuf import descriptor_pb2, descriptor_pool
 from google.protobuf.message import DecodeError
 
-# ``_safe_for_stderr`` uses the redundant-``as`` form: that is the
-# explicit re-export mypy strict's ``no_implicit_reexport`` requires, and
-# the ~20 lint-subpackage modules importing it from HERE (its original
-# home, before it moved down to ``protokit._cli_utils`` — see the note
+# ``_safe_for_stderr`` uses the redundant-``as`` form: that is the explicit re-export mypy
+# strict's ``no_implicit_reexport`` requires, and the ~20 lint-subpackage modules importing it
+# from HERE (its original home, before it moved down to ``protokit._cli_utils`` — see the note
 # where it used to live) keep working unchanged.
 from protokit._cli_utils import (
     _safe_for_stderr as _safe_for_stderr,
@@ -35,6 +34,7 @@ from protokit._cli_utils import (
     _scrub_exc_message,
     run_formatter_safely,
 )
+from protokit._pools import DescriptorPoolError, require_decodable_strings
 from protokit.schema.compile import CompileResult, LintCompileDiagnostic
 
 if TYPE_CHECKING:
@@ -251,7 +251,7 @@ def _load_descriptor_sets_to_result(
 
     1. Iterate ``paths`` in argv order.
     2. For each path, ``read_bytes()`` and ``FileDescriptorSet.FromString()``.
-       OSError or DecodeError → exit 2 via ``lint-bad-input``.
+       OSError or a parse failure → exit 2 via ``lint-bad-input``.
     3. Iterate ``fds.file`` in protobuf parse order. For each ``fd``:
 
        - If ``fd.name`` was already seen, append a ``LintCompileDiagnostic``
@@ -345,15 +345,15 @@ def _load_descriptor_sets_to_result(
     # documented descriptor-set-mode caveat). Mirrors the
     # capture-around-Add pattern at src/protokit/_cli_utils.py:264-267
     # (_populate_pool_with_capture).
-    source_info_descriptors: dict[
-        str, descriptor_pb2.FileDescriptorProto,
-    ] = {}
+    source_info_descriptors: dict[str, descriptor_pb2.FileDescriptorProto] = {}
 
     for input_path in paths:
         try:
             data = input_path.read_bytes()
-            fds = descriptor_pb2.FileDescriptorSet.FromString(data)
-        except (OSError, DecodeError) as exc:
+            fds = require_decodable_strings(descriptor_pb2.FileDescriptorSet.FromString(data))
+        except (
+            OSError, DecodeError, UnicodeDecodeError, RecursionError, DescriptorPoolError
+        ) as exc:
             error_exit_with_code(
                 "bad-input",
                 f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
@@ -410,17 +410,17 @@ def _load_descriptor_sets_to_result(
                 # Add emits first is a side effect, not the signal — do not
                 # build a warnings-capture path on it.
                 pool.FindFileByName(fd.name)
-            except (TypeError, ValueError, KeyError) as exc:
-                # protobuf-python's C++ runtime raises TypeError for
-                # the documented failure shapes (missing-imports,
-                # duplicate-symbol). The (TypeError, ValueError) catch
-                # mirrors compile.py:663-665's defensive over-catch — if a
-                # future protobuf release narrows or widens the
-                # exception type, lint's stable-prefix path stays
-                # intact rather than letting ValueError escape to
-                # click as exit 1 + traceback (no error[lint-...]
-                # prefix). KeyError joins them for the pure-Python
-                # resolution probe above.
+            except Exception as exc:
+                # upb raises TypeError for every shape it rejects. The
+                # pure-Python runtime raises KeyError from the resolution
+                # probe above, and its own descriptor checks raise
+                # ValueError, IndexError or AttributeError. The catch is
+                # broad so that no shape, on either backend or a future
+                # protobuf release, escapes to click as exit 1 + a
+                # traceback with no error[lint-...] prefix; the try holds
+                # only the two protobuf calls. BaseException (Ctrl-C) is
+                # not caught. Routing below is unchanged: KeyError or a
+                # missing-import marker, else pool-conflict.
                 msg = str(exc)
                 # A KeyError from the probe IS the missing-import signal on the
                 # pure-Python backend, and it carries the unresolvable symbol
