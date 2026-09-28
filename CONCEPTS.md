@@ -94,6 +94,8 @@ A site the derivation finds and then excuses on a written claim that some input 
 
 The derivation can also fail by never running. A defect report names a symptom, and a symptom names one site; taking the report's wording as the site list produces a fix that is complete against the words and partial against the code. The tell is prose that counts — a comment or docstring asserting it covered "both" or "every" site — because an exhaustive count inside one function reads like an exhaustive count of the surface and then blocks the next reader from re-deriving it. Such a claim names the scope it counted over, and a count that surprises the person deriving it is the finding rather than a detail. A sibling also need not look like the reported site: the same failure can sit in a differently shaped place — another container kind, the other arm of a union, one level down inside an element — so the ingredient to derive from is the operation that fails, not the shape the report happened to name.
 
+The same blindness occurs in description rather than code. A change made correctly at a shared site is written up by whoever made it, in terms of the caller they were looking at, so release notes assembled from those write-ups name one command where every caller of the site changed behaviour. The defence is the same derivation, run over the changed site's callers instead of over the notes.
+
 ### Mutation proof
 A check that a specific test is not vacuous: one anchor in the code the test guards is replaced with a plausible wrong version, the test is run, and the test must fail — a test that stays green with its guarded code broken proves nothing. Distinct from a Regression pin, which asserts correct behaviour for a defect not yet fixed; a mutation proof interrogates an already-passing test's power to catch a defect that does not yet exist.
 *Avoid:* vacuity check, vacuity gate, mutation test (the last is too broad: this is one anchor and one target, not a mutation-testing campaign)
@@ -135,9 +137,11 @@ tolerant mode skipped. Distinct from a finding, which is something the analysis 
 and which leaves the verdict intact.
 *Avoid:* trust check, completeness check
 
-One owner answers it for every kind of report, and both the rendered output and the
-process exit code read that one answer, so a run cannot print a caveat while exiting
-clean or the reverse. The verdict fails closed: a kind the owner does not recognise
+One owner answers it for every kind of report, and a command's exit code and every
+success verdict its output states are meant to read that one answer, so a run cannot
+print a caveat while exiting clean or the reverse. An output that states a verdict
+without asking the owner is a gap in the seam, not a second opinion: it can print a
+clean result on a run whose exit code says the analysis did not finish. The verdict fails closed: a kind the owner does not recognise
 raises rather than defaulting to trustworthy, because a permissive default would rebuild
 the fail-open the owner exists to end. Each reason it gives is one printable line, since
 a reason quotes text a plugin wrote and is printed beside stable prefixes that tooling
