@@ -396,3 +396,125 @@ class TestRequireDecodableStringsCustomOptions:
         outcome = _custom_option_outcome("group")
         # Naming the field proves the string was what failed, not the set.
         assert outcome.startswith("typed-error") and "opt.Opt.s" in outcome, outcome
+
+    @skip_under_pure_python(
+        "premise holds only on upb: the pure-Python parser rejects the option's "
+        "string while parsing, so the walk's own message never forms"
+    )
+    def test_the_group_option_error_is_the_walks_own_message(self) -> None:
+        # The walk lives in protokit._fieldview; the typed error it raises
+        # through require_decodable_strings must read exactly as before.
+        assert _custom_option_outcome("group") == (
+            "typed-error opt.Opt.s is not valid UTF-8: b'\\xff'"
+        )
+
+
+@skip_under_pure_python(
+    "premise holds only on upb: its parser keeps a non-UTF-8 string as bytes, "
+    "while the pure-Python parser rejects it before this check can run"
+)
+class TestRequireDecodableStringsMessage:
+    """The error text is part of the contract: it names the field and quotes the bytes.
+
+    ``require_decodable_strings`` is a thin wrapper over the shared walk in
+    ``protokit._fieldview``; these pin the message it builds from the walk's hit.
+    """
+
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            pytest.param(
+                bytes.fromhex("0a030a01ff"),
+                "google.protobuf.FileDescriptorProto.name is not valid UTF-8: b'\\xff'",
+                id="file-name",
+            ),
+            pytest.param(
+                bytes.fromhex("0a0e0a07612e70726f746f22030a01ff"),
+                "google.protobuf.DescriptorProto.name is not valid UTF-8: b'\\xff'",
+                id="nested-message-name",
+            ),
+        ],
+    )
+    def test_the_error_names_the_field_and_quotes_the_bytes(
+        self, data: bytes, expected: str,
+    ) -> None:
+        fds = descriptor_pb2.FileDescriptorSet.FromString(data)
+        with pytest.raises(_pools.DescriptorPoolError) as excinfo:
+            _pools.require_decodable_strings(fds)
+        assert str(excinfo.value) == expected
+
+    def test_the_quoted_bytes_stop_at_64(self) -> None:
+        name = b"\xff" * 100
+        data = b"\x0a" + bytes([len(name) + 2]) + b"\x0a" + bytes([len(name)]) + name
+        fds = descriptor_pb2.FileDescriptorSet.FromString(data)
+        with pytest.raises(_pools.DescriptorPoolError) as excinfo:
+            _pools.require_decodable_strings(fds)
+        assert str(excinfo.value) == (
+            f"google.protobuf.FileDescriptorProto.name is not valid UTF-8: {name[:64]!r}"
+        )
+
+    def test_a_clean_set_is_returned_unchanged(self) -> None:
+        fds = _fds(_file("a.proto", "a", message="A"))
+        assert _pools.require_decodable_strings(fds) is fds
+
+
+# A proto2 map-valued custom option whose key is not UTF-8. upb returns the key
+# as bytes when the map is iterated, but reading the map's values looks each key
+# up again and raises UnicodeDecodeError, so the walk must check keys first.
+_MAP_KEY_OPTION_SCENARIO = """
+import sys
+from google.protobuf import descriptor_pb2 as d, descriptor_pool as dp
+from protokit import _pools
+
+f = d.FileDescriptorProto(
+    name="mk.proto", package="mk", syntax="proto2",
+    dependency=["google/protobuf/descriptor.proto"],
+)
+holder = f.message_type.add(name="Holder")
+entry = holder.nested_type.add(name="MEntry")
+entry.options.map_entry = True
+entry.field.add(name="key", number=1, label=1, type=9)
+entry.field.add(name="value", number=2, label=1, type=9)
+holder.field.add(name="m", number=1, label=3, type=11, type_name=".mk.Holder.MEntry")
+f.extension.add(name="holder_opt", number=50002, label=1, type=11,
+                type_name=".mk.Holder", extendee=".google.protobuf.FileOptions")
+dp.Default().Add(f)
+ext = dp.Default().FindExtensionByName("mk.holder_opt")
+option_file = d.FileDescriptorProto()
+option_file.CopyFrom(f)
+option_file.name = "mk_user.proto"
+option_file.ClearField("extension")
+option_file.ClearField("message_type")
+option_file.dependency[:] = ["mk.proto"]
+option_file.options.Extensions[ext].m["ZZ"] = "v"
+fds = d.FileDescriptorSet()
+d.DESCRIPTOR.CopyToProto(fds.file.add())
+fds.file.add().CopyFrom(f)
+fds.file.add().CopyFrom(option_file)
+data = fds.SerializeToString()
+assert data.count(b"ZZ") == 1
+data = data.replace(b"ZZ", b"\\xff\\xfe")
+try:
+    _pools.load_pool_from_bytes(data)
+except _pools.DescriptorPoolError as exc:
+    print("typed-error", exc)
+else:
+    print("loaded")
+"""
+
+
+def test_a_non_utf8_map_key_in_an_option_raises_the_typed_error() -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        [sys.executable, "-c", _MAP_KEY_OPTION_SCENARIO],
+        capture_output=True, text=True, check=False, timeout=120,
+        env={**os.environ, "PYTHONPATH": str(Path(_pools.__file__).parents[1])},
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = result.stdout.strip()
+    # Naming the key field proves the key was what failed, on either backend.
+    assert outcome.startswith("typed-error") and "mk.Holder.MEntry.key" in outcome, outcome

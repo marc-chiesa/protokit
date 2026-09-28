@@ -25,9 +25,20 @@ from pathlib import Path
 
 import pytest
 from google.protobuf import descriptor as d
-from google.protobuf import descriptor_pb2, descriptor_pool
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from google.protobuf.message import Message
 
-from protokit._fieldview import FieldView, is_map_field, map_entry
+from protokit._fieldview import (
+    FieldView,
+    extension_key,
+    first_undecodable_string,
+    is_map_field,
+    is_message_like,
+    map_entry,
+    may_hold_unvalidated_string,
+    same_message_kind,
+)
+from tests._pure_python_inventory import skip_under_pure_python
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC = _REPO_ROOT / "src" / "protokit"
@@ -467,3 +478,400 @@ def test_guard_detects_an_injected_violation() -> None:
             "    return list(view.by_name.values()), view.fields_by_name['x']\n"
         )
         assert _direct_enumeration_lines(clean) == []
+
+
+# --- Message-kind, extension-key and string-walk helpers ---
+#
+# Checker, rules, differ and the payload decode seams each asked "is this field a
+# message?" and "is any string in this message undecodable?" in their own words,
+# and the answers drifted: several sites tested ``TYPE_MESSAGE`` alone and missed
+# groups and editions DELIMITED fields, which are ``TYPE_GROUP``. These helpers
+# give each question one owner.
+
+_FS = descriptor_pb2.FeatureSet
+
+
+def _editions_file(name: str, package: str) -> descriptor_pb2.FileDescriptorProto:
+    return descriptor_pb2.FileDescriptorProto(
+        name=name, package=package, syntax="editions", edition=descriptor_pb2.EDITION_2023,
+    )
+
+
+def _map_entry_type(
+    parent: descriptor_pb2.DescriptorProto, name: str, key_type: int, value_type: int,
+    value_type_name: str = "",
+) -> None:
+    entry = parent.nested_type.add(name=name)
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=key_type, label=_FD.LABEL_OPTIONAL)
+    value = entry.field.add(name="value", number=2, type=value_type, label=_FD.LABEL_OPTIONAL)
+    if value_type_name:  # an explicitly empty type_name is still "set" to upb
+        value.type_name = value_type_name
+
+
+def _kind_pool() -> descriptor_pool.DescriptorPool:
+    """A proto2 message field and group, and an editions file whose messages are DELIMITED."""
+    pool = descriptor_pool.DescriptorPool()
+
+    k2 = descriptor_pb2.FileDescriptorProto(name="k2.proto", package="k2", syntax="proto2")
+    k2.message_type.add(name="Leaf").field.add(
+        name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+    )
+    p2 = k2.message_type.add(name="P2")
+    p2.field.add(
+        name="msg", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".k2.Leaf",
+    )
+    p2.nested_type.add(name="Grp").field.add(
+        name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+    )
+    p2.field.add(
+        name="grp", number=2, type=_FD.TYPE_GROUP, label=_FD.LABEL_OPTIONAL,
+        type_name=".k2.P2.Grp",
+    )
+    p2.field.add(name="s", number=3, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    pool.Add(k2)
+
+    # File-level DELIMITED turns every singular and repeated message field into
+    # TYPE_GROUP, but a map field and its value stay TYPE_MESSAGE.
+    k3 = _editions_file("k3.proto", "k3")
+    k3.options.features.message_encoding = _FS.DELIMITED
+    k3.message_type.add(name="Leaf").field.add(
+        name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+    )
+    d3 = k3.message_type.add(name="D")
+    d3.field.add(
+        name="delim", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".k3.Leaf",
+    )
+    _map_entry_type(d3, "MEntry", _FD.TYPE_STRING, _FD.TYPE_MESSAGE, ".k3.Leaf")
+    d3.field.add(
+        name="m", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".k3.D.MEntry",
+    )
+    pool.Add(k3)
+    return pool
+
+
+class TestMessageKind:
+    @pytest.fixture(scope="class")
+    def fields(self) -> dict[str, d.FieldDescriptor]:
+        pool = _kind_pool()
+        p2 = FieldView.of(pool.FindMessageTypeByName("k2.P2")).by_name
+        d3 = FieldView.of(pool.FindMessageTypeByName("k3.D")).by_name
+        entry = map_entry(d3["m"])
+        assert entry is not None
+        return {
+            "msg": p2["msg"], "grp": p2["grp"], "s": p2["s"],
+            "delim": d3["delim"], "map": d3["m"], "map_value": entry.value,
+        }
+
+    def test_the_corpus_has_the_shapes_it_claims(
+        self, fields: dict[str, d.FieldDescriptor],
+    ) -> None:
+        """A DELIMITED field is TYPE_GROUP; a map field and its value never are."""
+        assert fields["grp"].type == _FD.TYPE_GROUP
+        assert fields["delim"].type == _FD.TYPE_GROUP
+        assert fields["msg"].type == _FD.TYPE_MESSAGE
+        assert fields["map"].type == _FD.TYPE_MESSAGE
+        assert fields["map_value"].type == _FD.TYPE_MESSAGE
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("msg", True), ("grp", True), ("delim", True), ("map", True),
+            ("map_value", True), ("s", False),
+        ],
+    )
+    def test_is_message_like(
+        self, fields: dict[str, d.FieldDescriptor], name: str, expected: bool,
+    ) -> None:
+        assert is_message_like(fields[name]) is expected
+
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param("msg", "msg", True, id="message-message"),
+            pytest.param("grp", "delim", True, id="proto2-group-editions-delimited"),
+            pytest.param("delim", "grp", True, id="editions-delimited-proto2-group"),
+            pytest.param("grp", "msg", False, id="group-message"),
+            pytest.param("msg", "grp", False, id="message-group"),
+            pytest.param("delim", "msg", False, id="delimited-message"),
+            pytest.param("map_value", "delim", False, id="map-value-is-not-a-group"),
+            pytest.param("map_value", "msg", True, id="map-value-is-a-message"),
+            pytest.param("s", "s", False, id="string-string"),
+            pytest.param("s", "msg", False, id="string-message"),
+        ],
+    )
+    def test_same_message_kind_needs_the_same_kind_on_both_sides(
+        self, fields: dict[str, d.FieldDescriptor], left: str, right: str, expected: bool,
+    ) -> None:
+        """KTD2: descend only message↔message or group↔group; a mixed pair does not."""
+        assert same_message_kind(fields[left], fields[right]) is expected
+
+
+class TestExtensionKey:
+    @pytest.mark.parametrize(
+        ("full_name", "expected"),
+        [("c2.ext_top", "(c2.ext_top)"), ("c2.Msg.ext_nested", "(c2.Msg.ext_nested)")],
+    )
+    def test_key_is_the_parenthesised_full_name(
+        self, pool: descriptor_pool.DescriptorPool, full_name: str, expected: str,
+    ) -> None:
+        """The spelling a one-segment ``FieldPath`` accepts, and never a declared name."""
+        ext = pool.FindExtensionByName(full_name)
+        assert extension_key(ext) == expected
+        declared = FieldView.of(pool.FindMessageTypeByName("c2.Msg")).by_name
+        assert extension_key(ext) not in declared
+
+
+def _walk_pool() -> descriptor_pool.DescriptorPool:
+    """Every place a proto2 string can sit: top level, nested, repeated, map, group, extension."""
+    pool = descriptor_pool.DescriptorPool()
+    w2 = descriptor_pb2.FileDescriptorProto(name="w2.proto", package="w2", syntax="proto2")
+    w2.message_type.add(name="Leaf").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    root = w2.message_type.add(name="Root")
+    root.field.add(name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    root.field.add(
+        name="sub", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".w2.Leaf",
+    )
+    root.field.add(name="rs", number=3, type=_FD.TYPE_STRING, label=_FD.LABEL_REPEATED)
+    _map_entry_type(root, "MEntry", _FD.TYPE_STRING, _FD.TYPE_STRING)
+    root.field.add(
+        name="m", number=4, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".w2.Root.MEntry",
+    )
+    root.field.add(
+        name="rsub", number=5, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".w2.Leaf",
+    )
+    root.nested_type.add(name="G").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    root.field.add(
+        name="g", number=6, type=_FD.TYPE_GROUP, label=_FD.LABEL_OPTIONAL,
+        type_name=".w2.Root.G",
+    )
+    _map_entry_type(root, "MlEntry", _FD.TYPE_INT32, _FD.TYPE_MESSAGE, ".w2.Leaf")
+    root.field.add(
+        name="ml", number=7, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".w2.Root.MlEntry",
+    )
+    root.extension_range.add(start=100, end=200)
+    w2.extension.add(
+        name="ext", number=100, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+        extendee=".w2.Root",
+    )
+    pool.Add(w2)
+
+    w3 = descriptor_pb2.FileDescriptorProto(name="w3.proto", package="w3", syntax="proto3")
+    p3 = w3.message_type.add(name="P3")
+    p3.field.add(name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    _map_entry_type(p3, "MEntry", _FD.TYPE_STRING, _FD.TYPE_STRING)
+    p3.field.add(
+        name="m", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".w3.P3.MEntry",
+    )
+    pool.Add(w3)
+
+    # utf8_validation = NONE on an editions string: upb leaves it unvalidated,
+    # exactly like a proto2 string.
+    w4 = _editions_file("w4.proto", "w4")
+    w4.message_type.add(name="Unchecked").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    ).options.features.utf8_validation = _FS.NONE
+    pool.Add(w4)
+    return pool
+
+
+# A marker the same length as the bad bytes that replace it, so every length
+# prefix in the serialized message stays valid after the swap.
+_MARKER, _BAD = b"ZZ", b"\xff\xfe"
+
+
+def _populate(root: Message, where: str, ext: d.FieldDescriptor) -> None:
+    marker = _MARKER.decode()
+    if where == "top":
+        root.s = marker
+    elif where == "submessage":
+        root.sub.s = marker
+    elif where == "repeated":
+        root.rs.extend(["ok", marker])
+    elif where == "map-key":
+        root.m[marker] = "ok"
+    elif where == "map-value":
+        root.m["ok"] = marker
+    elif where == "repeated-submessage":
+        root.rsub.add(s="ok")
+        root.rsub.add(s=marker)
+    elif where == "map-message-value":
+        root.ml[1].s = marker
+    elif where == "group":
+        root.g.s = marker
+    elif where == "extension":
+        root.Extensions[ext] = marker
+    else:  # pragma: no cover - a typo in the parametrize list
+        raise AssertionError(where)
+
+
+_WALK_CASES = [
+    ("top", "w2.Root.s"),
+    ("submessage", "w2.Leaf.s"),
+    ("repeated", "w2.Root.rs"),
+    ("map-key", "w2.Root.MEntry.key"),
+    ("map-value", "w2.Root.MEntry.value"),
+    ("repeated-submessage", "w2.Leaf.s"),
+    ("map-message-value", "w2.Leaf.s"),
+    ("group", "w2.Root.G.s"),
+    ("extension", "w2.ext"),
+]
+
+
+class TestFirstUndecodableString:
+    @pytest.fixture(scope="class")
+    def walk_pool(self) -> descriptor_pool.DescriptorPool:
+        return _walk_pool()
+
+    def _root_class(self, walk_pool: descriptor_pool.DescriptorPool) -> type[Message]:
+        cls: type[Message] = message_factory.GetMessageClass(
+            walk_pool.FindMessageTypeByName("w2.Root"),
+        )
+        return cls
+
+    @skip_under_pure_python(
+        "premise holds only on upb: it parses a non-UTF-8 proto2 string and returns "
+        "bytes, while the pure-Python parser rejects it before any walk could run"
+    )
+    @pytest.mark.parametrize(("where", "field_name"), _WALK_CASES)
+    def test_finds_bytes_wherever_upb_left_them(
+        self, walk_pool: descriptor_pool.DescriptorPool, where: str, field_name: str,
+    ) -> None:
+        """upb hands the bytes back at every depth, so the walk must reach every depth."""
+        cls = self._root_class(walk_pool)
+        root = cls()
+        _populate(root, where, walk_pool.FindExtensionByName("w2.ext"))
+        wire = root.SerializeToString()
+        assert wire.count(_MARKER) == 1
+        parsed = cls.FromString(wire.replace(_MARKER, _BAD))
+
+        hit = first_undecodable_string(parsed)
+        assert hit is not None
+        field, value = hit
+        assert (field.full_name, value) == (field_name, _BAD)
+
+    @pytest.mark.parametrize("where", [case for case, _ in _WALK_CASES])
+    def test_a_clean_message_has_no_hit(
+        self, walk_pool: descriptor_pool.DescriptorPool, where: str,
+    ) -> None:
+        cls = self._root_class(walk_pool)
+        root = cls()
+        _populate(root, where, walk_pool.FindExtensionByName("w2.ext"))
+        assert first_undecodable_string(cls.FromString(root.SerializeToString())) is None
+
+    def test_a_proto3_message_has_no_hit(self, walk_pool: descriptor_pool.DescriptorPool) -> None:
+        """Both runtimes validate proto3 strings while parsing; nothing is left to find."""
+        cls: type[Message] = message_factory.GetMessageClass(
+            walk_pool.FindMessageTypeByName("w3.P3"),
+        )
+        msg = cls(s="ok")
+        msg.m["k"] = "v"
+        assert first_undecodable_string(cls.FromString(msg.SerializeToString())) is None
+
+    @skip_under_pure_python(
+        "premise holds only on upb: it skips validation for utf8_validation = NONE, "
+        "while the pure-Python parser validates every string"
+    )
+    def test_an_editions_string_without_validation_is_found(
+        self, walk_pool: descriptor_pool.DescriptorPool,
+    ) -> None:
+        cls: type[Message] = message_factory.GetMessageClass(
+            walk_pool.FindMessageTypeByName("w4.Unchecked"),
+        )
+        wire = cls(s=_MARKER.decode()).SerializeToString().replace(_MARKER, _BAD)
+        hit = first_undecodable_string(cls.FromString(wire))
+        assert hit is not None and hit[0].full_name == "w4.Unchecked.s"
+
+
+def _reach_pool() -> descriptor_pool.DescriptorPool:
+    """Types that can and cannot reach a string upb leaves unvalidated."""
+    pool = descriptor_pool.DescriptorPool()
+    r2 = descriptor_pb2.FileDescriptorProto(name="r2.proto", package="r2", syntax="proto2")
+    ints2 = r2.message_type.add(name="Ints2")
+    ints2.field.add(name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    ints2.field.add(
+        name="self", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".r2.Ints2",
+    )
+    r2.message_type.add(name="Str2").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    ranged = r2.message_type.add(name="Ranged2")
+    ranged.field.add(name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    ranged.extension_range.add(start=100, end=200)
+    pool.Add(r2)
+
+    r3 = descriptor_pb2.FileDescriptorProto(
+        name="r3.proto", package="r3", syntax="proto3", dependency=["r2.proto"],
+    )
+    plain = r3.message_type.add(name="Plain3")
+    plain.field.add(name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    _map_entry_type(plain, "MEntry", _FD.TYPE_STRING, _FD.TYPE_STRING)
+    plain.field.add(
+        name="m", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".r3.Plain3.MEntry",
+    )
+    plain.field.add(
+        name="self", number=3, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".r3.Plain3",
+    )
+    r3.message_type.add(name="Bridge3").field.add(
+        name="other", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".r2.Str2",
+    )
+    pool.Add(r3)
+
+    r4 = _editions_file("r4.proto", "r4")
+    r4.message_type.add(name="EdStr").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    r4.message_type.add(name="EdInts").field.add(
+        name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+    )
+    pool.Add(r4)
+    return pool
+
+
+class TestMayHoldUnvalidatedString:
+    """The per-type precompute behind KTD6's skip.
+
+    A seam may skip the walk only for a type where this is False, so a False
+    that should be True silently lets upb's bytes through. The cases below
+    name each way a type becomes reachable, and a control that is not.
+    """
+
+    @pytest.fixture(scope="class")
+    def reach_pool(self) -> descriptor_pool.DescriptorPool:
+        return _reach_pool()
+
+    @pytest.mark.parametrize(
+        ("full_name", "expected"),
+        [
+            pytest.param("r3.Plain3", False, id="proto3-strings-map-and-self-reference"),
+            pytest.param("r2.Ints2", False, id="proto2-without-strings-or-ranges"),
+            pytest.param("r4.EdInts", False, id="editions-without-strings"),
+            pytest.param("r2.Str2", True, id="proto2-string"),
+            pytest.param("r2.Ranged2", True, id="extension-range"),
+            pytest.param("r3.Bridge3", True, id="proto3-reaching-a-proto2-string"),
+            # Conservative: an editions string may set utf8_validation = NONE,
+            # and upb then returns bytes (see the walk's editions case).
+            pytest.param("r4.EdStr", True, id="editions-string"),
+        ],
+    )
+    def test_reachability(
+        self, reach_pool: descriptor_pool.DescriptorPool, full_name: str, expected: bool,
+    ) -> None:
+        desc = reach_pool.FindMessageTypeByName(full_name)
+        assert may_hold_unvalidated_string(desc) is expected

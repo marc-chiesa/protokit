@@ -22,7 +22,7 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
-from protokit._fieldview import FieldView
+from protokit._fieldview import FieldView, extension_key
 from protokit._fieldview import field_present as _fieldview_field_present
 from protokit._fieldview import field_value as _fieldview_field_value
 from protokit.message._presence import PresenceVerdict, presence_verdict
@@ -84,17 +84,8 @@ _field_value: Callable[[Message, proto_descriptor.FieldDescriptor], Any] = (
     _fieldview_field_value
 )
 _field_present = _fieldview_field_present
-
-
-def _extension_key(fd: proto_descriptor.FieldDescriptor) -> str:
-    """Display key for an extension: ``(pkg.ext)``.
-
-    Parenthesised and fully qualified — the spelling proto uses for custom
-    options (text format spells an extension ``[pkg.ext]``, but brackets are
-    the path grammar's index syntax) — so an extension can never be confused
-    with, or shadowed by, a declared field of the same short name.
-    """
-    return f"({fd.full_name})"
+# The ``(pkg.ext)`` spelling lives in the seam so the schema checker can share it.
+_extension_key = extension_key
 
 
 def _fold_in_extensions(
