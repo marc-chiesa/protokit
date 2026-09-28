@@ -889,10 +889,13 @@ communication contract.
 `lint`. A green exit now means the analysis ran: when a command
 could not finish what it was asked to do, it says so and exits
 **2**. Exit **1** keeps its meaning: the tool ran and found
-something. Every command's exit gate and every built-in renderer
-that states a success verdict now ask the same predicate whether
-the run completed, so the exit code and the rendered verdict agree
-on it.
+something. Every command's exit gate, and every built-in
+`--format` renderer of `diff`, `compat` and `lint` that states a
+success verdict, now ask the same predicate whether the run
+completed, so for those commands the exit code and the rendered
+verdict agree. `forensics match` is the exception: its ranking
+verdict can read `clean match` on a run that exits 2 because
+another candidate could not be measured.
 
 **There is no opt-out.** No flag, environment variable or config
 key restores the old exit codes. A switch that brought back a
@@ -908,10 +911,11 @@ full list, including the Python API changes, is the upgrade table
 at the top of the 0.16.0 entry in `CHANGELOG.md`.
 
 1. **`storage scan|head|count` under `--on-error skip` or `warn`.**
-   A file with any record that does not parse now exits 2
-   (`Error: N record(s) were not read`) instead of 0. The records
-   that did parse still reach stdout, and `--on-error warn` names
-   each fault on stderr. `--on-error raise`, the default, is
+   A scan that reaches a record that does not parse now exits 2
+   (`Error: N record(s) were not read`) instead of 0, or instead
+   of 1 for `count --quiet` with no match. The records that did
+   parse still reach stdout, and `--on-error warn` names each
+   fault on stderr. `--on-error raise`, the default, is
    unchanged.
 2. **`compat history` / `bisect` over a renamed `.proto`.** A
    `--proto-file` that does not exist at the range's NEW endpoint
@@ -920,19 +924,23 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    renamed in-repo passed forever. Update the path.
 3. **`diff --max-depth` in CI.** A comparison the depth limit cuts
    short now exits 2 whether or not the cut hid a difference: 0
-   became 2 when it hid every difference, and 1 became 2 when some
-   stayed visible, since those are a lower bound. A limit above the
+   became 2 whenever nothing above the cut differed, identical
+   messages included, and 1 became 2 when differences stayed
+   visible, since those are a lower bound. A limit above the
    deepest path you compare is unaffected.
 4. **`lint --exclude` in a per-directory matrix.** A pattern that
-   excludes every input named on the command line now exits 2
+   excludes every file to be linted (for a descriptor set, every
+   `.proto` name recorded in it) now exits 2
    (`error[lint-analysis-incomplete]`) instead of 0 having linted
    nothing. A pattern that leaves one file standing is unaffected.
-5. **Rule packs.** A lint rule declaring `profiles="name"` as a
-   single string now fails to load (`error[lint-rule-pack-load]`,
-   exit 2); pass `profiles=("name",)`. A compat rule pack that calls
-   `sys.exit()` now exits 2 instead of passing its own code through,
-   and one whose `RULES` raises while being read exits 2 instead of
-   a traceback and 1.
+5. **Rule packs.** A lint rule declaring `profiles` as a single
+   string or a mapping now fails to load
+   (`error[lint-rule-pack-load]`, exit 2); pass a tuple such as
+   `profiles=("name",)`. A compat rule pack that calls
+   `sys.exit()` now exits 2 instead of passing its own code
+   through, and one whose `RULES` raises while being read, or
+   that raises `KeyboardInterrupt` at import, exits 2 instead of
+   1.
 6. **`diff` over proto2 messages with extensions.** Differences in
    declared extensions are now reported, so such a run can exit 1
    where it exited 0. Suppress one extension with
@@ -957,6 +965,11 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    pure-Python runtime, a message nested too deep or carrying a
    non-UTF-8 string now fails to decode that way instead of
    crashing with exit 1.
+9. **Descriptor sets with a non-UTF-8 file name.** Under upb,
+   `diff`, `storage` and `forensics` used to accept such a set;
+   they now reject it with exit 2, as `lint` does (it used to
+   crash with exit 1). The pure-Python runtime already rejected
+   it.
 
 **Machine-readable output.** Consumers of the report rather than
 the exit code see the same correction:

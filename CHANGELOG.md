@@ -39,22 +39,22 @@ All notable changes to `protokit` are documented here. Format loosely follows
 >
 > | Change | What starts happening |
 > |---|---|
-> | `storage scan\|head\|count --on-error skip\|warn` over a record that does not parse | exits 2 instead of 0; the records that did parse still reach stdout |
+> | `storage scan\|head\|count --on-error skip\|warn` when a record the scan reaches does not parse | exits 2 instead of 0 (for `count --quiet` with no match, instead of 1); the records that did parse still reach stdout |
 > | `compat history\|bisect --proto-file` naming a file absent at the range's NEW endpoint | exits 2 before the walk instead of 0 with `no commits touch …` |
-> | `compat` with a rule pack that calls `sys.exit()`, at import or from a rule | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`) |
-> | `diff --max-depth` where the cut hides every difference | exits 2 (`INCOMPLETE`) instead of 0 with `Messages are equal.` |
+> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, or from a rule | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`) |
+> | `diff --max-depth` where the limit cuts the comparison short and nothing above the cut differs, identical messages nested deeper than the limit included | exits 2 (`INCOMPLETE`) instead of 0 with `Messages are equal.` |
 > | `lint --exclude` matching every input | exits 2 (`error[lint-analysis-incomplete]`) instead of 0 having linted nothing |
-> | `lint --rule-pack` whose rules declare `profiles="name"` (a string) | exits 2 (`error[lint-rule-pack-load]`) instead of loading the pack and matching profile names as substrings; pass `profiles=("name",)` |
+> | `lint --rule-pack` whose rules declare `profiles` as a single string or a mapping | exits 2 (`error[lint-rule-pack-load]`) instead of loading the pack (a string used to match profile names as substrings); pass a tuple such as `profiles=("name",)` |
 > | `forensics match` with a candidate it cannot measure (a proto2 `required` field absent) | exits 2 after rendering the ranking, instead of 0. A candidate the message merely fails to decode under is still ranked last, and exits 0 as long as another candidate parses |
 > | *(pure-Python)* `lint` over a descriptor set with a missing import | exits 2 (`error[lint-missing-imports]`) instead of 0, as upb already did |
 > | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
-> | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of a traceback and 1 (INCOMPATIBLE). Any other exception at import already exited 2 |
+> | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
 > | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
 > | `diff --ignore`, `--treat-as-map` or `--filter` with a value the path grammar rejects | exits 2 with an `Error:` line instead of a traceback and 1 |
 > | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime cannot build or parse (an unreadable field default, an out-of-range `public_dependency` or `oneof_index`, a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1 |
-> | `lint` over a descriptor set with a non-UTF-8 file name, under upb | exits 2 (`error[lint-bad-input]`) instead of a traceback and 1 |
-> | *(pure-Python)* `compat`, `forensics match` / `drift` over a schema loaded from a descriptor set or `.proto` | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
+> | a descriptor set with a non-UTF-8 file name, under upb | `lint` exits 2 (`error[lint-bad-input]`) instead of a traceback and 1; `diff`, `storage` and `forensics`, which used to accept the set, now reject it with exit 2. The pure-Python runtime already rejected such a set |
+> | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
 > | *(pure-Python)* a message payload nested too deep, or carrying a non-UTF-8 proto3 string | `diff` exits 2 on deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1 |
 > | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
 > | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
@@ -62,8 +62,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint --format junit` for a run where a rule raised or was never loaded | one `analysis-incomplete` `<error>` testcase per rule instead of a passing `clean` testcase |
 > | `compat history --format junit` for a walk error no commit entry carries | a trailing `…-walk` suite with an `<error>` testcase, instead of dropping the error. The exit code was already 2 |
 > | `diff --format junit` for a truncated comparison | an `<error>` testcase, and no `messages-equal` testcase, instead of a passing suite |
-> | human output of `compat`, `history`, `bisect`, `diff` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.` |
-> | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record, or a value that is not a collection at all (`None`, a number) | raises `TypeError` naming the field, instead of being split into characters or keys, or stored as given |
+> | human output of `compat`, `history`, `bisect`, `diff` and `lint` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`; `lint`, which printed nothing, prints an `INCOMPLETE:` block. The exit codes were already 2 |
+> | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record, or a value that is not a collection at all (`None`, a number) | raises `TypeError` naming the field, instead of being split into characters or keys, or, in most records, stored as given |
 > | *(API)* a list of key/value pairs for `LintFinding.params`, `LintProfile.rule_severity_overrides`, or the multi-kind `LintRuleSpec.severity` / `message_template` | raises `TypeError`; pass a dict |
 > | *(API)* `Diagnostic`, `CommitDiagnostic` or `LintCompileDiagnostic` with a `level` other than `"info"`, `"warning"` or `"error"`; a `BisectReport` with only one of `breaking_commit` / `breaking_findings` | raises `ValueError` |
 > | *(API)* appending to a collection field after construction (`report.findings.append(…)`) | raises `AttributeError`: the field is a tuple, not the caller's list |
