@@ -16,6 +16,11 @@ Python toolkit for Protocol Buffers — four pillars: message diffing, schema co
 pip install protokit
 ```
 
+Upgrading from 0.15.x? Read the
+[0.16.0 upgrade notes](#upgrade-notes-015x--0160) first: several
+commands that exited 0 on a run that did not complete now exit 2,
+and there is no opt-out.
+
 ## Message Diffing
 
 ### Library
@@ -131,7 +136,7 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 echo $?  # 0 = equal, 1 = different, 2 = error
 # An error-level diagnostic (a hook or plugin raised) is 2 in EVERY format,
 # even when no differences were found: the comparison is not trustworthy,
-# so there is no verdict to report.
+# so there is no verdict to report. So is a comparison --max-depth cut short.
 ```
 
 ### pytest Integration
@@ -220,7 +225,7 @@ assert not result.is_complete  # truncated subtrees exist
 | `--ignore FIELD` | Ignore field. Repeatable. A bare name applies everywhere, a dotted path to one location; a proto2 extension is written as the differ reports it, `(pkg.ext)`. |
 | `--treat-as-map FIELD KEY` | Treat repeated field as map with key |
 | `--float-mode exact\|approximate` | Float comparison mode |
-| `--max-depth N` | Maximum comparison depth. Must be non-negative; a negative value is a usage error (exit 2). |
+| `--max-depth N` | Maximum comparison depth. Must be non-negative; a negative value is a usage error (exit 2). A comparison the limit cuts short exits 2 (0.16.0+), even when it reported differences before the cut. |
 | `--strict-schema` | Warn on message type name changes |
 
 ## Schema Compatibility
@@ -878,6 +883,124 @@ Literal values (`"contradictory_disable_config"` +
 bumps `0.6.0` → `0.7.0` independently per the version-bump
 communication contract.
 
+### Upgrade notes (0.15.x → 0.16.0)
+
+0.16.0 is a correctness release across every command, not only
+`lint`. A green exit now means the analysis ran: when a command
+could not finish what it was asked to do, it says so and exits
+**2**. Exit **1** keeps its meaning: the tool ran and found
+something. Every command's exit gate, and every built-in
+`--format` renderer of `diff`, `compat` and `lint` that states a
+success verdict, now ask the same predicate whether the run
+completed, so for those commands the exit code and the rendered
+verdict agree. `forensics match` is the exception: its ranking
+verdict can read `clean match` on a run that exits 2 because
+another candidate could not be measured.
+
+**There is no opt-out.** No flag, environment variable or config
+key restores the old exit codes. A switch that brought back a
+silent fail-open would be a supported way to keep shipping breaks,
+and it would outlive the release that introduced it. Each run that
+starts failing is one where protokit did not analyse what it was
+asked to, and the exit code was the last surface still saying
+otherwise.
+
+**Pre-upgrade checklist.** These are the changes most likely to
+turn an existing pipeline red, in rough order of likelihood. The
+full list, including the Python API changes, is the upgrade table
+at the top of the 0.16.0 entry in `CHANGELOG.md`.
+
+1. **`storage scan|head|count` under `--on-error skip` or `warn`.**
+   A scan that reaches a record that does not parse now exits 2
+   (`Error: N record(s) were not read`) instead of 0, or instead
+   of 1 for `count --quiet` with no match. The records that did
+   parse still reach stdout, and `--on-error warn` names each
+   fault on stderr. `--on-error raise`, the default, is
+   unchanged.
+2. **`compat history` / `bisect` over a renamed `.proto`.** A
+   `--proto-file` that does not exist at the range's NEW endpoint
+   now exits 2 before the walk. It used to exit 0 with
+   `no commits touch …`, so a checked-in invocation over a file
+   renamed in-repo passed forever. Update the path.
+3. **`diff --max-depth` in CI.** A comparison the depth limit cuts
+   short now exits 2 whether or not the cut hid a difference: 0
+   became 2 whenever nothing above the cut differed, identical
+   messages included, and 1 became 2 when differences stayed
+   visible, since those are a lower bound. A limit above the
+   deepest path you compare is unaffected.
+4. **`lint --exclude` in a per-directory matrix.** A pattern that
+   excludes every file to be linted (for a descriptor set, every
+   `.proto` name recorded in it) now exits 2
+   (`error[lint-analysis-incomplete]`) instead of 0 having linted
+   nothing. A pattern that leaves one file standing is unaffected.
+5. **Rule packs.** A lint rule declaring `profiles` as a single
+   string or a mapping now fails to load
+   (`error[lint-rule-pack-load]`, exit 2); pass a tuple such as
+   `profiles=("name",)`. A compat rule pack that calls
+   `sys.exit()` now exits 2 instead of passing its own code
+   through, and one whose `RULES` raises while being read, or
+   that raises `KeyboardInterrupt` at import, exits 2 instead of
+   1.
+6. **`diff` over proto2 messages with extensions.** Differences in
+   declared extensions are now reported, so such a run can exit 1
+   where it exited 0. Suppress one extension with
+   `--ignore '(pkg.ext)'`.
+7. **Gates that tell exit 1 from exit 2.** Several crashes that
+   surfaced as a traceback and exit 1 now exit 2 with an error
+   message: no `git` on `PATH` for `compat check --since`,
+   `ci --base` and `bisect`; a `diff` selector the path grammar
+   rejects; a descriptor set with a non-UTF-8 file name under upb;
+   and, under the pure-Python protobuf runtime, a descriptor set it
+   cannot build or parse, or a message nested too deep (or, for
+   `storage`, one carrying a non-UTF-8 string). Under that runtime
+   `compat` and `forensics` no longer crash on any schema loaded
+   from a descriptor set or `.proto`, so their exit code is now the
+   check's own. A gate that
+   read these exits as findings was misreading a crash.
+8. **`forensics match`.** A candidate it cannot measure (a proto2
+   message missing a `required` field) now exits 2 after rendering
+   the ranking. A candidate the message fails to decode under is
+   still ranked last, and the run exits 0 as long as another
+   candidate parses (2 when none does, as before). Under the
+   pure-Python runtime, a message nested too deep or carrying a
+   non-UTF-8 string now fails to decode that way instead of
+   crashing with exit 1.
+9. **Descriptor sets the other runtime would refuse.** Every
+   command now loads a descriptor set the same way on both
+   protobuf runtimes. Under upb, a set containing a string that
+   is not UTF-8 (a file name, a comment) is now refused with
+   exit 2 where it was accepted. Under the pure-Python runtime, a
+   set with a missing import or a type reference that resolves
+   nowhere, even in a file the command does not use, is now
+   refused with exit 2 as upb always did.
+
+**Machine-readable output.** Consumers of the report rather than
+the exit code see the same correction:
+
+- `diff --format json`: `schema_version` is `"0.2"`. `equal` is
+  `false` for a truncated comparison or one carrying an error
+  diagnostic, and the payload gains `complete`, `truncated_paths`
+  and a per-difference `annotations` list.
+- `compat --format json`: `compatible` is `false` for a check that
+  found nothing but raised an error diagnostic, and every compat
+  payload gains `complete`.
+- `lint --format json` and SARIF: the wire version is `"0.7"`.
+  SARIF's `executionSuccessful` is `false` when a rule raised or was
+  never loaded, and JUnit reports one `analysis-incomplete` error
+  per such rule instead of a passing `clean` testcase.
+- Human output prints `INCOMPLETE` and its reasons, not
+  `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`, for
+  a run that did not complete.
+
+**Python API.** A public frozen record now owns its collections:
+a `str`, `bytes` or mapping where a collection belongs raises
+`TypeError`, a field handed a list is stored as a tuple, and an
+unknown diagnostic `level` raises `ValueError`. See the 0.16.0
+entry in `CHANGELOG.md` for every constructor affected.
+
+To stay on the previous behaviour while you check, pin the minor
+version: `pip install 'protokit~=0.15.1'`.
+
 ### Custom annotation rules
 
 Declare option-aware annotation requirements in `pyproject.toml`
@@ -1235,7 +1358,7 @@ accumulation.
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with the deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
 | CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--disable-rule` (0.7.0+), `--enable-rule` (0.7.0+), `--version` | IN |
-| Exit codes | 0 (clean), 1 (findings exceeded threshold), 2 (configuration/setup error, or — 0.15.1+ — an incomplete analysis: a rule raised or a profile-named rule never loaded) | IN |
+| Exit codes | 0 (a clean run that completed), 1 (findings exceeded threshold), 2 (a configuration, setup or input error, or an incomplete analysis, reported as `error[lint-analysis-incomplete]:`). An incomplete analysis has exited 2 since 0.15.1 (a rule raised, or a profile-named rule never loaded) and, since 0.16.0, includes a run whose `--exclude` patterns dropped every input. The runtime-warning categories that count as incomplete are owned by `protokit._trust` | IN |
 | Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+), `analysis-incomplete` (0.15.1+) (full set in `_LINT_ERROR_CODES`) | IN |
 | Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
@@ -1742,10 +1865,13 @@ faithful view: no-presence fields appear at their default; presence-bearing
 fields are null when unset.
 
 **Exit codes:** `0` success, `2` error (a bad flag, an unresolved schema, a
-malformed `--where`, or a data fault under `--on-error raise`). `count --quiet`
+malformed `--where`, or a data fault under `--on-error raise`). Since 0.16.0 a
+scan that dropped any record under `--on-error skip` or `warn` also exits `2`:
+the records that parsed still reach stdout, but the scan did not read the whole
+file. `count --quiet`
 adds the grep-like signal — `1` when zero records match, `0` otherwise
 (mirroring `diff --quiet`); a bare `count` always prints the number (including
-`0`) and exits `0`.
+`0`) and exits `0`, unless the scan dropped records (above).
 
 Cross-channel correlation (one `scan` over multiple related streams) is a
 library capability — register several streams and read `record.stream_id` — and

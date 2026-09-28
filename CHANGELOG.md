@@ -15,6 +15,96 @@ All notable changes to `protokit` are documented here. Format loosely follows
 
 ## Unreleased
 
+> **Upgrade note (0.15.x → 0.16.0).** This release makes a green exit mean the
+> analysis ran. The table lists every change that can alter what a pipeline
+> sees on upgrade **without any schema or code change on your side**: an exit
+> code that moves, a machine-readable verdict that flips, a wire version that
+> bumps, or a Python constructor that starts raising. In each case the old
+> behaviour was a wrong answer given quietly, or a crash reported under the
+> exit code that means "findings".
+>
+> Unlike the 0.15.0 table, this one also lists exit 1 → exit 2 moves. `lint`
+> and `diff` document exit 1 as "the tool ran and found something", and
+> `compat` as INCOMPATIBLE, so a gate that tells 1 from 2 read each of these
+> crashes as a finding. Rows marked *(API)* affect only direct Python callers;
+> rows marked *(pure-Python)* apply only under
+> `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`.
+>
+> **There is no opt-out.** No flag, environment variable or config key
+> restores the old behaviour. A switch that brought back a silent fail-open
+> would be a supported way to keep shipping breaks, and it would outlive the
+> release that introduced it. The README's
+> [upgrade notes](README.md#upgrade-notes-015x--0160) say what to check
+> before upgrading.
+>
+> | Change | What starts happening |
+> |---|---|
+> | `storage scan\|head\|count --on-error skip\|warn` when a record the scan reaches does not parse | exits 2 instead of 0 (for `count --quiet` with no match, instead of 1); the records that did parse still reach stdout |
+> | `compat history\|bisect --proto-file` naming a file absent at the range's NEW endpoint | exits 2 before the walk instead of 0 with `no commits touch …` |
+> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, or from a rule | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`) |
+> | `diff --max-depth` where the limit cuts the comparison short and nothing above the cut differs, identical messages nested deeper than the limit included | exits 2 (`INCOMPLETE`) instead of 0 with `Messages are equal.` |
+> | `lint --exclude` matching every input | exits 2 (`error[lint-analysis-incomplete]`) instead of 0 having linted nothing |
+> | `lint --rule-pack` whose rules declare `profiles` as a single string or a mapping | exits 2 (`error[lint-rule-pack-load]`) instead of loading the pack (a string used to match profile names as substrings); pass a tuple such as `profiles=("name",)` |
+> | `forensics match` with a candidate it cannot measure (a proto2 `required` field absent) | exits 2 after rendering the ranking, instead of 0. A candidate the message merely fails to decode under is still ranked last, and exits 0 as long as another candidate parses |
+> | *(pure-Python)* a descriptor set upb refuses to build: a missing import, or a type reference that resolves nowhere, even in a file the command does not use | exits 2, as upb already did: `lint` (`error[lint-missing-imports]`), `diff`, `storage` and `forensics` instead of 0, `compat` instead of a traceback and 1 |
+> | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
+> | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
+> | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
+> | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
+> | `diff --ignore`, `--treat-as-map` or `--filter` with a value the path grammar rejects | exits 2 with an `Error:` line instead of a traceback and 1 |
+> | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime cannot build or parse (an unreadable field default, an out-of-range `public_dependency` or `oneof_index`, a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1 |
+> | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set |
+> | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
+> | *(pure-Python)* a message payload nested too deep, or carrying a non-UTF-8 proto3 string | `diff` exits 2 on deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1 |
+> | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
+> | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
+> | `lint --format json` / `--format sarif` | `schema_version` / `lint_schema_version` `"0.6"` → `"0.7"`; SARIF `executionSuccessful` is `false` for a run where a rule raised or was never loaded, instead of `true` |
+> | `lint --format junit` for a run where a rule raised or was never loaded | one `analysis-incomplete` `<error>` testcase per rule instead of a passing `clean` testcase |
+> | `compat history --format junit` for a walk error no commit entry carries | a trailing `…-walk` suite with an `<error>` testcase, instead of dropping the error. The exit code was already 2 |
+> | `diff --format junit` for a truncated comparison | an `<error>` testcase, and no `messages-equal` testcase, instead of a passing suite |
+> | human output of `compat`, `history`, `bisect`, `diff` and `lint` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`; `lint`, which printed nothing, prints an `INCOMPLETE:` block. The exit codes were already 2, except for the `diff --max-depth` cases in the rows above |
+> | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record, or a value that is not a collection at all (`None`, a number) | raises `TypeError` naming the field, instead of being split into characters or keys, or, in most records, stored as given |
+> | *(API)* a list of key/value pairs for `LintFinding.params`, `LintProfile.rule_severity_overrides`, or the multi-kind `LintRuleSpec.severity` / `message_template` | raises `TypeError`; pass a dict |
+> | *(API)* `Diagnostic`, `CommitDiagnostic` or `LintCompileDiagnostic` with a `level` other than `"info"`, `"warning"` or `"error"`; a `BisectReport` with only one of `breaking_commit` / `breaking_findings` | raises `ValueError` |
+> | *(API)* appending to a collection field after construction (`report.findings.append(…)`) | raises `AttributeError`: the field is a tuple, not the caller's list |
+> | *(API)* `get_option_value` on a schema loaded from a descriptor set | returns the option's value where it returned `None`; an option whose bytes do not parse raises `DecodeError` |
+> | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta of `0` |
+
+### Security
+
+- **A crashed lint rule no longer reads as a pass in JUnit or SARIF, and
+  `lint --exclude` can no longer turn the gate off.** *This continues the
+  0.15.1 `Security` entry (audit findings V31 and V33) and has the same
+  provenance: an internal audit, not a user report. No exploitation is known,
+  and no advisory is published, for the reasons given there.* 0.15.1 closed V31
+  at `SchemaChecker.ignore`, which every entry path reaches, and that fix
+  stands. It closed V33 at the `lint` exit code only, and two surfaces of the
+  same failure stayed open:
+
+  - **The report of a crashed-rule run still said it passed.** Under 0.15.1,
+    `lint` exited 2 when a rule raised, but `--format junit` emitted a suite
+    with `failures="0" errors="0"` and a passing `clean` testcase, and
+    `--format sarif` emitted `"executionSuccessful": true`. A CI dashboard or
+    code-scanning upload that reads the report rather than the exit code still
+    showed green. Both formats now report the failure (U7, below).
+  - **`lint --exclude` matching every input exited 0 having linted nothing.**
+    0.15.1 listed this as a known residual. It now exits 2 with
+    `error[lint-analysis-incomplete]` (U8, below).
+
+  The fix no longer lives at each call site. Every command's exit gate, and
+  every built-in renderer that states a success verdict, consults one
+  predicate, `protokit._trust`, and a guard test fails when a command's code
+  never consults it. The other commands that exited 0 on an incomplete run are
+  listed under U8 and in the upgrade table above.
+
+  *Still open.* Two lint runtime-warning categories that also mean a rule did
+  not run, `extension_unresolved` and `custom_annotation_extension_unresolved`,
+  do not gate the exit code; the first fires on nearly every run whose inputs
+  lack `google/api/field_behavior.proto`, and gating it waits on a rule
+  redesign. A rule pack runs in-process, so a pack that calls `os._exit`
+  still ends the process with its own exit code; no Python-level guard can
+  see it.
+
 ### Fixed — BREAKING (U3: comparison completeness)
 
 - **The differ now reports differences in declared proto2 extensions.**
@@ -417,7 +507,8 @@ backend-neutral rather than merely fixed (KTD6).
 - **A message the pure-Python runtime cannot parse is a decode failure, not a
   crash.** A proto3 string that is not UTF-8 raises `UnicodeDecodeError` there,
   and very deep nesting raises `RecursionError`, where upb raises
-  `DecodeError` for both. `protokit diff` crashed on such an input,
+  `DecodeError` for both. `protokit diff` crashed on the deep nesting (a
+  non-UTF-8 string already reached its parse error and exited 2),
   `protokit forensics match` crashed instead of ranking the candidate as
   `decode_error`, and `protokit storage` let the exception escape past
   `--on-error`. All three now treat it exactly as a `DecodeError`.

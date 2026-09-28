@@ -55,7 +55,7 @@ Once the fixture helpers were honest (PR #57; see the sibling learning
 full suite under pure-Python still failed about 176 tests, almost all on one
 product defect the later unit U3 owns (V34: `Descriptor.CopyToProto` on a
 pool-built descriptor raises `google.protobuf.descriptor.Error` on that backend;
-`CHANGELOG.md:26-30`). Two obvious ways to land the cell did not work:
+the V34 bullet under "Fixed — pure-Python protobuf runtime" in `CHANGELOG.md`). Two obvious ways to land the cell did not work:
 
 - **Per-test source markers.** A `@pytest.mark.xfail(..., raises=...)`
   conditional on the backend would have to be written ~176 times, and the

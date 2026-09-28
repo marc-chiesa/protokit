@@ -1,0 +1,168 @@
+"""Presence ratchet for the 0.15.x → 0.16.0 upgrade notes.
+
+0.16.0 moves many CLI paths to exit 2 and deliberately ships no switch to
+restore the old codes. The notes that say so are what stand between a user and
+a pipeline that turns red with no explanation, so this pins that they exist:
+the README section, the CHANGELOG upgrade note, the header row of the
+CHANGELOG upgrade table, the CHANGELOG ``### Security`` entry for the
+release, and the explicit no-opt-out statement in both files.
+
+This is a presence check, not a shape contract. Each test pins one short phrase
+or one heading line; the prose around it may be rewritten freely. The CHANGELOG
+checks are scoped to the ``## `` section that carries the 0.16.0 upgrade note,
+so the 0.15.1 ``### Security`` heading or its "no opt-out flag" wording cannot
+satisfy them. They key on the upgrade note, not on the ``## Unreleased``
+heading, so renaming that heading at the release cut does not break them.
+
+The last test checks that every link in README.md and CHANGELOG.md to an
+``#upgrade-notes-…`` anchor resolves to a README heading, since a heading with
+an arrow and dots in it has a slug that is easy to get wrong by hand, and a
+bare ``#upgrade-notes-…`` link only resolves on GitHub when it lives in
+README.md itself — the same fragment inside CHANGELOG.md resolves against
+CHANGELOG.md's own (nonexistent) headings instead.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+README_PATH = REPO_ROOT / "README.md"
+CHANGELOG_PATH = REPO_ROOT / "CHANGELOG.md"
+
+_README_HEADING = re.compile(
+    r"^### Upgrade notes \(0\.15\.x → 0\.16\.0\)$", flags=re.MULTILINE,
+)
+_CHANGELOG_NOTE = re.compile(
+    r"^> \*\*Upgrade note \(0\.15\.x → 0\.16\.0\)\.\*\*", flags=re.MULTILINE,
+)
+_NO_OPT_OUT = "There is no opt-out."
+_UPGRADE_TABLE_HEADER = "> | Change | What starts happening |"
+
+_UPDATE_PATH = (
+    "Restore it if the change was accidental. If the notes were deliberately "
+    "reworded, update the pattern in tests/meta/"
+    "test_upgrade_notes_presence_ratchet.py to the new wording, keeping the "
+    "explicit no-opt-out declaration: leaving the absence of an escape hatch "
+    "unexplained is the thing this ratchet exists to prevent."
+)
+_README_HEADING_MISSING = (
+    f"README.md has no `### Upgrade notes (0.15.x → 0.16.0)` heading. {_UPDATE_PATH}"
+)
+_CHANGELOG_NOTE_MISSING = (
+    f"CHANGELOG.md has no `> **Upgrade note (0.15.x → 0.16.0).**` block. {_UPDATE_PATH}"
+)
+_UPGRADE_TABLE_MISSING = (
+    "The CHANGELOG section carrying the 0.16.0 upgrade note has no "
+    f"`{_UPGRADE_TABLE_HEADER}` table header row. {_UPDATE_PATH}"
+)
+
+
+def _readme_section() -> str:
+    """The README text from the 0.16.0 heading to the next ``#``-heading."""
+    body = README_PATH.read_text(encoding="utf-8")
+    match = _README_HEADING.search(body)
+    assert match, _README_HEADING_MISSING
+    rest = body[match.end():]
+    end = re.search(r"^#{1,3} ", rest, flags=re.MULTILINE)
+    return rest[: end.start()] if end else rest
+
+
+def _changelog_release_section() -> str:
+    """The CHANGELOG ``## `` section that carries the 0.16.0 upgrade note."""
+    body = CHANGELOG_PATH.read_text(encoding="utf-8")
+    for section in re.split(r"^(?=## )", body, flags=re.MULTILINE):
+        if _CHANGELOG_NOTE.search(section):
+            return section
+    raise AssertionError(_CHANGELOG_NOTE_MISSING)
+
+
+def test_readme_has_the_upgrade_notes_heading() -> None:
+    assert _README_HEADING.search(README_PATH.read_text(encoding="utf-8")), (
+        _README_HEADING_MISSING
+    )
+
+
+def test_changelog_has_the_upgrade_note() -> None:
+    assert _CHANGELOG_NOTE.search(CHANGELOG_PATH.read_text(encoding="utf-8")), (
+        _CHANGELOG_NOTE_MISSING
+    )
+
+
+def test_readme_notes_declare_no_opt_out() -> None:
+    assert _NO_OPT_OUT in _readme_section(), (
+        f"README's 0.16.0 upgrade notes no longer say {_NO_OPT_OUT!r}. {_UPDATE_PATH}"
+    )
+
+
+def test_changelog_release_has_a_security_heading() -> None:
+    assert re.search(r"^### Security$", _changelog_release_section(), flags=re.MULTILINE), (
+        "The CHANGELOG section carrying the 0.16.0 upgrade note has no "
+        f"`### Security` heading for the V31/V33 follow-through. {_UPDATE_PATH}"
+    )
+
+
+def test_changelog_note_declares_no_opt_out() -> None:
+    assert _NO_OPT_OUT in _changelog_release_section(), (
+        f"The 0.16.0 CHANGELOG section no longer says {_NO_OPT_OUT!r}. {_UPDATE_PATH}"
+    )
+
+
+def test_changelog_note_has_the_upgrade_table() -> None:
+    assert _UPGRADE_TABLE_HEADER in _changelog_release_section(), _UPGRADE_TABLE_MISSING
+
+
+def _github_slug(heading: str) -> str:
+    """GitHub's heading anchor: lowercase, drop punctuation, spaces to hyphens."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def _upgrade_note_links() -> list[tuple[str, str, str]]:
+    """Every ``(file name, link destination, anchor)`` to an ``#upgrade-notes-…`` anchor.
+
+    ``destination`` is the part of the link before the ``#``: either empty
+    (a same-file anchor) or ``"README.md"``. GitHub resolves an empty
+    destination against the file the link itself lives in, so a bare
+    ``#upgrade-notes-…`` link only reaches the README heading when it is
+    written inside README.md.
+    """
+    return [
+        (path.name, dest, fragment)
+        for path in (README_PATH, CHANGELOG_PATH)
+        for dest, fragment in re.findall(
+            r"\]\((README\.md)?#(upgrade-notes-[^)]*)\)",
+            path.read_text(encoding="utf-8"),
+        )
+    ]
+
+
+def test_upgrade_note_links_exist() -> None:
+    """README's Installation pointer and the CHANGELOG note each link the notes."""
+    linking = {name for name, _, _ in _upgrade_note_links()}
+    assert linking == {README_PATH.name, CHANGELOG_PATH.name}, (
+        f"only {sorted(linking)} link to the 0.16.0 upgrade notes; README's "
+        "Installation pointer and the CHANGELOG upgrade note should both. "
+        + _UPDATE_PATH
+    )
+
+
+def test_upgrade_note_links_resolve_to_a_readme_heading() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    slugs = {
+        _github_slug(m.group(1))
+        for m in re.finditer(r"^#{1,6} (.+)$", readme, flags=re.MULTILINE)
+    }
+    broken = [
+        (name, dest, fragment)
+        for name, dest, fragment in _upgrade_note_links()
+        if not (
+            (dest == "README.md" or (dest == "" and name == README_PATH.name))
+            and fragment in slugs
+        )
+    ]
+    assert not broken, (
+        "links that do not resolve to a README heading (a bare "
+        "`#upgrade-notes-…` link only resolves against README.md when it "
+        f"lives in README.md itself): {broken}"
+    )
