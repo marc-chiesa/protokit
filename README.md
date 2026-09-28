@@ -889,10 +889,10 @@ communication contract.
 `lint`. A green exit now means the analysis ran: when a command
 could not finish what it was asked to do, it says so and exits
 **2**. Exit **1** keeps its meaning: the tool ran and found
-something. Every exit decision and every built-in renderer that
-states a success verdict now asks one predicate whether the run
-completed, so a command's exit code and its own report cannot
-disagree.
+something. Every command's exit gate and every built-in renderer
+that states a success verdict now ask the same predicate whether
+the run completed, so the exit code and the rendered verdict agree
+on it.
 
 **There is no opt-out.** No flag, environment variable or config
 key restores the old exit codes. A switch that brought back a
@@ -930,8 +930,9 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
 5. **Rule packs.** A lint rule declaring `profiles="name"` as a
    single string now fails to load (`error[lint-rule-pack-load]`,
    exit 2); pass `profiles=("name",)`. A compat rule pack that calls
-   `sys.exit()`, or raises at import, now exits 2 instead of passing
-   its own code, or 1, through.
+   `sys.exit()` now exits 2 instead of passing its own code through,
+   and one whose `RULES` raises while being read exits 2 instead of
+   a traceback and 1.
 6. **`diff` over proto2 messages with extensions.** Differences in
    declared extensions are now reported, so such a run can exit 1
    where it exited 0. Suppress one extension with
@@ -943,7 +944,10 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    rejects; a descriptor set with a non-UTF-8 file name under upb;
    and, under the pure-Python protobuf runtime, a descriptor set it
    cannot build or parse, or a message nested too deep (or, for
-   `storage`, one carrying a non-UTF-8 string). A gate that
+   `storage`, one carrying a non-UTF-8 string). Under that runtime
+   `compat` and `forensics` no longer crash on any schema loaded
+   from a descriptor set or `.proto`, so their exit code is now the
+   check's own. A gate that
    read these exits as findings was misreading a crash.
 8. **`forensics match`.** A candidate it cannot measure (a proto2
    message missing a `required` field) now exits 2 after rendering
@@ -1851,7 +1855,7 @@ the records that parsed still reach stdout, but the scan did not read the whole
 file. `count --quiet`
 adds the grep-like signal — `1` when zero records match, `0` otherwise
 (mirroring `diff --quiet`); a bare `count` always prints the number (including
-`0`) and exits `0`.
+`0`) and exits `0`, unless the scan dropped records (above).
 
 Cross-channel correlation (one `scan` over multiple related streams) is a
 library capability — register several streams and read `record.stream_id` — and

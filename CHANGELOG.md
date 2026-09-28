@@ -49,19 +49,21 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(pure-Python)* `lint` over a descriptor set with a missing import | exits 2 (`error[lint-missing-imports]`) instead of 0, as upb already did |
 > | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
-> | `compat` with a rule pack that raises at import (other than `AttributeError` / `TypeError`), or raises `KeyboardInterrupt` there | exits 2 instead of 1 (INCOMPATIBLE) |
+> | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of a traceback and 1 (INCOMPATIBLE). Any other exception at import already exited 2 |
 > | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
 > | `diff --ignore`, `--treat-as-map` or `--filter` with a value the path grammar rejects | exits 2 with an `Error:` line instead of a traceback and 1 |
 > | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime cannot build or parse (an unreadable field default, an out-of-range `public_dependency` or `oneof_index`, a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1 |
 > | `lint` over a descriptor set with a non-UTF-8 file name, under upb | exits 2 (`error[lint-bad-input]`) instead of a traceback and 1 |
+> | *(pure-Python)* `compat`, `forensics match` / `drift` over a schema loaded from a descriptor set or `.proto` | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
 > | *(pure-Python)* a message payload nested too deep, or carrying a non-UTF-8 proto3 string | `diff` exits 2 on deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1 |
 > | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
 > | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
 > | `lint --format json` / `--format sarif` | `schema_version` / `lint_schema_version` `"0.6"` → `"0.7"`; SARIF `executionSuccessful` is `false` for a run where a rule raised or was never loaded, instead of `true` |
 > | `lint --format junit` for a run where a rule raised or was never loaded | one `analysis-incomplete` `<error>` testcase per rule instead of a passing `clean` testcase |
+> | `compat history --format junit` for a walk error no commit entry carries | a trailing `…-walk` suite with an `<error>` testcase, instead of dropping the error. The exit code was already 2 |
 > | `diff --format junit` for a truncated comparison | an `<error>` testcase, and no `messages-equal` testcase, instead of a passing suite |
 > | human output of `compat`, `history`, `bisect`, `diff` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.` |
-> | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record | raises `TypeError` naming the field, instead of being split into characters or keys |
+> | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record, or a value that is not a collection at all (`None`, a number) | raises `TypeError` naming the field, instead of being split into characters or keys, or stored as given |
 > | *(API)* a list of key/value pairs for `LintFinding.params`, `LintProfile.rule_severity_overrides`, or the multi-kind `LintRuleSpec.severity` / `message_template` | raises `TypeError`; pass a dict |
 > | *(API)* `Diagnostic`, `CommitDiagnostic` or `LintCompileDiagnostic` with a `level` other than `"info"`, `"warning"` or `"error"`; a `BisectReport` with only one of `breaking_commit` / `breaking_findings` | raises `ValueError` |
 > | *(API)* appending to a collection field after construction (`report.findings.append(…)`) | raises `AttributeError`: the field is a tuple, not the caller's list |
@@ -89,10 +91,10 @@ All notable changes to `protokit` are documented here. Format loosely follows
     0.15.1 listed this as a known residual. It now exits 2 with
     `error[lint-analysis-incomplete]` (U8, below).
 
-  The fix no longer lives at each call site. Every CLI exit decision, and every
-  built-in renderer that states a success verdict, reads one predicate,
-  `protokit._trust`, and a guard test fails when a command decides its exit
-  code without it. The other commands that exited 0 on an incomplete run are
+  The fix no longer lives at each call site. Every command's exit gate, and
+  every built-in renderer that states a success verdict, consults one
+  predicate, `protokit._trust`, and a guard test fails when a command's code
+  never consults it. The other commands that exited 0 on an incomplete run are
   listed under U8 and in the upgrade table above.
 
   *Still open.* Two lint runtime-warning categories that also mean a rule did
