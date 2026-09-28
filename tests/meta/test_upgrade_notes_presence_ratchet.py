@@ -42,13 +42,19 @@ _UPDATE_PATH = (
     "explicit no-opt-out declaration: leaving the absence of an escape hatch "
     "unexplained is the thing this ratchet exists to prevent."
 )
+_README_HEADING_MISSING = (
+    f"README.md has no `### Upgrade notes (0.15.x → 0.16.0)` heading. {_UPDATE_PATH}"
+)
+_CHANGELOG_NOTE_MISSING = (
+    f"CHANGELOG.md has no `> **Upgrade note (0.15.x → 0.16.0).**` block. {_UPDATE_PATH}"
+)
 
 
 def _readme_section() -> str:
     """The README text from the 0.16.0 heading to the next ``#``-heading."""
     body = README_PATH.read_text(encoding="utf-8")
     match = _README_HEADING.search(body)
-    assert match, f"README.md has no `### Upgrade notes (0.15.x → 0.16.0)` heading. {_UPDATE_PATH}"
+    assert match, _README_HEADING_MISSING
     rest = body[match.end():]
     end = re.search(r"^#{1,3} ", rest, flags=re.MULTILINE)
     return rest[: end.start()] if end else rest
@@ -60,15 +66,18 @@ def _changelog_release_section() -> str:
     for section in re.split(r"^(?=## )", body, flags=re.MULTILINE):
         if _CHANGELOG_NOTE.search(section):
             return section
-    raise AssertionError(
-        "CHANGELOG.md has no `> **Upgrade note (0.15.x → 0.16.0).**` block. "
-        + _UPDATE_PATH,
-    )
+    raise AssertionError(_CHANGELOG_NOTE_MISSING)
 
 
 def test_readme_has_the_upgrade_notes_heading() -> None:
     assert _README_HEADING.search(README_PATH.read_text(encoding="utf-8")), (
-        f"README.md has no `### Upgrade notes (0.15.x → 0.16.0)` heading. {_UPDATE_PATH}"
+        _README_HEADING_MISSING
+    )
+
+
+def test_changelog_has_the_upgrade_note() -> None:
+    assert _CHANGELOG_NOTE.search(CHANGELOG_PATH.read_text(encoding="utf-8")), (
+        _CHANGELOG_NOTE_MISSING
     )
 
 
@@ -96,13 +105,9 @@ def _github_slug(heading: str) -> str:
     return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
 
 
-def test_upgrade_note_links_resolve_to_a_readme_heading() -> None:
-    readme = README_PATH.read_text(encoding="utf-8")
-    slugs = {
-        _github_slug(m.group(1))
-        for m in re.finditer(r"^#{1,6} (.+)$", readme, flags=re.MULTILINE)
-    }
-    links = [
+def _upgrade_note_links() -> list[tuple[str, str]]:
+    """Every ``(file name, anchor)`` link to an ``#upgrade-notes-…`` anchor."""
+    return [
         (path.name, target)
         for path in (README_PATH, CHANGELOG_PATH)
         for target in re.findall(
@@ -110,6 +115,23 @@ def test_upgrade_note_links_resolve_to_a_readme_heading() -> None:
             path.read_text(encoding="utf-8"),
         )
     ]
-    assert links, "no link to an `#upgrade-notes-…` anchor found; the premise of this test is gone"
-    broken = [(name, target) for name, target in links if target not in slugs]
+
+
+def test_upgrade_note_links_exist() -> None:
+    """README's Installation pointer and the CHANGELOG note each link the notes."""
+    linking = {name for name, _ in _upgrade_note_links()}
+    assert linking == {README_PATH.name, CHANGELOG_PATH.name}, (
+        f"only {sorted(linking)} link to the 0.16.0 upgrade notes; README's "
+        "Installation pointer and the CHANGELOG upgrade note should both. "
+        + _UPDATE_PATH
+    )
+
+
+def test_upgrade_note_links_resolve_to_a_readme_heading() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    slugs = {
+        _github_slug(m.group(1))
+        for m in re.finditer(r"^#{1,6} (.+)$", readme, flags=re.MULTILINE)
+    }
+    broken = [(name, target) for name, target in _upgrade_note_links() if target not in slugs]
     assert not broken, f"links to a README heading that does not exist: {broken}"
