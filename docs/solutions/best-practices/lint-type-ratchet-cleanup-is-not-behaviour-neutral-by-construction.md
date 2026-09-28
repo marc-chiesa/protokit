@@ -61,7 +61,7 @@ backend. Two kinds of edit made to satisfy the tools broke that contract:
    traceback that the loop did not have.
 2. **`str()` / `bool()` wraps added to silence mypy `no-any-return`.**
    `_hook_name` became `return str(getattr(hook, "__qualname__", None) or ...)`.
-   The diagnostic renders the name with `!r` (`src/protokit/message/differ.py:453`).
+   The diagnostic renders the name with `!r` (`src/protokit/message/differ.py:444`).
    For a `__qualname__` that is a `str` subclass with its own `__str__`, `str()`
    calls that override and returns a different string, so the message changed
    from `hook 'original' raised ValueError during VALIDATE: boom` to
@@ -113,7 +113,7 @@ return cast(bool, field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REP
 return cast(bool, field_desc.label == proto_descriptor.FieldDescriptor.LABEL_REQUIRED)
 return cast(bool, fd.has_presence)
 
-# src/protokit/message/differ.py:876
+# src/protokit/message/differ.py:867
 return cast(bool, _field_value(msg, left_fd) != _field_value(default_msg, left_fd))
 ```
 
@@ -128,7 +128,7 @@ the loop, suppress the rule on that line, and leave a comment so the next
 cleanup does not "fix" it again:
 
 ```python
-# src/protokit/message/differ.py:2640-2645
+# src/protokit/message/differ.py:2631-2636
 # A plain loop, not any(genexpr): inside a generator a selector's own
 # StopIteration would surface as RuntimeError (PEP 479).
 for selector in self._treat_as_set_selectors:  # noqa: SIM110

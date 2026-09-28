@@ -177,13 +177,15 @@ Separately, the cycle error message's `', '.join(remaining)` raised `TypeError`
 on a `bytes` name, so it now joins `map(repr, remaining)`
 (`src/protokit/_pools.py:135`).
 
-The fix is `require_decodable_strings(fds)` (`src/protokit/_pools.py:255-295`).
+The fix is `require_decodable_strings(fds)` (`src/protokit/_pools.py:255-278`).
 It walks every string field and raises `DescriptorPoolError` on any `bytes`
-value. It runs in `build_pool` (`src/protokit/_pools.py:200`) and at lint's parse
+value. The walk itself is `first_undecodable_string`
+(`src/protokit/_fieldview.py:247-288`), in the layer-0 seam so the payload
+decode seams can share it. It runs in `build_pool` (`src/protokit/_pools.py:200`) and at lint's parse
 site (`src/protokit/schema/lint/_cli_utils.py:353`). This isn't new validation.
 It makes upb reject input at the same point pure-Python already does.
 
-The first version of the walk had two bugs.
+The first version of the walk had two bugs, and a later audit found a third.
 
 - **A protobuf map iterates its keys.** The first version pushed each key
   string onto the stack as if it were a message. On a valid set with a
@@ -191,19 +193,26 @@ The first version of the walk had two bugs.
   `FileOptions`), it crashed on both backends with
   `AttributeError: 'str' object has no attribute 'ListFields'`. The fix reads the
   map-entry descriptor and walks keys and values as pairs
-  (`src/protokit/_pools.py:279-283`):
+  (`src/protokit/_fieldview.py:278-284`):
   ```python
-  entry = field.message_type
-  if entry is not None and entry.GetOptions().map_entry:
-      key, val = entry.fields_by_name["key"], entry.fields_by_name["value"]
-      items = [(key, k) for k in value] + [(val, v) for v in value.values()]
+  entry = map_entry(field)
+  if entry is not None:
+      yield from ((entry.key, k) for k in value)
+      yield from ((entry.value, v) for v in value.values())
   ```
 - **Groups are messages too.** The walk descended only into `TYPE_MESSAGE`, so a
   non-UTF-8 string inside a group-typed option still loaded on upb. It now
-  descends into `(TYPE_MESSAGE, TYPE_GROUP)` (`src/protokit/_pools.py:293`).
+  descends into `(TYPE_MESSAGE, TYPE_GROUP)` (`src/protokit/_fieldview.py:221`).
+- **Reading a map's values re-reads its keys.** On upb, iterating a proto2 map
+  whose key is not UTF-8 yields that key as `bytes`, but `values()` looks each
+  key up again and raises `UnicodeDecodeError`. The walk read values before it
+  checked keys, so a map-valued custom option with a bad key escaped
+  `load_pool_from_bytes` raw on upb. It now yields every key, and returns on a
+  bad one, before it reads any value
+  (`tests/core/test_pools.py::test_a_non_utf8_map_key_in_an_option_raises_the_typed_error`).
 
 Custom options are covered only because `ListFields()` includes registered
-extensions (`src/protokit/_pools.py:276-277`). An unregistered extension stays
+extensions (`src/protokit/_fieldview.py:263-264`). An unregistered extension stays
 as unparsed unknown bytes that nothing decodes, so nothing needs to walk it.
 
 After the fix, all 150 compilable `.proto` fixtures under
@@ -267,7 +276,7 @@ with 0 rejections.
    decoded the bad string. The scenario now calls
    `dp.Default().FindExtensionByName("opt.group_opt")` first
    (`tests/core/test_pools.py:348-349`). The assertion also checks that the error
-   names `opt.Opt.s` (`tests/core/test_pools.py:399-400`), which proves the
+   names `opt.Opt.s` (`tests/core/test_pools.py:397-398`), which proves the
    string caused the failure and not some other part of the set.
 2. **A registration in the global default pool leaks into later tests.** The
    custom-option scenarios run in a fresh interpreter

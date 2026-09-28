@@ -33,7 +33,7 @@ tags:
 
 ## Symptoms
 
-- After proving `left_map = _field_value(left_msg, left_fd)` (`src/protokit/message/differ.py:2157`) against the same-length replacement `left_map = getattr(left_msg, left_fd.name)`, `tests/message/test_extensions.py` stayed **red on the restored, unmutated source**; the traceback pointed at the `_field_value(...)` call with no frame inside the function — the bytecode being executed was still the `getattr` version.
+- After proving `left_map = _field_value(left_msg, left_fd)` (`src/protokit/message/differ.py:2207`) against the same-length replacement `left_map = getattr(left_msg, left_fd.name)`, `tests/message/test_extensions.py` stayed **red on the restored, unmutated source**; the traceback pointed at the `_field_value(...)` call with no frame inside the function — the bytecode being executed was still the `getattr` version.
 - A mutation applied and restored within the same wall-clock second, with a replacement the same length as its anchor, could make the *mutated* run silently execute the *original* bytecode — a false VACUOUS — while every run after restore kept executing the *mutated* bytecode until something else touched the file.
 - A misspelled `-k` selector (pytest exit 5, zero tests collected), a missing target file (exit 4), or a mutation that broke collection (exit 2) all printed `NON-VACUOUS — the target failed under mutation, as it must.`
 - A comment-only mutation that no test could ever observe was "proven" NON-VACUOUS whenever the target was already failing for an unrelated reason before the mutation was applied — there was no check that the baseline passed.

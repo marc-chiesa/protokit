@@ -42,11 +42,11 @@ wants it (the differ), instead of implicit everywhere.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from google.protobuf import descriptor as _d
 
@@ -208,3 +208,120 @@ class FieldView:
         """
         pool = self.descriptor.file.pool
         return tuple(sorted(pool.FindAllExtensions(self.descriptor), key=lambda f: f.number))
+
+
+def is_message_like(field_desc: _d.FieldDescriptor) -> bool:
+    """Return True when ``field_desc`` holds a message: ``TYPE_MESSAGE`` or ``TYPE_GROUP``.
+
+    A proto2 group and an editions field with ``message_encoding = DELIMITED``
+    are both ``TYPE_GROUP``: a nested message with different wire framing. A
+    site that tests ``TYPE_MESSAGE`` alone silently skips them, so every "is
+    this a message?" question asks here.
+    """
+    return field_desc.type in (_FD.TYPE_MESSAGE, _FD.TYPE_GROUP)
+
+
+def same_message_kind(left: _d.FieldDescriptor, right: _d.FieldDescriptor) -> bool:
+    """Whether a comparison may descend from ``left`` into ``right``.
+
+    True only when both are messages or both are groups. A group↔message
+    switch changes the wire framing and is reported as its own finding;
+    descending as well would pile nested findings on top of it. Map fields and
+    map values stay ``TYPE_MESSAGE`` even under DELIMITED, so they pair only
+    with messages.
+    """
+    return is_message_like(left) and left.type == right.type
+
+
+def extension_key(fd: _d.FieldDescriptor) -> str:
+    """Key for an extension: ``(pkg.ext)``.
+
+    Parenthesised and fully qualified — the spelling proto uses for custom
+    options (text format spells an extension ``[pkg.ext]``, but brackets are
+    the path grammar's index syntax) — so an extension can never be confused
+    with, or shadowed by, a declared field of the same short name.
+    """
+    return f"({fd.full_name})"
+
+
+def first_undecodable_string(message: Message) -> tuple[_d.FieldDescriptor, bytes] | None:
+    """Return the first string field in ``message`` that holds bytes, else ``None``.
+
+    The two runtimes disagree about an undecodable string. Pure-Python rejects
+    it while parsing (``UnicodeDecodeError``). upb validates UTF-8 only where
+    the field requires it (every proto3 string; an editions string unless it
+    sets ``utf8_validation = NONE``; never a proto2 string) and otherwise hands
+    the field back as ``bytes``, at any depth. Nothing downstream complains
+    about those bytes, so a seam that wants pure-Python's verdict on upb walks
+    the parsed message with this and classifies a hit its own way. Only set
+    fields are walked: an unset field reads its schema default, and protokit's
+    pool loaders reject a schema whose default is not UTF-8.
+    """
+    stack: list[Message] = [message]  # iterative: messages can nest deeply
+    while stack:
+        current = stack.pop()
+        # ListFields includes registered extensions, so custom options are
+        # walked too; an unregistered one stays as unparsed unknown bytes.
+        for field, value in current.ListFields():
+            for item_field, item in _field_items(field, value):
+                if item_field.type == _FD.TYPE_STRING and isinstance(item, bytes):
+                    return item_field, item
+                if is_message_like(item_field):
+                    stack.append(item)
+    return None
+
+
+def _field_items(
+    field: _d.FieldDescriptor, value: Any,
+) -> Iterator[tuple[_d.FieldDescriptor, Any]]:
+    """Yield ``(descriptor, item)`` for each value one set field holds."""
+    entry = map_entry(field)
+    if entry is not None:
+        # Iterating a map yields its keys; check keys and values. Keys come
+        # first and values are read only after: on upb, reading a value looks
+        # its key up again, which raises UnicodeDecodeError for a bytes key.
+        yield from ((entry.key, k) for k in value)
+        yield from ((entry.value, v) for v in value.values())
+    elif field.label == _FD.LABEL_REPEATED:
+        yield from ((field, item) for item in value)
+    else:
+        yield field, value
+
+
+def may_hold_unvalidated_string(descriptor: _d.Descriptor) -> bool:
+    """Whether a message of this type can hold a string upb did not validate.
+
+    A seam may skip :func:`first_undecodable_string` for a type where this is
+    False. The answer is conservative: any string field declared in a file
+    that is not proto3 counts (an editions string may opt out of validation),
+    and so does any extension range (an extension can carry any string),
+    across every message type ``descriptor`` can reach. It walks the type
+    graph, so compute it once per type rather than once per message. It
+    assumes the pool uses protobuf's standard feature defaults, as every pool
+    protokit builds does: a pool given custom ``FeatureSetDefaults`` can turn
+    proto3 validation off, and this would then answer False wrongly.
+    """
+    # Function-level: published docs cite line numbers in this module.
+    from google.protobuf import descriptor_pb2
+
+    proto3_files: dict[str, bool] = {}
+    seen: set[str] = set()
+    stack: list[_d.Descriptor] = [descriptor]
+    while stack:
+        current = stack.pop()
+        if current.full_name in seen:
+            continue
+        seen.add(current.full_name)
+        if current.extension_ranges:
+            return True
+        file = current.file
+        if file.name not in proto3_files:
+            # FileDescriptor has no public syntax attribute on protobuf 5.
+            syntax = descriptor_pb2.FileDescriptorProto.FromString(file.serialized_pb).syntax
+            proto3_files[file.name] = syntax == "proto3"
+        for field in current.fields:
+            if field.type == _FD.TYPE_STRING and not proto3_files[file.name]:
+                return True
+            if is_message_like(field):
+                stack.append(field.message_type)
+    return False

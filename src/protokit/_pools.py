@@ -27,7 +27,7 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.descriptor import Descriptor
-from google.protobuf.message import DecodeError, Message
+from google.protobuf.message import DecodeError
 
 
 class DescriptorPoolError(Exception):
@@ -268,28 +268,11 @@ def require_decodable_strings(
     Raises:
         DescriptorPoolError: A string field holds bytes that are not UTF-8.
     """
-    from protokit._descriptors import is_repeated
+    from protokit._fieldview import first_undecodable_string
 
-    stack: list[Message] = [fds]  # iterative: descriptor sets can nest deeply
-    while stack:
-        message = stack.pop()
-        # ListFields includes registered extensions, so custom options are
-        # walked too; an unregistered one stays as unparsed unknown bytes.
-        for field, value in message.ListFields():
-            entry = field.message_type
-            if entry is not None and entry.GetOptions().map_entry:
-                # Iterating a map yields its keys; check keys and values.
-                key, val = entry.fields_by_name["key"], entry.fields_by_name["value"]
-                items = [(key, k) for k in value] + [(val, v) for v in value.values()]
-            elif is_repeated(field):
-                items = [(field, item) for item in value]
-            else:
-                items = [(field, value)]
-            for item_field, item in items:
-                if item_field.type == item_field.TYPE_STRING and isinstance(item, bytes):
-                    raise DescriptorPoolError(
-                        f"{item_field.full_name} is not valid UTF-8: {item[:64]!r}"
-                    )
-                if item_field.type in (item_field.TYPE_MESSAGE, item_field.TYPE_GROUP):
-                    stack.append(item)
+    # The walk lives in the layer-0 seam so the payload decode seams share it.
+    hit = first_undecodable_string(fds)
+    if hit is not None:
+        field, value = hit
+        raise DescriptorPoolError(f"{field.full_name} is not valid UTF-8: {value[:64]!r}")
     return fds
