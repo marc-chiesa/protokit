@@ -882,7 +882,7 @@ class LintProfile:
 
         Walks ``module.RULES`` (a tuple of ``@lint_rule``-decorated
         functions, by convention echoing compat's
-        ``schema/checker.py:217-235`` pattern), reads each function's
+        ``schema/checker.py:270-288`` pattern), reads each function's
         ``_lint_spec`` attribute, and selects the rule_ids whose
         ``LintRuleSpec.profiles`` tuple includes ``profile_name``.
 

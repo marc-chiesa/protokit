@@ -1,7 +1,7 @@
 """``@lint_rule`` decorator — pure metadata attachment for D2 rule packs.
 
 Per-instance design adopted from compat at
-``schema/checker.py:217-235``: no process-global registry, no
+``schema/checker.py:270-288``: no process-global registry, no
 module-attribute side effects on the importing module. The decorator
 constructs a :class:`~protokit.schema.lint.model.LintRuleSpec` from
 the call-site kwargs and attaches it to the decorated function as

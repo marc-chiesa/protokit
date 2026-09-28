@@ -1231,3 +1231,50 @@ class TestReservedFieldReused:
         # Number reuse is WIRE; name reuse is SEMANTIC.
         severities = {f.severity for f in findings}
         assert severities == {Severity.WIRE, Severity.SEMANTIC}
+
+
+class TestFieldTypeNameChangedOnGroups:
+    """A group is a message with different framing, so its type identity counts too.
+
+    The rule used to fire only for ``TYPE_MESSAGE``; a proto2 group or an
+    editions DELIMITED field (``TYPE_GROUP``) retargeted to another type was
+    silent at every level.
+    """
+
+    @staticmethod
+    def _field(target: str, *, group: bool) -> object:
+        from google.protobuf import descriptor_pb2
+
+        f = descriptor_pb2.FieldDescriptorProto
+        fdp = descriptor_pb2.FileDescriptorProto(name="g.proto", package="t", syntax="proto2")
+        m = fdp.message_type.add(name="M")
+        for name in ("A", "B"):
+            m.nested_type.add(name=name).field.add(
+                name="v", number=1, type=f.TYPE_INT32, label=f.LABEL_OPTIONAL,
+            )
+        m.field.add(
+            name="g", number=1, label=f.LABEL_OPTIONAL, type_name=f".t.M.{target}",
+            type=f.TYPE_GROUP if group else f.TYPE_MESSAGE,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        return pool.FindMessageTypeByName("t.M").fields_by_name["g"]
+
+    def test_fires_when_a_group_type_name_differs(self) -> None:
+        findings = field_type_name_changed(
+            self._field("A", group=True), self._field("B", group=True), ROOT,
+        )
+        assert [f.rule_id for f in findings] == ["field_type_name_changed"]
+        assert findings[0].severity is Severity.POLICY
+        assert "message type changed: 't.M.A' -> 't.M.B'" in findings[0].message
+
+    def test_silent_when_a_group_type_name_matches(self) -> None:
+        assert field_type_name_changed(
+            self._field("A", group=True), self._field("A", group=True), ROOT,
+        ) == []
+
+    def test_silent_for_a_group_to_message_switch(self) -> None:
+        """A framing change is ``field_type_wire_incompatible``'s finding, not this rule's."""
+        assert field_type_name_changed(
+            self._field("A", group=True), self._field("B", group=False), ROOT,
+        ) == []

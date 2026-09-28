@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from google.protobuf import descriptor_pool
+from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.message.model import FieldPath
 from protokit.schema import (
@@ -15,6 +15,8 @@ from protokit.schema import (
     Verdict,
     check_compatibility,
 )
+from protokit.schema.plugins import FieldRuleContext
+from tests._pure_python_inventory import runtime_backend
 from tests.proto_builder import ProtoBuilder, wire_dependencies
 from tests.schema.helpers import T, build_enum, build_message
 
@@ -1337,3 +1339,374 @@ class TestCrossType:
         report = check_compatibility(old, "t.UserV1", new, "t.UserV2")
         assert any(f.rule_id == "field_removed" and str(f.path) == "email"
                    for f in report.findings)
+
+
+# ---------------------------------------------------------------------------
+# Declared extensions and groups
+#
+# The checker compared only ``Descriptor.fields``, which never holds an
+# extension, and descended only ``TYPE_MESSAGE`` fields, which misses proto2
+# groups and editions DELIMITED fields (both ``TYPE_GROUP``). Each case below
+# is judged against a twin the checker already handled correctly: a declared
+# field in place of the extension, or a plain message field in place of the
+# group, so "the same finding" is measured rather than asserted by hand.
+# ---------------------------------------------------------------------------
+
+
+_F = descriptor_pb2.FieldDescriptorProto
+_OPT = _F.LABEL_OPTIONAL
+
+
+def _pool_of(*files: descriptor_pb2.FileDescriptorProto) -> descriptor_pool.DescriptorPool:
+    pool = descriptor_pool.DescriptorPool()
+    for fdp in files:
+        pool.Add(fdp)
+    return pool
+
+
+def _x_variant(kind: str) -> tuple[int, int] | None:
+    """(number, type) of the field or extension ``x`` for one side of a change."""
+    return {
+        "int32": (100, _F.TYPE_INT32),
+        "string": (100, _F.TYPE_STRING),
+        "renumbered": (101, _F.TYPE_INT32),
+        "absent": None,
+    }[kind]
+
+
+def _ext_file(kind: str, *, as_extension: bool) -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``t.M`` (with an extension range), ``t.Outer`` holding it, and ``x``.
+
+    ``as_extension`` declares ``x`` as ``extend t.M``; otherwise it is a
+    declared field of ``t.M`` with the same number and type (the twin).
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="e.proto", package="t", syntax="proto2")
+    m = fdp.message_type.add(name="M")
+    m.field.add(name="a", number=1, type=_F.TYPE_INT32, label=_OPT)
+    m.extension_range.add(start=100, end=200)
+    fdp.message_type.add(name="Outer").field.add(
+        name="m", number=1, type=_F.TYPE_MESSAGE, label=_OPT, type_name=".t.M",
+    )
+    variant = _x_variant(kind)
+    if variant is not None:
+        number, ftype = variant
+        if as_extension:
+            fdp.extension.add(name="x", number=number, type=ftype, label=_OPT, extendee=".t.M")
+        else:
+            m.field.add(name="x", number=number, type=ftype, label=_OPT)
+    return fdp
+
+
+def _shape(report) -> set[tuple[str, str, object, object]]:
+    return {(str(f.path), f.rule_id, f.severity, f.direction) for f in report.findings}
+
+
+_EXT_CHANGES = [
+    pytest.param("int32", "string", id="type-int32-to-string"),
+    pytest.param("int32", "renumbered", id="renumber-100-to-101"),
+    pytest.param("int32", "absent", id="removed"),
+    pytest.param("absent", "int32", id="added"),
+]
+
+
+class TestDeclaredExtensions:
+    @pytest.mark.parametrize(("old_kind", "new_kind"), _EXT_CHANGES)
+    @pytest.mark.parametrize("level", list(CompatibilityLevel))
+    def test_an_extension_change_is_reported_like_its_declared_field_twin(
+        self, old_kind: str, new_kind: str, level: CompatibilityLevel,
+    ) -> None:
+        def run(as_extension: bool):
+            return check_compatibility(
+                _pool_of(_ext_file(old_kind, as_extension=as_extension)), "t.M",
+                _pool_of(_ext_file(new_kind, as_extension=as_extension)), "t.M",
+                level=level,
+            )
+
+        twin, ext = run(False), run(True)
+        twin_shape = {("(t.x)" if p == "x" else p, *rest) for p, *rest in _shape(twin)}
+        assert _shape(ext) == twin_shape
+        assert ext.is_compatible == twin.is_compatible
+
+    @pytest.mark.parametrize("level", list(CompatibilityLevel))
+    def test_an_extension_reusing_a_reserved_number_is_reported_like_a_field(
+        self, level: CompatibilityLevel,
+    ) -> None:
+        def pool(*, as_extension: bool, reuse: bool) -> descriptor_pool.DescriptorPool:
+            fdp = descriptor_pb2.FileDescriptorProto(name="r.proto", package="t", syntax="proto2")
+            m = fdp.message_type.add(name="M")
+            if not reuse:
+                m.reserved_range.add(start=100, end=101)
+            elif as_extension:
+                m.extension_range.add(start=100, end=101)
+                fdp.extension.add(name="x", number=100, type=_F.TYPE_INT32, label=_OPT,
+                                  extendee=".t.M")
+            else:
+                m.field.add(name="x", number=100, type=_F.TYPE_INT32, label=_OPT)
+            return _pool_of(fdp)
+
+        def run(as_extension: bool):
+            return check_compatibility(
+                pool(as_extension=as_extension, reuse=False), "t.M",
+                pool(as_extension=as_extension, reuse=True), "t.M", level=level,
+            )
+
+        twin, ext = run(False), run(True)
+        assert any(f.rule_id == "reserved_field_reused" for f in twin.findings)
+        twin_shape = {("(t.x)" if p == "x" else p, *rest) for p, *rest in _shape(twin)}
+        assert _shape(ext) == twin_shape
+
+    def test_every_change_is_visible_at_strict(self) -> None:
+        """Guards the parity test above against comparing two empty reports."""
+        for old_kind, new_kind in [p.values for p in _EXT_CHANGES]:
+            report = check_compatibility(
+                _pool_of(_ext_file(old_kind, as_extension=True)), "t.M",
+                _pool_of(_ext_file(new_kind, as_extension=True)), "t.M",
+                level=CompatibilityLevel.STRICT,
+            )
+            assert not report.is_compatible, (old_kind, new_kind)
+            assert {str(f.path) for f in report.findings} == {"(t.x)"}
+
+    def test_a_renumbered_extension_pairs_by_name_across_pools(self) -> None:
+        report = check_compatibility(
+            _pool_of(_ext_file("int32", as_extension=True)), "t.M",
+            _pool_of(_ext_file("renumbered", as_extension=True)), "t.M",
+            level=CompatibilityLevel.STRICT,
+        )
+        assert {f.rule_id for f in report.findings} == {"field_number_changed"}
+
+    def test_an_extension_on_a_nested_message_is_reached_by_descent(self) -> None:
+        report = check_compatibility(
+            _pool_of(_ext_file("int32", as_extension=True)), "t.Outer",
+            _pool_of(_ext_file("string", as_extension=True)), "t.Outer",
+            level=CompatibilityLevel.STRICT,
+        )
+        assert {str(f.path) for f in report.findings} == {"m.(t.x)"}
+
+    def test_a_message_typed_extension_is_descended(self) -> None:
+        def payload_file(inner_type: int) -> descriptor_pb2.FileDescriptorProto:
+            fdp = _ext_file("absent", as_extension=True)
+            fdp.message_type.add(name="Payload").field.add(
+                name="v", number=1, type=inner_type, label=_OPT,
+            )
+            fdp.extension.add(
+                name="p", number=150, type=_F.TYPE_MESSAGE, label=_OPT,
+                type_name=".t.Payload", extendee=".t.M",
+            )
+            return fdp
+
+        report = check_compatibility(
+            _pool_of(payload_file(_F.TYPE_INT32)), "t.M",
+            _pool_of(payload_file(_F.TYPE_STRING)), "t.M",
+            level=CompatibilityLevel.STRICT,
+        )
+        assert not report.is_compatible
+        assert {str(f.path) for f in report.findings} == {"(t.p).v"}
+
+    def test_a_custom_option_in_only_one_pool_is_not_a_finding(self) -> None:
+        """Extensions of descriptor.proto options types are custom options, not data.
+
+        Which custom options a pool holds depends on which files happened to be
+        loaded, so pairing them would make findings depend on the load set.
+        """
+        def holder_file() -> descriptor_pb2.FileDescriptorProto:
+            fdp = descriptor_pb2.FileDescriptorProto(
+                name="h.proto", package="t", syntax="proto2",
+                dependency=["google/protobuf/descriptor.proto"],
+            )
+            fdp.message_type.add(name="Holder").field.add(
+                name="opts", number=1, type=_F.TYPE_MESSAGE, label=_OPT,
+                type_name=".google.protobuf.FieldOptions",
+            )
+            return fdp
+
+        descriptor_proto = descriptor_pb2.FileDescriptorProto()
+        descriptor_pb2.DESCRIPTOR.CopyToProto(descriptor_proto)
+        option_file = descriptor_pb2.FileDescriptorProto(
+            name="o.proto", package="t", syntax="proto2",
+            dependency=["google/protobuf/descriptor.proto"],
+        )
+        option_file.extension.add(
+            name="my_opt", number=50000, type=_F.TYPE_INT32, label=_OPT,
+            extendee=".google.protobuf.FieldOptions",
+        )
+        old = _pool_of(descriptor_proto, holder_file())
+        new = _pool_of(descriptor_proto, holder_file(), option_file)
+        assert new.FindExtensionByName("t.my_opt") is not None
+        report = check_compatibility(old, "t.Holder", new, "t.Holder",
+                                     level=CompatibilityLevel.STRICT)
+        assert report.findings == ()
+
+    def test_ignore_of_a_lone_extension_key_suppresses_it_at_any_depth(self) -> None:
+        old = _pool_of(_ext_file("int32", as_extension=True))
+        new = _pool_of(_ext_file("string", as_extension=True))
+        for root, path in (("t.M", "(t.x)"), ("t.Outer", "m.(t.x)")):
+            unfiltered = SchemaChecker(level=CompatibilityLevel.STRICT)
+            assert {str(f.path) for f in unfiltered.check(old, root, new, root).findings} == {path}
+            checker = SchemaChecker(level=CompatibilityLevel.STRICT)
+            checker.ignore("(t.x)")
+            assert checker.check(old, root, new, root).findings == (), root
+
+    def test_ignore_of_a_qualified_extension_path_suppresses_only_there(self) -> None:
+        old = _pool_of(_ext_file("int32", as_extension=True))
+        new = _pool_of(_ext_file("string", as_extension=True))
+        checker = SchemaChecker(level=CompatibilityLevel.STRICT)
+        checker.ignore("m.(t.x)")
+        assert checker.check(old, "t.Outer", new, "t.Outer").findings == ()
+        top_level = checker.check(old, "t.M", new, "t.M")
+        assert {str(f.path) for f in top_level.findings} == {"(t.x)"}
+
+
+def _group_file(
+    inner_type: int, kind: str, *, target: str = "G",
+) -> descriptor_pb2.FileDescriptorProto:
+    """``t.M.g`` holding ``t.M.<target>.x``, as a message, group, or DELIMITED field.
+
+    ``kind`` is ``message`` / ``group`` (proto2), or ``editions-message`` /
+    ``editions-field`` / ``editions-file`` (DELIMITED set on the field or file).
+    """
+    if kind.startswith("editions"):
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name="g.proto", package="t", syntax="editions", edition=descriptor_pb2.EDITION_2023,
+        )
+        if kind == "editions-file":
+            fdp.options.features.message_encoding = descriptor_pb2.FeatureSet.DELIMITED
+    else:
+        fdp = descriptor_pb2.FileDescriptorProto(name="g.proto", package="t", syntax="proto2")
+    m = fdp.message_type.add(name="M")
+    for name in ("G", "H"):
+        m.nested_type.add(name=name).field.add(name="x", number=2, type=inner_type, label=_OPT)
+    field = m.field.add(
+        name="g", number=1, label=_OPT, type_name=f".t.M.{target}",
+        type=_F.TYPE_GROUP if kind == "group" else _F.TYPE_MESSAGE,
+    )
+    if kind == "editions-field":
+        field.options.features.message_encoding = descriptor_pb2.FeatureSet.DELIMITED
+    return fdp
+
+
+class TestGroups:
+    @pytest.mark.parametrize(("kind", "twin"), [
+        pytest.param("group", "message", id="proto2-group"),
+        pytest.param("editions-field", "editions-message", id="editions-delimited-field"),
+        pytest.param("editions-file", "editions-message", id="editions-delimited-file"),
+    ])
+    @pytest.mark.parametrize("new_inner", [
+        pytest.param(_F.TYPE_SINT32, id="int32-to-sint32"),
+        pytest.param(_F.TYPE_STRING, id="int32-to-string"),
+    ])
+    def test_a_change_inside_a_group_is_reported_like_its_message_twin(
+        self, kind: str, twin: str, new_inner: int,
+    ) -> None:
+        def run(k: str):
+            return check_compatibility(
+                _pool_of(_group_file(_F.TYPE_INT32, k)), "t.M",
+                _pool_of(_group_file(new_inner, k)), "t.M",
+                level=CompatibilityLevel.STRICT,
+            )
+
+        group_report = run(kind)
+        assert _pool_of(_group_file(new_inner, kind)).FindMessageTypeByName(
+            "t.M").fields_by_name["g"].type == _F.TYPE_GROUP
+        twin_report = run(twin)
+        assert {str(f.path) for f in twin_report.findings} == {"g.x"}
+        assert _shape(group_report) == _shape(twin_report)
+        assert not group_report.is_compatible
+
+    @pytest.mark.parametrize("kind", ["group", "editions-field", "editions-file"])
+    def test_a_group_retargeted_to_another_type_reports_the_name_change(self, kind: str) -> None:
+        report = check_compatibility(
+            _pool_of(_group_file(_F.TYPE_INT32, kind, target="G")), "t.M",
+            _pool_of(_group_file(_F.TYPE_INT32, kind, target="H")), "t.M",
+            level=CompatibilityLevel.STRICT,
+        )
+        assert ("g", "field_type_name_changed") in {
+            (str(f.path), f.rule_id) for f in report.findings
+        }
+
+    def test_a_group_to_message_switch_is_not_descended(self) -> None:
+        """A framing change is its own WIRE finding; nested findings would pile on."""
+        report = check_compatibility(
+            _pool_of(_group_file(_F.TYPE_INT32, "group")), "t.M",
+            _pool_of(_group_file(_F.TYPE_STRING, "message")), "t.M",
+            level=CompatibilityLevel.STRICT,
+        )
+        paths = {str(f.path) for f in report.findings}
+        assert paths == {"g"}
+        assert any(f.severity is Severity.WIRE for f in report.findings)
+
+    def test_a_field_plugin_sees_extensions_and_fields_inside_groups(self) -> None:
+        seen: list[tuple[str, str]] = []
+
+        def record(ctx: FieldRuleContext) -> None:
+            fd = ctx.new_field or ctx.old_field
+            assert fd is not None
+            seen.append((str(ctx.path), fd.full_name))
+
+        checker = SchemaChecker(level=CompatibilityLevel.STRICT)
+        checker.register_field_rule("record", record)
+        checker.check(
+            _pool_of(_ext_file("int32", as_extension=True)), "t.M",
+            _pool_of(_ext_file("string", as_extension=True)), "t.M",
+        )
+        checker.check(
+            _pool_of(_group_file(_F.TYPE_INT32, "group")), "t.M",
+            _pool_of(_group_file(_F.TYPE_STRING, "group")), "t.M",
+        )
+        assert ("(t.x)", "t.x") in seen
+        assert ("g.x", "t.M.G.x") in seen
+
+
+def _split_extension_pool(ext_type: int, *, resolve: bool) -> descriptor_pool.DescriptorPool:
+    """``t.M`` in base.proto, extended by ``t.x`` in ext.proto, added with bare ``Add``."""
+    base = descriptor_pb2.FileDescriptorProto(name="base.proto", package="t", syntax="proto2")
+    base.message_type.add(name="M").extension_range.add(start=100, end=200)
+    ext = descriptor_pb2.FileDescriptorProto(
+        name="ext.proto", package="t", syntax="proto2", dependency=["base.proto"],
+    )
+    ext.extension.add(name="x", number=100, type=ext_type, label=_OPT, extendee=".t.M")
+    pool = _pool_of(base, ext)
+    if resolve:
+        pool.FindFileByName("ext.proto")
+    return pool
+
+
+class TestExtensionDeclaredInAnotherFile:
+    """The pool obligation the ``check_compatibility`` docstring states, pinned.
+
+    The pure-Python runtime registers a file's extensions only once the file is
+    built, so a pool assembled with bare ``Add`` hides an extension declared
+    in another file until that file is resolved. protokit's loaders resolve
+    each file as they add it. If a protobuf release starts registering
+    extensions on ``Add``, the pure-Python half below fails and the docstring,
+    the ``data_extensions`` docstring and the CHANGELOG note should change.
+    """
+
+    _BREAK = {("(t.x)", "field_type_wire_incompatible")}
+
+    @staticmethod
+    def _found(old: descriptor_pool.DescriptorPool, new: descriptor_pool.DescriptorPool):
+        report = check_compatibility(old, "t.M", new, "t.M", level=CompatibilityLevel.STRICT)
+        return {(str(f.path), f.rule_id) for f in report.findings}
+
+    def test_resolved_pools_report_the_break_on_both_runtimes(self) -> None:
+        old = _split_extension_pool(_F.TYPE_INT32, resolve=True)
+        new = _split_extension_pool(_F.TYPE_STRING, resolve=True)
+        assert self._found(old, new) == self._BREAK
+
+    def test_protokit_loaded_pools_report_the_break_on_both_runtimes(self) -> None:
+        from protokit._pools import build_pool
+
+        def loaded(ext_type: int) -> descriptor_pool.DescriptorPool:
+            bare = _split_extension_pool(ext_type, resolve=True)
+            fds = descriptor_pb2.FileDescriptorSet()
+            for name in ("base.proto", "ext.proto"):
+                bare.FindFileByName(name).CopyToProto(fds.file.add())
+            return build_pool(fds)
+
+        assert self._found(loaded(_F.TYPE_INT32), loaded(_F.TYPE_STRING)) == self._BREAK
+
+    def test_bare_add_pools_hide_the_extension_only_under_pure_python(self) -> None:
+        old = _split_extension_pool(_F.TYPE_INT32, resolve=False)
+        new = _split_extension_pool(_F.TYPE_STRING, resolve=False)
+        expected = set() if runtime_backend() == "python" else self._BREAK
+        assert self._found(old, new) == expected

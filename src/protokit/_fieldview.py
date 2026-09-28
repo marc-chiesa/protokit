@@ -325,3 +325,27 @@ def may_hold_unvalidated_string(descriptor: _d.Descriptor) -> bool:
             if is_message_like(field):
                 stack.append(field.message_type)
     return False
+
+
+# Messages defined here are descriptor options; their extensions are custom options.
+_DESCRIPTOR_PROTO = "google/protobuf/descriptor.proto"
+
+
+def data_extensions(descriptor: _d.Descriptor) -> tuple[_d.FieldDescriptor, ...]:
+    """The declared extensions of ``descriptor`` that a schema comparison pairs.
+
+    This is :attr:`FieldView.extensions`, except that a message defined in
+    ``google/protobuf/descriptor.proto`` has none: its extensions are custom
+    options, and which of them a pool holds depends on which files it loaded,
+    so pairing them would report a difference in the load set rather than in
+    the schema. The cost is deliberate: a schema that carries an options
+    message as ordinary data has that message's extensions left out.
+
+    Like :attr:`FieldView.extensions`, this sees an extension declared in
+    another file only once the pure-Python pool has built that file; every
+    protokit loader resolves each file as it adds it (``_pools.add_and_resolve``),
+    but a caller that builds its own pool with a bare ``Add`` must do the same.
+    """
+    if descriptor.file.name == _DESCRIPTOR_PROTO:
+        return ()
+    return FieldView.of(descriptor).extensions

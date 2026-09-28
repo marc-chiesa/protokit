@@ -156,8 +156,8 @@ except Exception as exc:
 ```
 
 **After** — `src/protokit/schema/checker.py:112-115` (anchor
-`_PLUGIN_DISPATCH_EXCEPTIONS`), used at `:787` in `_dispatch_field_plugin` and
-`:830` in `_dispatch_message_plugin`:
+`_PLUGIN_DISPATCH_EXCEPTIONS`), used at `:789` in `_dispatch_field_plugin` and
+`:832` in `_dispatch_message_plugin`:
 
 ```python
 _PLUGIN_DISPATCH_EXCEPTIONS: tuple[type[BaseException], ...] = (
@@ -174,12 +174,12 @@ except _PLUGIN_DISPATCH_EXCEPTIONS as exc:
     return
 ```
 
-`_record_plugin_failure` (`src/protokit/schema/checker.py:875`) widened its
-parameter from `exc: Exception` to `exc: BaseException` (`:877`) — the type
+`_record_plugin_failure` (`src/protokit/schema/checker.py:877`) widened its
+parameter from `exc: Exception` to `exc: BaseException` (`:879`) — the type
 that made the old guard's ceiling explicit in the signature, and the one line
 of the fix a type checker would otherwise have argued about.
 
-The comment above the tuple (`src/protokit/schema/checker.py:90-111`) carries
+The comment above the tuple (`src/protokit/schema/checker.py:91-111`) carries
 the whole reason, including the half that is a *divergence*: `KeyboardInterrupt`
 is deliberately not in it, because dispatch runs mid-walk while the operator is
 watching, so a Ctrl-C there is the operator's and must keep propagating —
@@ -255,7 +255,7 @@ doing exactly what `sys.exit(0)` asks for.
 **An error diagnostic is the right shape, not a hard stop.** `check()` is a
 library call that returns a `CompatibilityReport`; its contract is to report,
 not to terminate. So the crash is recorded on the report as a `Diagnostic` at
-`level="error"` (`src/protokit/schema/checker.py:875-904`), and the exit code
+`level="error"` (`src/protokit/schema/checker.py:877-906`), and the exit code
 is derived from the report afterwards. `protokit._trust` is the single-owner
 seam for "can this report be read as success?" — `_compat_signals`
 (`src/protokit/_trust.py:197-198`) makes every error diagnostic a reason, and
@@ -305,13 +305,13 @@ src/protokit/schema/lint/_cli_utils.py:534:        module = importlib.import_mod
 $ grep -rn "plugin_fn(ctx)\|rule_fn(\|_invoke_rule\|fn(report" src/protokit/ | grep -vE 'def |:[0-9]+:[[:space:]]*#'
 src/protokit/_cli_utils.py:964:            output = fn(report, ctx)
 src/protokit/_trust.py:388:                    s._replace(text=one_line(s.text)) for s in fn(report)
-src/protokit/schema/checker.py:598:                findings.extend(rule_fn(old_m, new_m, path))
-src/protokit/schema/checker.py:662:                findings.extend(rule_fn(old_fd, new_fd, field_path))
-src/protokit/schema/checker.py:675:                    findings.extend(rule_fn(
-src/protokit/schema/checker.py:736:            findings.extend(rule_fn(old_value, new_value, value_path))
-src/protokit/schema/checker.py:747:                findings.extend(rule_fn(
-src/protokit/schema/checker.py:786:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
-src/protokit/schema/checker.py:829:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
+src/protokit/schema/checker.py:600:                findings.extend(rule_fn(old_m, new_m, path))
+src/protokit/schema/checker.py:664:                findings.extend(rule_fn(old_fd, new_fd, field_path))
+src/protokit/schema/checker.py:677:                    findings.extend(rule_fn(
+src/protokit/schema/checker.py:738:            findings.extend(rule_fn(old_value, new_value, value_path))
+src/protokit/schema/checker.py:749:                findings.extend(rule_fn(
+src/protokit/schema/checker.py:788:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
+src/protokit/schema/checker.py:831:            result = plugin_fn(ctx)  # type: ignore[func-returns-value]
 src/protokit/schema/lint/engine.py:1322:            self._invoke_rule(spec, ctx)
 src/protokit/schema/lint/engine.py:1327:                self._invoke_rule(spec, ctx_svc)
 src/protokit/schema/lint/engine.py:1333:                    self._invoke_rule(spec, ctx_m)
@@ -347,7 +347,7 @@ what this argument needs.
 **A live instance of exactly this, as of 2026-09-20 (current-state — verified
 by the reproduction below against the tree at #76).** Five of compat's seven
 rule-invocation sites — the *raw return-style* rules at
-`src/protokit/schema/checker.py:598`, `:662`, `:675`, `:736`, `:747` — are
+`src/protokit/schema/checker.py:600`, `:664`, `:677`, `:738`, `:749` — are
 wrapped in no `try` at all, so any exception from such a rule leaves `check()`:
 
 ```python
@@ -362,7 +362,7 @@ registers pack entries as emit-style field *plugins* only
 (`src/protokit/schema/checker.py:287-288`), so the shipped claim that a rule
 pack can no longer decide the exit code holds as written. It is reachable
 through documented public API — `register_raw_field_rule` and its enum/message
-siblings (`src/protokit/schema/checker.py:294`, `:315`, `:326`), described in
+siblings (`src/protokit/schema/checker.py:294`, `:314`, `:325`), described in
 the module docstring as "advanced users can register here too"
 (`:15-18`) — by any consumer embedding protokit. Recorded here as an open
 observation with its reproduction, not as a claim about #76's scope; the

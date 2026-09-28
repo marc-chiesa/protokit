@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterable
 
 from google.protobuf import descriptor as proto_descriptor
 
-from protokit import _descriptors
+from protokit import _descriptors, _fieldview
 from protokit._descriptors import (
     has_presence,
     is_map_field,
@@ -657,8 +657,8 @@ def field_type_name_changed(
 ) -> list[Finding]:
     """Detect a field whose message/enum type pointer now names a different type.
 
-    Severity POLICY, direction BOTH. Fires only when both sides are
-    ``TYPE_MESSAGE`` or both sides are ``TYPE_ENUM`` and the
+    Severity POLICY, direction BOTH. Fires only when both sides are the
+    same one of ``TYPE_MESSAGE``, ``TYPE_GROUP`` or ``TYPE_ENUM`` and the
     referenced type's fully-qualified name differs. Shape-level
     differences between the two types are reported separately by
     recursion (for messages) or ``enum_value_*`` rules (for enums);
@@ -681,7 +681,7 @@ def field_type_name_changed(
     Returns:
         A single-element list when the type name differs; an empty
         list when identity is unchanged or the field type isn't
-        MESSAGE/ENUM on both sides.
+        the same MESSAGE/GROUP/ENUM type on both sides.
     """
     if old_fd is None or new_fd is None:
         return []
@@ -699,7 +699,7 @@ def field_type_name_changed(
     if is_map_field(old_fd) or is_map_field(new_fd):
         return []
 
-    if old_fd.type == FD.TYPE_MESSAGE:
+    if _fieldview.is_message_like(old_fd):
         old_name = old_fd.message_type.full_name
         new_name = new_fd.message_type.full_name
     elif old_fd.type == FD.TYPE_ENUM:
@@ -709,7 +709,7 @@ def field_type_name_changed(
         return []
     if old_name == new_name:
         return []
-    kind = "message" if old_fd.type == FD.TYPE_MESSAGE else "enum"
+    kind = "enum" if old_fd.type == FD.TYPE_ENUM else "message"
     return [Finding(
         path=path,
         rule_id="field_type_name_changed",
@@ -1061,13 +1061,17 @@ def reserved_field_reused(
     Reading ``reserved_range`` and ``reserved_name`` requires a
     ``CopyToProto`` roundtrip on the upb backend (the live
     ``Descriptor`` doesn't expose them). Each violating new field
-    produces its own finding under ``path.child(field_name)``.
+    produces its own finding under ``path.child(field_name)``. A declared
+    extension that takes a reserved number is reported too, as a WIRE
+    finding under ``path.child("(pkg.ext)")``; reserved names do not apply
+    to extensions, whose names are package-scoped.
 
     Args:
         old_desc: Old-side message ``Descriptor`` (must be present).
         new_desc: New-side message ``Descriptor`` (must be present).
         path: Dotted ``FieldPath`` to the message itself; per-field
-            findings extend this path with the offending field's name.
+            findings extend this path with the offending field's name
+            or extension key.
 
     Returns:
         One finding per reused number or name. A field that reuses
@@ -1104,6 +1108,22 @@ def reserved_field_reused(
                     f"schema; it is reused in the new schema"
                 ),
                 new_descriptor=fd,
+            ))
+    # A declared extension of this message reuses a reserved number on the
+    # wire exactly as a field does. Its name is package-scoped and written
+    # ``(pkg.ext)``, so a reserved field name cannot apply to it.
+    for ext in _fieldview.data_extensions(new_desc):
+        if _is_reserved(ext.number, old_res_ranges):
+            findings.append(Finding(
+                path=path.child(_fieldview.extension_key(ext)),
+                rule_id="reserved_field_reused",
+                severity=Severity.WIRE,
+                direction=Direction.BOTH,
+                message=(
+                    f"field number {ext.number} was reserved in the old "
+                    f"schema; extension '{ext.full_name}' reuses it"
+                ),
+                new_descriptor=ext,
             ))
     return findings
 

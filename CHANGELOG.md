@@ -48,6 +48,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `forensics match` with a candidate it cannot measure (a proto2 `required` field absent) | exits 2 after rendering the ranking, instead of 0. A candidate the message merely fails to decode under is still ranked last, and exits 0 as long as another candidate parses |
 > | *(pure-Python)* a descriptor set upb refuses to build: a missing import, or a type reference that resolves nowhere, even in a file the command does not use | exits 2, as upb already did: `lint` (`error[lint-missing-imports]`), `diff`, `storage` and `forensics` instead of 0, `compat` instead of a traceback and 1 |
 > | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
+> | `compat` where a declared proto2 extension changes (type, number, removal or addition), or a field inside a proto2 group or an editions DELIMITED field changes | exits 1 (INCOMPATIBLE) instead of 0 at each level that reports the same change to a declared field; a group retargeted to another message type is reported at STRICT |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
 > | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
 > | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
@@ -130,6 +131,31 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `ignore_fields`, `treat_as_map`, `treat_as_set`, `--filter` and
   `DiffResult.filter` accept it too (ignore selectors still take no bracket
   suffix, as before).
+
+- **`compat` now compares declared proto2 extensions and the fields inside
+  groups.** The checker compared only a message's declared fields and
+  descended only into `TYPE_MESSAGE` fields, so a declared extension that
+  changed type, was renumbered, removed or added, and any change inside a
+  proto2 group or an editions DELIMITED field, passed at every level, STRICT
+  included (audit findings V26, R16-C6, R16-C2, R14-Cnote). An extension is
+  paired by its `(pkg.ext)` name and reports what the same change to a
+  declared field reports, including `reserved_field_reused` when it takes a
+  number the old schema reserved (a reserved field *name* does not apply to
+  an extension, whose name is package-scoped). Extensions of
+  `google/protobuf/descriptor.proto` options types are custom options and
+  are not compared, because which of them a pool holds depends on which files
+  were loaded. A group is descended
+  only when both sides are groups; a group↔message switch keeps its single
+  WIRE finding. `field_type_name_changed` now also fires when a group is
+  retargeted to another type. Rule-pack field plugins now also receive each
+  declared extension, at its `(pkg.ext)` path, and the fields inside groups.
+
+  *Upgrade impact:* `compat check` can exit 1 where it exited 0.
+  `--ignore '(pkg.ext)'` suppresses one extension at any depth, and
+  `--ignore 'parent.(pkg.ext)'` suppresses it at one location. A Python
+  caller that builds its own pool under the pure-Python runtime must resolve
+  each added file (for example with `pool.FindFileByName`) before the checker
+  can see an extension declared in another file; protokit's own loaders do.
 
 ### Fixed — BREAKING (U7: human and machine output agree on success)
 

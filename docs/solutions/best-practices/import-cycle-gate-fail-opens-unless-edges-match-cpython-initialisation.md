@@ -477,7 +477,7 @@ to synthetic packages: `DEFERRED_EDGES`
 (`tests/meta/test_import_layers.py:145-148`) names the two function-level
 imports that exist to break a load-time cycle —
 `src/protokit/schema/profiles.py:192-193` importing `SchemaChecker` inside a
-method, against `src/protokit/schema/checker.py:76`'s top-level
+method, against `src/protokit/schema/checker.py:77`'s top-level
 `from protokit.schema.profiles import filter_for_level`; and
 `src/protokit/message/pytest_plugin.py:585-586` importing `matchers` inside
 `ProtoMatcherFactory.__call__`, against `src/protokit/message/matchers.py:38`'s

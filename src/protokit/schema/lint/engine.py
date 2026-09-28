@@ -1,7 +1,7 @@
 """``LintEngine`` — descriptor-tree walker + per-instance rule registry.
 
 Adopts compat's per-instance design at
-``schema/checker.py:136-143, 217-235`` — each engine instance owns
+``schema/checker.py:170-183, 270-288`` — each engine instance owns
 its loaded-rule dict; there is no process-global registry. The
 ``RULES`` attribute name is reused but the **wire format differs**:
 compat's ``module.RULES`` is a sequence of ``(rule_id, plugin_fn)``
@@ -542,7 +542,7 @@ class LintEngine:
         """Load every entry from ``module.RULES`` per-instance.
 
         Mirrors compat's ``SchemaChecker.load_rule_pack(module)``
-        signature exactly (``schema/checker.py:217``); two **behaviour
+        signature exactly (``schema/checker.py:270``); two **behaviour
         divergences** worth noting:
 
         - The expected element type of ``module.RULES`` differs:
