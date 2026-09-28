@@ -965,11 +965,14 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    pure-Python runtime, a message nested too deep or carrying a
    non-UTF-8 string now fails to decode that way instead of
    crashing with exit 1.
-9. **Descriptor sets with a non-UTF-8 file name.** Under upb,
-   `diff`, `storage` and `forensics` used to accept such a set;
-   they now reject it with exit 2, as `lint` does (it used to
-   crash with exit 1). The pure-Python runtime already rejected
-   it.
+9. **Descriptor sets the other runtime would refuse.** Every
+   command now loads a descriptor set the same way on both
+   protobuf runtimes. Under upb, a set containing a string that
+   is not UTF-8 (a file name, a comment) is now refused with
+   exit 2 where it was accepted. Under the pure-Python runtime, a
+   set with a missing import or a type reference that resolves
+   nowhere, even in a file the command does not use, is now
+   refused with exit 2 as upb always did.
 
 **Machine-readable output.** Consumers of the report rather than
 the exit code see the same correction:
