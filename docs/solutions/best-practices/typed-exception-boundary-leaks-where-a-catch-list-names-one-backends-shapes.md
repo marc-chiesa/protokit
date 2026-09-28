@@ -205,7 +205,8 @@ The first version of the walk had two bugs, and a later audit found a third.
   descends into `(TYPE_MESSAGE, TYPE_GROUP)` (`src/protokit/_fieldview.py:221`).
 - **Reading a map's values re-reads its keys.** On upb, iterating a proto2 map
   whose key is not UTF-8 yields that key as `bytes`, but `values()` looks each
-  key up again and raises `UnicodeDecodeError`. The walk read values before it
+  key up again and raises `UnicodeDecodeError` (provenance — protobuf 5.27.5
+  upb; the outcome is re-asserted by the test named below). The walk read values before it
   checked keys, so a map-valued custom option with a bad key escaped
   `load_pool_from_bytes` raw on upb. It now yields every key, and returns on a
   bad one, before it reads any value
