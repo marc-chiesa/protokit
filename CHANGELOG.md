@@ -41,7 +41,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > |---|---|
 > | `storage scan\|head\|count --on-error skip\|warn` when a record the scan reaches does not parse | exits 2 instead of 0 (for `count --quiet` with no match, instead of 1); the records that did parse still reach stdout |
 > | `compat history\|bisect --proto-file` naming a file absent at the range's NEW endpoint | exits 2 before the walk instead of 0 with `no commits touch …` |
-> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, or from a rule | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`) |
+> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, from a rule, or from an object a rule returns or raises | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`) |
 > | `diff --max-depth` where the limit cuts the comparison short and nothing above the cut differs, identical messages nested deeper than the limit included | exits 2 (`INCOMPLETE`) instead of 0 with `Messages are equal.` |
 > | `lint --exclude` matching every input | exits 2 (`error[lint-analysis-incomplete]`) instead of 0 having linted nothing |
 > | `lint --rule-pack` whose rules declare `profiles` as a single string or a mapping | exits 2 (`error[lint-rule-pack-load]`) instead of loading the pack (a string used to match profile names as substrings); pass a tuple such as `profiles=("name",)` |
@@ -294,7 +294,12 @@ tool ran and found a problem.
     `Exception`, so an exiting rule unwound past it and still became the process
     exit code. `protokit compat check`, `ci`, `history` and `bisect` all reached
     it. A rule that exits is now recorded as an error diagnostic naming the rule,
-    and the run exits 2 with the schema's real verdict still rendered.
+    and the run exits 2 with the schema's real verdict still rendered. The same
+    holds for an object the rule returns or raises that exits while the checker
+    handles it: a coroutine that calls `sys.exit()` when closed, an awaitable
+    whose attribute lookup exits, an exception that exits when formatted into
+    the diagnostic, or a rule id (a `str` subclass from the pack's `RULES`)
+    that exits when formatted (audit finding R16-X3).
   - **A pack raising `KeyboardInterrupt` from its module body.** That reported a
     broken pack to CI as exit 1 — a schema break — where the two sibling pack
     loaders already reported it as a tooling error. The compat loader now matches

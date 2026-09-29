@@ -658,3 +658,193 @@ class TestLoadRulePack:
         checker.check(old, "t.M", new, "t.M")
         assert "alpha" in seen
         assert "beta" in seen
+
+
+async def _exits_on_cleanup():
+    """A coroutine whose ``finally`` calls ``sys.exit(0)`` when it is closed."""
+    import asyncio
+
+    try:
+        await asyncio.sleep(0)
+    finally:
+        sys.exit(0)
+
+
+async def _interrupted_on_cleanup():
+    """A coroutine whose ``finally`` raises ``KeyboardInterrupt`` when it is closed."""
+    import asyncio
+
+    try:
+        await asyncio.sleep(0)
+    finally:
+        raise KeyboardInterrupt
+
+
+def _started(coro):
+    """Advance ``coro`` to its first await, so closing it runs its ``finally``."""
+    coro.send(None)
+    return coro
+
+
+class TestAwaitableCleanupContainsSystemExit:
+    """A plugin that returns a coroutine must not exit the process from its cleanup.
+
+    The dispatch guard catches ``SystemExit`` raised by the plugin call, but
+    ``_cleanup_awaitable`` closed a returned coroutine under ``except
+    Exception``. A coroutine whose ``finally`` calls ``sys.exit(0)`` therefore
+    escaped ``check()`` during that cleanup, and through the CLI the process
+    exited 0 on a real break.
+    """
+
+    def test_field_plugin_cleanup_exit_is_recorded_and_traversal_continues(self) -> None:
+        old, new = _identical_pair()
+
+        def returns_exiting_coroutine(ctx: FieldRuleContext):
+            return _started(_exits_on_cleanup())
+
+        def follow_up(ctx: FieldRuleContext) -> None:
+            ctx.emit(severity=Severity.WIRE, message="still ran")
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        checker.register_field_rule("exits_on_cleanup", returns_exiting_coroutine)
+        checker.register_field_rule("follow_up", follow_up)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any("exits_on_cleanup" in w.message for w in report.errors)
+        assert any(f.rule_id == "follow_up" for f in report.findings)
+
+    def test_message_plugin_cleanup_exit_is_recorded_and_traversal_continues(self) -> None:
+        old, new = _identical_pair()
+
+        def returns_exiting_coroutine(ctx: MessageRuleContext):
+            return _started(_exits_on_cleanup())
+
+        def follow_up(ctx: MessageRuleContext) -> None:
+            ctx.emit(severity=Severity.WIRE, message="still ran")
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        checker.register_message_rule("exits_on_cleanup", returns_exiting_coroutine)
+        checker.register_message_rule("follow_up", follow_up)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any("exits_on_cleanup" in w.message for w in report.errors)
+        assert any(f.rule_id == "follow_up" for f in report.findings)
+
+    def test_keyboard_interrupt_in_cleanup_still_propagates(self) -> None:
+        """Ctrl-C stays the operator's at cleanup time too, as at dispatch time."""
+        old, new = _identical_pair()
+
+        def returns_interrupted_coroutine(ctx: FieldRuleContext):
+            return _started(_interrupted_on_cleanup())
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        checker.register_field_rule("interrupted_on_cleanup", returns_interrupted_coroutine)
+        with pytest.raises(KeyboardInterrupt):
+            checker.check(old, "t.M", new, "t.M")
+
+
+class _ExitsOnAttributeLookup:
+    """An awaitable whose every attribute lookup (``close``, ``cancel``) exits."""
+
+    def __await__(self):
+        return iter(())
+
+    def __getattr__(self, name):
+        raise SystemExit(0)
+
+
+class _ExitsOnTypeInspection:
+    """A return value whose ``__class__`` lookup exits, as ``inspect.isawaitable`` does."""
+
+    @property
+    def __class__(self):
+        raise SystemExit(0)
+
+
+class _ExitingDescriptionError(Exception):
+    """An exception that exits when it is formatted into a diagnostic."""
+
+    def __str__(self):
+        raise SystemExit(0)
+
+
+class _ExitingRepr:
+    def __repr__(self):
+        raise SystemExit(0)
+
+
+def _returns(value):
+    return lambda ctx: value
+
+
+def _raises(exc):
+    def plugin(ctx):
+        raise exc
+    return plugin
+
+
+_HOSTILE_PLUGINS = [
+    pytest.param(_returns(_ExitsOnAttributeLookup()), id="cleanup-attribute-lookup-exits"),
+    pytest.param(_returns(_ExitsOnTypeInspection()), id="type-inspection-exits"),
+    pytest.param(_raises(_ExitingDescriptionError()), id="exception-str-exits"),
+    pytest.param(_raises(RuntimeError(_ExitingRepr())), id="exception-arg-repr-exits"),
+]
+
+
+class TestNoPluginValueEndsTheCheck:
+    """Every step that touches a plugin's return value or exception is guarded.
+
+    The dispatch guard covered the plugin call and, after the cleanup fix,
+    closing a returned coroutine. It did not cover looking up ``close`` or
+    ``cancel`` on the returned object, inspecting whether it is awaitable, or
+    formatting a raised exception into the diagnostic. A hostile object at any
+    of those steps ended ``check()`` with ``SystemExit`` -- exit 0 through the
+    CLI, on a real break.
+    """
+
+    @pytest.mark.parametrize("hostile", _HOSTILE_PLUGINS)
+    @pytest.mark.parametrize("kind", ["field", "message"])
+    def test_a_hostile_plugin_is_recorded_and_traversal_continues(
+        self, hostile, kind: str,
+    ) -> None:
+        old, new = _identical_pair()
+
+        def follow_up(ctx) -> None:
+            ctx.emit(severity=Severity.WIRE, message="still ran")
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        register = getattr(checker, f"register_{kind}_rule")
+        register("hostile", hostile)
+        register("follow_up", follow_up)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any("hostile" in w.message for w in report.errors)
+        assert any(f.rule_id == "follow_up" for f in report.findings)
+
+
+class _ExitingRuleId(str):
+    """A rule id that exits when it is formatted into a diagnostic."""
+
+    def __format__(self, spec):
+        raise SystemExit(0)
+
+    def __str__(self):
+        raise SystemExit(0)
+
+
+class TestRuleIdCannotEndTheCheck:
+    """A rule id comes from the pack's ``RULES``, so it is third-party input too.
+
+    ``iter_rule_pack`` accepts any ``str`` subclass. An id whose ``__format__``
+    exits, paired with a rule that raises, ended ``check()`` while the failure
+    diagnostic was built -- exit 0 through the CLI on a real break.
+    """
+
+    @pytest.mark.parametrize("kind", ["field", "message"])
+    def test_a_hostile_rule_id_is_recorded_as_plain_text(self, kind: str) -> None:
+        old, new = _identical_pair()
+
+        def boom(ctx) -> None:
+            raise RuntimeError("kaboom")
+
+        checker = SchemaChecker(level=CompatibilityLevel.WIRE)
+        getattr(checker, f"register_{kind}_rule")(_ExitingRuleId("rid"), boom)
+        report = checker.check(old, "t.M", new, "t.M")
+        assert any("'rid' raised RuntimeError" in w.message for w in report.errors)

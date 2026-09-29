@@ -255,7 +255,7 @@ doing exactly what `sys.exit(0)` asks for.
 **An error diagnostic is the right shape, not a hard stop.** `check()` is a
 library call that returns a `CompatibilityReport`; its contract is to report,
 not to terminate. So the crash is recorded on the report as a `Diagnostic` at
-`level="error"` (`src/protokit/schema/checker.py:877-906`), and the exit code
+`level="error"` (`src/protokit/schema/checker.py:877-908`), and the exit code
 is derived from the report afterwards. `protokit._trust` is the single-owner
 seam for "can this report be read as success?" — `_compat_signals`
 (`src/protokit/_trust.py:197-198`) makes every error diagnostic a reason, and

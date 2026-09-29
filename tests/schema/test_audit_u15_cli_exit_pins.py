@@ -1173,3 +1173,129 @@ class TestU15Controls:
         ])
         assert result.exit_code == 1
         assert "mid.inner.label" in result.stdout
+
+
+async def _coroutine_exiting_on_cleanup():
+    """Exits the process from its ``finally`` when the engine closes it."""
+    import asyncio
+
+    try:
+        await asyncio.sleep(0)
+    finally:
+        sys.exit(0)
+
+
+def _rule_returning_exiting_coroutine(ctx):
+    """A rule that returns a started coroutine whose cleanup calls ``sys.exit(0)``."""
+    coro = _coroutine_exiting_on_cleanup()
+    coro.send(None)
+    return coro
+
+
+def test_rule_coroutine_exiting_during_cleanup_does_not_forge_exit_0(
+    breaking_protos: tuple[Path, Path],
+) -> None:
+    """The dispatch guard's sibling at cleanup time must hold too.
+
+    A rule returning an awaitable is closed by
+    ``SchemaChecker._cleanup_awaitable``, which caught only ``Exception``.
+    A coroutine whose ``finally`` calls ``sys.exit(0)`` escaped that cleanup
+    exactly as a rule calling ``sys.exit(0)`` escaped dispatch before the
+    fix above: exit 0 on a pair whose only change is a removed field.
+    """
+    old, new = breaking_protos
+    pack_name = "u3_exit_on_cleanup_pack"
+
+    with _temp_rule_pack(pack_name, [("exits_on_cleanup", _rule_returning_exiting_coroutine)]):
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", pack_name,
+        ], catch_exceptions=False)
+
+    assert result.exit_code == 2, (
+        "a rule whose awaitable exits during cleanup is a broken pack (exit 2), "
+        f"not a compatible verdict; got exit {result.exit_code} with "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "exits_on_cleanup" in result.stderr
+
+
+class _AwaitableExitingOnAttributeLookup:
+    def __await__(self):
+        return iter(())
+
+    def __getattr__(self, name):
+        sys.exit(0)
+
+
+class _ExitsWhenFormattedError(Exception):
+    def __str__(self):
+        sys.exit(0)
+
+
+def _rule_returning_hostile_awaitable(ctx):
+    return _AwaitableExitingOnAttributeLookup()
+
+
+def _rule_raising_hostile_exception(ctx):
+    raise _ExitsWhenFormattedError()
+
+
+@pytest.mark.parametrize("rule", [
+    pytest.param(_rule_returning_hostile_awaitable, id="cleanup-attribute-lookup"),
+    pytest.param(_rule_raising_hostile_exception, id="exception-formatting"),
+])
+def test_rule_exiting_outside_the_call_does_not_forge_exit_0(
+    breaking_protos: tuple[Path, Path], rule,
+) -> None:
+    """The steps around the rule call are guarded as tightly as the call itself.
+
+    Looking up ``close``/``cancel`` on a returned awaitable and formatting a
+    raised exception into the diagnostic both ran outside the dispatch guard,
+    so a hostile object exited the process with code 0 and empty output on a
+    pair whose only change is a removed field.
+    """
+    old, new = breaking_protos
+    pack_name = "u3_hostile_value_pack"
+
+    with _temp_rule_pack(pack_name, [("hostile", rule)]):
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", pack_name,
+        ], catch_exceptions=False)
+
+    assert result.exit_code == 2, (
+        f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "hostile" in result.stderr
+
+
+class _RuleIdExitingWhenFormatted(str):
+    def __format__(self, spec):
+        sys.exit(0)
+
+    def __str__(self):
+        sys.exit(0)
+
+
+def _rule_that_raises(ctx):
+    raise RuntimeError("kaboom")
+
+
+def test_rule_id_exiting_when_formatted_does_not_forge_exit_0(
+    breaking_protos: tuple[Path, Path],
+) -> None:
+    """A pack's rule id is its own text; formatting it must not end the run."""
+    old, new = breaking_protos
+    pack_name = "u3_rule_id_pack"
+
+    with _temp_rule_pack(pack_name, [(_RuleIdExitingWhenFormatted("rid"), _rule_that_raises)]):
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", pack_name,
+        ], catch_exceptions=False)
+
+    assert result.exit_code == 2, (
+        f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "rid" in result.stderr

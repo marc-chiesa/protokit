@@ -226,7 +226,7 @@ class SchemaChecker:
             TypeError: If ``plugin_fn`` is an async function.
         """
         self._reject_async(rule_id, plugin_fn)
-        self._field_plugins.append((rule_id, plugin_fn))
+        self._field_plugins.append((_plain_rule_id(rule_id), plugin_fn))
 
     def register_message_rule(self, rule_id: str, plugin_fn: MessagePlugin) -> None:
         """Register an emit-style message-level plugin.
@@ -247,7 +247,7 @@ class SchemaChecker:
             TypeError: If ``plugin_fn`` is an async function.
         """
         self._reject_async(rule_id, plugin_fn)
-        self._message_plugins.append((rule_id, plugin_fn))
+        self._message_plugins.append((_plain_rule_id(rule_id), plugin_fn))
 
     @staticmethod
     def _reject_async(rule_id: str, plugin_fn: object) -> None:
@@ -791,13 +791,13 @@ class SchemaChecker:
                 rule_id, exc, path, warnings_sink,
             )
             return
-        if inspect.isawaitable(result):
+        if _returned_awaitable(result):
             self._cleanup_awaitable(result)
             self._record_plugin_failure(
                 rule_id,
                 TypeError(
-                    "plugin returned an awaitable; async plugins are "
-                    "not supported"
+                    "plugin returned an awaitable or an uninspectable value; "
+                    "async plugins are not supported"
                 ),
                 path,
                 warnings_sink,
@@ -834,13 +834,13 @@ class SchemaChecker:
                 rule_id, exc, path, warnings_sink,
             )
             return
-        if inspect.isawaitable(result):
+        if _returned_awaitable(result):
             self._cleanup_awaitable(result)
             self._record_plugin_failure(
                 rule_id,
                 TypeError(
-                    "plugin returned an awaitable; async plugins are "
-                    "not supported"
+                    "plugin returned an awaitable or an uninspectable value; "
+                    "async plugins are not supported"
                 ),
                 path,
                 warnings_sink,
@@ -856,20 +856,20 @@ class SchemaChecker:
         native coroutines and legacy generator-based ones use
         ``close()``, ``asyncio.Future`` uses ``cancel()``, and
         custom ``__await__`` objects may have neither. Try each
-        method in turn, swallowing any exception so a misbehaving
-        awaitable can't take the whole check down during teardown.
+        method in turn, swallowing ``_PLUGIN_DISPATCH_EXCEPTIONS``
+        (``SystemExit`` included) so teardown can't end the check.
         Returns after the first method completes *successfully*; if
         the first method raises, we still try the next so a
         coroutine that explodes on ``close()`` still gets a chance
         to ``cancel()``.
         """
         for method in ("close", "cancel"):
-            cleanup = getattr(result, method, None)
-            if not callable(cleanup):
-                continue
             try:
+                cleanup = getattr(result, method, None)
+                if not callable(cleanup):
+                    continue
                 cleanup()
-            except Exception:
+            except _PLUGIN_DISPATCH_EXCEPTIONS:
                 continue
             return
 
@@ -895,10 +895,12 @@ class SchemaChecker:
         here as an error diagnostic instead of becoming the process
         exit code.
         """
-        message = (
-            f"schema plugin '{rule_id}' raised "
-            f"{type(exc).__name__}: {exc}"
-        )
+        try:
+            detail = f"{type(exc).__name__}: {exc}"
+        except _PLUGIN_DISPATCH_EXCEPTIONS:
+            # The plugin's exception cannot describe itself; the rule id is enough.
+            detail = "an exception that could not be formatted"
+        message = f"schema plugin '{rule_id}' raised {detail}"
         warnings_sink.append(Diagnostic(
             path=str(path) if path else None,
             message=message,
@@ -946,6 +948,31 @@ def _ignore_matches(ignored: FieldPath, path: FieldPath) -> bool:
     if len(segments) == 1 and segments[0].name.startswith("("):
         return any(segments[0].matches(segment) for segment in path.segments)
     return ignored.is_prefix_of(path)
+
+
+def _plain_rule_id(rule_id: str) -> str:
+    """An exact ``str`` copy of a rule id, taken without calling its methods.
+
+    A rule id comes from a third-party pack, and ``iter_rule_pack`` accepts any
+    ``str`` subclass. One whose ``__format__`` or ``__str__`` exits would end
+    the check when the id is formatted into a failure diagnostic.
+    ``str.__str__`` copies the characters without dispatching to the subclass.
+    """
+    return str.__str__(rule_id) if isinstance(rule_id, str) else rule_id
+
+
+def _returned_awaitable(result: object) -> bool:
+    """Whether a plugin's return value is an awaitable the engine must refuse.
+
+    ``inspect.isawaitable`` reads the value's type, which a hostile object can
+    make raise. A value that cannot even be inspected is treated as a broken
+    return, so it is cleaned up and recorded like an awaitable instead of
+    ending the check.
+    """
+    try:
+        return inspect.isawaitable(result)
+    except _PLUGIN_DISPATCH_EXCEPTIONS:
+        return True
 
 
 # ---------------------------------------------------------------------------
