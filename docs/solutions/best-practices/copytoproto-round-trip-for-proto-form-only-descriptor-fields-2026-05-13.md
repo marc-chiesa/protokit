@@ -276,14 +276,13 @@ indexes its messages — the same pin-the-object rule applies there, with the
 extra consequence that a pinned `FileDescriptor` keeps its whole pool alive.
 
 **D1 — reserved-name detection in the schema checker
-(`schema/rules.py:911-918`):**
+(`schema/rules.py:976-998`, `_reserved`, which reads the reserved ranges in the
+same round-trip):**
 
 ```python
-def _reserved_names(desc: proto_descriptor.Descriptor) -> set[str]:
-    """Names reserved on ``desc`` via the ``reserved`` keyword."""
-    dp = descriptor_pb2.DescriptorProto()
-    desc.CopyToProto(dp)
-    return set(dp.reserved_name)
+dp = _descriptors.message_proto(desc)
+ranges = _normalize_ranges((rng.start, rng.end) for rng in dp.reserved_range)
+return ranges, set(dp.reserved_name)
 ```
 
 **D6a U5 — `imports/no-public` (`schema/lint/rules/imports.py`):**

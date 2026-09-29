@@ -982,7 +982,7 @@ def main() -> None:
     "ignore_paths",
     multiple=True,
     metavar="PATH",
-    help="Suppress findings at this dotted path prefix (repeatable).",
+    help="Suppress findings under this path; a lone (pkg.ext) matches at any depth (repeatable).",
 )
 @click.option(
     "--dedupe-by-type",
@@ -1194,7 +1194,7 @@ def check(
     "ignore_paths",
     multiple=True,
     metavar="PATH",
-    help="Suppress findings at this dotted path prefix (repeatable).",
+    help="Suppress findings under this path; a lone (pkg.ext) matches at any depth (repeatable).",
 )
 @click.option(
     "--dedupe-by-type",
@@ -1530,7 +1530,7 @@ def history(
     "ignore_paths",
     multiple=True,
     metavar="PATH",
-    help="Suppress findings at this dotted path prefix (repeatable).",
+    help="Suppress findings under this path; a lone (pkg.ext) matches at any depth (repeatable).",
 )
 @click.option(
     "--dedupe-by-type",
@@ -1900,7 +1900,7 @@ def bisect(
     "ignore_paths",
     multiple=True,
     metavar="PATH",
-    help="Suppress findings at this dotted path prefix (repeatable).",
+    help="Suppress findings under this path; a lone (pkg.ext) matches at any depth (repeatable).",
 )
 @click.option(
     "--dedupe-by-type",

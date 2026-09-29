@@ -30,6 +30,7 @@ from google.protobuf.message import Message
 
 from protokit._fieldview import (
     FieldView,
+    data_extensions,
     extension_key,
     first_undecodable_string,
     is_map_field,
@@ -321,7 +322,8 @@ class TestViewIsImmutable:
 # wrong in both directions — it named two modules that enumerate nothing and
 # omitted ``schema/rules.py``, whose ``reserved_field_reused`` has the very
 # ``for fd in ...fields: if fd.is_extension: continue`` shape that V19 was
-# (an extension reusing a reserved number is invisible to it; a U17 item). A
+# (extensions now reach it through ``data_extensions``, but its field loop
+# still enumerates directly; a U17 item). A
 # hand-written list inside the guard that exists to prevent sibling
 # blindness had itself gone blind. So the set below must equal what the
 # walker finds: a module migrated to ``FieldView`` is removed from it (the
@@ -875,3 +877,40 @@ class TestMayHoldUnvalidatedString:
     ) -> None:
         desc = reach_pool.FindMessageTypeByName(full_name)
         assert may_hold_unvalidated_string(desc) is expected
+
+
+class TestDataExtensions:
+    """The extensions a schema comparison pairs: all but custom options."""
+
+    def test_a_data_message_yields_its_extensions(
+        self, pool: descriptor_pool.DescriptorPool,
+    ) -> None:
+        msg = pool.FindMessageTypeByName("c2.Msg")
+        assert data_extensions(msg) == FieldView.of(msg).extensions != ()
+
+    def test_a_message_without_extension_ranges_yields_none(
+        self, pool: descriptor_pool.DescriptorPool,
+    ) -> None:
+        assert data_extensions(pool.FindMessageTypeByName("c3.Msg3")) == ()
+
+    def test_an_options_message_yields_none_even_with_custom_options_loaded(self) -> None:
+        """Which custom options a pool holds depends on the files it loaded."""
+        descriptor_proto = descriptor_pb2.FileDescriptorProto()
+        descriptor_pb2.DESCRIPTOR.CopyToProto(descriptor_proto)
+        options = descriptor_pb2.FileDescriptorProto(
+            name="o.proto", package="o", syntax="proto2",
+            dependency=["google/protobuf/descriptor.proto"],
+        )
+        options.extension.add(
+            name="my_opt", number=50000, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+            extendee=".google.protobuf.FieldOptions",
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(descriptor_proto)
+        pool.Add(options)
+        # Resolve the file as protokit's loaders do (``add_and_resolve``): the
+        # pure-Python pool registers a file's extensions only once it is built.
+        pool.FindFileByName("o.proto")
+        field_options = pool.FindMessageTypeByName("google.protobuf.FieldOptions")
+        assert FieldView.of(field_options).extensions != ()
+        assert data_extensions(field_options) == ()

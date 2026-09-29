@@ -18,7 +18,7 @@ References:
   audit-trail correction in the project's design notes.
 
 Module shape adopts the ``RULES`` attribute name from compat
-(``schema/checker.py:217-220``) but its wire format differs: this
+(``schema/checker.py:270-275``) but its wire format differs: this
 pack's ``RULES`` is a tuple of bare ``@lint_rule``-decorated
 functions (the rule_id lives on ``fn._lint_spec``), whereas compat's
 ``RULES`` is ``(rule_id, plugin_fn)`` tuples. Lint packs cannot be
@@ -302,7 +302,7 @@ def check_snake_case_packages(ctx: FileLintContext) -> None:
 
 
 # Module-level RULES tuple — same attribute name as compat
-# (``schema/checker.py:217-220``) but holding bare decorated callables,
+# (``schema/checker.py:270-275``) but holding bare decorated callables,
 # not (rule_id, fn) tuples. ``LintEngine.load_rule_pack`` reads this
 # attribute and extracts each fn's ``_lint_spec``.
 RULES: tuple[Callable[..., None], ...] = (

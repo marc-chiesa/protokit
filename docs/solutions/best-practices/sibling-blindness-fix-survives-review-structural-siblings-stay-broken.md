@@ -121,15 +121,15 @@ fix is to establish a *single owner* and delete the per-caller restatements.
 
 In instance 1, the first revision of the V31 guard sat at the CLI flag
 boundary, in `_build_configured_checker`
-(`src/protokit/schema/cli.py:594`, anchor `def _build_configured_checker`).
+(`src/protokit/schema/cli.py:698`, anchor `def _build_configured_checker`).
 Every CLI route was covered. `SchemaChecker.ignore("")` and
 `CompatibilityPolicy(ignore_paths=("",))` — both public API, neither routed
 through the CLI — stayed broken. The reviewer reproduced it: a pair that
 reports 1 finding reported 0.
 
 The fix moved the rule to the single owner,
-`SchemaChecker.ignore` (`src/protokit/schema/checker.py:313`, guard at
-`:357`, anchor `if len(path) == 0:`), and deleted the CLI guard. The comment
+`SchemaChecker.ignore` (`src/protokit/schema/checker.py:340`, guard at
+`:386`, anchor `if len(path) == 0:`), and deleted the CLI guard. The comment
 left at the old site records why, so the next person does not re-add it there.
 
 **Shape B — the owner is correct and simply never reached.** Nothing about the
@@ -138,8 +138,8 @@ owner is wrong. There is a code path on which it is not invoked at all.
 Instance 2 is this shape. After the relocation, `history` and `bisect` still
 accepted `--ignore=` and exited 0. Both build the checker **inside the
 per-commit loop** — `_build_configured_checker` is called at
-`src/protokit/schema/cli.py:1241` (inside `for old_ref, new_ref in pairs:`) and
-`:1618` (inside `for sha in commits:`). An empty commit range
+`src/protokit/schema/cli.py:1364` (inside `for old_ref, new_ref in pairs:`) and
+`:1759` (inside `for sha in commits:`). An empty commit range
 (`--range HEAD..HEAD`) yields zero iterations, so the loop body never runs,
 the checker is never built, and the owner is never consulted. The command
 printed `no commits touch …` and exited 0 with an invalid flag silently
@@ -149,7 +149,7 @@ The fix for Shape B is an **additional eager check at every entry point** —
 and, critically, one that *invokes* the owner rather than restating its rule:
 
 ```python
-# src/protokit/schema/cli.py:562
+# src/protokit/schema/cli.py:666
 def _validate_ignore_paths(ignore_paths: tuple[str, ...]) -> None:
     probe = SchemaChecker()
     for path in ignore_paths:
@@ -219,8 +219,8 @@ $ grep -n 'report.diagnostics' src/protokit/schema/cli.py
 ```console
 $ grep -rn '\.ignore(' src/protokit/
 src/protokit/schema/profiles.py:201:            checker.ignore(path)
-src/protokit/schema/cli.py:587:            probe.ignore(path)
-src/protokit/schema/cli.py:621:            checker.ignore(path)
+src/protokit/schema/cli.py:691:            probe.ignore(path)
+src/protokit/schema/cli.py:725:            checker.ignore(path)
 ```
 
 Three: the policy path, the eager validator, the checker builder. That is the
@@ -552,7 +552,7 @@ error: invalid --ignore path ''            # exit 2
 ```
 
 **After** — the rule lives at the single owner, `SchemaChecker.ignore`
-(`src/protokit/schema/checker.py:357`), and `CompatibilityPolicy.check` reaches
+(`src/protokit/schema/checker.py:386`), and `CompatibilityPolicy.check` reaches
 it through `checker.ignore(path)` (`src/protokit/schema/profiles.py:201`). The
 CLI guard was deleted; a comment at the old site records why it must not come
 back.
@@ -575,9 +575,9 @@ $ echo $?
 0
 ```
 
-The checker is built at `src/protokit/schema/cli.py:1241`, inside
+The checker is built at `src/protokit/schema/cli.py:1364`, inside
 `for old_ref, new_ref in pairs:`. Zero pairs, zero iterations, zero validation.
-`bisect` has the identical structure at `:1618`.
+`bisect` has the identical structure at `:1759`.
 
 **After** — `_validate_ignore_paths(ignore_paths)` at each subcommand entry
 (`:929`, `:1161`, `:1502`, `:1826`), implemented as a throwaway probe that
@@ -653,7 +653,7 @@ traceback, not a warning, not the finding the walk had already computed.
 
 **After** (#76) — the dispatch guard also names `SystemExit`, from
 `_PLUGIN_DISPATCH_EXCEPTIONS` (`src/protokit/schema/checker.py:112-115`),
-applied at the two dispatch call sites (`:787`, `:830`):
+applied at the two dispatch call sites (`:789`, `:832`):
 
 ```console
 $ protokit compat check --proto old.proto new.proto --type acme.Thing \

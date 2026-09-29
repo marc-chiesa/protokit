@@ -59,7 +59,7 @@ from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pool
 
 from protokit._descriptors import is_map_field
-from protokit._fieldview import FieldView
+from protokit._fieldview import FieldView, data_extensions, extension_key, same_message_kind
 from protokit.message.model import Diagnostic, FieldPath
 from protokit.schema.model import (
     CompatibilityLevel,
@@ -343,6 +343,8 @@ class SchemaChecker:
         Uses segment-name prefix matching. ``"debug"`` suppresses
         ``debug`` and every descendant path such as ``debug.inner``.
         ``"parent.debug"`` suppresses only under that specific parent.
+        A lone extension key such as ``"(pkg.ext)"`` is the one exception:
+        it suppresses that extension wherever it appears, at any depth.
         Filtering is applied after profile filtering, so a suppressed
         finding is also absent from the bucket properties.
 
@@ -407,16 +409,16 @@ class SchemaChecker:
         ``ignore_paths`` before being assembled into the report.
 
         Args:
-            old_pool: Descriptor pool containing the old schema.
-            old_type: Fully-qualified message type name in
-                ``old_pool`` (e.g. ``"acme.User"``).
-            new_pool: Descriptor pool containing the new schema. May
-                be the same object as ``old_pool`` for same-pool
-                checks.
-            new_type: Fully-qualified message type name in
-                ``new_pool``. Use a different name from ``old_type``
-                for cross-type comparisons (e.g., ``"acme.UserV1"``
-                vs ``"acme.UserV2"``).
+            old_pool: Descriptor pool containing the old schema. Under the
+                pure-Python runtime, resolve each file added with a bare
+                ``Add`` (``FindFileByName``) before checking, or extensions
+                declared in another file are not compared.
+            old_type: Fully-qualified message type name in ``old_pool``.
+            new_pool: Descriptor pool containing the new schema, under the
+                same condition; may be the same object as ``old_pool``.
+            new_type: Fully-qualified message type name in ``new_pool``;
+                a different name from ``old_type`` compares across types
+                (e.g., ``"acme.UserV1"`` vs ``"acme.UserV2"``).
 
         Returns:
             A ``CompatibilityReport`` whose ``findings`` are already
@@ -650,8 +652,8 @@ class SchemaChecker:
         warnings_sink: list[Diagnostic],
         stack: list[tuple[Any, ...]],
     ) -> None:
-        old_fields = FieldView.of(old_m).by_name
-        new_fields = FieldView.of(new_m).by_name
+        old_fields = self._fields_and_extensions(old_m)
+        new_fields = self._fields_and_extensions(new_m)
         names = sorted(set(old_fields) | set(new_fields))
         for name in names:
             old_fd = old_fields.get(name)
@@ -677,7 +679,7 @@ class SchemaChecker:
                     ))
                 continue
 
-            if old_fd.type != FD.TYPE_MESSAGE or new_fd.type != FD.TYPE_MESSAGE:
+            if not same_message_kind(old_fd, new_fd):
                 continue
 
             old_is_map = is_map_field(old_fd)
@@ -913,8 +915,37 @@ class SchemaChecker:
         ignored = self._ignore_paths
         return [
             f for f in findings
-            if not any(ig.is_prefix_of(f.path) for ig in ignored)
+            if not any(_ignore_matches(ig, f.path) for ig in ignored)
         ]
+
+    @staticmethod
+    def _fields_and_extensions(
+        m: proto_descriptor.Descriptor,
+    ) -> dict[str, proto_descriptor.FieldDescriptor]:
+        """Declared fields by name, plus each declared extension under ``(pkg.ext)``.
+
+        Extensions come from ``m``'s own pool, so each side is paired against
+        what its own schema declares, and :func:`data_extensions` leaves out
+        custom options. The ``(pkg.ext)`` key cannot collide with a declared
+        field's name.
+        """
+        fields = FieldView.of(m).name_map()
+        for ext in data_extensions(m):
+            fields[extension_key(ext)] = ext
+        return fields
+
+
+def _ignore_matches(ignored: FieldPath, path: FieldPath) -> bool:
+    """Whether an ``ignore`` path suppresses a finding reported at ``path``.
+
+    A dotted path matches as a segment prefix. A lone extension key such as
+    ``(pkg.ext)`` matches that extension at any depth, because the message it
+    extends can be reached by many paths.
+    """
+    segments = ignored.segments
+    if len(segments) == 1 and segments[0].name.startswith("("):
+        return any(segments[0].matches(segment) for segment in path.segments)
+    return ignored.is_prefix_of(path)
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +966,13 @@ def check_compatibility(
     Convenience wrapper around ``SchemaChecker(level=level).check(...)``.
     Use the class directly when you need to register custom rules,
     configure ignore paths, or load rule packs.
+
+    Declared extensions are compared, so both pools must expose every file
+    that declares one. protokit's loaders resolve each file as they add it.
+    A pool you build yourself under the pure-Python runtime must do the same
+    (``pool.FindFileByName(name)`` after each bare ``pool.Add``): that
+    runtime registers a file's extensions only once the file is built, and
+    an extension it has not registered is not compared at all.
 
     Args:
         old_pool: Descriptor pool containing the old schema.

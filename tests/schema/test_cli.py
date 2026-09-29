@@ -2337,3 +2337,55 @@ class TestUnclassifiedGitFailureExitCode:
             f"{result.exit_code}; exception={result.exception!r}"
         )
         assert "unable to read tree" in result.stderr
+
+
+class TestExtensionAndGroupBreaksExit1:
+    """Breaks the checker could not see used to exit 0 at every level."""
+
+    @staticmethod
+    def _desc(tmp_path: Path, label: str, fdp: descriptor_pb2.FileDescriptorProto) -> Path:
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.add().CopyFrom(fdp)
+        path = tmp_path / f"{label}.descriptor_set"
+        path.write_bytes(fds.SerializeToString())
+        return path
+
+    @staticmethod
+    def _extension_file(ext_type: int) -> descriptor_pb2.FileDescriptorProto:
+        f = descriptor_pb2.FieldDescriptorProto
+        fdp = descriptor_pb2.FileDescriptorProto(name="e.proto", package="t", syntax="proto2")
+        m = fdp.message_type.add(name="M")
+        m.field.add(name="a", number=1, type=f.TYPE_INT32, label=f.LABEL_OPTIONAL)
+        m.extension_range.add(start=100, end=200)
+        fdp.extension.add(name="x", number=100, type=ext_type, label=f.LABEL_OPTIONAL,
+                          extendee=".t.M")
+        return fdp
+
+    @staticmethod
+    def _group_file(inner_type: int) -> descriptor_pb2.FileDescriptorProto:
+        f = descriptor_pb2.FieldDescriptorProto
+        fdp = descriptor_pb2.FileDescriptorProto(name="g.proto", package="t", syntax="proto2")
+        m = fdp.message_type.add(name="M")
+        m.nested_type.add(name="G").field.add(name="x", number=2, type=inner_type,
+                                              label=f.LABEL_OPTIONAL)
+        m.field.add(name="g", number=1, type=f.TYPE_GROUP, label=f.LABEL_OPTIONAL,
+                    type_name=".t.M.G")
+        return fdp
+
+    @pytest.mark.parametrize(("build", "path"), [
+        pytest.param("_extension_file", "(t.x)", id="declared-extension"),
+        pytest.param("_group_file", "g.x", id="proto2-group"),
+    ])
+    def test_a_break_inside_an_extension_or_group_exits_1(
+        self, tmp_path: Path, build: str, path: str,
+    ) -> None:
+        f = descriptor_pb2.FieldDescriptorProto
+        builder = getattr(self, build)
+        old_path = self._desc(tmp_path, "old", builder(f.TYPE_INT32))
+        new_path = self._desc(tmp_path, "new", builder(f.TYPE_STRING))
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M", "--level", "strict",
+        ])
+        assert result.exit_code == 1, result.output
+        assert "INCOMPATIBLE" in result.output
+        assert path in result.output
