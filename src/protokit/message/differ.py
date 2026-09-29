@@ -22,7 +22,7 @@ from protokit._descriptors import (
     label_name,
     type_name,
 )
-from protokit._fieldview import FieldView, extension_key
+from protokit._fieldview import FieldView, extension_key, is_message_like, same_message_kind
 from protokit._fieldview import field_present as _fieldview_field_present
 from protokit._fieldview import field_value as _fieldview_field_value
 from protokit.message._presence import PresenceVerdict, presence_verdict
@@ -1236,7 +1236,7 @@ class MessageDifferencer:
                             field_path, differences, stack, item.depth,
                             warnings, same_pool,
                         )
-                    elif left_fd.type == TYPE_MESSAGE:
+                    elif is_message_like(left_fd):
                         self._compare_message_field(
                             item.left_msg, item.right_msg, left_fd, right_fd,
                             field_path, stack, item.depth, differences,
@@ -1344,7 +1344,7 @@ class MessageDifferencer:
 
         # Type change (skip for message->message)
         if left_fd.type != right_fd.type and not (
-            left_fd.type == TYPE_MESSAGE and right_fd.type == TYPE_MESSAGE
+            same_message_kind(left_fd, right_fd)
         ):
             diffs.append(Difference(
                 path=path,
@@ -1368,8 +1368,8 @@ class MessageDifferencer:
         # on both sides — the recursive walk only ever sees populated types.
         if (
             self.strict_schema
-            and left_fd.type == TYPE_MESSAGE
-            and right_fd.type == TYPE_MESSAGE
+            # Both messages or both groups; a framing switch is a TYPE_CHANGED.
+            and same_message_kind(left_fd, right_fd)
         ):
             left_name = left_fd.message_type.full_name
             right_name = right_fd.message_type.full_name
@@ -1384,8 +1384,8 @@ class MessageDifferencer:
                 left_value = left_fd.message_type.fields_by_name["value"]
                 right_value = right_fd.message_type.fields_by_name["value"]
                 if (
-                    left_value.type != TYPE_MESSAGE
-                    or right_value.type != TYPE_MESSAGE
+                    not is_message_like(left_value)
+                    or not is_message_like(right_value)
                 ):
                     # A message<->scalar value change is not type-NAME drift;
                     # _compare_map records it as a TYPE_CHANGED difference.
@@ -2086,7 +2086,7 @@ class MessageDifferencer:
         # Check if treat_as_map is configured for this field
         key_field = self._get_treat_as_map_key(field_name, path)
         if key_field:
-            if left_fd.type == TYPE_MESSAGE:
+            if is_message_like(left_fd):
                 self._compare_treat_as_map(
                     left_msg, right_msg, left_fd, right_fd, path,
                     key_field, diffs, stack, depth, warnings, same_pool,
@@ -2118,7 +2118,7 @@ class MessageDifferencer:
         for i in range(min_len):
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
 
-            if left_fd.type == TYPE_MESSAGE:
+            if is_message_like(left_fd):
                 stack.append(_WorkItem(left_list[i], right_list[i], idx_path, depth + 1))
             else:
                 left_val = left_list[i]
@@ -2142,7 +2142,7 @@ class MessageDifferencer:
         if not self._partial:
             for i in range(min_len, len(right_list)):
                 idx_path = _replace_bracket(path, str(i)) if path.segments else path
-                if right_fd.type == TYPE_MESSAGE:
+                if is_message_like(right_fd):
                     if _has_populated_fields(right_list[i]):
                         stack.append(_WorkItem(None, right_list[i], idx_path, depth + 1))
                     else:
@@ -2159,7 +2159,7 @@ class MessageDifferencer:
 
         for i in range(min_len, len(left_list)):
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
-            if left_fd.type == TYPE_MESSAGE:
+            if is_message_like(left_fd):
                 if _has_populated_fields(left_list[i]):
                     stack.append(_WorkItem(left_list[i], None, idx_path, depth + 1))
                 else:
@@ -2269,7 +2269,7 @@ class MessageDifferencer:
                 if self._partial:
                     continue
                 right_val = right_map[key]
-                if right_value_fd.type == TYPE_MESSAGE:
+                if is_message_like(right_value_fd):
                     if _has_populated_fields(right_val):
                         stack.append(_WorkItem(None, right_val, key_path, depth + 1))
                     else:
@@ -2285,7 +2285,7 @@ class MessageDifferencer:
                     )
             elif key not in right_map:
                 left_val = left_map[key]
-                if left_value_fd.type == TYPE_MESSAGE:
+                if is_message_like(left_value_fd):
                     if _has_populated_fields(left_val):
                         stack.append(_WorkItem(left_val, None, key_path, depth + 1))
                     else:
@@ -2301,7 +2301,7 @@ class MessageDifferencer:
                     )
             else:
                 # Both have the key
-                if left_value_fd.type == TYPE_MESSAGE:
+                if is_message_like(left_value_fd):
                     stack.append(_WorkItem(
                         left_map[key], right_map[key], key_path, depth + 1,
                     ))
@@ -2356,7 +2356,7 @@ class MessageDifferencer:
         Returns:
             True if the two elements are strictly engine-equal.
         """
-        if left_fd.type == TYPE_MESSAGE:
+        if is_message_like(left_fd):
             # Engine equality for message elements: a fresh default-config
             # differ gives strict comparison with full descriptor awareness.
             sub_result = MessageDifferencer().compare(left_elem, right_elem)
@@ -2428,7 +2428,7 @@ class MessageDifferencer:
         # Expected-side leftovers -> REMOVED, keyed by original left index.
         for i in expected_unmatched:
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
-            if left_fd.type == TYPE_MESSAGE:
+            if is_message_like(left_fd):
                 if _has_populated_fields(left_list[i]):
                     stack.append(_WorkItem(left_list[i], None, idx_path, depth + 1))
                 else:
@@ -2446,7 +2446,7 @@ class MessageDifferencer:
         # Actual-side leftovers -> ADDED, keyed by original right index.
         for i in actual_unmatched:
             idx_path = _replace_bracket(path, str(i)) if path.segments else path
-            if right_fd.type == TYPE_MESSAGE:
+            if is_message_like(right_fd):
                 if _has_populated_fields(right_list[i]):
                     # force_emit: partial does NOT descend into set fields
                     # (KTD-8 carve-out), so an actual-only set message element
@@ -2709,7 +2709,7 @@ class MessageDifferencer:
                     for k, v in value.items():
                         key_str = format_key(k)
                         key_path = _replace_bracket(field_path, key_str)
-                        if value_fd.type == TYPE_MESSAGE:
+                        if is_message_like(value_fd):
                             if _has_populated_fields(v):
                                 emit_stack.append((v, key_path, cur_depth + 1))
                             else:
@@ -2722,14 +2722,14 @@ class MessageDifferencer:
                                 key_path, change_type, v, value_fd, cur_msg,
                                 is_new=is_new, diffs=diffs, warnings=warnings,
                             )
-                elif fd.type == TYPE_MESSAGE and not is_repeated(fd):
+                elif is_message_like(fd) and not is_repeated(fd):
                     # Singular sub-message: push for full recursion
                     emit_stack.append((value, field_path, cur_depth + 1))
                 elif is_repeated(fd):
                     # Check treat_as_map for key-based path formatting
                     tam_key = (
                         self._get_treat_as_map_key(field_name, field_path)
-                        if fd.type == TYPE_MESSAGE
+                        if is_message_like(fd)
                         else None
                     )
                     # Look up the key field descriptor once for the whole list
@@ -2755,7 +2755,7 @@ class MessageDifferencer:
                         bracketed = [(str(i), elem) for i, elem in enumerate(value)]
                     for key_bracket, elem in bracketed:
                         elem_path = _replace_bracket(field_path, key_bracket)
-                        if fd.type == TYPE_MESSAGE:
+                        if is_message_like(fd):
                             if _has_populated_fields(elem):
                                 emit_stack.append((elem, elem_path, cur_depth + 1))
                             else:
@@ -2807,7 +2807,7 @@ class MessageDifferencer:
                 return _WorkItem(None, child, p, depth + 1)
             return _WorkItem(child, None, p, depth + 1)
 
-        if fd.type == TYPE_MESSAGE and not is_repeated(fd):
+        if is_message_like(fd) and not is_repeated(fd):
             if _field_present(msg, fd):
                 child = _field_value(msg, fd)
                 if _has_populated_fields(child):
@@ -2823,7 +2823,7 @@ class MessageDifferencer:
             for k, v in map_val.items():
                 key_str = format_key(k)
                 key_path = _replace_bracket(path, key_str) if path.segments else path
-                if value_fd.type == TYPE_MESSAGE:
+                if is_message_like(value_fd):
                     if _has_populated_fields(v):
                         stack.append(_work_item(v, key_path))
                     else:
@@ -2840,7 +2840,7 @@ class MessageDifferencer:
             vals = _field_value(msg, fd)
             for i, elem in enumerate(vals):
                 idx_path = _replace_bracket(path, str(i)) if path.segments else path
-                if fd.type == TYPE_MESSAGE:
+                if is_message_like(fd):
                     if _has_populated_fields(elem):
                         stack.append(_work_item(elem, idx_path))
                     else:
