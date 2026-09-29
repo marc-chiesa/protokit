@@ -48,6 +48,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `forensics match` with a candidate it cannot measure (a proto2 `required` field absent) | exits 2 after rendering the ranking, instead of 0. A candidate the message merely fails to decode under is still ranked last, and exits 0 as long as another candidate parses |
 > | *(pure-Python)* a descriptor set upb refuses to build: a missing import, or a type reference that resolves nowhere, even in a file the command does not use | exits 2, as upb already did: `lint` (`error[lint-missing-imports]`), `diff`, `storage` and `forensics` instead of 0, `compat` instead of a traceback and 1 |
 > | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
+> | `diff` over messages holding a proto2 group or an editions DELIMITED field | the group is compared field by field: identical groups from two descriptor sets compare equal (exit 0 instead of 1), a change is reported at the inner field instead of the whole group, and `ignore_fields`, float tolerance and presence mode apply inside it |
+> | *(API)* `MessageDifferencer`, `proto_match` / `expect_proto` and the pytest `proto_matcher` fixture over the same messages | the same verdicts as `diff`; field hooks (`register_validate_hook`, `register_compare_hook`, `register_report_hook`) run on each field inside the group instead of once at the group, and `register_message_validate_hook` hooks also run for the group |
 > | `compat` where a declared proto2 extension changes (type, number, removal or addition), or a field inside a proto2 group or an editions DELIMITED field changes | exits 1 (INCOMPATIBLE) instead of 0 at each level that reports the same change to a declared field; a group retargeted to another message type is reported at STRICT |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
 > | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
@@ -131,6 +133,22 @@ All notable changes to `protokit` are documented here. Format loosely follows
   `ignore_fields`, `treat_as_map`, `treat_as_set`, `--filter` and
   `DiffResult.filter` accept it too (ignore selectors still take no bracket
   suffix, as before).
+
+- **The differ compares groups by content** (audit findings R13-C2,
+  R13-X7). A proto2 group or an editions DELIMITED field was compared as one
+  opaque value: a change was reported at the group rather than the field that
+  changed, `ignore_fields`, float tolerance and presence mode never applied
+  inside it, and identical groups from two descriptor sets (`--left-desc` /
+  `--right-desc`, or separate pools) compared unequal. Groups are now walked
+  like message fields, including group-typed extensions, repeated groups
+  under `treat_as_map` / `treat_as_set`, and `--max-depth` truncation. The
+  change reaches every caller of `MessageDifferencer`, including
+  `proto_match` / `expect_proto` and the pytest `proto_matcher` fixture, and
+  differ hooks now see a group's inner fields as they do a message's. A
+  failing pytest `==` on such messages now lists the inner fields that
+  differ; whether it fails is still decided by protobuf equality. A field
+  that is a group on one side and a message on the other is still reported
+  as one `TYPE_CHANGED`.
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and

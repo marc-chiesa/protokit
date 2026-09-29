@@ -892,3 +892,67 @@ class TestCrossPoolExtensions:
         assert [(str(x.path), x.change_type.name) for x in diff_messages(left, right)] == [
             ("(x.xtag)", "REMOVED"),
         ]
+
+
+def _group_ext_schema() -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``t.M`` extended by a group-typed extension ``t.ext`` (type ``t.Ext``)."""
+    f = descriptor_pb2.FieldDescriptorProto
+    fdp = descriptor_pb2.FileDescriptorProto(name="ge.proto", package="t", syntax="proto2")
+    msg = fdp.message_type.add(name="M")
+    msg.field.add(name="name", number=1, type=f.TYPE_STRING, label=f.LABEL_OPTIONAL)
+    msg.extension_range.add(start=100, end=200)
+    ext_type = fdp.message_type.add(name="Ext")
+    ext_type.field.add(name="a", number=1, type=f.TYPE_INT32, label=f.LABEL_OPTIONAL)
+    fdp.extension.add(
+        name="ext", number=100, type=f.TYPE_GROUP, label=f.LABEL_OPTIONAL,
+        type_name=".t.Ext", extendee=".t.M",
+    )
+    return fdp
+
+
+def _group_ext_message(a: int) -> Message:
+    """A ``t.M`` from a fresh pool, with the group extension's ``a`` set."""
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(_group_ext_schema())
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("t.M"))
+    msg = cls(name="n")
+    msg.Extensions[pool.FindExtensionByName("t.ext")].a = a
+    return msg
+
+
+class TestGroupTypedExtension:
+    """A group-typed extension is walked like a message-typed one, across pools too."""
+
+    def test_identical_group_extensions_from_two_pools_are_equal(self) -> None:
+        result = MessageDifferencer().compare(_group_ext_message(1), _group_ext_message(1))
+        assert result.differences == ()
+
+    def test_an_inner_change_is_reported_under_the_extension_key(self) -> None:
+        result = MessageDifferencer().compare(_group_ext_message(1), _group_ext_message(2))
+        assert [(str(d.path), d.change_type.value) for d in result.differences] == [
+            ("(t.ext).a", "MODIFIED"),
+        ]
+
+    @pytest.mark.parametrize(("right_a", "exit_code"), [(1, 0), (2, 1)])
+    def test_the_cli_compares_group_extensions_across_descriptor_sets(
+        self, tmp_path, right_a: int, exit_code: int,
+    ) -> None:
+        from click.testing import CliRunner
+
+        from protokit.message.cli import main
+
+        desc = descriptor_pb2.FileDescriptorSet()
+        desc.file.add().CopyFrom(_group_ext_schema())
+        paths = {}
+        for side, a in (("left", 1), ("right", right_a)):
+            (tmp_path / f"{side}.desc").write_bytes(desc.SerializeToString())
+            (tmp_path / f"{side}.pb").write_bytes(_group_ext_message(a).SerializeToString())
+            paths[side] = tmp_path / side
+        result = CliRunner().invoke(main, [
+            f"{paths['left']}.pb", f"{paths['right']}.pb",
+            "--left-desc", f"{paths['left']}.desc", "--right-desc", f"{paths['right']}.desc",
+            "--left-type", "t.M", "--right-type", "t.M",
+        ])
+        assert result.exit_code == exit_code, result.output
+        if exit_code:
+            assert "(t.ext).a" in result.output
