@@ -1341,3 +1341,18 @@ def test_structural_nested_extension_fails_fast_under_error(tmp_path):
         to_parquet([("s", _nested_ext_wire(reg))], reg, out, stream_id="s", fidelity="error")
     assert excinfo.value.dropped_extensions == ("no.ext_val",)
     assert not out.exists()
+
+
+def test_a_proto2_string_that_is_not_utf8_fails_the_parquet_write(tmp_path):
+    """upb used to hand the bytes to Arrow; now both backends report a scan fault."""
+    from tests import invalid_utf8
+
+    reg = StreamRegistry()
+    reg.register_stream("u", FileDescriptorSetSchema(invalid_utf8.schema(), invalid_utf8.TYPE_NAME))
+    out = tmp_path / "u.parquet"
+    # The Arrow converter does not read groups, so the clean record holds only ``n``.
+    src = [("u", b"\x38\x07"), ("u", invalid_utf8.BAD_PAYLOADS["top"])]
+    with pytest.raises(IncompleteScanError) as excinfo:
+        to_parquet(src, reg, out, stream_id="u")
+    assert [f.record_index for f in excinfo.value.faults] == [1]
+    assert not out.exists()

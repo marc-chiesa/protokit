@@ -576,3 +576,71 @@ class TestPayloadsTheRuntimeCannotParse:
         registry, _ = _registry_and_class("n", "n.N", fdp)
         with pytest.raises(FrameError):
             list(scan(iter([("n", _nested_payload(2000))]), registry))
+
+
+# ---------------------------------------------------------------------------
+# A proto2 string that is not UTF-8 is a decode fault on every backend
+#
+# upb does not check UTF-8 in a proto2 string and returns the field as bytes;
+# pure-Python rejects the record while parsing. The engine walks each parsed
+# record, so the same bytes are a FrameError on both backends.
+# ---------------------------------------------------------------------------
+
+
+def _invalid_utf8_registry() -> StreamRegistry:
+    from tests import invalid_utf8
+
+    registry = StreamRegistry()
+    schema = FileDescriptorSetSchema(invalid_utf8.schema(), invalid_utf8.TYPE_NAME)
+    registry.register_stream("u", schema)
+    return registry
+
+
+class TestProto2StringsThatAreNotUtf8:
+    @pytest.mark.parametrize(
+        "location",
+        ["top", "nested", "repeated", "map_key", "map_value", "group", "extension"],
+    )
+    def test_is_a_frame_error(self, location: str) -> None:
+        from tests import invalid_utf8
+
+        with pytest.raises(FrameError) as exc:
+            list(scan(iter([("u", invalid_utf8.BAD_PAYLOADS[location])]), _invalid_utf8_registry()))
+        assert exc.value.record_index == 0
+        assert exc.value.stream_id == "u"
+
+    @pytest.mark.parametrize("on_error", ["skip", "collect"])
+    def test_on_error_keeps_the_good_records(self, on_error: str) -> None:
+        from tests import invalid_utf8
+
+        bad = invalid_utf8.BAD_PAYLOADS["nested"]
+        src = [("u", invalid_utf8.GOOD), ("u", bad), ("u", invalid_utf8.GOOD)]
+        result = scan(iter(src), _invalid_utf8_registry(), on_error=on_error)  # type: ignore[arg-type]
+        assert [r.record_index for r in result] == [0, 2]
+        if on_error == "collect":
+            assert [e.record_index for e in result.errors] == [1]
+
+    def test_a_clean_proto2_record_is_yielded(self) -> None:
+        from tests import invalid_utf8
+
+        records = list(scan(iter([("u", invalid_utf8.GOOD)]), _invalid_utf8_registry()))
+        assert [r.message.n for r in records] == [7]
+
+    @pytest.mark.parametrize("on_error", ["skip", "collect"])
+    def test_two_pools_sharing_a_file_name_each_keep_their_verdict(self, on_error: str) -> None:
+        """A proto3 and a proto2 schema that both call their file ``same.proto``."""
+        registry = StreamRegistry()
+        for stream, syntax in (("v3", "proto3"), ("v2", "proto2")):
+            fdp = descriptor_pb2.FileDescriptorProto(name="same.proto", package="p", syntax=syntax)
+            fdp.message_type.add(name="M").field.add(
+                name="s", number=1, type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+                label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+            )
+            fds = descriptor_pb2.FileDescriptorSet()
+            fds.file.append(fdp)
+            registry.register_stream(stream, FileDescriptorSetSchema(fds, "p.M"))
+        src = [("v3", b"\x0a\x01x"), ("v2", b"\x0a\x01\xff")]
+        result = scan(iter(src), registry, on_error=on_error)  # type: ignore[arg-type]
+        assert [r.stream_id for r in result] == ["v3"]
+        if on_error == "collect":
+            assert [e.stream_id for e in result.errors] == ["v2"]

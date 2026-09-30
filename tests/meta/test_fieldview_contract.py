@@ -30,6 +30,7 @@ from google.protobuf.message import Message
 
 from protokit._fieldview import (
     FieldView,
+    StringWalk,
     data_extensions,
     extension_key,
     first_undecodable_string,
@@ -914,3 +915,226 @@ class TestDataExtensions:
         field_options = pool.FindMessageTypeByName("google.protobuf.FieldOptions")
         assert FieldView.of(field_options).extensions != ()
         assert data_extensions(field_options) == ()
+
+
+# Why several tests below run only on upb.
+_UPB_ONLY_PREMISE = (
+    "premise holds only on upb: it parses a non-UTF-8 proto2 string and returns "
+    "bytes, while the pure-Python parser rejects it before any walk could run"
+)
+
+
+class TestStringWalk:
+    """The planned walk behind ``first_undecodable_string``.
+
+    A storage scan keeps one walk for every record, so a plan built for one
+    message must serve the next, and a type that cannot hold a string upb left
+    unvalidated must cost nothing to walk.
+    """
+
+    @skip_under_pure_python(_UPB_ONLY_PREMISE)
+    def test_one_walk_finds_every_case_in_turn(self) -> None:
+        pool = _walk_pool()
+        cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("w2.Root"))
+        walk = StringWalk()
+        for where, field_name in _WALK_CASES:
+            root = cls()
+            _populate(root, where, pool.FindExtensionByName("w2.ext"))
+            clean = cls.FromString(root.SerializeToString())
+            bad = cls.FromString(root.SerializeToString().replace(_MARKER, _BAD))
+            assert walk.first(clean) is None, where
+            hit = walk.first(bad)
+            assert hit is not None and hit[0].full_name == field_name, where
+
+    @pytest.mark.parametrize(
+        ("full_name", "planned"),
+        [
+            pytest.param("r3.Plain3", [], id="proto3-strings-map-and-self-reference"),
+            pytest.param("r2.Ints2", [], id="proto2-without-strings"),
+            pytest.param("r2.Str2", ["s"], id="proto2-string"),
+            pytest.param("r3.Bridge3", ["other"], id="proto3-field-reaching-a-proto2-string"),
+            pytest.param("r4.EdStr", ["s"], id="editions-string"),
+        ],
+    )
+    def test_the_plan_reads_only_fields_that_can_hold_one(
+        self, full_name: str, planned: list[str],
+    ) -> None:
+        walk = StringWalk()
+        fields, *_ = walk._plan(_reach_pool().FindMessageTypeByName(full_name))
+        assert [name for name, *_ in fields] == planned
+
+    @skip_under_pure_python(_UPB_ONLY_PREMISE)
+    def test_a_type_whose_only_string_is_an_extension_is_walked(self) -> None:
+        """Nothing to plan among its own fields; the extension range still counts."""
+        fdp = descriptor_pb2.FileDescriptorProto(name="e2.proto", package="e2", syntax="proto2")
+        only = fdp.message_type.add(name="OnlyExt")
+        only.extension_range.add(start=100, end=200)
+        fdp.extension.add(
+            name="tag", number=100, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+            extendee=".e2.OnlyExt",
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("e2.OnlyExt"))
+        tag = pool.FindExtensionByName("e2.tag")
+        msg = cls()
+        msg.Extensions[tag] = _MARKER.decode()
+        bad = cls.FromString(msg.SerializeToString().replace(_MARKER, _BAD))
+        hit = StringWalk().first(bad)
+        assert hit is not None and hit[0].full_name == "e2.tag"
+
+    @skip_under_pure_python(_UPB_ONLY_PREMISE)
+    def test_a_file_name_shared_by_two_pools_is_not_confused(self) -> None:
+        """One walk over a proto3 and a proto2 file of the same name checks each by its syntax."""
+        classes = {}
+        for syntax in ("proto3", "proto2"):
+            fdp = descriptor_pb2.FileDescriptorProto(name="same.proto", package="p", syntax=syntax)
+            fdp.message_type.add(name="M").field.add(
+                name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+            )
+            pool = descriptor_pool.DescriptorPool()
+            pool.Add(fdp)
+            classes[syntax] = message_factory.GetMessageClass(pool.FindMessageTypeByName("p.M"))
+        walk = StringWalk()
+        assert walk.first(classes["proto3"].FromString(b"\x0a\x01x")) is None
+        hit = walk.first(classes["proto2"].FromString(b"\x0a\x01\xff"))
+        assert hit is not None and hit[0].full_name == "p.M.s"
+
+
+def _shadowing_class(name: str) -> type[Message]:
+    """proto2 ``sh.M`` with an int field named ``name`` and a ``child`` holding a string."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="sh.proto", package="sh", syntax="proto2")
+    fdp.message_type.add(name="Child").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    m = fdp.message_type.add(name="M")
+    m.field.add(name=name, number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    m.field.add(
+        name="child", number=2, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".sh.Child",
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    cls: type[Message] = message_factory.GetMessageClass(pool.FindMessageTypeByName("sh.M"))
+    return cls
+
+
+class TestStringWalkFieldNamesThatShadowTheMessageApi:
+    """A field named like a ``Message`` method hides the method (upb) or is hidden by it."""
+
+    # Not DESCRIPTOR: pure-Python protobuf cannot build a class with that field.
+    @pytest.mark.parametrize("name", ["HasField", "ListFields", "Clear"])
+    def test_a_clean_message_walks_without_error(self, name: str) -> None:
+        cls = _shadowing_class(name)
+        # n = 5, child { s: "a" }
+        msg = cls.FromString(b"\x08\x05\x12\x03\x0a\x01a")
+        assert StringWalk().first(msg) is None
+
+    @skip_under_pure_python(_UPB_ONLY_PREMISE)
+    @pytest.mark.parametrize("name", ["HasField", "ListFields", "DESCRIPTOR", "Clear"])
+    def test_a_bad_string_beside_it_is_found(self, name: str) -> None:
+        cls = _shadowing_class(name)
+        msg = cls.FromString(b"\x08\x05\x12\x03\x0a\x01\xff")
+        hit = StringWalk().first(msg)
+        assert hit is not None and hit[0].full_name == "sh.Child.s"
+
+
+@skip_under_pure_python(_UPB_ONLY_PREMISE)
+def test_the_lowest_numbered_bad_string_is_reported_whatever_the_declaration_order() -> None:
+    fdp = descriptor_pb2.FileDescriptorProto(name="o.proto", package="o", syntax="proto2")
+    m = fdp.message_type.add(name="M")
+    for name, number in (("second", 2), ("first", 1)):
+        m.field.add(name=name, number=number, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("o.M"))
+    hit = StringWalk().first(cls.FromString(bytes.fromhex("0a01ff1201fe")))
+    assert hit is not None and hit[0].full_name == "o.M.first"
+
+
+def _shadowing_message_class(name: str) -> type[Message]:
+    """proto2 ``sm.M`` with a *message* field named ``name`` holding ``sm.Inner.s``.
+
+    ``M`` has an extension range (so ``Extensions`` is a live attribute) and, for a
+    ``*_FIELD_NUMBER`` name, the field whose constant that name repeats.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="sm.proto", package="sm", syntax="proto2")
+    fdp.message_type.add(name="Inner").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    m = fdp.message_type.add(name="M")
+    m.field.add(
+        name=name, number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".sm.Inner",
+    )
+    if name.endswith("_FIELD_NUMBER"):
+        m.field.add(
+            name=name.removesuffix("_FIELD_NUMBER").lower(), number=2,
+            type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+        )
+    m.extension_range.add(start=100, end=200)
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    cls: type[Message] = message_factory.GetMessageClass(pool.FindMessageTypeByName("sm.M"))
+    return cls
+
+
+_SHADOWING_MESSAGE_NAMES = [
+    "Extensions", "FindInitializationErrors", "HasField", "ListFields", "Clear", "A_FIELD_NUMBER",
+]
+
+
+class TestStringWalkMessageFieldsThatShadowTheMessageApi:
+    """A *message* field with a colliding name is the one the walk descends into."""
+
+    @pytest.mark.parametrize("name", _SHADOWING_MESSAGE_NAMES)
+    def test_a_clean_message_walks_without_error(self, name: str) -> None:
+        msg = _shadowing_message_class(name).FromString(bytes.fromhex("0a040a026f6b"))
+        assert StringWalk().first(msg) is None
+
+    @skip_under_pure_python(_UPB_ONLY_PREMISE)
+    @pytest.mark.parametrize("name", _SHADOWING_MESSAGE_NAMES)
+    def test_a_bad_string_inside_it_is_found(self, name: str) -> None:
+        msg = _shadowing_message_class(name).FromString(bytes.fromhex("0a030a01ff"))
+        hit = StringWalk().first(msg)
+        assert hit is not None and hit[0].full_name == "sm.Inner.s"
+
+
+@skip_under_pure_python(_UPB_ONLY_PREMISE)
+def test_a_bad_key_in_a_map_whose_values_need_no_walk_is_found() -> None:
+    """``map<string, int32>``: the plan checks the keys and skips the values."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="mk.proto", package="mk", syntax="proto2")
+    m = fdp.message_type.add(name="M")
+    _map_entry_type(m, "CountsEntry", _FD.TYPE_STRING, _FD.TYPE_INT32)
+    m.field.add(
+        name="counts", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=".mk.M.CountsEntry",
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("mk.M"))
+    walk = StringWalk()
+    # counts { key: <k> value: 1 }
+    assert walk.first(cls.FromString(bytes.fromhex("0a050a016b1001"))) is None
+    hit = walk.first(cls.FromString(bytes.fromhex("0a050a01ff1001")))
+    assert hit is not None and hit[0].full_name == "mk.M.CountsEntry.key"
+
+
+def test_a_walk_plans_each_message_type_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-record cost a storage scan pays assumes plans are reused, not rebuilt."""
+    pool = _walk_pool()
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("w2.Root"))
+    walk = StringWalk()
+    planned: list[str] = []
+    real_plan = walk._plan
+
+    def counting_plan(descriptor):  # type: ignore[no-untyped-def]
+        planned.append(descriptor.full_name)
+        return real_plan(descriptor)
+
+    monkeypatch.setattr(walk, "_plan", counting_plan)
+    root = cls()
+    root.sub.s = "ok"
+    for _ in range(3):
+        assert walk.first(cls.FromString(root.SerializeToString())) is None
+    assert sorted(planned) == ["w2.Leaf", "w2.Root"]
