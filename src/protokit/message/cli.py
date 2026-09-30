@@ -23,7 +23,7 @@ from google.protobuf import (
 )
 from google.protobuf.message import DecodeError, Message
 
-from protokit import _trust
+from protokit import _fieldview, _trust
 from protokit._cli_utils import (
     _safe_for_stderr,
     load_formatter_packs,
@@ -127,6 +127,13 @@ def _parse_message(
         _error(f"Failed to parse {filename}: {e}")
     except (json_format.ParseError, text_format.ParseError) as e:
         _error(f"Failed to parse {filename}: {e}")
+    if not (use_text_format or use_json):
+        # upb hands a proto2 string that is not UTF-8 back as bytes where
+        # pure-Python rejects the input while parsing (text and JSON parsing
+        # reject it on both), so a binary parse gets the same verdict.
+        undecodable = _fieldview.first_undecodable_string(msg)
+        if undecodable is not None:
+            _error(f"Failed to parse {filename}: {_fieldview.not_utf8_detail(undecodable[0])}")
     return msg
 
 

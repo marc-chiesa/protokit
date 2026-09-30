@@ -256,19 +256,19 @@ def first_undecodable_string(message: Message) -> tuple[_d.FieldDescriptor, byte
     the parsed message with this and classifies a hit its own way. Only set
     fields are walked: an unset field reads its schema default, and protokit's
     pool loaders reject a schema whose default is not UTF-8.
+
+    The walk reads only fields that can hold such a string (:class:`StringWalk`
+    has the rule), so a proto3 message costs one lookup per type: upb validates
+    every proto3 string, assuming protobuf's standard feature defaults
+    (:func:`may_hold_unvalidated_string`). This plans each type afresh; a seam
+    that walks many messages of the same types, as a storage scan does, keeps
+    one :class:`StringWalk` and calls its ``first`` instead, so each type is
+    planned once rather than once per message. A seam reporting a hit can word
+    it with :func:`not_utf8_detail`.
+
+    It runs after each payload parse: storage scans, ``forensics match``, ``diff``.
     """
-    stack: list[Message] = [message]  # iterative: messages can nest deeply
-    while stack:
-        current = stack.pop()
-        # ListFields includes registered extensions, so custom options are
-        # walked too; an unregistered one stays as unparsed unknown bytes.
-        for field, value in current.ListFields():
-            for item_field, item in _field_items(field, value):
-                if item_field.type == _FD.TYPE_STRING and isinstance(item, bytes):
-                    return item_field, item
-                if is_message_like(item_field):
-                    stack.append(item)
-    return None
+    return StringWalk().first(message)
 
 
 def _field_items(
@@ -349,3 +349,204 @@ def data_extensions(descriptor: _d.Descriptor) -> tuple[_d.FieldDescriptor, ...]
     if descriptor.file.name == _DESCRIPTOR_PROTO:
         return ()
     return FieldView.of(descriptor).extensions
+
+
+def _message_api() -> frozenset[str]:
+    """Public attributes of a generated message class that a field name can collide with.
+
+    Read from a real generated class as well as the abstract ``Message``, so the
+    runtime's own additions count (pure-Python adds ``Extensions`` and
+    ``FindInitializationErrors``). That class's own fields, nested types and
+    enum values are left out: protoc stops a field from sharing their names.
+    Per-field ``*_FIELD_NUMBER`` constants are matched by suffix instead.
+    """
+    # Function-level: published docs cite line numbers in this module.
+    from google.protobuf import descriptor_pb2
+    from google.protobuf.message import Message as _Message
+
+    sample = descriptor_pb2.FileOptions
+    own = {field.name for field in sample.DESCRIPTOR.fields}
+    own |= {nested.name for nested in sample.DESCRIPTOR.nested_types}
+    for enum in sample.DESCRIPTOR.enum_types:
+        own |= {enum.name, *(value.name for value in enum.values)}
+    names = set(dir(_Message)) | set(dir(sample))
+    return frozenset(
+        name for name in names
+        if not name.startswith("_") and name not in own and not name.endswith("_FIELD_NUMBER")
+    )
+
+
+# Field names that collide with a generated class's attributes. Such a field
+# hides the attribute on upb (field access wins) and is hidden by it on
+# pure-Python (the attribute wins), so the walk reads a type holding one
+# through ListFields.
+_SHADOWING = _message_api()
+
+
+def _shadows(name: str) -> bool:
+    """Whether a field called ``name`` collides with a generated class attribute."""
+    # Pure-Python gives each field ``f`` a constant ``F_FIELD_NUMBER``.
+    return name in _SHADOWING or name.endswith("_FIELD_NUMBER")
+
+
+def _unshadowed(cls: type, method: str) -> Any:
+    """The message class's own ``method``, even where a field of that name hides it."""
+    for base in cls.__mro__:
+        attr = base.__dict__.get(method)
+        if attr is not None and callable(attr) and not isinstance(attr, property):
+            return attr
+    raise AttributeError(f"{cls.__name__} has no {method} method")
+
+
+# What one planned field of a message type can hold (see StringWalk).
+_STRING, _STRINGS, _MESSAGE, _MESSAGES, _MAP = range(5)
+
+_MapPlan = tuple[MapEntry, bool, "int | None"]
+# (attribute name, kind, map plan, descriptor): the name is stored because reading
+# ``descriptor.name`` once per field per message is measurable in a scan.
+_FieldPlan = tuple[str, int, "_MapPlan | None", _d.FieldDescriptor]
+
+
+class StringWalk:
+    """The walk behind :func:`first_undecodable_string`, planned once per message type.
+
+    The first time the walk meets a message type it records which of the
+    type's fields can hold a string upb did not validate: a string field (or a
+    map key or value) declared in a file that is not proto3, and a message,
+    group or map field whose type can reach one
+    (:func:`may_hold_unvalidated_string`). Only those fields are read after
+    that, so a type that cannot hold such a string costs one lookup. A type
+    with an extension range also has its set extensions read, whatever file
+    declares them. A seam that parses many messages of the same types keeps
+    one walk for all of them. A walk holds descriptors, so it should not
+    outlive the pools it was used with.
+    """
+
+    def __init__(self) -> None:
+        self._plans: dict[_d.Descriptor, tuple[tuple[_FieldPlan, ...], bool, bool]] = {}
+        self._reaches: dict[_d.Descriptor, bool] = {}
+        # Keyed by the file descriptor, not its name: two pools may each hold
+        # a file of the same name, one proto3 and one not.
+        self._proto3_files: dict[_d.FileDescriptor, bool] = {}
+
+    def first(self, message: Message) -> tuple[_d.FieldDescriptor, bytes] | None:
+        """Return the first string field in ``message`` that holds bytes, else ``None``."""
+        # type(...).DESCRIPTOR: a field may be named DESCRIPTOR (see _SHADOWING).
+        plan = self._plans.get(type(message).DESCRIPTOR)
+        if plan is None:
+            plan = self._plan(type(message).DESCRIPTOR)
+        if not plan[0] and not plan[1] and not plan[2]:
+            return None  # the common proto3 case: nothing in this type to read
+        stack: list[Message] = [message]  # iterative: messages can nest deeply
+        while stack:
+            current = stack.pop()
+            plan = self._plans.get(type(current).DESCRIPTOR)
+            if plan is None:
+                plan = self._plan(type(current).DESCRIPTOR)
+            fields, has_extensions, shadowed = plan
+            if shadowed:
+                # A field named like a Message method hides the method on upb and
+                # the field on pure-Python, so neither ``current.HasField`` nor
+                # ``getattr(current, name)`` can be trusted: read every set field
+                # through the class's own ListFields instead.
+                for field, value in _unshadowed(type(current), "ListFields")(current):
+                    for item_field, item in _field_items(field, value):
+                        if item_field.type == _FD.TYPE_STRING and isinstance(item, bytes):
+                            return item_field, item
+                        if is_message_like(item_field):
+                            stack.append(item)
+                continue
+            for name, kind, map_plan, field in fields:
+                if kind == _MESSAGE:
+                    if current.HasField(name):
+                        stack.append(getattr(current, name))
+                    continue
+                value = getattr(current, name)
+                if kind == _STRING:
+                    if isinstance(value, bytes):
+                        return field, value
+                elif kind == _STRINGS:
+                    for item in value:
+                        if isinstance(item, bytes):
+                            return field, item
+                elif kind == _MESSAGES:
+                    stack.extend(value)
+                else:
+                    assert map_plan is not None  # invariant: _MAP carries its plan
+                    entry, check_keys, value_kind = map_plan
+                    # Keys first, values only after: on upb, reading a value
+                    # looks its key up again, which raises UnicodeDecodeError
+                    # for a bytes key.
+                    if check_keys:
+                        for key in value:
+                            if isinstance(key, bytes):
+                                return entry.key, key
+                    if value_kind == _STRING:
+                        for item in value.values():
+                            if isinstance(item, bytes):
+                                return entry.value, item
+                    elif value_kind == _MESSAGE:
+                        stack.extend(value.values())
+            if has_extensions:
+                # ListFields includes registered extensions, so custom options are
+                # walked too; an unregistered one stays as unparsed unknown bytes.
+                for field, value in current.ListFields():
+                    if not field.is_extension:
+                        continue
+                    for item_field, item in _field_items(field, value):
+                        if item_field.type == _FD.TYPE_STRING and isinstance(item, bytes):
+                            return item_field, item
+                        if is_message_like(item_field):
+                            stack.append(item)
+        return None
+
+    def _plan(self, descriptor: _d.Descriptor) -> tuple[tuple[_FieldPlan, ...], bool, bool]:
+        """Record which of ``descriptor``'s own fields the walk has to read."""
+        unvalidated = not self._is_proto3(descriptor.file)
+        planned: list[_FieldPlan] = []
+        # Field-number order, as ListFields reports, so a message with several bad
+        # declared strings names the one it always did (extensions are read last).
+        for field in sorted(descriptor.fields, key=lambda f: f.number):
+            entry = map_entry(field)
+            if entry is not None:
+                check_keys = unvalidated and entry.key.type == _FD.TYPE_STRING
+                value_kind: int | None = None
+                if entry.value.type == _FD.TYPE_STRING:
+                    value_kind = _STRING if unvalidated else None
+                elif is_message_like(entry.value) and self._can_reach(entry.value.message_type):
+                    value_kind = _MESSAGE
+                if check_keys or value_kind is not None:
+                    planned.append((field.name, _MAP, (entry, check_keys, value_kind), field))
+            elif field.type == _FD.TYPE_STRING:
+                if unvalidated:
+                    repeated = field.label == _FD.LABEL_REPEATED
+                    planned.append((field.name, _STRINGS if repeated else _STRING, None, field))
+            elif is_message_like(field) and self._can_reach(field.message_type):
+                repeated = field.label == _FD.LABEL_REPEATED
+                planned.append((field.name, _MESSAGES if repeated else _MESSAGE, None, field))
+        shadowed = any(_shadows(field.name) for field in descriptor.fields)
+        plan = (tuple(planned), bool(descriptor.extension_ranges), shadowed)
+        self._plans[descriptor] = plan
+        return plan
+
+    def _can_reach(self, descriptor: _d.Descriptor) -> bool:
+        reaches = self._reaches.get(descriptor)
+        if reaches is None:
+            reaches = self._reaches[descriptor] = may_hold_unvalidated_string(descriptor)
+        return reaches
+
+    def _is_proto3(self, file: _d.FileDescriptor) -> bool:
+        proto3 = self._proto3_files.get(file)
+        if proto3 is None:
+            # Function-level: published docs cite line numbers in this module.
+            from google.protobuf import descriptor_pb2
+
+            # FileDescriptor has no public syntax attribute on protobuf 5.
+            syntax = descriptor_pb2.FileDescriptorProto.FromString(file.serialized_pb).syntax
+            proto3 = self._proto3_files[file] = syntax == "proto3"
+        return proto3
+
+
+def not_utf8_detail(field: _d.FieldDescriptor) -> str:
+    """How a seam words a :func:`first_undecodable_string` hit on ``field``."""
+    return f"string field {field.full_name} is not valid UTF-8"

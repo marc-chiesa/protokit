@@ -93,3 +93,16 @@ def test_resolution_error_propagates() -> None:
     bad = Candidate("wrong", FileDescriptorSetSchema(fds(fdp({"x": 1})), "a.Nope"))
     with pytest.raises(DescriptorPoolError):
         fit_candidate(b"", bad)
+
+
+@pytest.mark.parametrize("location", ["top", "nested", "map_key", "group", "extension"])
+def test_a_proto2_string_that_is_not_utf8_is_a_decode_error(location: str) -> None:
+    """upb parses the record and returns bytes; the fit is a fault on both backends."""
+    from tests import invalid_utf8
+
+    cand = Candidate("u", FileDescriptorSetSchema(invalid_utf8.schema(), invalid_utf8.TYPE_NAME))
+    fit = fit_candidate(invalid_utf8.BAD_PAYLOADS[location], cand)
+    assert fit.tier is ParseTier.FAULT
+    assert fit.parse_outcome == "decode_error"
+    clean = fit_candidate(invalid_utf8.GOOD, cand)
+    assert clean.parse_outcome != "decode_error"

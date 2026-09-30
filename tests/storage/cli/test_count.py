@@ -81,3 +81,16 @@ def test_count_with_where(
     )
     assert result.exit_code == 0
     assert result.output.strip() == "2"
+
+
+def test_count_exits_2_on_a_proto2_string_that_is_not_utf8(
+    runner: CliRunner, tmp_path: Path, data_file_factory: Callable[..., Path],
+) -> None:
+    """The same bytes fail on both backends; upb used to count the record (exit 0)."""
+    from tests import invalid_utf8
+
+    desc = tmp_path / "u.desc"
+    desc.write_bytes(invalid_utf8.schema().SerializeToString())
+    data = data_file_factory([invalid_utf8.GOOD, invalid_utf8.BAD_PAYLOADS["map_value"]])
+    result = _run(runner, ["storage", "count", str(data), "--desc", str(desc), "--type", "u.M"])
+    assert result.exit_code == 2, result.output
