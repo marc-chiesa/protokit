@@ -208,8 +208,9 @@ class TestSemanticsEquivalence:
     """The path-form selector agrees with the engine gates on the same pair.
 
     Pins the KTD-1 risk: ``FieldSelector`` (path form), ``_is_ignored``, and
-    ``_get_treat_as_map_key`` all use the one shared bracket-blind exact-length
-    matcher (``FieldPath.matches_selector``), so they must agree exactly.
+    ``_get_treat_as_map_key`` all apply the same bracket-blind exact-length
+    matching to a dotted path, and all apply a lone extension name
+    ``(pkg.ext)`` at any depth, so they must agree on each row's expected value.
     """
 
     def _make_differ(self) -> MessageDifferencer:
@@ -236,30 +237,32 @@ class TestSemanticsEquivalence:
             ("items", "items[2]", True),
             ("items", "items", True),
             ("items", "a.items", False),
+            # A lone extension name selects that extension at any depth,
+            # bracket-blind, and nothing else.
+            ("(e.ival)", "(e.ival)", True),
+            ("(e.ival)", "inner.(e.ival)", True),
+            ("(e.itags)", "a.inner.(e.itags)[3]", True),
+            ("(e.ival)", "inner.ival", False),
+            ("(e.ival)", "inner.(e.other)", False),
+            # A qualified extension path stays exact-length.
+            ("inner.(e.ival)", "outer.inner.(e.ival)", False),
         ],
     )
     def test_selector_matches_engine_ignore_gate(
         self, selector_str: str, path_str: str, expected: bool
     ) -> None:
-        d = self._make_differ()
         path = FieldPath.parse(path_str)
-        # The engine's ignore gate, for the dotted "items.note" selector.
-        ignore_path = FieldPath.parse("items.note")
-        engine_ignore = ignore_path.matches_selector(path)
-
-        sel = FieldSelector.of(selector_str)
-        last_name = path.segments[-1].name if path.segments else ""
-        selector_match = sel.matches(_field("test.Msg", "name"), path)
-
-        # The FieldSelector path-form result is exactly the bracket-blind
-        # exact-length match for its own selector string.
-        assert selector_match == FieldPath.parse(selector_str).matches_selector(path)
-        # And for the matching selector string, it agrees with the engine's gate.
-        if selector_str == "items.note":
-            assert selector_match == engine_ignore
-            # Cross-check the engine's private gate directly too.
-            assert d._is_ignored(last_name, path) == selector_match
+        selector_match = FieldSelector.of(selector_str).matches(_field("test.Msg", "name"), path)
         assert selector_match is expected
+
+        # The engine's string ignore gate, configured with the same selector,
+        # agrees for dotted paths and extension names. A plain bare name is the
+        # exception: the engine applies it at any depth (audit finding V12,
+        # deferred to 0.17.0), so those rows are not cross-checked.
+        if "." in selector_str:
+            d = MessageDifferencer()
+            d.ignore_fields(selector_str)
+            assert d._is_ignored(path.segments[-1].name, path) is expected
 
     @pytest.mark.parametrize(
         ("path_str", "is_map_field"),

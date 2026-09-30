@@ -26,7 +26,7 @@ from protokit._fieldview import FieldView, extension_key, is_message_like, same_
 from protokit._fieldview import field_present as _fieldview_field_present
 from protokit._fieldview import field_value as _fieldview_field_value
 from protokit.message._presence import PresenceVerdict, presence_verdict
-from protokit.message._selector import FieldSelector, SelectorSpec
+from protokit.message._selector import FieldSelector, SelectorSpec, is_extension_name, overlaps
 from protokit.message._setmatch import greedy_multiset_pairing
 from protokit.message.comparators import (
     FloatComparison,
@@ -583,9 +583,9 @@ class MessageDifferencer:
         consulted both pre-dispatch and inside ``_emit_all_fields``.
 
         Conflict validation with ``treat_as_map`` is enforced at registration
-        for the string forms only. A predicate-form ignore CANNOT be
-        conflict-checked at registration — the callable is opaque and no
-        descriptor is in hand — so no such check is attempted for it. The
+        for strings, and for a path-form selector naming an extension (it
+        registers as its string). Other selector forms are not checked: a
+        predicate is opaque and no descriptor is in hand at registration. The
         compare-time behavior when a predicate ignores a field that is also
         ``treat_as_map``-keyed is defined as **ignore wins**: the field is
         simply not visited, so its map key is never consulted. This is
@@ -602,14 +602,14 @@ class MessageDifferencer:
                 ignoring a map key field). Predicate-form selectors are not
                 conflict-checked at registration (see above).
         """
-        # Partition string selectors (existing path) from predicate/selector
-        # forms (new path). Strings keep byte-identical behavior, including
-        # conflict validation; the selector forms route to _ignore_selectors.
+        # Partition string selectors from predicate/selector forms. A path-form
+        # selector naming an extension joins the strings (same match, and the
+        # conflict checks see it); the other forms route to _ignore_selectors.
         string_selectors: list[str] = []
         selector_forms: list[FieldSelector] = []
         for spec in selectors:
-            if isinstance(spec, str):
-                string_selectors.append(spec)
+            if (as_string := _extension_selector_string(spec)) is not None:
+                string_selectors.append(as_string)
             else:
                 # FieldSelector or (FieldDescriptor, FieldPath) -> bool callable.
                 # FieldSelector.of returns a FieldSelector as-is and wraps a
@@ -628,7 +628,7 @@ class MessageDifferencer:
                     f"Bracket syntax is not supported in ignore selectors: '{sel}'. "
                     "Use bare field names or dotted paths (e.g. 'field' or 'parent.field')."
                 )
-            if sel in self._treat_as_map:
+            if any(_selectors_overlap(sel, map_sel) for map_sel in self._treat_as_map):
                 raise ValueError(
                     f"Cannot ignore field '{sel}' that is configured as treat_as_map"
                 )
@@ -644,7 +644,7 @@ class MessageDifferencer:
                         f"for treat_as_map('{map_sel}', key='{key_name}')"
                     )
                 # Path-scoped that targets the key inside the map field
-                if not is_global and ign == f"{map_sel}.{key_name}":
+                if not is_global and _names_map_key(ign, map_sel, key_name):
                     raise ValueError(
                         f"Cannot ignore '{ign}' because it's the key field "
                         f"for treat_as_map('{map_sel}', key='{key_name}')"
@@ -687,7 +687,7 @@ class MessageDifferencer:
         # Check for conflicts with already-configured ignore fields
         for ign in self._ignore_fields_raw:
             # The field itself is ignored
-            if ign == field_selector:
+            if _selectors_overlap(ign, field_selector):
                 raise ValueError(
                     f"Cannot treat_as_map field '{field_selector}' that is "
                     f"already ignored"
@@ -699,7 +699,7 @@ class MessageDifferencer:
                     f"because '{ign}' is globally ignored"
                 )
             # Path-scoped that targets the key inside the map field
-            if not _is_global_selector(ign) and ign == f"{field_selector}.{key}":
+            if not _is_global_selector(ign) and _names_map_key(ign, field_selector, key):
                 raise ValueError(
                     f"Cannot use key '{key}' for treat_as_map('{field_selector}') "
                     f"because '{ign}' is ignored"
@@ -710,7 +710,7 @@ class MessageDifferencer:
         map_path = FieldPath.parse(field_selector)
         for set_sel in self._treat_as_set_selectors:
             set_path = set_sel.path
-            if set_path is not None and set_path.matches_selector(map_path):
+            if set_path is not None and overlaps(set_path, map_path):
                 raise ValueError(
                     f"Cannot treat_as_map field '{field_selector}' that is "
                     f"already configured as treat_as_set"
@@ -721,7 +721,7 @@ class MessageDifferencer:
         # leave the two stores disagreeing about the key actually in force
         # (and the conflict checks above read only the dict). Reject the
         # conflict; an identical repeat is a harmless no-op.
-        existing_key = self._treat_as_map.get(field_selector)
+        existing_key = _conflicting_map_key(self._treat_as_map, field_selector, key)
         if existing_key is not None:
             if existing_key != key:
                 raise ValueError(
@@ -759,18 +759,18 @@ class MessageDifferencer:
         with the opaque-predicate ignore path).
 
         Args:
-            selector: A bare field name (``"items"``), a dotted path
-                (``"parent.items"``), a ``(FieldDescriptor, FieldPath) -> bool``
-                predicate, or a pre-built :class:`FieldSelector`. The same
-                selection model every selective policy uses (R9).
+            selector: A bare field name (``"items"``), an extension name
+                (``"(pkg.ext)"``, at any depth), a dotted path, a predicate
+                ``(FieldDescriptor, FieldPath) -> bool`` or a :class:`FieldSelector`
+                — the one selection model every selective policy uses (R9).
 
         Raises:
             TypeError: If ``selector`` is not a str, callable, or
                 :class:`FieldSelector` (propagated from
                 :meth:`FieldSelector.of`).
-            ValueError: If ``selector`` is a *string/path* form that is also
-                configured as ``treat_as_map`` (a field cannot be both keyed
-                and keyless). Predicate-form selectors are opaque and cannot be
+            ValueError: If ``selector`` is a *string/path* form that overlaps a
+                ``treat_as_map`` selector (a field cannot be both keyed and
+                keyless). Predicate-form selectors are opaque and cannot be
                 conflict-checked at registration (mirroring predicate ignore).
         """
         field_selector = FieldSelector.of(selector)
@@ -781,7 +781,7 @@ class MessageDifferencer:
         sel_path = field_selector.path
         if sel_path is not None:
             for map_sel in self._treat_as_map:
-                if FieldPath.parse(map_sel).matches_selector(sel_path):
+                if overlaps(FieldPath.parse(map_sel), sel_path):
                     raise ValueError(
                         f"Cannot treat_as_set field '{sel_path}' that is "
                         f"already configured as treat_as_map('{map_sel}')"
@@ -946,12 +946,12 @@ class MessageDifferencer:
                 are equal if ``|a - b| <= margin``. Combined with
                 ``fraction`` as a logical OR. Defaults to ``1e-9``.
                 Ignored in EXACT mode.
-            selector: When provided, a bare name / dotted path string, a
-                ``(FieldDescriptor, FieldPath) -> bool`` predicate, or a
-                :class:`FieldSelector` scoping this ``mode``/``fraction``/
-                ``margin`` to the matching float fields as an overlay over the
-                global setting. When ``None`` (default), the global float config
-                is set instead.
+            selector: When provided, a bare name, ``(pkg.ext)`` extension name
+                (any depth) or dotted path string, a ``(FieldDescriptor,
+                FieldPath) -> bool`` predicate, or a :class:`FieldSelector`
+                scoping this mode and tolerance to the matching float fields as
+                an overlay; the first matching overlay registered wins. When
+                ``None`` (default), the global float config is set instead.
         """
         config = FloatConfig(mode=mode, fraction=fraction, margin=margin)
         if selector is None:
@@ -2926,3 +2926,89 @@ def diff_messages(
         differ.max_depth = max_depth
     differ.strict_schema = strict_schema
     return differ.compare(left, right)
+
+
+def _extension_selector_string(spec: SelectorSpec) -> str | None:
+    """The string an ``ignore_fields`` spec registers as, or ``None`` for a selector form.
+
+    A string is itself. A path-form :class:`FieldSelector` that names an
+    extension segment is registered as its dotted string, brackets dropped:
+    path-form matching ignores brackets, so it selects exactly the same fields
+    that way, and the string route is the one the ``treat_as_map`` conflict
+    checks read. Every other form (predicates, and plain path-form selectors,
+    whose bare names keep their exact-length meaning) stays a selector.
+    """
+    if isinstance(spec, str):
+        return spec
+    if not isinstance(spec, FieldSelector) or spec.path is None:
+        return None
+    names = [segment.name for segment in spec.path.segments]
+    if not any(name.startswith("(") for name in names):
+        return None
+    return ".".join(names)
+
+
+def _selectors_overlap(first: str, second: str) -> bool:
+    """Whether two string selectors can select the same field (registration checks).
+
+    Equal strings always overlap. Beyond that, the check widens only when a
+    selector names an extension: then the two are compared as paths
+    (:func:`overlaps`), so a lone ``(pkg.ext)`` overlaps any path ending in the
+    same extension (it selects that extension at any depth), and two paths
+    that differ only in brackets overlap because selection ignores brackets.
+    Two plain selectors overlap only when equal, as before. A selector the
+    grammar rejects overlaps nothing here; the caller's own parse reports it.
+    """
+    if first == second:
+        return True
+    try:
+        first_path, second_path = FieldPath.parse(first), FieldPath.parse(second)
+    except ValueError:
+        return False
+    segments = (*first_path.segments, *second_path.segments)
+    if not any(segment.name.startswith("(") for segment in segments):
+        return False
+    return overlaps(first_path, second_path)
+
+
+def _names_map_key(ignore: str, map_selector: str, key: str) -> bool:
+    """Whether a scoped ignore selector names ``treat_as_map(map_selector)``'s key field.
+
+    ``<map_selector>.<key>`` always does. When the map selector is a lone
+    extension name ``(pkg.ext)``, the map applies to that extension at any
+    depth, so any ignore path ending ``(pkg.ext).<key>`` names the key too.
+    A deeper path to the key of a map on a plain name (``container.items.id``
+    for ``treat_as_map("items", key="id")``) is not caught: that general case
+    is audit finding U8-5, owned by 0.17.0 and pinned by strict xfails that
+    any wider rule here would flip.
+    """
+    if ignore == f"{map_selector}.{key}":
+        return True
+    try:
+        map_path = FieldPath.parse(map_selector)
+    except ValueError:
+        # A malformed map selector is reported by ``treat_as_map``'s own
+        # parse, after its other conflict checks, as before.
+        return False
+    if not is_extension_name(map_path):
+        return False
+    names = [segment.name for segment in FieldPath.parse(ignore).segments]
+    return names[-2:] == [map_path.segments[0].name, key]
+
+
+def _conflicting_map_key(maps: dict[str, str], selector: str, key: str) -> str | None:
+    """The key a ``treat_as_map(selector, key=key)`` registration must agree with.
+
+    The key already registered for ``selector`` itself, else the key of another
+    registered map selector that selects the same field through the extension
+    spelling (:func:`_selectors_overlap`) with a different key, else ``None``.
+    A lone ``(pkg.ext)`` keyed ``id`` and ``inner.(pkg.ext)`` keyed ``other``
+    would otherwise both be accepted, with the scoped one silently winning at
+    ``inner``. Plain selectors conflict only when equal, as before.
+    """
+    if selector in maps:
+        return maps[selector]
+    for other, other_key in maps.items():
+        if other_key != key and _selectors_overlap(selector, other):
+            return other_key
+    return None

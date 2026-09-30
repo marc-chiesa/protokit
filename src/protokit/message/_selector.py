@@ -6,10 +6,10 @@ selective comparison policy in the differ — ignore, keyless-set, partial
 overrides, per-field tolerance — consumes one of these, so there is a single
 selection concept rather than one parser per policy (KTD-1, R9).
 
-Path-form matching delegates to :meth:`FieldPath.matches_selector`, the same
-bracket-blind, exact-length segment-name comparison the engine's ``_is_ignored``
-and ``_get_treat_as_map_key`` gates use. Both forms therefore agree on the same
-selector/path pair; the regression test in ``tests/message/test_field_selector.py``
+Path-form matching is :func:`selects`: the bracket-blind, exact-length name
+comparison the engine's ``_is_ignored`` and ``_get_treat_as_map_key`` gates use,
+where a lone ``(pkg.ext)`` matches at any depth as those gates' name tables do.
+The regression test in ``tests/message/test_field_selector.py``
 pins that equivalence.
 
 This module is strict-typed (``mypy --strict``) and gated by
@@ -48,9 +48,13 @@ class FieldSelector:
 
     * **Path form** holds a parsed :class:`FieldPath` and delegates to
       :meth:`FieldPath.matches_selector` — bracket-blind, exact-length
-      segment-name matching. A bare name (``"name"``) matches that field at
-      any depth; a dotted path (``"items.name"``) matches that scoped location
-      and matches ``"items[0].name"`` but NOT ``"a.items.name"``.
+      segment-name matching. A bare name (``"name"``) is one segment, so it
+      matches only a top-level ``name`` (unlike a bare name given to
+      ``ignore_fields`` as a string, which applies at any depth); a dotted path
+      (``"items.name"``) matches that scoped location and matches
+      ``"items[0].name"`` but NOT ``"a.items.name"``. A lone extension name
+      (``"(pkg.ext)"``) matches that extension at any depth, as
+      :func:`selects` describes.
     * **Predicate form** calls a ``(FieldDescriptor, FieldPath) -> bool``
       callable with the descriptor and path as explicit arguments. Exceptions
       raised by the predicate PROPAGATE — they are author bugs, not engine
@@ -174,10 +178,12 @@ class FieldSelector:
     ) -> bool:
         """Return whether this selector matches the given field.
 
-        Path form delegates to :meth:`FieldPath.matches_selector` (the shared
-        bracket-blind, exact-length comparison the engine gates use), ignoring
-        ``fd``. Predicate form calls the predicate with ``(fd, path)`` as
-        explicit arguments; any exception it raises propagates unchanged.
+        Path form ignores ``fd`` and applies :func:`selects`: the shared
+        bracket-blind, exact-length comparison the engine gates use, except
+        that a lone extension name ``(pkg.ext)`` matches that extension at any
+        depth, as ``ignore_fields`` and ``treat_as_map`` always applied it.
+        Predicate form calls the predicate with ``(fd, path)`` as explicit
+        arguments; any exception it raises propagates unchanged.
 
         Args:
             fd: The descriptor of the field being tested.
@@ -187,6 +193,59 @@ class FieldSelector:
             True if this selector selects the field at ``path``.
         """
         if self._path is not None:
-            return self._path.matches_selector(path)
+            return selects(self._path, path)
         assert self._predicate is not None  # invariant: exactly one form
         return self._predicate(fd, path)
+
+
+def selects(selector: FieldPath, path: FieldPath) -> bool:
+    """Whether a path-form ``selector`` selects the concrete ``path``.
+
+    Bracket-blind, exact-length segment-name matching
+    (:meth:`FieldPath.matches_selector`), with one exception: a selector that
+    is a lone extension name ``(pkg.ext)`` names the extension, not a location,
+    so it selects the path's last segment at any depth. A plain bare name
+    keeps exact-length matching here.
+
+    Args:
+        selector: The parsed selector path.
+        path: The concrete field path being tested.
+
+    Returns:
+        True if ``selector`` selects ``path``.
+    """
+    if is_extension_name(selector):
+        return bool(path.segments) and path.segments[-1].name == selector.segments[0].name
+    return selector.matches_selector(path)
+
+
+def is_extension_name(selector: FieldPath) -> bool:
+    """Whether ``selector`` is a lone extension name ``(pkg.ext)``.
+
+    Such a selector names an extension rather than a location, so it applies
+    at any depth.
+
+    Args:
+        selector: The parsed selector path.
+
+    Returns:
+        True if the selector is one parenthesised segment.
+    """
+    return len(selector.segments) == 1 and selector.segments[0].name.startswith("(")
+
+
+def overlaps(first: FieldPath, second: FieldPath) -> bool:
+    """Whether two path-form selectors can select the same field.
+
+    The registration conflict checks use this, so a set/map or ignore/map
+    overlap through the extension spelling is caught. For two plain selectors
+    it is the same exact-length comparison as before.
+
+    Args:
+        first: One parsed selector path.
+        second: The other parsed selector path.
+
+    Returns:
+        True if either selector selects the other's path.
+    """
+    return selects(first, second) or selects(second, first)
