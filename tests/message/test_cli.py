@@ -843,3 +843,36 @@ class TestUnparseableInput:
         ])
         assert result.exit_code == 2, result.output
         assert "Failed to parse" in result.output
+
+
+class TestExtensionSelectorConflictExitCode:
+    """A map key ignored through the extension spelling is a usage error (exit 2).
+
+    ``--treat-as-map '(x.items)' id`` keys the extension wherever it appears, so
+    ``--ignore 'container.(x.items).id'`` deletes the key the map runs on. The
+    guard compared only the literal ``(x.items).id`` spelling, so the pair was
+    accepted and differing elements could compare equal.
+    """
+
+    @pytest.mark.parametrize("ignore", ["container.(x.items).id", "(x.items).id"])
+    def test_ignoring_the_key_of_a_keyed_extension_exits_2(
+        self, runner: CliRunner, extension_setup: dict[str, Path], ignore: str,
+    ) -> None:
+        result = runner.invoke(main, [
+            str(extension_setup["left"]), str(extension_setup["right"]),
+            "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
+            "--treat-as-map", "(x.items)", "id", "--ignore", ignore,
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "treat_as_map" in result.output
+
+    def test_a_scoped_map_selector_leaves_another_location_alone(
+        self, runner: CliRunner, extension_setup: dict[str, Path],
+    ) -> None:
+        result = runner.invoke(main, [
+            str(extension_setup["left"]), str(extension_setup["right"]),
+            "--desc", str(extension_setup["desc"]), "--message-type", "x.Msg",
+            "--treat-as-map", "inner.(x.items)", "id", "--ignore", "container.(x.items).id",
+        ], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        assert "(x.tag)" in result.output

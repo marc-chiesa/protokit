@@ -956,3 +956,333 @@ class TestGroupTypedExtension:
         assert result.exit_code == exit_code, result.output
         if exit_code:
             assert "(t.ext).a" in result.output
+
+
+# ---------------------------------------------------------------------------
+# A lone extension selector ``(pkg.ext)`` selects at any depth in every policy
+#
+# ``ignore_fields`` and ``treat_as_map`` filed a one-segment ``(pkg.ext)``
+# under the extension's name and so applied it everywhere, but the policies
+# that take a ``FieldSelector`` (``treat_as_set``, float overlays, and the
+# selector form of ``ignore_fields``) matched it exact-length, at the root
+# only. The same spelling meant two things, and the registration guards that
+# compare selectors missed the overlap.
+# ---------------------------------------------------------------------------
+
+
+def _sel_pool() -> descriptor_pool.DescriptorPool:
+    """proto2 ``e.Msg`` with a double, a repeated string and a repeated message extension."""
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="e.proto", package="e", syntax="proto2")
+    item = fdp.message_type.add(name="Item")
+    item.field.add(name="id", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    msg = fdp.message_type.add(name="Msg")
+    msg.field.add(name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    msg.extension_range.add(start=100, end=200)
+    fdp.extension.add(
+        name="ival", number=100, type=_FD.TYPE_DOUBLE, label=_FD.LABEL_OPTIONAL,
+        extendee=".e.Msg",
+    )
+    fdp.extension.add(
+        name="itags", number=101, type=_FD.TYPE_STRING, label=_FD.LABEL_REPEATED,
+        extendee=".e.Msg",
+    )
+    outer = fdp.message_type.add(name="Outer")
+    outer.field.add(
+        name="inner", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_OPTIONAL,
+        type_name=".e.Msg",
+    )
+    pool.Add(fdp)
+    return pool
+
+
+def _sel_pair(
+    ival: tuple[float, float] = (1.0, 1.0),
+    itags: tuple[list[str], list[str]] = ([], []),
+) -> tuple[Message, Message]:
+    """Two ``e.Outer`` messages whose ``inner`` carries the given extension values."""
+    pool = _sel_pool()
+    outer_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("e.Outer"))
+    ival_fd, itags_fd = pool.FindExtensionByName("e.ival"), pool.FindExtensionByName("e.itags")
+    pair = []
+    for value, tags in zip(ival, itags, strict=True):
+        msg = outer_cls()
+        msg.inner.name = "n"
+        msg.inner.Extensions[ival_fd] = value
+        msg.inner.Extensions[itags_fd].extend(tags)
+        pair.append(msg)
+    return pair[0], pair[1]
+
+
+def _as_selector(spelling: str, form: str):  # type: ignore[no-untyped-def]
+    from protokit.message._selector import FieldSelector
+
+    return FieldSelector.of(spelling) if form == "selector" else spelling
+
+
+_FORMS = pytest.mark.parametrize("form", ["string", "selector"])
+
+
+class TestExtensionSelectorAtAnyDepth:
+    @_FORMS
+    def test_an_exact_float_overlay_applies_to_a_nested_extension(self, form: str) -> None:
+        """Global tolerance with an EXACT overlay on the extension: a nested change is found."""
+        from protokit.message.comparators import FloatComparison
+
+        left, right = _sel_pair(ival=(1.0, 1.0000001))
+        differ = MessageDifferencer()
+        differ.set_float_comparison(FloatComparison.APPROXIMATE, fraction=1e-3)
+        differ.set_float_comparison(
+            FloatComparison.EXACT, selector=_as_selector("(e.ival)", form),
+        )
+        result = differ.compare(left, right)
+        assert result.has_changes()
+        assert [str(x.path) for x in result] == ["inner.(e.ival)"]
+
+    @_FORMS
+    def test_a_tolerance_overlay_applies_to_a_nested_extension(self, form: str) -> None:
+        from protokit.message.comparators import FloatComparison
+
+        left, right = _sel_pair(ival=(1.0, 1.0001))
+        differ = MessageDifferencer()
+        differ.set_float_comparison(
+            FloatComparison.APPROXIMATE, fraction=1e-3, selector=_as_selector("(e.ival)", form),
+        )
+        assert list(differ.compare(left, right)) == []
+
+    @pytest.mark.parametrize(
+        ("first", "second", "has_changes"),
+        [
+            ("(e.ival)", "inner.(e.ival)", False),  # the lone name registered first wins
+            ("inner.(e.ival)", "(e.ival)", True),  # the qualified path registered first wins
+        ],
+    )
+    def test_overlapping_float_overlays_are_first_registered_wins(
+        self, first: str, second: str, has_changes: bool,
+    ) -> None:
+        from protokit.message.comparators import FloatComparison
+
+        left, right = _sel_pair(ival=(1.0, 1.0001))
+        differ = MessageDifferencer()
+        modes = {
+            "(e.ival)": FloatComparison.APPROXIMATE,
+            "inner.(e.ival)": FloatComparison.EXACT,
+        }
+        for selector in (first, second):
+            differ.set_float_comparison(modes[selector], fraction=1e-3, selector=selector)
+        assert differ.compare(left, right).has_changes() is has_changes
+
+    @_FORMS
+    def test_treat_as_set_applies_to_a_nested_extension(self, form: str) -> None:
+        left, right = _sel_pair(itags=(["a", "b"], ["b", "a"]))
+        differ = MessageDifferencer()
+        differ.treat_as_set(_as_selector("(e.itags)", form))
+        assert list(differ.compare(left, right)) == []
+
+    def test_treat_as_set_reports_leftovers_of_a_nested_extension(self) -> None:
+        left, right = _sel_pair(itags=(["a", "b"], ["c", "a"]))
+        differ = MessageDifferencer()
+        differ.treat_as_set("(e.itags)")
+        assert sorted((str(x.path), x.change_type.name) for x in differ.compare(left, right)) == [
+            ("inner.(e.itags)[0]", "ADDED"),
+            ("inner.(e.itags)[1]", "REMOVED"),
+        ]
+
+    @_FORMS
+    def test_ignore_applies_to_a_nested_extension(self, form: str) -> None:
+        left, right = _sel_pair(ival=(1.0, 2.0))
+        differ = MessageDifferencer()
+        differ.ignore_fields(_as_selector("(e.ival)", form))
+        assert list(differ.compare(left, right)) == []
+
+    def test_a_qualified_extension_path_stays_scoped(self) -> None:
+        """Only the lone name is global; ``other.(e.ival)`` does not reach ``inner``."""
+        from protokit.message._selector import FieldSelector
+
+        left, right = _sel_pair(ival=(1.0, 2.0))
+        differ = MessageDifferencer()
+        differ.ignore_fields(FieldSelector.of("other.(e.ival)"))
+        assert [str(x.path) for x in differ.compare(left, right)] == ["inner.(e.ival)"]
+
+    def test_a_bracketed_selector_form_is_still_accepted(self) -> None:
+        """Only the string grammar rejects brackets; a bracketed FieldSelector keeps working."""
+        from protokit.message._selector import FieldSelector
+
+        left, right = _sel_pair(itags=(["a"], ["b"]))
+        differ = MessageDifferencer()
+        differ.ignore_fields(FieldSelector.of("inner.(e.itags)[0]"))
+        assert list(differ.compare(left, right)) == []
+
+    def test_a_plain_selector_form_name_stays_top_level(self) -> None:
+        """Only extension names widen; a plain FieldSelector name keeps exact-length matching."""
+        from protokit.message._selector import FieldSelector
+
+        left, right = _sel_pair()
+        right.inner.name = "changed"
+        differ = MessageDifferencer()
+        differ.ignore_fields(FieldSelector.of("name"))
+        assert [str(x.path) for x in differ.compare(left, right)] == ["inner.name"]
+
+    def test_a_matcher_tolerance_overlay_applies_to_a_nested_extension(self) -> None:
+        from protokit.message import expect_proto
+
+        left, right = _sel_pair(ival=(1.0, 1.0001))
+        expect_proto(left).approximately(fraction=1e-3, selector="(e.ival)").assert_matches(right)
+        with pytest.raises(AssertionError):
+            expect_proto(left).approximately(fraction=1e-3, selector="other").assert_matches(right)
+
+    def test_matchers_apply_the_extension_selector_at_any_depth(self) -> None:
+        from protokit.message import proto_match
+
+        left, right = _sel_pair(ival=(1.0, 2.0), itags=(["a", "b"], ["b", "a"]))
+        proto_match(right, left, ignore="(e.ival)", as_set="(e.itags)")
+        with pytest.raises(AssertionError):
+            proto_match(right, left, as_set="(e.itags)")
+
+
+def _register(differ: MessageDifferencer, call: tuple) -> None:  # type: ignore[type-arg]
+    kind, *args = call
+    if kind == "set":
+        differ.treat_as_set(args[0])
+    elif kind == "map":
+        differ.treat_as_map(args[0], key=args[1])
+    else:
+        differ.ignore_fields(args[0])
+
+
+class TestExtensionSelectorConflicts:
+    """A registration that overlaps another through the extension spelling is rejected."""
+
+    @pytest.mark.parametrize(
+        ("set_sel", "map_sel"),
+        [("(e.items)", "inner.(e.items)"), ("inner.(e.items)", "(e.items)")],
+    )
+    @pytest.mark.parametrize("set_first", [True, False])
+    def test_set_and_map_on_the_same_extension_are_rejected(
+        self, set_sel: str, map_sel: str, set_first: bool,
+    ) -> None:
+        calls = [("set", set_sel), ("map", map_sel, "id")]
+        differ = MessageDifferencer()
+        _register(differ, calls[0] if set_first else calls[1])
+        with pytest.raises(ValueError, match="treat_as_(set|map)"):
+            _register(differ, calls[1] if set_first else calls[0])
+
+    @_FORMS
+    @pytest.mark.parametrize("ignore", ["(e.items)", "container.(e.items)"])
+    @pytest.mark.parametrize("map_first", [True, False])
+    def test_ignoring_a_keyed_extension_is_rejected(
+        self, ignore: str, map_first: bool, form: str,
+    ) -> None:
+        calls = [("map", "(e.items)", "id"), ("ignore", _as_selector(ignore, form))]
+        differ = MessageDifferencer()
+        _register(differ, calls[0] if map_first else calls[1])
+        with pytest.raises(ValueError, match="treat_as_map"):
+            _register(differ, calls[1] if map_first else calls[0])
+
+    @pytest.mark.parametrize(
+        ("ignore", "form"),
+        [
+            ("container.(e.items).id", "string"),
+            ("container.(e.items).id", "selector"),
+            ("(e.items).id", "string"),
+            ("(e.items).id", "selector"),
+            ("id", "string"),  # a plain FieldSelector "id" is top-level only
+        ],
+    )
+    @pytest.mark.parametrize("map_first", [True, False])
+    def test_ignoring_the_key_of_a_keyed_extension_is_rejected(
+        self, ignore: str, form: str, map_first: bool,
+    ) -> None:
+        calls = [("map", "(e.items)", "id"), ("ignore", _as_selector(ignore, form))]
+        differ = MessageDifferencer()
+        _register(differ, calls[0] if map_first else calls[1])
+        with pytest.raises(ValueError, match="treat_as_map|key"):
+            _register(differ, calls[1] if map_first else calls[0])
+
+    @pytest.mark.parametrize(
+        "calls",
+        [
+            # A scoped map selector does not reach another location's key.
+            [("map", "inner.(e.items)", "id"), ("ignore", "container.(e.items).id")],
+            # A different extension's key is not this map's key.
+            [("map", "(e.items)", "id"), ("ignore", "container.(e.other).id")],
+            # A set on one scoped location and a map on another do not overlap.
+            [("set", "a.(e.items)"), ("map", "b.(e.items)", "id")],
+        ],
+    )
+    def test_non_overlapping_registrations_are_accepted(self, calls) -> None:  # type: ignore[no-untyped-def]
+        for ordered in (calls, calls[::-1]):
+            differ = MessageDifferencer()
+            for call in ordered:
+                _register(differ, call)
+
+    @pytest.mark.parametrize(
+        "calls",
+        [
+            [("map", "parent.items[0]", "id"), ("ignore", "parent.items")],
+            [("map", "items", "id"), ("ignore", "container.items")],
+        ],
+    )
+    def test_plain_selectors_keep_the_equal_string_check(self, calls) -> None:  # type: ignore[no-untyped-def]
+        """Without an extension name, only equal selector strings conflict, as before.
+
+        Widening the check for plain names (audit finding U8-5 and its
+        relatives) is scheduled for 0.17.0; this wave widens it only for the
+        extension spelling.
+        """
+        for ordered in (calls, calls[::-1]):
+            differ = MessageDifferencer()
+            for call in ordered:
+                _register(differ, call)
+
+    def test_a_malformed_map_selector_reports_the_existing_conflict_first(self) -> None:
+        """The widened key check must not change which error a bad map selector gets."""
+        differ = MessageDifferencer()
+        differ.ignore_fields("parent.id", "id")
+        with pytest.raises(ValueError, match="'id' is globally ignored"):
+            differ.treat_as_map("bad.", key="id")
+
+    @pytest.mark.parametrize("ignore", ["container.(e.items)[0].id", "(e.items)[0]"])
+    @pytest.mark.parametrize("map_first", [True, False])
+    def test_a_bracketed_selector_form_is_checked_too(self, ignore: str, map_first: bool) -> None:
+        """Path-form matching ignores brackets, so the conflict check must too."""
+        from protokit.message._selector import FieldSelector
+
+        calls = [("map", "(e.items)", "id"), ("ignore", FieldSelector.of(ignore))]
+        differ = MessageDifferencer()
+        _register(differ, calls[0] if map_first else calls[1])
+        with pytest.raises(ValueError, match="treat_as_map"):
+            _register(differ, calls[1] if map_first else calls[0])
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("(e.items)", "inner.(e.items)"),
+            ("inner.(e.items)", "(e.items)"),
+            ("inner.(e.items)", "inner.(e.items)[0]"),
+            ("inner.(e.items)[0]", "inner.(e.items)"),
+        ],
+    )
+    def test_two_maps_on_one_extension_must_share_a_key(self, first: str, second: str) -> None:
+        differ = MessageDifferencer()
+        differ.treat_as_map(first, key="id")
+        with pytest.raises(ValueError, match="already configured with key 'id'"):
+            differ.treat_as_map(second, key="other")
+        same_key = MessageDifferencer()
+        same_key.treat_as_map(first, key="id")
+        same_key.treat_as_map(second, key="id")
+
+    def test_a_same_key_map_after_a_scoped_one_still_applies_everywhere(self) -> None:
+        """The later lone-name map is registered, not dropped as a repeat of the scoped one."""
+        msg_cls, _outer, xitems, _items = _keyed_classes()
+        differ = MessageDifferencer()
+        differ.treat_as_map("inner.(x.xitems)", key="id")
+        differ.treat_as_map("(x.xitems)", key="id")
+        left, right = _reordered_pair(msg_cls, lambda m: m.Extensions[xitems])
+        assert list(differ.compare(left, right)) == []
+
+    def test_two_maps_on_plain_names_keep_the_equal_string_check(self) -> None:
+        """Plain names conflict only when equal, as before (widening them is 0.17.0)."""
+        differ = MessageDifferencer()
+        differ.treat_as_map("items", key="id")
+        differ.treat_as_map("inner.items", key="other")

@@ -50,6 +50,9 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
 > | `diff` over messages holding a proto2 group or an editions DELIMITED field | the group is compared field by field: identical groups from two descriptor sets compare equal (exit 0 instead of 1), a change is reported at the inner field instead of the whole group, and `ignore_fields`, float tolerance and presence mode apply inside it |
 > | *(API)* `MessageDifferencer`, `proto_match` / `expect_proto` and the pytest `proto_matcher` fixture over the same messages | the same verdicts as `diff`; field hooks (`register_validate_hook`, `register_compare_hook`, `register_report_hook`) run on each field inside the group instead of once at the group, and `register_message_validate_hook` hooks also run for the group |
+> | *(API)* a lone extension selector `(pkg.ext)` given to `treat_as_set`, a float overlay (`set_float_comparison(selector=…)`, `.approximately(selector=…)`) or `ignore_fields` as a `FieldSelector` | applies to that extension at any depth, as `ignore_fields("(pkg.ext)")` and `treat_as_map` already did, instead of at the top level only |
+> | *(API)* a `treat_as_set` and a `treat_as_map`, or two `treat_as_map` calls with different keys, that select the same extension, one through `(pkg.ext)` and the other through a path to it; ignoring a keyed `(pkg.ext)` or its key at a deeper path (`ignore_fields("parent.(pkg.ext).id")`) | raises `ValueError` at registration instead of being accepted; with the key ignored, differing elements could compare equal |
+> | `diff --treat-as-map '(pkg.ext)' KEY` with an `--ignore` path that names the key below the top level (`'parent.(pkg.ext).KEY'`) | exits 2 (usage error) instead of comparing with the key ignored; `--ignore '(pkg.ext).KEY'` already exited 2 |
 > | `compat` where a declared proto2 extension changes (type, number, removal or addition), or a field inside a proto2 group or an editions DELIMITED field changes | exits 1 (INCOMPATIBLE) instead of 0 at each level that reports the same change to a declared field; a group retargeted to another message type is reported at STRICT |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
 > | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
@@ -149,6 +152,24 @@ All notable changes to `protokit` are documented here. Format loosely follows
   differ; whether it fails is still decided by protobuf equality. A field
   that is a group on one side and a message on the other is still reported
   as one `TYPE_CHANGED`.
+
+- **An extension selector means one thing in every differ policy** (audit
+  findings R10-C1, R13-X5). `ignore_fields("(pkg.ext)")` and
+  `treat_as_map("(pkg.ext)", …)` applied a lone parenthesised name at any
+  depth, but `treat_as_set`, float overlays and the `FieldSelector` form of
+  `ignore_fields` matched it only at the top level. So a global tolerance
+  with an EXACT overlay on `(pkg.ext)` still compared a nested
+  `inner.(pkg.ext)` approximately, and reported a real change as equal. All
+  of them now apply the lone name at any depth; `parent.(pkg.ext)` stays
+  scoped, and overlapping float overlays still apply the first one
+  registered. The registration checks use the same rule, so a `treat_as_set`
+  and a `treat_as_map` that meet through the extension spelling, two
+  `treat_as_map` calls that meet there with different keys, or an ignore of
+  a keyed extension or its key at a deeper path, raise `ValueError`; a
+  path-form `FieldSelector` naming an extension, brackets or not, is checked
+  like its string. The same deeper-path check for a plain name
+  (`container.items.id` under `treat_as_map("items", key="id")`) is still
+  missing; it is scheduled for 0.17.0.
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and
