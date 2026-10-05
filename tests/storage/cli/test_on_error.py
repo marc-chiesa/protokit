@@ -401,3 +401,26 @@ def test_a_closed_stdout_keeps_its_exit_1(tmp_path: Path) -> None:
     assert proc.wait(timeout=120) == 1
     assert "Error:" not in stderr
     assert "Traceback" not in stderr
+
+
+def test_a_failed_warning_write_is_not_reported_as_a_read_error(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """``warn`` writes each fault to stderr while the scan reads. A failure
+    of that write (a full disk under a redirected stderr) is not a failure to
+    read the data file, so it is not reported as one: it escapes as before."""
+    desc, cls = desc_and_cls
+    data = data_file_factory([_DECODE_BAD, cls(x=9).SerializeToString()])
+    echo = storage_cli.click.echo
+
+    def no_room_for_warnings(message: object = None, *args: object, **kwargs: object) -> None:
+        if kwargs.get("err") and str(message).startswith("Warning:"):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        echo(message, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(storage_cli.click, "echo", no_room_for_warnings)
+    with pytest.raises(OSError, match="No space left on device"):
+        _run(runner, [*_base(data, desc), "--on-error", "warn"])
