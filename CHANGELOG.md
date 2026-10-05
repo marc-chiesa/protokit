@@ -79,6 +79,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(API)* `get_option_value` on a proto2 string option (or one nested in a message option) that is not UTF-8, under upb | raises `DecodeError` naming the option instead of returning `bytes`; pure-Python already raised |
 > | `lint` custom annotation rules and option-reading rules (`field_behavior`) on an element where another option is malformed | the rule runs instead of failing with `rule_exception` |
 > | `lint` custom annotation rules and option-reading rules (`field_behavior`) on a proto2 string option (or one nested in a message option) that is not UTF-8, under upb | the rule fails with `rule_exception` and the run is `INCOMPLETE` (exit 2), instead of passing or comparing the bytes; pure-Python already did this |
+> | `lint` over a descriptor set that lists a file before one it imports, or over several sets passed with the importing one first | lints the files (exit 0 or 1) instead of exiting 2 with `error[lint-missing-imports]`; an import cycle exits 2 with `error[lint-pool-conflict]` naming the cycle, instead of `error[lint-missing-imports]` (a file importing itself, under pure-Python, already gave `error[lint-pool-conflict]`, from a recursion error) |
 > | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta of `0` |
 
 ### Security
@@ -205,6 +206,22 @@ All notable changes to `protokit` are documented here. Format loosely follows
   hold one, so proto3 schemas and types without strings cost next to
   nothing; for a proto2 type with strings, a upb storage scan spends
   noticeably more time per record, because the walk runs in Python.
+
+- **`lint` accepts a complete descriptor set in any file order** (audit
+  finding R23-C2). The loader added files to the pool in the order the
+  inputs listed them. A set that listed a file before one it imports, or
+  several sets passed with the importing one first, failed with
+  `error[lint-missing-imports]` and exit 2 on both backends, even though
+  every file was there. `diff`, `compat`, `storage` and `forensics` already
+  sorted. Files are now added dependencies first. A dependency that no set
+  holds is still `error[lint-missing-imports]`, naming the input that needs
+  it. An import cycle, which no order can load, is now
+  `error[lint-pool-conflict]`. When two inputs hold a file of the same
+  name, the first is still the one loaded, and the files lint reports on
+  stay in input order. Every input is now read before any file is loaded,
+  so when inputs are broken in more than one way, an input that cannot be
+  read (`error[lint-bad-input]`) is reported before a missing import in an
+  earlier one. Both exit 2.
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and

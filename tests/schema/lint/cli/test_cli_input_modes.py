@@ -692,3 +692,170 @@ class TestProtoPathAdvisory:
         assert result.exit_code == 0, result.output
         assert "warning[lint-cli]:" not in result.stderr
         assert "--proto-path ignored" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# File order inside and across descriptor sets (U8, R9)
+#
+# A descriptor set lists files in whatever order its producer wrote them.
+# ``protoc --include_imports`` happens to write dependencies first, but other
+# tools, a set merged by hand, or several sets passed in any order need not.
+# ---------------------------------------------------------------------------
+
+
+def _ordered_file(
+    name: str, message: str, *deps: tuple[str, str],
+) -> descriptor_pb2.FileDescriptorProto:
+    """``u8/<name>.proto`` in package ``u8``: one message, one field per
+    ``(file, message)`` dependency, typed with that dependency's message."""
+    fd = descriptor_pb2.FileDescriptorProto(
+        name=f"u8/{name}.proto", package="u8", syntax="proto3",
+    )
+    msg = fd.message_type.add(name=message)
+    for number, (dep_file, dep_message) in enumerate(deps, start=1):
+        fd.dependency.append(f"u8/{dep_file}.proto")
+        msg.field.add(
+            name=f"{dep_file}_ref", number=number,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+            type=descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE,
+            type_name=f".u8.{dep_message}",
+        )
+    return fd
+
+
+def _write_set(path: Path, *files: descriptor_pb2.FileDescriptorProto) -> Path:
+    path.write_bytes(descriptor_pb2.FileDescriptorSet(file=files).SerializeToString())
+    return path
+
+
+_DEP = _ordered_file("dep", "Dep")
+_MAIN = _ordered_file("main", "Main", ("dep", "Dep"))
+
+
+class TestDescriptorSetFileOrder:
+    @pytest.mark.parametrize(
+        "files",
+        [
+            (_MAIN, _DEP),
+            # Two files import Dep; the second finds it already placed.
+            (_MAIN, _ordered_file("side", "Side", ("dep", "Dep")), _DEP),
+        ],
+        ids=["one-importer", "two-importers"],
+    )
+    def test_a_set_listing_a_file_before_its_dependency_lints(
+        self, tmp_path: Path, files: tuple[descriptor_pb2.FileDescriptorProto, ...],
+    ) -> None:
+        reversed_set = _write_set(tmp_path / "reversed.pb", *files)
+        result = CliRunner().invoke(lint_main, [str(reversed_set)])
+        assert result.exit_code == 0, result.output
+
+    def test_sets_passed_before_their_dependencies_lint(self, tmp_path: Path) -> None:
+        main_only = _write_set(tmp_path / "main_only.pb", _MAIN)
+        dep = _write_set(tmp_path / "dep.pb", _DEP)
+        result = CliRunner().invoke(lint_main, [str(main_only), str(dep)])
+        assert result.exit_code == 0, result.output
+
+    def test_a_dependency_absent_from_every_set_still_names_its_input(
+        self, tmp_path: Path,
+    ) -> None:
+        """The orphan sits in the second input, so the error must carry that
+        input's path even though sorting moved the files around."""
+        orphan = _ordered_file("orphan", "Orphan", ("gone", "Gone"))
+        main_only = _write_set(tmp_path / "main_only.pb", _MAIN)
+        dep = _write_set(tmp_path / "dep.pb", _DEP, orphan)
+        result = CliRunner().invoke(lint_main, [str(main_only), str(dep)])
+        assert result.exit_code == 2
+        assert f"error[lint-missing-imports]: {dep}:" in result.stderr
+
+    @pytest.mark.parametrize(
+        "files",
+        [
+            (
+                _ordered_file("left", "Left", ("right", "Right")),
+                _ordered_file("right", "Right", ("left", "Left")),
+            ),
+            (_ordered_file("loop", "Loop", ("loop", "Loop")),),
+        ],
+        ids=["two-files", "self-import"],
+    )
+    def test_an_import_cycle_is_a_pool_conflict(
+        self, tmp_path: Path, files: tuple[descriptor_pb2.FileDescriptorProto, ...],
+    ) -> None:
+        cycle = _write_set(tmp_path / "cycle.pb", *files)
+        result = CliRunner().invoke(lint_main, [str(cycle)])
+        assert result.exit_code == 2
+        assert f"error[lint-pool-conflict]: {cycle}:" in result.stderr
+        assert "import cycle" in result.stderr
+
+    def test_a_duplicate_file_keeps_its_first_occurrence(self, tmp_path: Path) -> None:
+        """The second ``u8/dep.proto`` declares another message; only the
+        first is loaded, so ``Main``'s field still resolves to ``Dep``."""
+        first = _write_set(tmp_path / "first.pb", _MAIN, _DEP)
+        second = _write_set(tmp_path / "second.pb", _ordered_file("dep", "Other"))
+        result = CliRunner().invoke(lint_main, [str(first), str(second)])
+        assert result.exit_code == 0, result.output
+        assert "deduplicated duplicate file path 'u8/dep.proto'" in result.output
+
+    def test_files_report_in_input_order(self, tmp_path: Path) -> None:
+        reversed_set = _write_set(tmp_path / "reversed.pb", _MAIN, _DEP)
+        result = lint_cli_utils._load_descriptor_sets_to_result((reversed_set,))
+        assert result.root_files == ("u8/main.proto", "u8/dep.proto")
+        assert result.pool_file_names == ("u8/main.proto", "u8/dep.proto")
+
+    @pytest.mark.parametrize(
+        ("inputs", "cycle", "closing_input"),
+        [
+            # The loop B -> C -> B is reached through A, which is not part of it.
+            (
+                [[
+                    _ordered_file("a", "A", ("b", "B")),
+                    _ordered_file("b", "B", ("c", "C")),
+                    _ordered_file("c", "C", ("b", "B")),
+                ]],
+                "u8/b.proto -> u8/c.proto -> u8/b.proto",
+                0,
+            ),
+            # The import that closes the loop sits in the second input.
+            (
+                [
+                    [_ordered_file("left", "Left", ("right", "Right"))],
+                    [_ordered_file("right", "Right", ("left", "Left"))],
+                ],
+                "u8/left.proto -> u8/right.proto -> u8/left.proto",
+                1,
+            ),
+        ],
+        ids=["loop-below-the-root", "across-inputs"],
+    )
+    def test_an_import_cycle_names_the_loop_and_its_input(
+        self,
+        tmp_path: Path,
+        inputs: list[list[descriptor_pb2.FileDescriptorProto]],
+        cycle: str,
+        closing_input: int,
+    ) -> None:
+        paths = [
+            _write_set(tmp_path / f"set{index}.pb", *files)
+            for index, files in enumerate(inputs)
+        ]
+        result = CliRunner().invoke(lint_main, [str(path) for path in paths])
+        assert result.exit_code == 2
+        assert (
+            f"error[lint-pool-conflict]: {paths[closing_input]}: import cycle: {cycle}"
+            in result.stderr
+        )
+
+    def test_an_unreadable_input_is_reported_before_a_missing_import(
+        self, tmp_path: Path,
+    ) -> None:
+        """Every input is read before any file is loaded, so the second
+        input's parse failure wins over the first input's missing import."""
+        orphan = _write_set(
+            tmp_path / "orphan.pb", _ordered_file("orphan", "Orphan", ("gone", "Gone")),
+        )
+        corrupt = tmp_path / "corrupt.pb"
+        corrupt.write_bytes(b"\xff")
+        result = CliRunner().invoke(lint_main, [str(orphan), str(corrupt)])
+        assert result.exit_code == 2
+        assert f"error[lint-bad-input]: {corrupt}:" in result.stderr
+        assert "lint-missing-imports" not in result.stderr
