@@ -65,7 +65,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import BinaryIO, NamedTuple, NoReturn
 
@@ -504,6 +504,9 @@ class _Run(NamedTuple):
     #: Populated under 'skip' and 'warn' (both route); ``None`` under 'raise',
     #: where the first fault propagates instead of being recovered past.
     tally: _Tally | None
+    #: The read error that ended the scan early, as an error diagnostic, filled
+    #: in by ``_records`` (R10). Empty when the source was read to its end.
+    read_errors: list[Diagnostic]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -548,14 +551,38 @@ def _make_result(setup: _Setup, source: Source, on_error: str) -> _Run:
             on_error="route",
             error_sink=sink,
         )
-        return _Run(result, tally)
+        return _Run(result, tally, [])
     result = scan(
         source,
         setup.registry,
         predicate=setup.predicate,
         on_error=_CLI_TO_ENGINE[on_error],
     )
-    return _Run(result, None)
+    return _Run(result, None, [])
+
+
+def _records(run: _Run, path: Path) -> Iterator[ScanRecord]:
+    """Yield the scan's records, ending at a read error instead of raising it.
+
+    A read ``OSError`` mid-scan (a failing disk, a dropped mount) used to
+    escape every text command as a traceback and exit 1 (R10). It is recorded
+    on ``run.read_errors`` instead, so ``_exit_after_scan`` gives it the same
+    verdict as any other incomplete scan. The ``try`` covers only the read: a
+    write error on stdout (``BrokenPipeError`` under ``| head``) is raised in
+    the caller's loop body, outside it, and keeps Click's own handling.
+    """
+    records = iter(run.result)
+    while True:
+        try:
+            record = next(records)
+        except StopIteration:
+            return
+        except OSError as exc:
+            run.read_errors.append(
+                Diagnostic(path=None, message=f"cannot read {path}: {exc}", level="error")
+            )
+            return
+        yield record
 
 
 def _flatten_view(view: dict[str, object], prefix: str = "") -> list[str]:
@@ -666,7 +693,9 @@ def _emit_warn_summary(on_error: str, matched: int, run: _Run) -> None:
 def _exit_after_scan(on_error: str, matched: int, run: _Run, code: int) -> NoReturn:
     """Emit the warn summary, then exit -- 2 if the scan did not read it all.
 
-    R1: a tolerant ``--on-error`` mode is a licence to keep going past a
+    "Did not read it all" means a record dropped under a tolerant mode or a
+    read error that ended the scan early (``run.read_errors``, R10). R1: a
+    tolerant ``--on-error`` mode is a licence to keep going past a
     corrupt record, not a claim that the file was read. The records that did
     come out have already gone to stdout by the time this runs, so the caller
     keeps everything the mode promised; what it no longer gets is an exit code
@@ -682,6 +711,7 @@ def _exit_after_scan(on_error: str, matched: int, run: _Run, code: int) -> NoRet
     report = _ScanReport(
         faults=run.tally.count if run.tally else 0,
         first_fault=run.tally.first if run.tally else None,
+        diagnostics=tuple(run.read_errors),
     )
     # ``signals`` rather than ``is_trustworthy`` then ``reasons``, which
     # would compute them twice. The text is already one printable line: the
@@ -886,7 +916,7 @@ def scan_cmd(
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:
-            for record in run.result:
+            for record in _records(run, data_file):
                 click.echo(_render(record, output_format, setup.selection, setup.explicit_defaults))
                 yielded += 1
         except _TYPED_CLI_ERRORS as exc:
@@ -938,7 +968,7 @@ def head_cmd(
         # limit == 0 pulls nothing (and shows nothing); the `with` closes the file.
         if limit > 0:
             try:
-                for record in run.result:
+                for record in _records(run, data_file):
                     click.echo(
                         _render(
                             record,
@@ -985,7 +1015,7 @@ def count_cmd(
         source = length_delimited(handle, stream_id=setup.stream_id)
         run = _make_result(setup, source, on_error)
         try:
-            for _record in run.result:
+            for _record in _records(run, data_file):
                 matched += 1
         except _TYPED_CLI_ERRORS as exc:
             error_exit(str(exc))

@@ -82,6 +82,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint` over a descriptor set that lists a file before one it imports, or over several sets passed with the importing one first | lints the files (exit 0 or 1) instead of exiting 2 with `error[lint-missing-imports]`; an import cycle exits 2 with `error[lint-pool-conflict]` naming the cycle, instead of `error[lint-missing-imports]` (a file importing itself, under pure-Python, already gave `error[lint-pool-conflict]`, from a recursion error) |
 > | `lint --proto` given a file through a path that steps back out of an include with `..` (`proto/a/../b/bad.proto` with `-I proto`) | lints that file (exit 0 or 1) instead of skipping it and exiting 0 on the other files alone |
 > | `lint --proto` given a file the compiler emits under another name (under protoc, a `-I VIRTUAL=DIR` mapping) | exits 2 (`error[lint-compile-failed]`, after a `not linted:` line naming the file) instead of skipping it and exiting 0 |
+> | `storage scan\|head\|count` (human or JSON) when reading the data file fails partway (an I/O error from a failing disk or a dropped mount) | exits 2 with `Error: cannot read <file>: …` instead of a traceback and 1, under every `--on-error` mode; the records read before the error still reach stdout, `count` still prints its partial count, and `count --quiet` exits 2 instead of 1 ("zero matches") even after a match. `--format parquet` already exited 2 |
 > | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta of `0` |
 
 ### Security
@@ -249,6 +250,17 @@ All notable changes to `protokit` are documented here. Format loosely follows
   for lint's. Control characters in those messages now print as spaces, as
   they already did in the compiler-output lines below them. Exit codes are
   unchanged.
+
+- **`storage scan`, `head` and `count` exit 2 when reading the data file
+  fails partway** (audit finding R27-C3). An I/O error after the first
+  record, from a failing disk or a dropped network mount, escaped as a
+  traceback and exit 1, the code `lint` and `diff` use for findings, and
+  `count --quiet` read it as "zero matches" even after a record had matched.
+  The error now ends the scan as an incomplete one: the records read before
+  it still reach stdout, `count` prints its partial count, and the command
+  exits 2 with `Error: cannot read <file>: …`, under every `--on-error` mode.
+  A closed stdout (`scan … | head -1`) is a write error, not a read error,
+  and still exits 1 quietly, as before. `--format parquet` already exited 2.
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and

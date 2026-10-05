@@ -15,13 +15,19 @@ process claims the scan succeeded.
 
 from __future__ import annotations
 
+import errno
+import io
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from protokit.cli import main
+from protokit.storage import cli as storage_cli
 from tests.storage.cli.conftest import DECODE_BAD as _DECODE_BAD
 from tests.storage.proto_fixtures import delimited, encode_varint
 
@@ -271,3 +277,127 @@ def test_count_quiet_prefers_the_incompleteness_over_the_grep_signal(
     ])
     assert result.exit_code == 2  # not 1 ("nothing matched")
     assert result.stdout == ""  # --quiet still means no stdout
+
+
+# ---------------------------------------------------------------------------
+# A read error mid-scan is an incomplete scan (U10, R10)
+#
+# The data file fails with EIO after its first frame: a failing disk or a
+# dropped network mount. Before U10 the ``OSError`` escaped every text command
+# as a traceback and exit 1, the code ``lint`` and ``diff`` use for findings,
+# and ``count --quiet`` read as "zero matches" after a record had matched.
+# ---------------------------------------------------------------------------
+
+
+class _FailsAfter(io.RawIOBase):
+    """Serve the first ``limit`` bytes of ``path``, then raise EIO."""
+
+    def __init__(self, path: Path, limit: int) -> None:
+        self._data = path.read_bytes()[:limit]
+        self._served = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        rest = self._data[self._served:]
+        if not rest:
+            raise OSError(errno.EIO, "Input/output error")
+        n = min(len(buffer), len(rest))
+        buffer[:n] = rest[:n]
+        self._served += n
+        return n
+
+
+@pytest.fixture
+def eio_after_first_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> tuple[Path, Path]:
+    """``(data, desc)`` whose data file fails after its first frame (x=7)."""
+    desc, cls = desc_and_cls
+    first = cls(x=7).SerializeToString()
+    data = data_file_factory([first, cls(x=9).SerializeToString()])
+    frame = len(encode_varint(len(first))) + len(first)
+    monkeypatch.setattr(
+        storage_cli, "_open_data",
+        lambda path: io.BufferedReader(_FailsAfter(path, frame)),
+    )
+    return data, desc
+
+
+@pytest.mark.parametrize("on_error", ["raise", "skip", "warn"])
+@pytest.mark.parametrize(
+    "command",
+    [["scan"], ["scan", "--format", "json"], ["head"], ["head", "--format", "json"]],
+    ids=["scan", "scan-json", "head", "head-json"],
+)
+def test_a_read_error_mid_scan_exits_2(
+    runner: CliRunner,
+    eio_after_first_frame: tuple[Path, Path],
+    command: list[str],
+    on_error: str,
+) -> None:
+    data, desc = eio_after_first_frame
+    result = _run(runner, [
+        "storage", command[0], str(data), "--desc", str(desc), "--type", "a.A",
+        *command[1:], "--on-error", on_error,
+    ])
+    assert result.exit_code == 2
+    # The record read before the fault still reached stdout, and only it.
+    shown = [line for line in result.stdout.splitlines() if not line.startswith("#")]
+    assert shown in (["x: 7"], ['{"x": 7}'])
+    assert f"Error: cannot read {data}: [Errno 5] Input/output error" in result.stderr
+
+
+def test_count_prints_the_partial_count_then_exits_2(
+    runner: CliRunner, eio_after_first_frame: tuple[Path, Path],
+) -> None:
+    data, desc = eio_after_first_frame
+    result = _run(runner, [
+        "storage", "count", str(data), "--desc", str(desc), "--type", "a.A",
+    ])
+    assert result.exit_code == 2
+    assert result.stdout == "1\n"
+    assert "Input/output error" in result.stderr
+
+
+@pytest.mark.parametrize("on_error", ["raise", "skip", "warn"])
+def test_count_quiet_after_a_match_exits_2_not_0(
+    runner: CliRunner, eio_after_first_frame: tuple[Path, Path], on_error: str,
+) -> None:
+    """A match was seen, but the file was not read: neither 0 nor 1 is true."""
+    data, desc = eio_after_first_frame
+    result = _run(runner, [
+        "storage", "count", str(data), "--desc", str(desc), "--type", "a.A",
+        "--quiet", "--on-error", on_error,
+    ])
+    assert result.exit_code == 2
+    assert result.stdout == ""
+
+
+def test_a_closed_stdout_keeps_its_exit_1(tmp_path: Path) -> None:
+    """``scan ... | head -1``: the broken pipe is a write error, not a read error.
+
+    It stays Click's quiet exit 1, as before U10 and in 0.15.1, rather than
+    becoming the read-error exit 2.
+    """
+    from tests.storage.cli.conftest import a_fds
+
+    desc = tmp_path / "a.desc"
+    desc.write_bytes(a_fds().SerializeToString())  # type: ignore[attr-defined]
+    data = tmp_path / "big.bin"
+    data.write_bytes(b"\x02\x08\x01" * 200_000)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "from protokit.cli import main; main()",
+         "storage", "scan", str(data), "--desc", str(desc), "--type", "a.A"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    assert proc.stdout.readline().startswith(b"# stream=")
+    proc.stdout.close()
+    stderr = proc.stderr.read().decode()
+    assert proc.wait(timeout=120) == 1
+    assert "Error:" not in stderr
+    assert "Traceback" not in stderr
