@@ -33,7 +33,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 from google.protobuf import descriptor_pb2, descriptor_pool
 
 from protokit.cli import main as protokit_main
@@ -859,3 +859,152 @@ class TestDescriptorSetFileOrder:
         assert result.exit_code == 2
         assert f"error[lint-bad-input]: {corrupt}:" in result.stderr
         assert "lint-missing-imports" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Every root named with --proto is linted, or the run fails (U9, R8)
+#
+# The compile helpers keep a root only when the backend emitted the name they
+# predicted for it. A path stepping through ``..`` was predicted wrongly, so
+# the root dropped out and lint exited 0 without linting it. Any root that
+# still fails to come back (protoc's ``-I VIRTUAL=DIR`` mapping renames it)
+# now exits 2 naming the path.
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).parents[4]
+
+_GOOD = 'syntax = "proto3";\npackage a;\nmessage Good { string name = 1; }\n'
+# A root-level file, so ``package/directory-match`` has nothing to compare.
+_BAD = 'syntax = "proto3";\nmessage bad_message { string name = 1; }\n'
+
+
+def _use_backend(backend: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the compile arm ``lint --proto`` takes."""
+    from protokit import _cli_utils
+    from protokit.schema import compile as compile_module
+
+    if backend == "protoxy":
+        if not _cli_utils._has_protoxy():
+            pytest.skip("optional [compiler] extra not installed")
+        return
+    import shutil
+
+    if shutil.which("protoc") is None:
+        pytest.skip("protoc not on PATH (CI installs it on every cell)")
+    monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
+
+
+def _proto_tree(root: Path) -> None:
+    (root / "proto" / "a").mkdir(parents=True)
+    (root / "proto" / "b").mkdir()
+    (root / "proto" / "a" / "good.proto").write_text(_GOOD)
+    (root / "proto" / "b" / "bad.proto").write_text(_BAD)
+
+
+@pytest.mark.parametrize("backend", ["protoxy", "protoc"])
+class TestProtoRootsAreLinted:
+    def test_a_root_named_through_dotdot_is_linted(
+        self, backend: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _use_backend(backend, monkeypatch)
+        monkeypatch.chdir(_REPO_ROOT)
+        result = CliRunner().invoke(
+            lint_main,
+            [
+                "--proto",
+                "tests/schema/lint/cli/../cli/cli_fixtures/bad_naming.proto",
+                "-I", ".",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert result.stdout.count("naming/snake-case-fields") == 2
+        assert "BadCamelCase" in result.stdout
+        assert "with__double" in result.stdout
+
+    def test_two_roots_one_through_dotdot_are_both_linted(
+        self, backend: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _use_backend(backend, monkeypatch)
+        _proto_tree(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(
+            lint_main,
+            ["--proto", "proto/a/good.proto", "proto/a/../b/bad.proto", "-I", "proto"],
+        )
+        assert result.exit_code == 1, result.output
+        assert "naming/pascal-case-messages" in result.stdout
+        assert "bad_message" in result.stdout
+
+
+class TestDroppedProtoRoot:
+    def test_a_root_protoc_names_differently_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``-I v=proto`` is protoc's VIRTUAL=DIR mapping: protoc names the
+        file ``v/b/bad.proto``, which no prediction matches. Lint's ``-I``
+        must name an existing directory, so ``v=proto`` exists as one too."""
+        _use_backend("protoc", monkeypatch)
+        _proto_tree(tmp_path)
+        (tmp_path / "v=proto").mkdir()
+        monkeypatch.chdir(tmp_path)
+        result = CliRunner().invoke(
+            lint_main, ["--proto", "proto/b/bad.proto", "-I", "v=proto"],
+        )
+        assert result.exit_code == 2, result.output
+        assert "not linted: proto/b/bad.proto" in result.stderr
+        assert "error[lint-compile-failed]: 1 of 1 " in result.stderr
+        assert "bad_message" not in result.stdout
+
+    @staticmethod
+    def _invoke_dropping(
+        tmp_path: Path, names: list[str], keep: tuple[str, ...],
+    ) -> Result:
+        """Run ``lint --proto`` over ``names`` with a clean compile that
+        returns only ``keep`` as ``root_files``.
+
+        The result is built by hand: a real compile of these files would
+        either keep every root or fail with its own diagnostics, and either
+        way never reach the check under test.
+        """
+        from protokit.schema.lint import cli as lint_cli_module
+
+        paths = []
+        for name in names:
+            path = tmp_path / name
+            path.write_text(_BAD)
+            paths.append(path)
+        dropped = CompileResult(
+            pool=descriptor_pool.DescriptorPool(),
+            root_files=keep,
+            pool_file_names=keep,
+        )
+        with patch.object(
+            lint_cli_module, "compile_protos_to_result", return_value=dropped,
+        ):
+            return CliRunner().invoke(
+                lint_main, ["--proto", *(str(p) for p in paths)],
+            )
+
+    def test_a_dropped_root_exits_2_naming_only_that_path(
+        self, tmp_path: Path,
+    ) -> None:
+        result = self._invoke_dropping(
+            tmp_path, ["first.proto", "second.proto"], keep=("first.proto",),
+        )
+        assert result.exit_code == 2, result.output
+        assert f"not linted: {tmp_path / 'second.proto'}" in result.stderr
+        assert str(tmp_path / "first.proto") not in result.stderr
+        assert "error[lint-compile-failed]: 1 of 2 " in result.stderr
+
+    def test_a_dropped_path_cannot_forge_a_stable_prefix_line(
+        self, tmp_path: Path,
+    ) -> None:
+        result = self._invoke_dropping(
+            tmp_path, ["x\nerror[lint-forged]: y.proto"], keep=(),
+        )
+        assert result.exit_code == 2, result.output
+        assert "not linted: " in result.stderr
+        assert not any(
+            line.startswith("error[lint-forged]")
+            for line in result.stderr.splitlines()
+        )

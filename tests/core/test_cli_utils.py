@@ -323,6 +323,25 @@ class TestResolveExpectedName:
         )
         assert result == "file.proto"
 
+    def test_an_include_reached_through_dotdot_is_skipped(self) -> None:
+        """A remainder holding ``..`` is not a name either backend emits.
+
+        ``proto/a/../b/bad.proto`` sits lexically under ``proto``, but the
+        remainder ``a/../b/bad.proto`` steps back out of it, so protoxy and
+        protoc skip that include and name the file from the next one: its
+        own parent, which the compile helpers always append.
+        """
+        p = Path("proto/a/../b/bad.proto")
+        result = _cli_utils._resolve_expected_name(p, ["proto", str(p.parent)])
+        assert result == "bad.proto"
+
+    def test_dotdot_inside_the_include_itself_still_matches(self) -> None:
+        """Only the remainder is checked: an include spelled with ``..``
+        that the path repeats literally still names the file below it."""
+        p = Path("proto/a/../b/bad.proto")
+        result = _cli_utils._resolve_expected_name(p, ["proto/a/.."])
+        assert result == "b/bad.proto"
+
 
 class TestLegacyCompileProto:
     """Tests that exercise ``compile_proto`` (legacy adapter) at the
@@ -809,3 +828,84 @@ class TestCompileProtoTypedPoolErrors:
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         assert "protoxy compile failed: could not build file 'orphan.proto'" in err
+
+
+# ---------------------------------------------------------------------------
+# Predicted root names agree with what the backends emit (U9, R8, KTD9)
+# ---------------------------------------------------------------------------
+
+
+def _emitted_root_names(
+    backend: str, paths: list[Path], include_paths: list[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Compile ``paths`` on one backend; return ``(root_names, emitted)``.
+
+    The fixtures import nothing, so ``pool_file_names`` holds exactly the
+    names the backend gave the inputs -- the oracle the prediction must meet.
+    """
+    if backend == "protoxy":
+        if not _cli_utils._has_protoxy():
+            pytest.skip("optional [compiler] extra not installed")
+        pool, roots, _, emitted = _cli_utils._compile_with_protoxy(paths, include_paths)
+    else:
+        import shutil
+
+        if shutil.which("protoc") is None:
+            pytest.skip("protoc not on PATH (CI installs it on every cell)")
+        pool, roots, _, emitted = _cli_utils._compile_with_protoc(paths, include_paths)
+    return roots, emitted
+
+
+class TestExpectedRootNamesMatchTheBackends:
+    """``_expected_root_names_ordered`` predicts the ``fd.name`` each backend
+    gives an input, including paths that step through ``..``.
+
+    A prediction the backend does not emit makes the compile helpers drop
+    that root from ``root_files``, so lint skipped the file and exited 0.
+    The shapes were checked against protoxy 0.7 and protoc 3.21.12 (the
+    version CI installs); both name every one of them the same way.
+    """
+
+    # (cwd below the tree, inputs, -I list); "{root}" is the tree's absolute path.
+    _SHAPES = {
+        "plain": ("", ["proto/a/good.proto"], ["proto"]),
+        "dotdot-to-sibling": ("", ["proto/a/../b/bad.proto"], ["proto"]),
+        "dotdot-back-in": ("", ["proto/../proto/a/good.proto"], ["proto"]),
+        "two-files": ("", ["proto/a/good.proto", "proto/a/../b/bad.proto"], ["proto"]),
+        "dotdot-in-include": ("", ["proto/b/bad.proto"], ["proto/a/.."]),
+        "dotdot-in-both": ("", ["proto/a/../b/bad.proto"], ["proto/a/.."]),
+        "leading-dotdot-include-above": ("proto/a", ["../b/bad.proto"], [".."]),
+        "leading-dotdot-include-dot": ("proto/a", ["../b/bad.proto"], ["."]),
+        "absolute-dotdot": ("", ["{root}/proto/a/../b/bad.proto"], ["{root}/proto"]),
+        "include-dot-deep": ("", ["proto/a/good.proto"], ["."]),
+        "inner-include-first": ("", ["proto/a/good.proto"], ["proto/a", "proto"]),
+        "no-include": ("", ["proto/a/good.proto"], []),
+    }
+
+    @pytest.mark.parametrize("backend", ["protoxy", "protoc"])
+    @pytest.mark.parametrize("shape", list(_SHAPES))
+    def test_prediction_matches_the_emitted_name(
+        self, shape: str, backend: str, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (tmp_path / "proto" / "a").mkdir(parents=True)
+        (tmp_path / "proto" / "b").mkdir()
+        (tmp_path / "proto" / "a" / "good.proto").write_text(
+            'syntax = "proto3";\npackage a;\nmessage Good { string x = 1; }\n'
+        )
+        (tmp_path / "proto" / "b" / "bad.proto").write_text(
+            'syntax = "proto3";\npackage b;\nmessage Bad { string x = 1; }\n'
+        )
+        cwd, inputs, incs = self._SHAPES[shape]
+        monkeypatch.chdir(tmp_path / cwd)
+        paths = [Path(p.format(root=tmp_path)) for p in inputs]
+        include_paths = [i.format(root=tmp_path) for i in incs]
+
+        roots, emitted = _emitted_root_names(backend, paths, include_paths)
+
+        parents = dict.fromkeys(str(p.parent) for p in paths)
+        expected = _cli_utils._expected_root_names_ordered(
+            paths, [*include_paths, *parents],
+        )
+        assert sorted(expected) == sorted(emitted)
+        assert roots == tuple(expected)

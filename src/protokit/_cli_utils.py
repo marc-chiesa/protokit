@@ -614,27 +614,27 @@ def _resolve_expected_name(p: Path, includes: Sequence[str]) -> str:
 
     Walks ``includes`` in declared order; the first include that is a
     prefix of ``p`` determines the relative form (which is what
-    protoxy/protoc emit as ``fd.name``). Falls back to ``p.name`` if
-    no include is a prefix (rare; caller convention is to include
-    ``p.parent``).
+    protoxy/protoc emit as ``fd.name``), unless that remainder holds a
+    ``..`` segment: both backends skip such an include and try the next
+    (U9, checked on protoc 3.21.12 and protoxy 0.7). Falls back to
+    ``p.name`` (rare; caller convention is to include ``p.parent``).
 
     Path components are matched LITERALLY — neither ``p`` nor the
     includes are passed through ``Path.resolve()``. Both backends
     resolve ``-I`` arguments and input paths against the literal
-    string the user passed (no symlink expansion of the include
-    against the input). Calling ``.resolve()`` here would diverge
-    from the backend on macOS (``/var`` -> ``/private/var``), Bazel
-    ``bazel-out`` symlinks, and any container bind-mount where the
-    user-passed path does not byte-match the realpath. The skew
-    silently empties ``CompileResult.root_files`` for compiles
-    that otherwise succeed.
+    string the user passed (no symlink expansion). Calling
+    ``.resolve()`` here would diverge from the backend on macOS
+    (``/var`` -> ``/private/var``), Bazel ``bazel-out`` symlinks, and
+    any bind-mount where the user-passed path does not byte-match the
+    realpath. The skew silently empties ``CompileResult.root_files``.
     """
     for inc in includes:
-        inc_path = Path(inc)
         try:
-            return str(p.relative_to(inc_path))
+            rel = p.relative_to(inc)
         except ValueError:
             continue
+        if ".." not in rel.parts:
+            return str(rel)
     return p.name
 
 

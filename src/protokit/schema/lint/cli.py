@@ -63,7 +63,7 @@ from click.core import ParameterSource as _ParameterSource
 # happen at module top so registration runs at ``protokit.cli`` load
 # time, before click dispatches the subcommand callback.
 from protokit import _trust
-from protokit._cli_utils import _scrub_exc_message
+from protokit._cli_utils import _expected_root_names_ordered, _scrub_exc_message
 from protokit.formatters import (
     FormatterContext,
     FormatterKind,
@@ -970,6 +970,31 @@ def _main_impl(
                 "compile-failed",
                 "source compile produced error-level diagnostics; "
                 "see stderr for details.",
+            )
+        # Every named root must reach the engine (R8). The compile helpers
+        # keep a root only if the backend emitted the ``fd.name`` predicted
+        # for it, so a root the compiler named another way (protoc's
+        # ``-I VIRTUAL=DIR`` mapping, or any future naming skew) used to drop
+        # out and the run exited 0 without linting it. The check sits here,
+        # not in the shared helpers: compat, diff, git and storage use only
+        # the pool. Its include order is theirs (``-I`` first, then each
+        # input's parent); later includes never decide a name, because every
+        # file resolves against its own parent.
+        missing = len(inputs) - len(result.root_files)
+        if missing > 0:
+            parents = dict.fromkeys(str(p.parent) for p in inputs)
+            expected = _expected_root_names_ordered(inputs, [*proto_paths, *parents])
+            for path, name in zip(inputs, expected, strict=True):
+                if name not in result.root_files:
+                    click.echo(
+                        f"not linted: {_safe_for_stderr(path)} (the compile "
+                        f"emitted no file named {_safe_for_stderr(name)!r} for it)",
+                        err=True,
+                    )
+            error_exit_with_code(
+                "compile-failed",
+                f"{missing} of {len(inputs)} named .proto file(s) did not come "
+                "back from the compile; see stderr for details.",
             )
     else:
         if proto_paths:

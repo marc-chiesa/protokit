@@ -319,3 +319,43 @@ class TestCompileProtosToResultMultiPath:
         assert result.diagnostics == ()
         with pytest.raises(KeyError):
             result.pool.FindFileByName("anything.proto")
+
+
+class TestRootsNamedThroughDotdot:
+    """A root whose path steps through ``..`` stays in ``root_files`` (U9, R8).
+
+    ``proto/a/../b/bad.proto`` with ``-I proto`` is named ``bad.proto`` by
+    both backends; ``root_files`` used to drop it because the prediction
+    kept the ``..`` remainder ``a/../b/bad.proto``.
+    """
+
+    @pytest.mark.parametrize("backend", _BACKEND_PARAMS)
+    def test_both_roots_reach_root_files_in_input_order(
+        self,
+        backend: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        if backend == "protoc":
+            import shutil
+
+            from protokit.schema import compile as compile_module
+
+            if shutil.which("protoc") is None:
+                pytest.skip("protoc not on PATH (CI installs it on every cell)")
+            # ``compile_protos_to_result`` reads its own import of
+            # ``_has_protoxy``; patching ``_cli_utils`` alone leaves protoxy on.
+            monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
+        (tmp_path / "proto" / "a").mkdir(parents=True)
+        (tmp_path / "proto" / "b").mkdir()
+        (tmp_path / "proto" / "a" / "a.proto").write_text(_PROTO_A)
+        (tmp_path / "proto" / "b" / "b.proto").write_text(_PROTO_B)
+        monkeypatch.chdir(tmp_path)
+
+        result = compile_protos_to_result(
+            [Path("proto/a/a.proto"), Path("proto/a/../b/b.proto")],
+            proto_paths=["proto"],
+        )
+
+        assert result.diagnostics == ()
+        assert result.root_files == ("a/a.proto", "b.proto")
