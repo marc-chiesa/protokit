@@ -584,7 +584,12 @@ class _DataFile:
             raise _DataReadError(*exc.args) from exc
 
     def close(self) -> None:
-        self._handle.close()
+        # The reader closes the file at a clean end of input and lets that
+        # close() error surface, so a mount dropped at EOF is a read failure too.
+        try:
+            self._handle.close()
+        except OSError as exc:
+            raise _DataReadError(*exc.args) from exc
 
 
 def _frames(handle: BinaryIO, stream_id: str) -> Source:

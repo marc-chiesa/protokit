@@ -351,12 +351,14 @@ def test_a_read_error_mid_scan_exits_2(
     assert f"Error: cannot read {data}: [Errno 5] Input/output error" in result.stderr
 
 
+@pytest.mark.parametrize("on_error", ["raise", "skip", "warn"])
 def test_count_prints_the_partial_count_then_exits_2(
-    runner: CliRunner, eio_after_first_frame: tuple[Path, Path],
+    runner: CliRunner, eio_after_first_frame: tuple[Path, Path], on_error: str,
 ) -> None:
     data, desc = eio_after_first_frame
     result = _run(runner, [
         "storage", "count", str(data), "--desc", str(desc), "--type", "a.A",
+        "--on-error", on_error,
     ])
     assert result.exit_code == 2
     assert result.stdout == "1\n"
@@ -424,3 +426,57 @@ def test_a_failed_warning_write_is_not_reported_as_a_read_error(
     monkeypatch.setattr(storage_cli.click, "echo", no_room_for_warnings)
     with pytest.raises(OSError, match="No space left on device"):
         _run(runner, [*_base(data, desc), "--on-error", "warn"])
+
+
+def _arm(monkeypatch: pytest.MonkeyPatch, opener: Callable[[Path], io.BufferedReader]) -> None:
+    monkeypatch.setattr(storage_cli, "_open_data", opener)
+
+
+@pytest.mark.parametrize("quiet", [False, True], ids=["count", "count-quiet"])
+def test_a_read_error_before_the_first_record_exits_2(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+    quiet: bool,
+) -> None:
+    """Nothing read at all is not "zero matches": ``--quiet`` would say 1."""
+    desc, cls = desc_and_cls
+    data = data_file_factory([cls(x=7).SerializeToString()])
+    _arm(monkeypatch, lambda path: io.BufferedReader(_FailsAfter(path, 0)))
+    result = _run(runner, [
+        "storage", "count", str(data), "--desc", str(desc), "--type", "a.A",
+        *(["--quiet"] if quiet else []),
+    ])
+    assert result.exit_code == 2
+    assert result.stdout == ("" if quiet else "0\n")
+    assert f"Error: cannot read {data}: [Errno 5] Input/output error" in result.stderr
+
+
+class _FailsOnClose(io.BytesIO):
+    """The whole file reads cleanly; closing it fails (a mount dropped at EOF)."""
+
+    def close(self) -> None:
+        if not self.closed:
+            super().close()
+            raise OSError(errno.EIO, "Input/output error")
+
+
+@pytest.mark.parametrize("command", [["scan"], ["head"], ["count"]])
+def test_a_close_error_after_the_last_record_exits_2(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+    command: list[str],
+) -> None:
+    """The reader closes the file at a clean end of input; a failure there is
+    still a failure to read the data file, not a traceback."""
+    desc, cls = desc_and_cls
+    data = data_file_factory([cls(x=7).SerializeToString()])
+    _arm(monkeypatch, lambda path: _FailsOnClose(path.read_bytes()))  # type: ignore[arg-type,return-value]
+    result = _run(runner, [
+        "storage", command[0], str(data), "--desc", str(desc), "--type", "a.A",
+    ])
+    assert result.exit_code == 2
+    assert f"Error: cannot read {data}: [Errno 5] Input/output error" in result.stderr
