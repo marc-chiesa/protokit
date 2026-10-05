@@ -106,7 +106,7 @@ _INCOMPLETE_ANALYSIS_CATEGORIES: frozenset[str] = (
     _trust.INCOMPLETE_ANALYSIS_CATEGORIES
 )
 
-# src/protokit/schema/lint/cli.py:1533 — after the report, the human-warning
+# src/protokit/schema/lint/cli.py:1558 — after the report, the human-warning
 # hook, and the statistics footer:
 incomplete = _trust.signals(report)
 if incomplete:
@@ -255,5 +255,5 @@ verdict. There it was never caught at all — the dispatch guard read
 `except Exception`, which `SystemExit` is not — so nothing was recorded that
 could reach a verdict, and the rule's own exit code became the process's. Both
 now resolve through the same seam: lint at
-`src/protokit/schema/lint/cli.py:1533`, compat at
+`src/protokit/schema/lint/cli.py:1558`, compat at
 `src/protokit/schema/cli.py:827`.

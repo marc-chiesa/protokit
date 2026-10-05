@@ -80,6 +80,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint` custom annotation rules and option-reading rules (`field_behavior`) on an element where another option is malformed | the rule runs instead of failing with `rule_exception` |
 > | `lint` custom annotation rules and option-reading rules (`field_behavior`) on a proto2 string option (or one nested in a message option) that is not UTF-8, under upb | the rule fails with `rule_exception` and the run is `INCOMPLETE` (exit 2), instead of passing or comparing the bytes; pure-Python already did this |
 > | `lint` over a descriptor set that lists a file before one it imports, or over several sets passed with the importing one first | lints the files (exit 0 or 1) instead of exiting 2 with `error[lint-missing-imports]`; an import cycle exits 2 with `error[lint-pool-conflict]` naming the cycle, instead of `error[lint-missing-imports]` (a file importing itself, under pure-Python, already gave `error[lint-pool-conflict]`, from a recursion error) |
+> | `lint --proto` given a file through a path that steps back out of an include with `..` (`proto/a/../b/bad.proto` with `-I proto`) | lints that file (exit 0 or 1) instead of skipping it and exiting 0 on the other files alone |
+> | `lint --proto` given a file the compiler emits under another name (under protoc, a `-I VIRTUAL=DIR` mapping) | exits 2 (`error[lint-compile-failed]`, after a `not linted:` line naming the file) instead of skipping it and exiting 0 |
 > | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta of `0` |
 
 ### Security
@@ -222,6 +224,31 @@ All notable changes to `protokit` are documented here. Format loosely follows
   so when inputs are broken in more than one way, an input that cannot be
   read (`error[lint-bad-input]`) is reported before a missing import in an
   earlier one. Both exit 2.
+
+- **`lint --proto` lints every file it is given, or fails** (audit finding
+  R15-X1). Lint predicted the name the compiler would give each file from
+  the include paths, and linted only the files whose predicted name came
+  back. A path that steps back out of an include through `..`, such as
+  `proto/a/../b/bad.proto` with `-I proto`, was predicted as
+  `a/../b/bad.proto`, but protoc and protoxy both name it `bad.proto`, so
+  lint skipped the file and, with nothing else wrong, exited 0. The
+  prediction now passes over such an include the way both compilers do
+  (checked against protoc 3.21.12 and protoxy 0.7). A named file that still
+  does not come back, such as one protoc renames through a
+  `-I VIRTUAL=DIR` mapping, now fails the run: a `not linted:` line names
+  each such file, then `error[lint-compile-failed]` and exit 2. A named
+  file shadowed by a same-named file earlier on the include path is still
+  not detected. `compat`, `diff` and `storage` use only the compiled schema
+  and are unchanged.
+
+- **A `.proto` file name can no longer print its own `error[lint-…]` line.**
+  In `--proto` mode, lint printed each compile diagnostic's message to stderr
+  as it came. Some messages quote the input, such as the same-basename
+  collision, which names the file, so a file name holding a newline could
+  start a line of its own that a CI script grepping `error[lint-` would take
+  for lint's. Control characters in those messages now print as spaces, as
+  they already did in the compiler-output lines below them. Exit codes are
+  unchanged.
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and
