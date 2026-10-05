@@ -249,10 +249,10 @@ def _load_descriptor_sets_to_result(
 
     Algorithm:
 
-    1. Iterate ``paths`` in argv order.
-    2. For each path, ``read_bytes()`` and ``FileDescriptorSet.FromString()``.
-       OSError or a parse failure → exit 2 via ``lint-bad-input``.
-    3. Iterate ``fds.file`` in protobuf parse order. For each ``fd``:
+    1. Read every path in argv order: ``read_bytes()``, then
+       ``FileDescriptorSet.FromString()``. OSError or a parse failure →
+       exit 2 via ``lint-bad-input``.
+    2. Visit files dependencies-first (:func:`_in_dependency_order`):
 
        - If ``fd.name`` was already seen, append a ``LintCompileDiagnostic``
          with ``category="same_basename_collision"`` (semantic stretch:
@@ -261,7 +261,7 @@ def _load_descriptor_sets_to_result(
        - Else add to ``seen_names``, call ``pool.Add(fd)``, append
          ``fd.name`` to ``root_files``.
 
-    4. ``pool.Add(fd)`` may raise ``TypeError`` for two distinct
+    3. ``pool.Add(fd)`` may raise ``TypeError`` for two distinct
        reasons that share the exception type. We discriminate via
        message-text matching:
 
@@ -277,7 +277,7 @@ def _load_descriptor_sets_to_result(
          protobuf versions that change message wording surface
          here rather than misroute).
 
-    5. Returns a ``CompileResult`` with ``diagnostics`` carrying the
+    4. Returns a ``CompileResult`` with ``diagnostics`` carrying the
        duplicate-filename info entries — formatters in any output
        format (``human``/``json``/``junit``/``sarif``) can surface
        them uniformly.
@@ -316,8 +316,8 @@ def _load_descriptor_sets_to_result(
         SystemExit: Via :func:`error_exit_with_code` for any of:
             ``bad-input`` (read or parse failure),
             ``missing-imports`` (TypeError matching missing-import
-            markers), ``pool-conflict`` (TypeError matching
-            duplicate-symbol marker, or unmatched).
+            markers), ``pool-conflict`` (an import cycle, a TypeError
+            matching the duplicate-symbol marker, or unmatched).
     """
     pool = descriptor_pool.DescriptorPool()
     seen_names: set[str] = set()
@@ -339,13 +339,13 @@ def _load_descriptor_sets_to_result(
     # .source_code_info field for downstream R6 comment-aware rules.
     # When the input descriptor set was built without
     # ``protoc --include_source_info``, each fd's source_code_info.location
-    # array will be empty — the comment index is empty, so every
-    # lookup returns None and R6 rules emit findings for every
-    # deprecated element (the
-    # documented descriptor-set-mode caveat). Mirrors the
+    # array will be empty — the comment index is empty, so every lookup
+    # returns None and R6 rules emit findings for every deprecated element
+    # (the documented descriptor-set-mode caveat). Mirrors the
     # capture-around-Add pattern at src/protokit/_cli_utils.py:264-267
     # (_populate_pool_with_capture).
     source_info_descriptors: dict[str, descriptor_pb2.FileDescriptorProto] = {}
+    loaded: list[tuple[Path, descriptor_pb2.FileDescriptorSet]] = []
 
     for input_path in paths:
         try:
@@ -358,106 +358,106 @@ def _load_descriptor_sets_to_result(
                 "bad-input",
                 f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
             )
-
-        for fd in fds.file:
-            if fd.name in seen_names:
-                duplicates.append(
-                    LintCompileDiagnostic(
-                        level="info",
-                        message=(
-                            f"deduplicated duplicate file path "
-                            f"{fd.name!r} across input sets "
-                            f"(first occurrence wins)"
-                        ),
-                        category="same_basename_collision",
-                    )
+        loaded.append((input_path, fds))
+    for input_path, fd in _in_dependency_order(loaded):
+        if fd.name in seen_names:
+            duplicates.append(
+                LintCompileDiagnostic(
+                    level="info",
+                    message=(
+                        f"deduplicated duplicate file path "
+                        f"{fd.name!r} across input sets "
+                        f"(first occurrence wins)"
+                    ),
+                    category="same_basename_collision",
                 )
-                # Dedup-skipped fds are NOT inserted into the accumulator
-                # — symmetric with their absence from pool.Add. The
-                # invariant is: source_info_descriptors keys exactly
-                # match the set of fd.name strings that made it into
-                # the pool.
-                continue
-            seen_names.add(fd.name)
-            # PRE-ADD capture: pool.Add(fd) consumes source_code_info
-            # regardless of fd's serialized state, so the capture must
-            # precede Add. See the _populate_pool_with_capture
-            # docstring at src/protokit/_cli_utils.py:230-238 for the
-            # load-bearing invariant this mirrors.
-            source_info_descriptors[fd.name] = fd
-            try:
-                # Deliberately NOT ``_pools.add_and_resolve``, which is the
-                # owner of this Add-then-probe sequence everywhere else. That
-                # helper collapses both backends' failures into one
-                # ``DescriptorPoolError``; this site must route on the RAW
-                # exception (its type for pure-Python, its text for upb) to
-                # pick between ``error[lint-missing-imports]`` and
-                # ``error[lint-pool-conflict]``, and it also catches the
-                # ``ValueError`` over-catch below. Sharing would push CLI exit
-                # semantics into ``_pools``. Unifying the two is U17's
-                # duplication-removal work: give ``_pools`` typed subclasses
-                # for the two shapes and route here on type alone.
-                pool.Add(fd)
-                # Resolution asserted, not inferred (KTD6, V10). upb resolves
-                # eagerly and raises from Add itself; the pure-Python pool
-                # resolves LAZILY, so Add() returns cleanly for a descriptor
-                # set with missing imports and lint exited 0 on an analysis it
-                # never performed — the fail-open this release exists to close.
-                # FindFileByName forces resolution here. Measured on protobuf
-                # 5.27.5 under the pure-Python runtime: a missing import raises
-                # KeyError(<dependency name>), a duplicate symbol raises
-                # TypeError("Conflict register for file ..."). The RuntimeWarning
-                # Add emits first is a side effect, not the signal — do not
-                # build a warnings-capture path on it.
-                pool.FindFileByName(fd.name)
-            except Exception as exc:
-                # upb raises TypeError for every shape it rejects. The
-                # pure-Python runtime raises KeyError from the resolution
-                # probe above, and its own descriptor checks raise
-                # ValueError, IndexError or AttributeError. The catch is
-                # broad so that no shape, on either backend or a future
-                # protobuf release, escapes to click as exit 1 + a
-                # traceback with no error[lint-...] prefix; the try holds
-                # only the two protobuf calls. BaseException (Ctrl-C) is
-                # not caught. Routing below is unchanged: KeyError or a
-                # missing-import marker, else pool-conflict.
-                msg = str(exc)
-                # A KeyError from the probe IS the missing-import signal on the
-                # pure-Python backend, and it carries the unresolvable symbol
-                # rather than any of upb's prose markers — so route on the
-                # exception type, not on message text. Marker matching stays
-                # for upb, whose TypeError text is the only signal it gives.
-                if isinstance(exc, KeyError) or any(
-                    marker in msg for marker in _MISSING_IMPORT_MARKERS
-                ):
-                    error_exit_with_code(
-                        "missing-imports",
-                        (
-                            f"{input_path}: "
-                            f"{_safe_for_stderr(_scrub_exc_message(exc))}. "
-                            "Rebuild the descriptor set with "
-                            "'protoc --include_imports' or include "
-                            "WKT descriptor files."
-                        ),
-                    )
-                # Either explicit duplicate-symbol or unmatched —
-                # both route to pool-conflict (legacy behavior
-                # preserved for unmatched paths).
-                # The partial source_info_descriptors state (carrying
-                # the failing fd's entry) is harmlessly discarded by
-                # SystemExit — no caller observes the partial dict
-                # because the CompileResult is never constructed on
-                # this path.
+            )
+            # Dedup-skipped fds are NOT inserted into the accumulator
+            # — symmetric with their absence from pool.Add. The
+            # invariant is: source_info_descriptors keys exactly
+            # match the set of fd.name strings that made it into
+            # the pool.
+            continue
+        seen_names.add(fd.name)
+        # PRE-ADD capture: pool.Add(fd) consumes source_code_info
+        # regardless of fd's serialized state, so the capture must
+        # precede Add. See the _populate_pool_with_capture
+        # docstring at src/protokit/_cli_utils.py:230-238 for the
+        # load-bearing invariant this mirrors.
+        source_info_descriptors[fd.name] = fd
+        try:
+            # Deliberately NOT ``_pools.add_and_resolve``, which is the
+            # owner of this Add-then-probe sequence everywhere else. That
+            # helper collapses both backends' failures into one
+            # ``DescriptorPoolError``; this site must route on the RAW
+            # exception (its type for pure-Python, its text for upb) to
+            # pick between ``error[lint-missing-imports]`` and
+            # ``error[lint-pool-conflict]``, and it also catches the
+            # ``ValueError`` over-catch below. Sharing would push CLI exit
+            # semantics into ``_pools``. Unifying the two is U17's
+            # duplication-removal work: give ``_pools`` typed subclasses
+            # for the two shapes and route here on type alone.
+            pool.Add(fd)
+            # Resolution asserted, not inferred (KTD6, V10). upb resolves
+            # eagerly and raises from Add itself; the pure-Python pool
+            # resolves LAZILY, so Add() returns cleanly for a descriptor
+            # set with missing imports and lint exited 0 on an analysis it
+            # never performed — the fail-open this release exists to close.
+            # FindFileByName forces resolution here. Measured on protobuf
+            # 5.27.5 under the pure-Python runtime: a missing import raises
+            # KeyError(<dependency name>), a duplicate symbol raises
+            # TypeError("Conflict register for file ..."). The RuntimeWarning
+            # Add emits first is a side effect, not the signal — do not
+            # build a warnings-capture path on it.
+            pool.FindFileByName(fd.name)
+        except Exception as exc:
+            # upb raises TypeError for every shape it rejects. The
+            # pure-Python runtime raises KeyError from the resolution
+            # probe above, and its own descriptor checks raise
+            # ValueError, IndexError or AttributeError. The catch is
+            # broad so that no shape, on either backend or a future
+            # protobuf release, escapes to click as exit 1 + a
+            # traceback with no error[lint-...] prefix; the try holds
+            # only the two protobuf calls. BaseException (Ctrl-C) is
+            # not caught. Routing below is unchanged: KeyError or a
+            # missing-import marker, else pool-conflict.
+            msg = str(exc)
+            # A KeyError from the probe IS the missing-import signal on the
+            # pure-Python backend, and it carries the unresolvable symbol
+            # rather than any of upb's prose markers — so route on the
+            # exception type, not on message text. Marker matching stays
+            # for upb, whose TypeError text is the only signal it gives.
+            if isinstance(exc, KeyError) or any(
+                marker in msg for marker in _MISSING_IMPORT_MARKERS
+            ):
                 error_exit_with_code(
-                    "pool-conflict",
-                    f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
+                    "missing-imports",
+                    (
+                        f"{input_path}: "
+                        f"{_safe_for_stderr(_scrub_exc_message(exc))}. "
+                        "Rebuild the descriptor set with "
+                        "'protoc --include_imports' or include "
+                        "WKT descriptor files."
+                    ),
                 )
-            root_files.append(fd.name)
-            pool_names.append(fd.name)
+            # Either explicit duplicate-symbol or unmatched —
+            # both route to pool-conflict (legacy behavior
+            # preserved for unmatched paths).
+            # The partial source_info_descriptors state (carrying
+            # the failing fd's entry) is harmlessly discarded by
+            # SystemExit — no caller observes the partial dict
+            # because the CompileResult is never constructed on
+            # this path.
+            error_exit_with_code(
+                "pool-conflict",
+                f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
+            )
+        root_files.append(fd.name)
+        pool_names.append(fd.name)
 
     return CompileResult(
         pool=pool,
-        root_files=tuple(root_files),
+        root_files=_in_input_order(root_files, loaded),
         # pool_file_names tracks pool membership via the parallel
         # `pool_names` list (NOT root_files; the rename was a
         # code-review follow-up),
@@ -469,7 +469,7 @@ def _load_descriptor_sets_to_result(
         # transitively-bundled --include_imports files. Dedup-skipped fds
         # (continue branch above) are absent from both lists, preserving
         # the invariant.
-        pool_file_names=tuple(pool_names),
+        pool_file_names=_in_input_order(pool_names, loaded),
         # CompileResult.__post_init__ wraps the dict in MappingProxyType
         # per the U1-established pattern at
         # src/protokit/schema/compile.py:307-315. We pass a plain dict
@@ -641,3 +641,84 @@ def _active_rule_ids_per_pack(
                 contributing.append(spec.rule_id)
         result[pack.__name__] = sorted(contributing)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Descriptor-set file order (U8)
+# ---------------------------------------------------------------------------
+
+
+def _in_dependency_order(
+    loaded: list[tuple[Path, descriptor_pb2.FileDescriptorSet]],
+) -> list[tuple[Path, descriptor_pb2.FileDescriptorProto]]:
+    """Every file of every set, each paired with its input, dependencies first.
+
+    A set lists files in whatever order its producer wrote them, and the pool
+    can only add a file once its dependencies are in. So the first file of
+    each name comes after the files it imports, otherwise in input order;
+    inputs already in dependency order, with no name repeated, come back
+    unchanged. The sort is lenient: a dependency no set holds is skipped
+    here and left for ``pool.Add`` to report, exactly as before. Later
+    files reusing a name
+    come last, in input order, so the loader still records them as
+    duplicates and loads only the first. An import cycle exits 2 via
+    ``lint-pool-conflict``: no order can load it.
+    ``protokit._pools.sort_files_by_dependency`` raises on a missing
+    dependency and on a repeated name, so it cannot serve here.
+    """
+    first, repeats = _first_occurrences(loaded)
+    ordered: list[tuple[Path, descriptor_pb2.FileDescriptorProto]] = []
+    # False while a file waits on its dependencies, True once it is placed.
+    placed: dict[str, bool] = {}
+    for name in first:
+        if name in placed:
+            continue
+        placed[name] = False
+        stack = [(name, iter(first[name][1].dependency))]
+        while stack:
+            current, deps = stack[-1]
+            for dep in deps:
+                if dep not in first or placed.get(dep):
+                    continue
+                if dep in placed:
+                    on_stack = [entry for entry, _ in stack]
+                    cycle = " -> ".join([*on_stack[on_stack.index(dep):], dep])
+                    error_exit_with_code(
+                        "pool-conflict",
+                        f"{first[current][0]}: import cycle: {_safe_for_stderr(cycle)}",
+                    )
+                placed[dep] = False
+                stack.append((dep, iter(first[dep][1].dependency)))
+                break
+            else:
+                stack.pop()
+                placed[current] = True
+                ordered.append(first[current])
+    return ordered + repeats
+
+
+def _in_input_order(
+    names: list[str], loaded: list[tuple[Path, descriptor_pb2.FileDescriptorSet]],
+) -> tuple[str, ...]:
+    """``names`` in the order the inputs first list them."""
+    rank = {name: index for index, name in enumerate(_first_occurrences(loaded)[0])}
+    return tuple(sorted(names, key=rank.__getitem__))
+
+
+def _first_occurrences(
+    loaded: list[tuple[Path, descriptor_pb2.FileDescriptorSet]],
+) -> tuple[
+    dict[str, tuple[Path, descriptor_pb2.FileDescriptorProto]],
+    list[tuple[Path, descriptor_pb2.FileDescriptorProto]],
+]:
+    """Each file name's first ``(input, file)`` in input order, and every later
+    file that reuses a name, in input order."""
+    first: dict[str, tuple[Path, descriptor_pb2.FileDescriptorProto]] = {}
+    repeats: list[tuple[Path, descriptor_pb2.FileDescriptorProto]] = []
+    for input_path, fds in loaded:
+        for fd in fds.file:
+            if fd.name in first:
+                repeats.append((input_path, fd))
+            else:
+                first[fd.name] = (input_path, fd)
+    return first, repeats
