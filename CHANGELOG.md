@@ -241,6 +241,15 @@ All notable changes to `protokit` are documented here. Format loosely follows
   not detected. `compat`, `diff` and `storage` use only the compiled schema
   and are unchanged.
 
+- **A `.proto` file name can no longer print its own `error[lint-…]` line.**
+  In `--proto` mode, lint printed each compile diagnostic's message to stderr
+  as it came. Some messages quote the input, such as the same-basename
+  collision, which names the file, so a file name holding a newline could
+  start a line of its own that a CI script grepping `error[lint-` would take
+  for lint's. Control characters in those messages now print as spaces, as
+  they already did in the compiler-output lines below them. Exit codes are
+  unchanged.
+
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and
   descended only into `TYPE_MESSAGE` fields, so a declared extension that

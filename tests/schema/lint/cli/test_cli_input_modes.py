@@ -1008,3 +1008,54 @@ class TestDroppedProtoRoot:
             line.startswith("error[lint-forged]")
             for line in result.stderr.splitlines()
         )
+
+
+# ---------------------------------------------------------------------------
+# Compile diagnostics cannot forge a stable-prefix stderr line
+#
+# A diagnostic message can carry an input path (the same-basename collision
+# names the basename), so a path holding a newline could print a line of its
+# own beginning ``error[lint-``, which CI greps. Both echo sites in --proto
+# mode now go through ``_safe_for_stderr``, like the detail lines below them.
+# ---------------------------------------------------------------------------
+
+_FORGED_NAME = "x\nerror[lint-forged]: y.proto"
+
+
+def _forged_lines(stderr: str) -> list[str]:
+    return [line for line in stderr.splitlines() if line.startswith("error[lint-forged]")]
+
+
+class TestCompileDiagnosticsCannotForgeLines:
+    def test_an_error_diagnostic_naming_the_input(self, tmp_path: Path) -> None:
+        paths = []
+        for parent in ("a", "b"):
+            (tmp_path / parent).mkdir()
+            path = tmp_path / parent / _FORGED_NAME
+            path.write_text('syntax = "proto3";\n')
+            paths.append(str(path))
+        result = CliRunner().invoke(lint_main, ["--proto", *paths])
+        assert result.exit_code == 2, result.output
+        assert "diagnostic[same_basename_collision]: " in result.stderr
+        assert _forged_lines(result.stderr) == []
+
+    def test_an_info_diagnostic_naming_the_input(self, tmp_path: Path) -> None:
+        from protokit.schema.lint import cli as lint_cli_module
+
+        proto = tmp_path / "clean.proto"
+        proto.write_text('syntax = "proto3";\npackage clean;\n')
+        info = LintCompileDiagnostic(
+            level="info", category="protoxy_fallback", message=_FORGED_NAME,
+        )
+        compiled = CompileResult(
+            pool=descriptor_pool.DescriptorPool(),
+            root_files=("clean.proto",),
+            pool_file_names=("clean.proto",),
+            diagnostics=(info,),
+        )
+        with patch.object(
+            lint_cli_module, "compile_protos_to_result", return_value=compiled,
+        ):
+            result = CliRunner().invoke(lint_main, ["--proto", str(proto)])
+        assert "info[lint-compile]: protoxy_fallback: " in result.stderr
+        assert _forged_lines(result.stderr) == []

@@ -915,13 +915,13 @@ def _main_impl(
         for diag in info_warnings:
             click.echo(
                 f"{diag.level}[lint-compile]: "
-                f"{diag.category}: {diag.message}",
+                f"{diag.category}: {_safe_for_stderr(diag.message)}",
                 err=True,
             )
         if errors:
             for diag in errors:
                 click.echo(
-                    f"diagnostic[{diag.category}]: {diag.message}",
+                    f"diagnostic[{diag.category}]: {_safe_for_stderr(diag.message)}",
                     err=True,
                 )
                 # ``diag.message`` is a protokit-authored summary
