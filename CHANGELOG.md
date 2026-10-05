@@ -75,6 +75,10 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(API)* `Diagnostic`, `CommitDiagnostic` or `LintCompileDiagnostic` with a `level` other than `"info"`, `"warning"` or `"error"`; a `BisectReport` with only one of `breaking_commit` / `breaking_findings` | raises `ValueError` |
 > | *(API)* appending to a collection field after construction (`report.findings.append(…)`) | raises `AttributeError`: the field is a tuple, not the caller's list |
 > | *(API)* `get_option_value` on a schema loaded from a descriptor set | returns the option's value where it returned `None`; an option whose bytes do not parse raises `DecodeError` |
+> | *(API)* `get_option_value` for a custom option on an element where a *different* option's bytes do not parse as its type, or hold a proto3 string that is not UTF-8 (under pure-Python, any such string) | returns the requested option's value instead of raising `DecodeError` |
+> | *(API)* `get_option_value` on a proto2 string option (or one nested in a message option) that is not UTF-8, under upb | raises `DecodeError` naming the option instead of returning `bytes`; pure-Python already raised |
+> | `lint` custom annotation rules and option-reading rules (`field_behavior`) on an element where another option is malformed | the rule runs instead of failing with `rule_exception` |
+> | `lint` custom annotation rules and option-reading rules (`field_behavior`) on a proto2 string option (or one nested in a message option) that is not UTF-8, under upb | the rule fails with `rule_exception` and the run is `INCOMPLETE` (exit 2), instead of passing or comparing the bytes; pure-Python already did this |
 > | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta of `0` |
 
 ### Security
@@ -171,6 +175,22 @@ All notable changes to `protokit` are documented here. Format loosely follows
   like its string. The same deeper-path check for a plain name
   (`container.items.id` under `treat_as_map("items", key="id")`) is still
   missing; it is scheduled for 0.17.0.
+
+- **One malformed custom option no longer hides the others** (audit finding
+  R01-C1). Reading a custom option re-read the element's whole options
+  message, so a different option whose bytes did not parse, or held a
+  string the runtime rejects as not UTF-8 (a proto3 one, or any one under
+  pure-Python), made every option on that element unreadable:
+  `get_option_value` raised `DecodeError` and lint rules on it failed with
+  `rule_exception`. When the whole read fails, the requested option's own
+  records are now read on their own. A framing error anywhere still
+  raises rather than returning part of a repeated option. A string option
+  that is not UTF-8 now raises `DecodeError` naming the option on both
+  backends; under upb a proto2 one used to come back as `bytes`. One case
+  still differs: a singular string option written twice on the wire, the
+  first copy not UTF-8, reads as its last value under upb and raises under
+  pure-Python, because the check reads the parsed value (the same holds for
+  the payload checks above).
 
 - **A proto2 string that is not UTF-8 gets the same verdict on both
   backends** (audit findings R01-C2, R24-C2, R28-C2). upb does not check

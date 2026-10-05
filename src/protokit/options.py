@@ -136,9 +136,9 @@ def get_option_value(
 
     Raises:
         google.protobuf.message.DecodeError: The option's stored
-            bytes do not parse as its declared type — a corrupt
-            descriptor set. They used to read as ``None``; an
-            unreadable option is not an absent one.
+            bytes do not parse as its type or hold a string that is
+            not UTF-8 (on both backends). Another option's bad bytes
+            do not stop this one from being read.
     """
     options = desc.GetOptions()
     if pool is None:

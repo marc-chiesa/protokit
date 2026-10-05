@@ -600,3 +600,60 @@ class TestSyntheticRuleSpecRegistryContract:
             "custom-annotation-absent": LintSeverity.ERROR,
             "custom-annotation-value-mismatch": LintSeverity.ERROR,
         }
+
+
+class TestOptionBesideAMalformedOne:
+    """A rule reading a valid option still runs when another option is malformed.
+
+    ``example.audit_note`` is a proto3 string option holding bytes that are not
+    UTF-8. Reading the options message whole failed on it, so every rule on any
+    option of that method raised ``rule_exception``.
+    """
+
+    def test_the_rule_runs(self, tmp_path: Path) -> None:
+        from google.protobuf import descriptor_pb2
+
+        from protokit.schema.lint._cli_utils import _load_descriptor_sets_to_result
+
+        fd = descriptor_pb2.FieldDescriptorProto
+        descriptor_proto = descriptor_pb2.FileDescriptorProto()
+        descriptor_pb2.DESCRIPTOR.CopyToProto(descriptor_proto)
+        ext_file = descriptor_pb2.FileDescriptorProto(
+            name="example/note.proto", package="example", syntax="proto3",
+            dependency=["google/protobuf/descriptor.proto"],
+        )
+        for name, number, kind in (
+            ("audit_note", 50101, fd.TYPE_STRING), ("audit_level", 50102, fd.TYPE_INT32),
+        ):
+            ext_file.extension.add(
+                name=name, number=number, type=kind, label=fd.LABEL_OPTIONAL,
+                extendee=".google.protobuf.MethodOptions",
+            )
+        svc_file = descriptor_pb2.FileDescriptorProto(
+            name="example/svc.proto", package="example", syntax="proto3",
+            dependency=["example/note.proto"],
+        )
+        svc_file.message_type.add(name="Req")
+        svc = svc_file.service.add(name="Svc")
+        method = svc.method.add(
+            name="Annotated", input_type=".example.Req", output_type=".example.Req",
+        )
+        # audit_note = 0xff 0xfe (50101, wire type 2), audit_level = 42 (50102, wire type 0).
+        method.options.MergeFromString(bytes.fromhex("aabb18" "02fffe" "b0bb18" "2a"))
+        fds = descriptor_pb2.FileDescriptorSet()
+        fds.file.extend([descriptor_proto, ext_file, svc_file])
+        path = tmp_path / "set.binpb"
+        path.write_bytes(fds.SerializeToString())
+
+        # 42 is not allowed, so a finding proves the rule read the option.
+        spec = CustomAnnotationRuleSpec(
+            rule_suffix="audit-level",
+            option="example.audit_level",
+            element_kinds=(ElementKind.METHOD,),
+            allowed_values=(7,),
+        )
+        report = _run(_load_descriptor_sets_to_result((path,)), [spec])
+        assert [w.category for w in report.runtime_warnings] == []
+        assert [(f.violation_kind, f.params["actual_value"]) for f in report.findings] == [
+            ("custom-annotation-value-mismatch", "42"),
+        ]

@@ -248,7 +248,7 @@ rebind_options`):
 ```python
     target = ext_desc.containing_type
     if options.DESCRIPTOR is target:
-        return options
+        return _checked(options, ext_desc)
     if not extends(options, ext_desc):
         raise KeyError(
             f"extension {ext_desc.full_name!r} extends {target.full_name!r}, "
@@ -257,12 +257,18 @@ rebind_options`):
     rebound = _options_class(target)()
     try:
         rebound.MergeFromString(options.SerializeToString())
-    except UnicodeDecodeError as exc:
-        # Pure-python validates proto3 string UTF-8 while parsing and raises
-        # this where upb raises DecodeError; callers get one type on both.
-        raise message.DecodeError(f"{ext_desc.full_name}: {exc}") from exc
-    return rebound
+    except (message.DecodeError, UnicodeDecodeError):
+        # Any option's bytes can fail the whole read (pure-Python also rejects
+        # a bad string while parsing), so read just this one's records instead.
+        rebound = _only_extension(target, options.SerializeToString(), ext_desc)
+    return _checked(rebound, ext_desc)
 ```
+
+(Current state since 0.16.0 U7: the original version re-raised a
+`UnicodeDecodeError` as `DecodeError` and returned `rebound`. A malformed
+option anywhere on the element then made every option on it unreadable, and a
+proto2 string option that was not UTF-8 came back as `bytes` on upb.
+`_only_extension` and `_checked` are defined below `_options_class`.)
 
 **The absent-case predicate**, `src/protokit/_extensions.py:47-62` (anchor `def
 extends`), compares `options.DESCRIPTOR.full_name` with
