@@ -44,6 +44,7 @@ from typing import Literal
 
 from google.protobuf.message import DecodeError, Message
 
+from protokit._fieldview import StringWalk, not_utf8_detail
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.source import FrameError, Source
 
@@ -270,6 +271,7 @@ class ScanResult:
     def _iterate(self, source: Source) -> Iterator[ScanRecord]:
         registry = self._registry
         predicate = self._predicate
+        strings = StringWalk()  # planned once per message type, reused per record
         iterator = iter(source)
         record_index = -1
         while True:
@@ -324,6 +326,14 @@ class ScanResult:
                         str(exc) or "protobuf decode error",
                     )
                 )
+                continue
+
+            # upb hands a proto2 string that is not UTF-8 back as bytes where
+            # pure-Python rejects the record while parsing; both are this fault.
+            undecodable = strings.first(message)
+            if undecodable is not None:
+                reason = not_utf8_detail(undecodable[0])
+                self._dispatch(FrameError(stream_id, record_index, None, reason))
                 continue
 
             # `raw` is not referenced beyond this point. A predicate exception

@@ -542,3 +542,48 @@ def test_a_candidate_whose_string_is_not_utf8_is_ranked_not_crashed(
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "decode_error" in result.stdout
+
+
+def _write_invalid_utf8_desc(path: Path) -> None:
+    from tests import invalid_utf8
+
+    path.write_bytes(invalid_utf8.schema().SerializeToString())
+
+
+def test_a_proto2_string_that_is_not_utf8_under_the_only_candidate_exits_2(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """upb used to parse the record and rank the candidate clean (exit 0)."""
+    from tests import invalid_utf8
+
+    _write_invalid_utf8_desc(tmp_path / "u.desc")
+    (tmp_path / "msg.bin").write_bytes(invalid_utf8.BAD_PAYLOADS["repeated"])
+    result = _invoke(
+        runner, str(tmp_path / "msg.bin"), "--schema", f"u={tmp_path / 'u.desc'}", "--type", "u.M",
+    )
+    assert result.exit_code == 2, result.stdout + result.stderr
+    assert "does not parse under any candidate schema" in result.stderr
+
+
+def test_a_proto2_string_that_is_not_utf8_ranks_that_candidate_as_decode_error(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    from tests import invalid_utf8
+
+    _write_invalid_utf8_desc(tmp_path / "u.desc")
+    bytes_schema = descriptor_pb2.FileDescriptorProto(name="b.proto", package="u", syntax="proto2")
+    msg = bytes_schema.message_type.add(name="M")
+    msg.field.add(name="s", number=1, type=FieldProto.TYPE_BYTES, label=FieldProto.LABEL_OPTIONAL)
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.file.append(bytes_schema)
+    (tmp_path / "b.desc").write_bytes(fds.SerializeToString())
+    (tmp_path / "msg.bin").write_bytes(invalid_utf8.BAD_PAYLOADS["top"])
+    result = _invoke(
+        runner, str(tmp_path / "msg.bin"),
+        "--schema", f"u={tmp_path / 'u.desc'}", "--schema", f"b={tmp_path / 'b.desc'}",
+        "--type", "u.M", "--format", "json",
+    )
+    assert result.exit_code == 0, result.stdout + result.stderr
+    fits = {f["label"]: f for f in json.loads(result.stdout)["candidates"]}
+    assert fits["u"]["parse_outcome"] == "decode_error"
+    assert fits["b"]["parse_outcome"] != "decode_error"

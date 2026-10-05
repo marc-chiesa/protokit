@@ -62,6 +62,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set |
 > | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
 > | *(pure-Python)* a message payload nested too deep, or carrying a non-UTF-8 proto3 string | `diff` exits 2 on deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1 |
+> | a message payload carrying a proto2 string that is not UTF-8 (or an editions string with UTF-8 validation off), at any depth, under upb | `diff` exits 2 on binary input instead of comparing the raw bytes (exit 0 or 1); `storage` counts the record as a fault under `--on-error` (`count` exits 2 instead of 0 with the record counted), and `to_parquet` raises `IncompleteScanError` instead of a raw `ValueError` from the Arrow converter; `forensics match` ranks the candidate `decode_error` instead of `clean`, and exits 2 when no candidate parses. The pure-Python runtime already refused such a payload |
 > | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
 > | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
 > | `lint --format json` / `--format sarif` | `schema_version` / `lint_schema_version` `"0.6"` → `"0.7"`; SARIF `executionSuccessful` is `false` for a run where a rule raised or was never loaded, instead of `true` |
@@ -170,6 +171,20 @@ All notable changes to `protokit` are documented here. Format loosely follows
   like its string. The same deeper-path check for a plain name
   (`container.items.id` under `treat_as_map("items", key="id")`) is still
   missing; it is scheduled for 0.17.0.
+
+- **A proto2 string that is not UTF-8 gets the same verdict on both
+  backends** (audit findings R01-C2, R24-C2, R28-C2). upb does not check
+  UTF-8 in a proto2 string, or in an editions string with validation off,
+  and hands the field back as `bytes`; pure-Python rejects the payload
+  while parsing. Under upb, `diff` compared those bytes, a storage scan
+  yielded the record (and `to_parquet` then failed with a raw Arrow
+  error), and `forensics match` ranked the candidate a clean fit. Each of
+  them now walks a parsed payload for such a string, at any depth (nested
+  messages, groups, repeated fields, map keys and values, extensions), and
+  reports it as its own decode fault. The walk reads only fields that can
+  hold one, so proto3 schemas and types without strings cost next to
+  nothing; for a proto2 type with strings, a upb storage scan spends
+  noticeably more time per record, because the walk runs in Python.
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and

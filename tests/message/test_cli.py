@@ -876,3 +876,40 @@ class TestExtensionSelectorConflictExitCode:
         ], catch_exceptions=False)
         assert result.exit_code == 1, result.output
         assert "(x.tag)" in result.output
+
+
+class TestProto2StringsThatAreNotUtf8:
+    """Binary input with a proto2 string that is not UTF-8 is a parse failure (exit 2).
+
+    upb used to parse it, hand the field back as bytes and report it as a
+    difference (exit 1); pure-Python already refused it.
+    """
+
+    @pytest.mark.parametrize("location", ["top", "map_key", "group", "extension"])
+    def test_exits_2_naming_the_file(
+        self, runner: CliRunner, tmp_path: Path, location: str,
+    ) -> None:
+        from tests import invalid_utf8
+
+        desc = tmp_path / "u.desc"
+        desc.write_bytes(invalid_utf8.schema().SerializeToString())
+        good, bad = tmp_path / "good.pb", tmp_path / "bad.pb"
+        good.write_bytes(invalid_utf8.GOOD)
+        bad.write_bytes(invalid_utf8.BAD_PAYLOADS[location])
+        result = runner.invoke(main, [
+            str(good), str(bad), "--desc", str(desc), "--message-type", "u.M",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert f"Failed to parse {bad}" in result.output
+
+    def test_clean_records_still_compare(self, runner: CliRunner, tmp_path: Path) -> None:
+        from tests import invalid_utf8
+
+        desc = tmp_path / "u.desc"
+        desc.write_bytes(invalid_utf8.schema().SerializeToString())
+        good = tmp_path / "good.pb"
+        good.write_bytes(invalid_utf8.GOOD)
+        result = runner.invoke(main, [
+            str(good), str(good), "--desc", str(desc), "--message-type", "u.M",
+        ], catch_exceptions=False)
+        assert result.exit_code == 0, result.output

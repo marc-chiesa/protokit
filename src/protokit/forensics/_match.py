@@ -26,6 +26,7 @@ from typing import Literal
 from google.protobuf.descriptor import Descriptor
 from google.protobuf.message import DecodeError, Message
 
+from protokit._fieldview import first_undecodable_string, not_utf8_detail
 from protokit._records import own_tuples
 from protokit.forensics._drift import compatibility_score
 from protokit.forensics._wire import WalkError, walk_top_level
@@ -131,18 +132,14 @@ def fit_candidate(
     try:
         message.MergeFromString(message_bytes)
     except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
-        return CandidateFit(
-            label=candidate.label,
-            tier=ParseTier.FAULT,
-            parse_outcome="decode_error",
-            total_bytes=total,
-            unmodeled_bytes=None,
-            modeled_fraction=None,
-            declared_field_coverage=None,
-            present_field_count=0,
-            declared_field_count=declared_count,
-            detail=str(exc) or "message does not parse under this schema",
-        )
+        detail = str(exc) or "message does not parse under this schema"
+        return _decode_error_fit(candidate.label, total, declared_count, detail)
+    # upb hands a proto2 string that is not UTF-8 back as bytes where
+    # pure-Python rejects the message while parsing; both are a decode error.
+    undecodable = first_undecodable_string(message)
+    if undecodable is not None:
+        detail = not_utf8_detail(undecodable[0])
+        return _decode_error_fit(candidate.label, total, declared_count, detail)
 
     present_count = _present_declared_field_count(message)
     coverage = present_count / declared_count if declared_count else 1.0
@@ -347,3 +344,19 @@ def match(
     ranked = tuple(paired[i][1] for i in order)
     verdict = _verdict([(i, paired[i][1]) for i in order], compat, max_residual_bytes)
     return MatchReport(ranked=ranked, verdict=verdict, ambiguous_top=ambiguous_top)
+
+
+def _decode_error_fit(label: str, total: int, declared_count: int, detail: str) -> CandidateFit:
+    """The fit of a candidate the message does not decode under: last, as a fault."""
+    return CandidateFit(
+        label=label,
+        tier=ParseTier.FAULT,
+        parse_outcome="decode_error",
+        total_bytes=total,
+        unmodeled_bytes=None,
+        modeled_fraction=None,
+        declared_field_coverage=None,
+        present_field_count=0,
+        declared_field_count=declared_count,
+        detail=detail,
+    )

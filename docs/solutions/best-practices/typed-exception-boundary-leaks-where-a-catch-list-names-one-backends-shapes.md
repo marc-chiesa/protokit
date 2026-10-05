@@ -70,8 +70,8 @@ sites were:
 - descriptor sets: `src/protokit/_pools.py:218`,
   `src/protokit/schema/lint/_cli_utils.py:353`,
   `src/protokit/forensics/cli.py:135`, `src/protokit/storage/cli.py:315`
-- message payloads: `src/protokit/forensics/_match.py:132`,
-  `src/protokit/storage/engine.py:317`, `src/protokit/message/cli.py:125`
+- message payloads: `src/protokit/forensics/_match.py:133`,
+  `src/protokit/storage/engine.py:319`, `src/protokit/message/cli.py:125`
 
 The two parse sites that were left alone read bytes protokit produced itself:
 protoc's output at `src/protokit/_cli_utils.py:558`, and a re-serialized options
@@ -146,8 +146,8 @@ except (DecodeError, UnicodeDecodeError, RecursionError) as exc:
 ```
 
 This tuple appears at `src/protokit/_pools.py:219`,
-`src/protokit/forensics/cli.py:136`, `src/protokit/forensics/_match.py:133`,
-`src/protokit/storage/engine.py:318` and `src/protokit/message/cli.py:126`.
+`src/protokit/forensics/cli.py:136`, `src/protokit/forensics/_match.py:134`,
+`src/protokit/storage/engine.py:320` and `src/protokit/message/cli.py:126`.
 Storage and lint add `OSError` because their `try` also reads the file
 (`src/protokit/storage/cli.py:316`,
 `src/protokit/schema/lint/_cli_utils.py:354-356`). Parse sites don't use a broad
@@ -155,7 +155,7 @@ catch for two reasons:
 
 - These `try` blocks hold more than the protobuf call. The storage engine's
   block holds `bytes(raw)`, which is deliberately allowed to raise `ValueError`
-  for a released memoryview and fail loud (`src/protokit/storage/engine.py:310-314`).
+  for a released memoryview and fail loud (`src/protokit/storage/engine.py:312-316`).
   A broad catch would turn that into a per-record `FrameError`.
 - The decoder's failure set is small and tied to what it checks: wire format
   (`DecodeError`), UTF-8 (`UnicodeDecodeError` on pure-Python) and depth
@@ -180,9 +180,12 @@ on a `bytes` name, so it now joins `map(repr, remaining)`
 The fix is `require_decodable_strings(fds)` (`src/protokit/_pools.py:255-278`).
 It walks every string field and raises `DescriptorPoolError` on any `bytes`
 value. The walk itself is `first_undecodable_string`
-(`src/protokit/_fieldview.py:247-288`), in the layer-0 seam so the payload
+(`src/protokit/_fieldview.py:247-271`), which runs a `StringWalk`
+(`src/protokit/_fieldview.py:410-547`), in the layer-0 seam so the payload
 decode seams can share it. It runs in `build_pool` (`src/protokit/_pools.py:200`) and at lint's parse
-site (`src/protokit/schema/lint/_cli_utils.py:353`). This isn't new validation.
+site (`src/protokit/schema/lint/_cli_utils.py:353`), and after each payload parse in storage
+scans, `forensics match` and binary `diff` input, each of which reports a hit as its own
+decode fault. This isn't new validation.
 It makes upb reject input at the same point pure-Python already does.
 
 The first version of the walk had two bugs, and a later audit found a third.
@@ -192,8 +195,9 @@ The first version of the walk had two bugs, and a later audit found a third.
   map-valued custom option (a `google.protobuf.Struct` extension on
   `FileOptions`), it crashed on both backends with
   `AttributeError: 'str' object has no attribute 'ListFields'`. The fix reads the
-  map-entry descriptor and walks keys and values as pairs
-  (`src/protokit/_fieldview.py:278-284`):
+  map-entry descriptor and walks keys and values as pairs (the extension path
+  at `src/protokit/_fieldview.py:278-284`; the planned walk's map branch at
+  `:477-489` keeps the same order):
   ```python
   entry = map_entry(field)
   if entry is not None:
@@ -213,7 +217,7 @@ The first version of the walk had two bugs, and a later audit found a third.
   (`tests/core/test_pools.py::test_a_non_utf8_map_key_in_an_option_raises_the_typed_error`).
 
 Custom options are covered only because `ListFields()` includes registered
-extensions (`src/protokit/_fieldview.py:263-264`). An unregistered extension stays
+extensions (`src/protokit/_fieldview.py:491-492`). An unregistered extension stays
 as unparsed unknown bytes that nothing decodes, so nothing needs to walk it.
 
 After the fix, all 150 compilable `.proto` fixtures under
