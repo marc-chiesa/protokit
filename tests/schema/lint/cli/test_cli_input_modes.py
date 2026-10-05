@@ -996,6 +996,20 @@ class TestDroppedProtoRoot:
         assert str(tmp_path / "first.proto") not in result.stderr
         assert "error[lint-compile-failed]: 1 of 2 " in result.stderr
 
+    def test_every_dropped_root_gets_its_own_line(self, tmp_path: Path) -> None:
+        result = self._invoke_dropping(
+            tmp_path, ["one.proto", "two.proto", "three.proto"], keep=("one.proto",),
+        )
+        assert result.exit_code == 2, result.output
+        not_linted = [
+            line for line in result.stderr.splitlines() if line.startswith("not linted: ")
+        ]
+        assert [line.split(" (")[0] for line in not_linted] == [
+            f"not linted: {tmp_path / 'two.proto'}",
+            f"not linted: {tmp_path / 'three.proto'}",
+        ]
+        assert "error[lint-compile-failed]: 2 of 3 " in result.stderr
+
     def test_a_dropped_path_cannot_forge_a_stable_prefix_line(
         self, tmp_path: Path,
     ) -> None:
