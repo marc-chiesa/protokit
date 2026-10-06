@@ -20,8 +20,12 @@ Asserted properties of the job:
 * it exists under the id ``test-minimal-install`` with no ``strategy``: a
   matrix renames the check context, and ``matrix.include``/``exclude`` trips
   ``tests/schema/lint/test_perf_smoke_coverage.py``;
+* no job-level ``if:``: the job runs on every trigger, pull requests included,
+  because GitHub reports a skipped job as a success;
 * it sets up exactly one Python, the floor read from ``requires-python`` in
-  ``pyproject.toml``, so a raised floor that leaves the cell behind fails here;
+  ``pyproject.toml``, so a raised floor that leaves the cell behind fails here,
+  and that setup runs before the sanity step, or the checks run on the
+  runner's default Python;
 * it runs exactly one ``pip install``, and that install is ``pip install .``:
   no extras, no ``-e``, and no second install that could supply what the
   declaration should;
@@ -29,18 +33,24 @@ Asserted properties of the job:
   pip, setuptools and wheel, so a runner image that happens to ship an
   undeclared dependency cannot make the smoke pass vacuously;
 * a step after the install walks ``protokit.cli.main``'s click tree and runs
-  ``protokit <command path> --help`` for every command;
+  ``protokit <command path> --help`` for every command: the walk recurses
+  (``yield from walk(``) and each command runs through ``subprocess.run`` with
+  ``check=True``, so a failing ``--help`` fails the step;
 * no job-level ``PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION``: the backend is not
   this cell's axis, and ``tests/meta/test_pure_python_cell_presence_ratchet.py``
   counts the jobs that set it there;
 * the sanity and smoke steps are each one ``python -c "..."`` command with
   nothing around it, so no ``exit 0`` or ``|| true`` can skip the check;
 * no ``continue-on-error`` on the job or any step, and no ``if:`` or
-  ``working-directory:`` on the sanity, install or smoke steps.
+  ``working-directory:`` on the setup-python, sanity, install or smoke steps.
 
 KTD3 proof: the injected-violation self-tests below run the same check over a
 synthetic workflow with one property broken each and assert the message names
 it; there is no ``src`` anchor for ``scripts/mutation_check.py``.
+
+``TestRuntimeBackportIsDeclared`` asserts the declaration the cell protects:
+``pyproject.toml`` declares ``typing_extensions>=4.1`` for Python 3.10 only, so
+deleting it fails a local run, not just this CI cell.
 """
 
 from __future__ import annotations
@@ -52,6 +62,8 @@ from typing import Any
 
 import pytest
 import yaml
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -69,6 +81,12 @@ BARE_FRAGMENTS = ("importlib.metadata", "distributions()", "assert")
 # The smoke step imports the real CLI group and recurses through it, so a
 # subcommand added later is covered without editing the workflow.
 WALK_FRAGMENTS = ("from protokit.cli import main", "list_commands", "'--help'")
+# What makes that walk a check rather than a listing. Each --help runs through
+# subprocess.run with check=True on the same line, so a non-zero exit fails the
+# step; walk() recurses, so commands inside a nested group are reached. Both are
+# matched with ``#`` comments stripped: a check commented out guards nothing.
+CHECKED_RUN = ("subprocess.run(", "check=True")
+RECURSION = "yield from walk("
 
 
 def python_floor(pyproject_text: str) -> str:
@@ -133,6 +151,25 @@ def _single_python_c(step: dict[str, Any]) -> bool:
     return '"' not in "\n".join(lines[1:-1])
 
 
+def _smoke_gaps(step: dict[str, Any]) -> list[str]:
+    """What the smoke step lacks to fail on a failing ``--help``; empty if
+    nothing. Comments are stripped per line before matching."""
+    run = step.get("run")
+    code = [line.partition("#")[0] for line in run.splitlines()] if isinstance(run, str) else []
+    gaps: list[str] = []
+    if not any(all(f in line for f in CHECKED_RUN) for line in code):
+        gaps.append(
+            "subprocess.run(..., check=True) on each command, so a failing --help "
+            "fails the step"
+        )
+    if not any(RECURSION in line for line in code):
+        gaps.append(
+            f"the recursion '{RECURSION}...)', so commands inside a nested group "
+            f"are walked"
+        )
+    return gaps
+
+
 def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
     """Every way the workflow fails to carry the minimal-install cell.
 
@@ -160,13 +197,18 @@ def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
             f"{JOB_ID} must not carry job-level continue-on-error (found "
             f"{job['continue-on-error']!r}); a job that cannot fail guards nothing"
         )
+    if "if" in job:
+        # GitHub reports a skipped job as successful, required check or not.
+        violations.append(
+            f"{JOB_ID} must run on every workflow trigger, pull requests included: "
+            f"no job-level if: (found {job['if']!r})"
+        )
 
     steps = [s for s in job.get("steps", []) if isinstance(s, dict)]
-    versions = [
-        str((s.get("with") or {}).get("python-version"))
-        for s in steps
-        if str(s.get("uses", "")).startswith("actions/setup-python")
+    setups = [
+        i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/setup-python")
     ]
+    versions = [str((steps[i].get("with") or {}).get("python-version")) for i in setups]
     if versions != [floor]:
         violations.append(
             f"{JOB_ID} must set up exactly one Python, the declared floor {floor} "
@@ -194,6 +236,13 @@ def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
         )
     elif install_at is not None and not any(i < install_at for i in bare):
         violations.append(f"{JOB_ID}'s bare-interpreter sanity step must run before the install")
+    if bare and any(i > min(bare) for i in setups):
+        # A pin that lands after the checks leaves them on the runner's default
+        # Python while the version count above still sees the floor.
+        violations.append(
+            f"{JOB_ID}'s setup-python step must run before the bare-interpreter sanity "
+            f"step, or the checks run on the runner's default Python, not {floor}"
+        )
 
     walk = [i for i, s in enumerate(steps) if _runs_with(s, WALK_FRAGMENTS)]
     if not walk:
@@ -203,6 +252,9 @@ def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
         )
     elif install_at is not None and not any(i > install_at for i in walk):
         violations.append(f"{JOB_ID}'s --help smoke step must run after the install")
+    for i in walk:
+        for gap in _smoke_gaps(steps[i]):
+            violations.append(f"{JOB_ID}'s smoke step {_label(steps[i])!r} is missing {gap}")
 
     for i in sorted({*bare, *walk}):
         if not _single_python_c(steps[i]):
@@ -210,7 +262,7 @@ def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
                 f"{JOB_ID}'s step {_label(steps[i])!r} must be a single python -c "
                 f'"..." command, with no shell before, after or inside it'
             )
-    gated = sorted({*bare, *walk, *([install_at] if install_at is not None else [])})
+    gated = sorted({*setups, *bare, *walk, *([install_at] if install_at is not None else [])})
     for i in gated:
         if "if" in steps[i] or "working-directory" in steps[i]:
             violations.append(
@@ -264,10 +316,18 @@ jobs:
       - name: Smoke
         run: |
           python -c "
+          import subprocess
           import click
           from protokit.cli import main
-          names = main.list_commands(click.Context(main))
-          argv = ['protokit', '--help']
+          def walk(command, path):
+              yield path
+              if isinstance(command, click.Group):
+                  ctx = click.Context(command)
+                  for name in command.list_commands(ctx):
+                      yield from walk(command.get_command(ctx, name), [*path, name])
+          for path in walk(main, []):
+              argv = ['protokit', *path, '--help']
+              subprocess.run(argv, check=True)
           "
 """
 
@@ -333,6 +393,25 @@ class TestMinimalInstallCellPresenceRatchetSelfCheck:
         (violation,) = _violations(mutated)
         assert "exactly one Python" in violation
 
+    _SETUP_PYTHON = (
+        "      - uses: actions/setup-python@v6\n        with:\n"
+        f'          python-version: "{_FLOOR}"\n'
+    )
+
+    def test_setup_python_after_the_checks_is_named(self) -> None:
+        # The sanity and smoke steps would then run on the runner's default
+        # Python, not the floor, while the floor check still counts one pin.
+        assert _SYNTHETIC.count(self._SETUP_PYTHON) == 1
+        mutated = _SYNTHETIC.replace(self._SETUP_PYTHON, "") + self._SETUP_PYTHON
+        (violation,) = _violations(mutated)
+        assert "setup-python" in violation and "before the bare-interpreter sanity" in violation
+
+    def test_a_conditioned_setup_python_is_named(self) -> None:
+        head = "      - uses: actions/setup-python@v6\n"
+        mutated = _SYNTHETIC.replace(head, head + "        if: 'false'\n")
+        (violation,) = _violations(mutated)
+        assert "unconditionally" in violation and "setup-python" in violation
+
     def test_a_raised_floor_leaves_the_cell_behind(self) -> None:
         (violation,) = _violations(_SYNTHETIC, floor="3.11")
         assert "3.11" in violation and _FLOOR in violation
@@ -340,6 +419,42 @@ class TestMinimalInstallCellPresenceRatchetSelfCheck:
     def test_missing_help_walk_is_named(self) -> None:
         (violation,) = _violations(_SYNTHETIC.replace("list_commands", "commands"))
         assert "--help" in violation and "walking" in violation
+
+    # Each edit keeps every fragment the smoke step is recognised by, yet the
+    # step can no longer fail: no subprocess.run, a run whose non-zero exit is
+    # ignored, or a walk that never descends into a group's subcommands.
+    _SMOKE_GAPS = {
+        "no-run": (
+            "              subprocess.run(argv, check=True)\n",
+            "              print(argv)\n",
+            "subprocess.run(..., check=True)",
+        ),
+        "no-check": (
+            "subprocess.run(argv, check=True)", "subprocess.run(argv)", "check=True",
+        ),
+        "check-in-comment": (
+            "subprocess.run(argv, check=True)",
+            "subprocess.run(argv)  # check=True",
+            "check=True",
+        ),
+        "no-recursion": (
+            "yield from walk(command.get_command(ctx, name), [*path, name])",
+            "yield [*path, name]",
+            "yield from walk(",
+        ),
+        "recursion-in-comment": (
+            "yield from walk(command.get_command(ctx, name), [*path, name])",
+            "yield [*path, name]  # yield from walk(",
+            "yield from walk(",
+        ),
+    }
+
+    @pytest.mark.parametrize("gap", sorted(_SMOKE_GAPS))
+    def test_a_smoke_step_that_cannot_fail_is_named(self, gap: str) -> None:
+        old, new, named = self._SMOKE_GAPS[gap]
+        assert _SYNTHETIC.count(old) == 1
+        (violation,) = _violations(_SYNTHETIC.replace(old, new))
+        assert "Smoke" in violation and named in violation
 
     def test_help_walk_before_the_install_is_named(self) -> None:
         mutated = _SYNTHETIC.replace("run: pip install .\n", "run: echo moved\n") + (
@@ -385,6 +500,18 @@ class TestMinimalInstallCellPresenceRatchetSelfCheck:
         (violation,) = _violations(mutated)
         assert "job-level continue-on-error" in violation
 
+    def test_a_job_level_condition_is_named(self) -> None:
+        # Push-only: every pull request skips the job, and a skipped job's
+        # check reports success, so the PR merges unguarded.
+        condition = "${{ github.event_name == 'push' }}"
+        mutated = _SYNTHETIC.replace(
+            f"  {JOB_ID}:\n    runs-on: ubuntu-latest\n",
+            f"  {JOB_ID}:\n    runs-on: ubuntu-latest\n    if: " + condition + "\n",
+        )
+        (violation,) = _violations(mutated)
+        assert "every workflow trigger" in violation and "pull requests" in violation
+        assert condition in violation
+
     @pytest.mark.parametrize("step", ["Sanity", "Install", "Smoke"])
     def test_step_level_continue_on_error_is_named(self, step: str) -> None:
         mutated = _SYNTHETIC.replace(
@@ -405,7 +532,7 @@ class TestMinimalInstallCellPresenceRatchetSelfCheck:
     # The last line of each python -c body in _SYNTHETIC, closing quote included.
     _BODY_END = {
         "Sanity": "          assert not extra, extra\n          \"\n",
-        "Smoke": "          argv = ['protokit', '--help']\n          \"\n",
+        "Smoke": "              subprocess.run(argv, check=True)\n          \"\n",
     }
 
     @pytest.mark.parametrize("step", ["Sanity", "Smoke"])
@@ -438,3 +565,77 @@ class TestMinimalInstallCellPresenceRatchetSelfCheck:
     def test_an_unreadable_floor_fails_loudly(self) -> None:
         with pytest.raises(pytest.fail.Exception, match="single '>=X.Y' bound"):
             python_floor('[project]\nrequires-python = ">=3.10,<4"\n')
+
+
+# --- the declaration the cell exists to protect ---------------------------------
+
+BACKPORT = "typing-extensions"
+# assert_never first shipped in typing_extensions 4.1; 4.0.1 is the last release
+# without it.
+BACKPORT_FIRST, BACKPORT_LAST_WITHOUT = "4.1", "4.0.1"
+
+
+def backport_declaration_gaps(dependencies: list[str]) -> list[str]:
+    """Every way ``dependencies`` (PEP 508 strings, as in ``[project]
+    dependencies``) fails to declare the ``typing_extensions`` backport the
+    3.10 CLI imports at startup; empty if it is declared right."""
+    found = [
+        req
+        for req in map(Requirement, dependencies)
+        if canonicalize_name(req.name) == BACKPORT
+    ]
+    if len(found) != 1:
+        return [f"expected exactly one {BACKPORT} requirement, found {[str(r) for r in found]}"]
+    (req,) = found
+
+    def applies_on(python: str) -> bool:
+        return req.marker is None or req.marker.evaluate({"python_version": python})
+
+    gaps: list[str] = []
+    if not applies_on("3.10"):
+        gaps.append(f"{req} does not apply on Python 3.10, where the CLI imports it")
+    if applies_on("3.11"):
+        gaps.append(f"{req} applies on Python 3.11, where typing.assert_never is stdlib")
+    if not req.specifier.contains(BACKPORT_FIRST):
+        gaps.append(f"{req} rejects {BACKPORT_FIRST}, the first release with assert_never")
+    if req.specifier.contains(BACKPORT_LAST_WITHOUT):
+        gaps.append(f"{req} admits {BACKPORT_LAST_WITHOUT}, which has no assert_never")
+    return gaps
+
+
+class TestRuntimeBackportIsDeclared:
+    """R22-C1's root cause, asserted locally.
+
+    On 3.10, ``formatters/_builtin_lint.py`` imports ``assert_never`` from
+    ``typing_extensions`` at CLI startup. The minimal-install cell catches a
+    missing declaration only in CI; here, deleting the line from
+    ``[project] dependencies`` fails a local run too.
+    """
+
+    def test_pyproject_declares_the_backport_for_310_only(self) -> None:
+        project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert backport_declaration_gaps(project["project"]["dependencies"]) == []
+
+    # Non-vacuity: the same check over dependency lists that get it wrong.
+    _LANDED = "typing_extensions>=4.1; python_version<'3.11'"
+
+    @pytest.mark.parametrize(
+        ("dependencies", "named"),
+        [
+            (["click>=8.0"], "exactly one"),
+            ([_LANDED, "typing-extensions>=4.2"], "exactly one"),
+            (["typing_extensions>=4.1"], "applies on Python 3.11"),
+            (["typing_extensions>=4.1; python_version<'3.12'"], "applies on Python 3.11"),
+            (["typing_extensions>=4.1; python_version>='3.11'"], "not apply on Python 3.10"),
+            (["typing_extensions>=4.0; python_version<'3.11'"], "admits 4.0.1"),
+            (["typing_extensions<4.1; python_version<'3.11'"], "rejects 4.1"),
+        ],
+        ids=["missing", "duplicate", "unmarked", "marker-too-wide", "marker-wrong-way",
+             "floor-too-low", "floor-excluded"],
+    )
+    def test_a_wrong_declaration_is_named(self, dependencies: list[str], named: str) -> None:
+        gaps = backport_declaration_gaps(dependencies)
+        assert any(named in g for g in gaps), gaps
+
+    def test_the_landed_declaration_passes(self) -> None:
+        assert backport_declaration_gaps(["click>=8.0", self._LANDED]) == []
