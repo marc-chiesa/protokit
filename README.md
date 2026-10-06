@@ -124,6 +124,12 @@ protokit diff left.pb right.pb --desc schema.descriptor_set --message-type myapp
 > skipped, not every reason the result is incomplete. `complete` means the same in `protokit compat
 > --format json`, where `compatible` likewise needs it.
 >
+> `complete` reports what the run recorded, not what it covered: it is
+> `false` for a depth cut or an error-level diagnostic, and `true`
+> otherwise. A difference the differ does not look for leaves it `true`.
+> Fields the schema does not declare (unknown fields) are not compared, so
+> two messages that differ only there give `"equal": true, "complete": true`.
+>
 > The JSON object is **open/additive** — ignore unknown keys rather than
 > validating a closed set. Gate on the top-level `schema_version` to detect the
 > shape change when `old_value`/`new_value` are removed at 1.0; output from
@@ -886,10 +892,17 @@ communication contract.
 ### Upgrade notes (0.15.x → 0.16.0)
 
 0.16.0 is a correctness release across every command, not only
-`lint`. A green exit now means the analysis ran: when a command
-could not finish what it was asked to do, it says so and exits
-**2**. Exit **1** keeps its meaning: the tool ran and found
-something. Every command's exit gate, and every built-in
+`lint`. A run that records it could not finish what it was asked
+to do now says so and exits **2**, where several commands used to
+exit 0. Exit **1** keeps its meaning: the tool ran and found
+something. This covers the reasons a run records, such as a rule
+that raised, a depth limit that cut a comparison short or a
+record that did not parse. It is not a check that every input was
+analysed: where protokit skips something without recording it,
+the exit code is unchanged. Two cases known in 0.16.0 are `diff`,
+which does not compare unknown fields, and `lint`, which does not
+count the `extension_unresolved` warning as an incomplete run.
+Every command's exit gate, and every built-in
 `--format` renderer of `diff`, `compat` and `lint` that states a
 success verdict, now ask the same predicate whether the run
 completed, so for those commands the exit code and the rendered
@@ -965,14 +978,17 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    pure-Python runtime, a message nested too deep or carrying a
    non-UTF-8 string now fails to decode that way instead of
    crashing with exit 1.
-9. **Descriptor sets the other runtime would refuse.** Every
-   command now loads a descriptor set the same way on both
-   protobuf runtimes. Under upb, a set containing a string that
-   is not UTF-8 (a file name, a comment) is now refused with
-   exit 2 where it was accepted. Under the pure-Python runtime, a
-   set with a missing import or a type reference that resolves
-   nowhere, even in a file the command does not use, is now
-   refused with exit 2 as upb always did.
+9. **Descriptor sets the other runtime would refuse.** Three
+   kinds of descriptor set are now refused with exit 2 on both
+   protobuf runtimes, by every command that loads one. Under upb,
+   a set containing a string that is not UTF-8 (a file name, a
+   comment) is now refused where it was accepted. Under the
+   pure-Python runtime, a set with a missing import or a type
+   reference that resolves nowhere, even in a file the command
+   does not use, is now refused as upb always did. The runtimes
+   still differ on other malformed sets: pure-Python accepts some
+   that upb refuses, such as a duplicate field number, and
+   protokit adds no validation of its own for those.
 
 **Machine-readable output.** Consumers of the report rather than
 the exit code see the same correction:
@@ -1334,7 +1350,7 @@ accumulation.
 | Surface | Element | Status |
 |---------|---------|--------|
 | Python dataclass | `LintReport` (fields, ordering, frozen-ness) | IN |
-| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved", "contradictory_disable_config", "unknown_rule_id"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger a `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump-contract at `_builtin_lint.py:227-312`. Last two values added in 0.7.0. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
+| Python dataclass | `LintRuntimeWarning` (`category: Literal["rule_exception", "unloaded_rule", "severities_unloaded_rule", "min_severity_relaxed", "all_files_excluded", "custom_annotation_extension_unresolved", "extension_unresolved", "contradictory_disable_config", "unknown_rule_id"]` — **CLOSED DISCRIMINATOR**: consumer switch statements should be exhaustive; additions trigger a `_LINT_JSON_SCHEMA_VERSION` minor bump per the bump contract documented above that constant in `_builtin_lint.py`. Last two values added in 0.7.0. Contrast with `LintSeverity` open ladder), `rule_id: str \| None`, message, exception_type, descriptor_path | IN |
 | Python module | `BUILTIN_PACKS` (auto-loaded rule packs; includes `package_same` as of 0.3.0 → 7 `PACKAGE_SAME_*` rules default-on under `recommended` + `default` profiles) | IN |
 | Python function | `leading_comment(source_info_descriptors, file_name, path)` (free function in `protokit.schema.lint.rules.options._comments`; reads `[replaced-by: <X>]` and similar leading-comment annotations from the indexed source-info descriptors) | IN |
 | Python class field | `CompileResult.source_info_descriptors: Mapping[str, FileDescriptorProto] \| None` (the source-locations index built from `FileDescriptorSet` before `pool.Add()` discards `source_code_info`; consumed by leading-comment introspection) | INTERNAL |
@@ -1352,13 +1368,13 @@ accumulation.
 | JSON wire | `lint_json["schema_version"]: "0.7"` (top-level wire-format version; absence → implicit "0.1"; bumped from `"0.6"` in 0.16.0 with the SARIF meaning change below, which shares the constant) | IN |
 | SARIF wire | `runs[].properties.runtime_warnings` shape (level, message, properties.category, properties.subcategory; 0.7.0 adds `properties.rule_id` for `contradictory_disable_config` + `unknown_rule_id` categories only — pre-existing rule-scoped categories (`rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`) do NOT carry `rule_id` in the SARIF propertyBag despite being rule-scoped; SARIF consumers needing complete rule_id attribution should use `--format=json` where `rule_id` is populated uniformly) | IN |
 | SARIF wire | `runs[].invocations[].toolExecutionNotifications` (compile-stage diagnostics) | IN |
-| SARIF wire | `runs[].properties.lint_schema_version: "0.7"` (parity with `lint_json["schema_version"]`). Since 0.16.0 `invocations[0].executionSuccessful` is false whenever the analysis did not complete — a rule that raised or was never loaded, as well as a compile error | IN |
+| SARIF wire | `runs[].properties.lint_schema_version: "0.7"` (parity with `lint_json["schema_version"]`). Since 0.16.0 `invocations[0].executionSuccessful` is false when the run recorded a reason the analysis did not complete: a compile error, a rule that raised, a profile-named rule that never loaded, or `--exclude` dropping every input (the set `protokit._trust` owns). `true` is not a check that every rule ran: the `extension_unresolved` and `custom_annotation_extension_unresolved` warnings leave it `true` | IN |
 | SARIF wire | `tool.driver.rules[].defaultConfiguration.level` (added in 0.7.0; pre-flight rule severity for IDE consumers) | IN |
 | JUnit wire | `<system-out>` dual line format (compile diagnostics, then runtime warnings) | IN |
 | Profile names | `essentials` / `recommended` / `default` (protokit-native names; `default` extends `recommended` with the deprecated-replacement family (5 error-severity option-aware rules as of 0.7.0 — promoted from `warning`) + `options/field-behavior-consistent`) | IN |
 | Profile aliases | `minimal` → `essentials`, `basic` → `recommended` (resolved at `_coerce_profile` input boundary) | IN |
 | CLI flags | `--config`, `--no-config`, `--exclude`, `--no-exclude`, `--profile`, `--min-severity`, `--max-warnings`, `--format`, `--rule-pack`, `--no-builtin-rules`, `--disable-rule` (0.7.0+), `--enable-rule` (0.7.0+), `--version` | IN |
-| Exit codes | 0 (a clean run that completed), 1 (findings exceeded threshold), 2 (a configuration, setup or input error, or an incomplete analysis, reported as `error[lint-analysis-incomplete]:`). An incomplete analysis has exited 2 since 0.15.1 (a rule raised, or a profile-named rule never loaded) and, since 0.16.0, includes a run whose `--exclude` patterns dropped every input. The runtime-warning categories that count as incomplete are owned by `protokit._trust` | IN |
+| Exit codes | 0 (a clean run that recorded no reason it was incomplete), 1 (findings exceeded threshold), 2 (a configuration, setup or input error, or an incomplete analysis, reported as `error[lint-analysis-incomplete]:`). An incomplete analysis has exited 2 since 0.15.1 (a rule raised, or a profile-named rule never loaded) and, since 0.16.0, includes a run whose `--exclude` patterns dropped every input. The runtime-warning categories that count as incomplete are owned by `protokit._trust` | IN |
 | Error codes (stderr `error[lint-<code>]:` prefix) | `no-rules`, `unknown-profile`, `format-unavailable`, `compile-failed`, `formatter-exception`, `bad-input`, `pool-conflict`, `missing-imports`, `rule-collision`, `rule-pack-load`, `pyproject-config-load`, `pyproject-config-invalid`, `exclude-pattern-invalid`, `no-rules-after-disable` (0.7.0+), `cli-option-invalid` (0.7.0+), `analysis-incomplete` (0.15.1+) (full set in `_LINT_ERROR_CODES`) | IN |
 | Stderr formatter envelopes | `protokit lint: warning [<category>]: <message>` (human format) | IN |
 | Internal module | `protokit.schema.lint._config` (loader + `ResolvedLintConfig`) | INTERNAL |
@@ -1395,7 +1411,7 @@ loads user-supplied packs for anything else.
 
 | Kind | Names | Notes |
 |------|-------|-------|
-| `DIFF` | `human`, `json`, `junit` | `junit` uses a binary-result single-testcase pattern (one assertion per comparison); per-difference detail goes in the failure body. SARIF intentionally omitted — message diffs don't fit SARIF's rule/result model. |
+| `DIFF` | `human`, `json`, `junit` | `junit` states the comparison as one `messages-equal` testcase (one assertion per comparison), with per-difference detail in its failure body. A run that cannot be trusted adds a `comparison-integrity` error testcase, and withholds `messages-equal` when no difference was found. SARIF intentionally omitted — message diffs don't fit SARIF's rule/result model. |
 | `COMPAT` | `human`, `json`, `junit`, `sarif` | `junit` is per-finding; empty checks emit a synthetic passing testcase so CI doesn't read the suite as "no tests ran." `sarif` is a single SARIF 2.1.0 `run` with one `result` per finding; `tool.driver.rules` declares every fired rule_id. |
 | `COMPAT_HISTORY` | `human`, `json`, `junit`, `sarif` | `junit` wraps per-commit suites under `<testsuites>`; each suite carries the commit subject as `package` and a sequential `id`. `sarif` aggregates results into one `run` with `partialFingerprints.commit` per result. |
 | `COMPAT_BISECT` | `human`, `json`, `junit`, `sarif` | `junit` carries `range_spec`, `old_sha`, `new_sha`, and `breaking_commit` in a `<properties>` block. `sarif` exposes the same in `run.properties`. |

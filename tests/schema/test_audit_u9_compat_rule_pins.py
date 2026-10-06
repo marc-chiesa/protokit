@@ -8,7 +8,7 @@ is live, and it flips to a loud XPASS the day the gap is closed.
 
 Shared root cause for U9-1 and U9-2
 -----------------------------------
-``rules.options_changed`` (``rules.py:630-635``) is the only built-in rule
+``rules.options_changed`` (in ``schema/rules.py``) is the only built-in rule
 that could plausibly notice either change — every other field rule keys off
 type, number, cardinality, presence or oneof membership — and its entire
 mechanism is::

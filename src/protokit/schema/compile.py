@@ -229,9 +229,9 @@ class CompileResult:
             :func:`compile_protos_to_result` is called with
             ``include_source_info=True``; ``None`` otherwise.
             Consumed by R6 comment-aware lint rules.
-            Wrapped in :class:`types.MappingProxyType` at
-            construction time so the frozen-dataclass guarantee
-            holds against post-hoc mutation. Defaults to ``None``
+            Stored as a :class:`types.MappingProxyType`: a plain
+            mapping is copied, a proxy the caller passes is kept
+            without copying. Defaults to ``None``
             so D1-D5 callers and the ``protokit compat`` / non-lint
             paths pay zero descriptor-size cost.
     """
@@ -251,10 +251,10 @@ class CompileResult:
         is real. Mirrors the pattern in
         :class:`protokit.schema.profiles.LintProfile`.
 
-        ``source_info_descriptors`` follows the same discipline:
-        when non-None, the caller's mapping is wrapped in
-        :class:`types.MappingProxyType` so post-construction mutation
-        cannot affect the stored mapping.
+        ``source_info_descriptors``, when non-None, is stored as a
+        :class:`types.MappingProxyType`. A plain mapping is copied, so
+        mutating it afterwards changes nothing here; a proxy the caller
+        passes is kept as is and still reflects the dict behind it.
 
         ``pool_file_names`` also snapshots into an immutable tuple.
         **Invariant check via diagnostic emission, NOT raise:**

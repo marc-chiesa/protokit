@@ -64,8 +64,8 @@ class TestCategoryLiteral:
         ``options/field-behavior-consistent`` linting protos that
         don't include ``google/api/field_behavior.proto``); bumped
         ``_LINT_JSON_SCHEMA_VERSION`` ``"0.4"`` → ``"0.5"`` per the
-        closed-Literal-discriminator bump contract at
-        ``_builtin_lint.py:227-312``.
+        closed-Literal-discriminator bump contract above that
+        constant in ``_builtin_lint.py``.
 
         D6f U2 added the eighth and ninth categories
         ``contradictory_disable_config`` (CLI-emitted from

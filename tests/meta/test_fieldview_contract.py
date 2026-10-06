@@ -1,4 +1,9 @@
-"""Contract test for the ``_fieldview`` seam (U3, closes V26/V19).
+"""Contract test for the ``_fieldview`` seam (U3: closes V19 and the differ's half of V26).
+
+The compat checker's half of V26 stayed open after U3, because the checker
+read only ``by_name``; it closed when the checker began pairing declared
+extensions too (``_fieldview.data_extensions``). The contract below is about
+the owner, so it could not see a consumer that never asked.
 
 **Why a contract test and not a bypass guard (KTD1).** The two seam failure
 modes need different guards. Bypass drift — a correct owner exists and a

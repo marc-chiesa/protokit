@@ -328,6 +328,52 @@ that case, and the second case no longer arises because the read goes through
 the right class. If a future protobuf changes the refusal, the error propagates
 instead of becoming `None`.
 
+**A read now fails for the option asked for, not for the whole element.**
+(provenance — measured on protobuf 5.27.5, Python 3.13.5, under both backends,
+on the code before and after 0.16.0 U7; the current behavior is re-asserted by
+`TestOneMalformedOptionCannotHideAnother` in `tests/core/test_extensions.py`.)
+Letting errors propagate had a cost the first version of the seam missed.
+`rebound.MergeFromString(options.SerializeToString())` re-reads the *whole*
+options message, and on an isolated pool that is the first time any custom
+option's bytes are parsed as their type. So one option whose bytes did not
+parse raised for every option on the element, the valid ones included. Which
+bytes count as malformed depended on the backend. Reading a valid `int32` option
+(value 7) beside a string option holding `ff fe`:
+
+```text
+                              before U7      now
+upb     beside a proto3 string  DecodeError    7
+upb     beside a proto2 string  7              7
+python  beside a proto3 string  DecodeError    7
+python  beside a proto2 string  DecodeError    7
+```
+
+The whole-message read still runs first, and when it succeeds the result keeps
+the declared fields and `uninterpreted_option` as before. When it fails,
+`_only_extension` splits the bytes into records and parses only the requested
+extension's, so the result holds that option and nothing else. Reading the
+malformed option itself still raises `DecodeError`, which now names the option
+on both backends.
+
+The first version also carried a comment saying that pure-Python raises
+`UnicodeDecodeError` for a bad proto3 string where upb raises `DecodeError`, and
+concluding that callers get one type on both. The conclusion held for a proto3
+string only. upb does not validate a proto2 string, so it returned the option
+as `bytes` where pure-Python raised. `_checked` now inspects the value on every
+return path, the fast path included. Reading a proto2 string option holding
+`ff fe`:
+
+```text
+        before U7      now
+upb     b'\xff\xfe'    DecodeError "<option>: a string is not valid UTF-8"
+python  DecodeError    DecodeError
+```
+
+One difference is left. `_checked` reads the parsed value, not the wire, so a
+singular proto2 string option written twice, with a first copy that is not
+UTF-8 and a valid last copy, reads as its last value on upb. Pure-Python raises
+on the first copy.
+
 **Mismatch still raises inside the seam, on purpose.** `rebind_options` raises
 `KeyError` rather than reparsing field bytes as method options, because the
 field numbers would decode as unrelated data. The public helper tests `extends`

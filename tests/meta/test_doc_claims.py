@@ -32,6 +32,12 @@ The other two D6 claims are guarded elsewhere, both closed in 0.16.0 U17a:
 A release adds the claims of the modules it touched; it does not wait for the
 others.
 
+The last three classes are claims 0.16.0 itself wrote and its re-audit found
+too wide: that every descriptor set loads the same way on both runtimes, that
+a default-valued extension always equals an unset one, and that ``complete``
+and SARIF's ``executionSuccessful`` say the analysis covered its input. Their
+prose lives in ``README.md`` and ``CHANGELOG.md`` as well as in the source.
+
 KTD3 proof: a doc-shaped fix has no guarded branch to mutate. Each prose
 check was proven instead by using ``scripts/mutation_check.py`` to rewrite the
 corrected text back to the original wrong claim and watching the check fail.
@@ -49,15 +55,31 @@ import typing
 from pathlib import Path
 
 import pytest
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from google.protobuf.internal import api_implementation
+from google.protobuf.message import Message
 
 import protokit._pools as pools
 import protokit.schema.lint._cli_utils as cli_utils
 from protokit._cli_utils import load_descriptor_pool
 from protokit._pools import DescriptorPoolError, load_pool_from_path
+from protokit.formatters import FormatterContext, FormatterKind, get_formatter
+from protokit.formatters._builtin_lint import lint_sarif
+from protokit.message import diff_messages
+from protokit.message.model import DiffResult
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.lint.model import LintReport
+from protokit.schema.model import bisect_report_to_dict, history_report_to_dict
+from tests._trust_reports import (
+    bisect_report,
+    compat_report,
+    error_diagnostic,
+    history_report,
+    lint_report,
+    truncated_diff_result,
+    warning_diagnostic,
+)
 from tests.meta.test_import_layers import (
     _REPO_ROOT,
     _SRC_ROOT,
@@ -408,4 +430,411 @@ class TestLintCliUtilsDocstring:
         phrase = "loaded only when"
         assert phrase not in _prose(cli_utils.__doc__), _returned(
             phrase, _WHERE_CLI_UTILS, "the lint engine imports it at module load"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Re-audit claim 1: README upgrade note 9, descriptor sets and the two runtimes
+# ---------------------------------------------------------------------------
+
+_README_PATH = _REPO_ROOT / "README.md"
+_CHANGELOG_PATH = _REPO_ROOT / "CHANGELOG.md"
+_PURE_PYTHON = api_implementation.Type() == "python"
+_WHERE_NOTE_9 = "README upgrade note 9"
+
+
+def _as_prose(text: str) -> str:
+    """``text`` with ``#`` and ``>`` line markers dropped and whitespace collapsed."""
+    return _prose("\n".join(line.strip().lstrip("#>") for line in text.splitlines()))
+
+
+def _file_prose(path: Path) -> str:
+    return _as_prose(path.read_text(encoding="utf-8"))
+
+
+def _changelog_unreleased() -> str:
+    """The CHANGELOG's ``## Unreleased`` section, as prose."""
+    body = _CHANGELOG_PATH.read_text(encoding="utf-8")
+    sections = re.split(r"^(?=## )", body, flags=re.MULTILINE)
+    unreleased = [section for section in sections if section.startswith("## Unreleased")]
+    assert len(unreleased) == 1, "CHANGELOG.md has no single `## Unreleased` section"
+    return _as_prose(unreleased[0])
+
+
+def _readme_upgrade_note(number: int) -> str:
+    """Item ``number`` of the README's 0.16.0 pre-upgrade checklist, as prose."""
+    body = _README_PATH.read_text(encoding="utf-8")
+    start = re.search(rf"^{number}\. \*\*", body, flags=re.MULTILINE)
+    assert start, f"README.md has no upgrade note numbered {number}"
+    rest = body[start.start():]
+    end = re.search(r"^(?:\d+\. \*\*|\*\*|#)", rest[1:], flags=re.MULTILINE)
+    return _prose(rest[: end.start() + 1] if end else rest)
+
+
+def _one_file_set(build: typing.Callable[[descriptor_pb2.FileDescriptorProto], None]) -> bytes:
+    fds = descriptor_pb2.FileDescriptorSet()
+    build(fds.file.add(name="a.proto", package="a", syntax="proto3"))
+    return fds.SerializeToString()
+
+
+def _duplicate_field_number(fdp: descriptor_pb2.FileDescriptorProto) -> None:
+    message = fdp.message_type.add(name="M")
+    for name in ("x", "y"):
+        message.field.add(name=name, number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
+
+
+def _dangling_type_reference(fdp: descriptor_pb2.FileDescriptorProto) -> None:
+    fdp.message_type.add(name="M").field.add(
+        name="x", number=1, type=T.TYPE_MESSAGE, label=T.LABEL_OPTIONAL, type_name=".a.Absent"
+    )
+
+
+class TestDescriptorSetLoadingNote:
+    """The two runtimes refuse the same three kinds of set, not every kind.
+
+    Note 9 used to open "Every command now loads a descriptor set the same way
+    on both protobuf runtimes". 0.16.0 aligned three kinds: a missing import,
+    a type reference that resolves nowhere, and a string that is not UTF-8.
+    Pure-Python still builds sets upb refuses, a duplicate field number among
+    them, and protokit adds no validation of its own. If that changes,
+    ``test_duplicate_field_number_loads_on_pure_python_only`` fails; rewrite
+    the note in the same change.
+    """
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param(_unbuildable_set(), id="missing-import"),
+            pytest.param(_one_file_set(_dangling_type_reference), id="dangling-type-reference"),
+            pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="string-not-utf8"),
+        ],
+    )
+    def test_the_three_aligned_kinds_are_refused(self, tmp_path: Path, data: bytes) -> None:
+        path = tmp_path / "schema.descriptor_set"
+        path.write_bytes(data)
+        with pytest.raises(DescriptorPoolError):
+            load_pool_from_path(path)
+
+    def test_duplicate_field_number_loads_on_pure_python_only(self, tmp_path: Path) -> None:
+        path = tmp_path / "schema.descriptor_set"
+        path.write_bytes(_one_file_set(_duplicate_field_number))
+        if _PURE_PYTHON:
+            pool = load_pool_from_path(path)
+            assert [f.name for f in pool.FindMessageTypeByName("a.M").fields] == ["x", "y"]
+        else:
+            with pytest.raises(DescriptorPoolError):
+                load_pool_from_path(path)
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "a missing import",
+            "a type reference that resolves nowhere",
+            "a string that is not UTF-8",
+            "pure-Python accepts some that upb refuses, such as a duplicate field number",
+        ],
+    )
+    def test_note_names_what_was_aligned_and_what_was_not(self, phrase: str) -> None:
+        assert phrase in _readme_upgrade_note(9), _missing(phrase, _WHERE_NOTE_9)
+
+    def test_readme_does_not_claim_every_set_loads_alike(self) -> None:
+        phrase = "the same way on both"
+        assert phrase not in _file_prose(_README_PATH), _returned(
+            phrase, "README.md", "pure-Python builds sets upb refuses to build"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Re-audit claim 2: EQUIVALENT and a default-valued extension
+# ---------------------------------------------------------------------------
+
+_DIFFER_PATH = _SRC_ROOT / PACKAGE / "message" / "differ.py"
+_WHERE_FOLD_IN = "The comment above the extension fold-in in message/differ.py"
+_WHERE_CHANGELOG_EXTENSIONS = "CHANGELOG's entry on declared proto2 extensions"
+
+
+def _presence_classes() -> tuple[type[Message], typing.Any, typing.Any]:
+    """proto2 ``t.M`` with a declared and an extension twin of a scalar and a message."""
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="t.proto", package="t", syntax="proto2")
+    fdp.message_type.add(name="Sub").field.add(
+        name="x", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL
+    )
+    message = fdp.message_type.add(name="M")
+    message.field.add(
+        name="sub", number=1, type=T.TYPE_MESSAGE, label=T.LABEL_OPTIONAL, type_name=".t.Sub"
+    )
+    message.field.add(name="num", number=2, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
+    message.extension_range.add(start=100, end=200)
+    fdp.extension.add(
+        name="sub", number=100, type=T.TYPE_MESSAGE, label=T.LABEL_OPTIONAL,
+        extendee=".t.M", type_name=".t.Sub",
+    )
+    fdp.extension.add(
+        name="num", number=101, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL, extendee=".t.M"
+    )
+    pool.Add(fdp)
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("t.M"))
+    return cls, pool.FindExtensionByName("t.sub"), pool.FindExtensionByName("t.num")
+
+
+def _reported(left: Message, right: Message) -> list[tuple[str, str]]:
+    return [(str(d.path), d.change_type.name) for d in diff_messages(left, right)]
+
+
+class TestEquivalentExtensionCollapse:
+    """Under EQUIVALENT only a scalar at its default or an empty message equals unset.
+
+    0.16.0's extension entry said an extension "set to its default on one side
+    and unset on the other collapses". A message extension holding a sub-field
+    set to its default does not: it is reported at the sub-field, which is
+    what a declared message field has always done. The declared twin is
+    measured beside each extension case so the two cannot drift apart
+    unnoticed.
+    """
+
+    def test_scalar_at_its_default_equals_unset(self) -> None:
+        cls, _sub, num = _presence_classes()
+        left, right = cls(), cls()
+        right.Extensions[num] = 0
+        right.num = 0
+        assert _reported(left, right) == []
+
+    def test_empty_message_equals_unset(self) -> None:
+        cls, sub, _num = _presence_classes()
+        left, right = cls(), cls()
+        right.Extensions[sub].SetInParent()
+        right.sub.SetInParent()
+        assert _reported(left, right) == []
+
+    def test_message_with_a_default_valued_sub_field_is_reported(self) -> None:
+        cls, sub, _num = _presence_classes()
+        left, right = cls(), cls()
+        right.Extensions[sub].x = 0
+        right.sub.x = 0
+        assert _reported(left, right) == [("(t.sub).x", "ADDED"), ("sub.x", "ADDED")]
+
+    def test_same_sub_field_collapses_once_both_sides_hold_the_message(self) -> None:
+        # The half of the old claim that is true: with the message present on
+        # both sides, the default-valued sub-field is an ordinary scalar.
+        cls, sub, _num = _presence_classes()
+        left, right = cls(), cls()
+        left.Extensions[sub].SetInParent()
+        right.Extensions[sub].x = 0
+        assert _reported(left, right) == []
+
+    @pytest.mark.parametrize(
+        "phrase", ["a scalar at its default or an empty message", "a sub-field set does not"]
+    )
+    def test_fold_in_comment_states_the_rule(self, phrase: str) -> None:
+        assert phrase in _file_prose(_DIFFER_PATH), _missing(phrase, _WHERE_FOLD_IN)
+
+    def test_fold_in_comment_does_not_generalise(self) -> None:
+        phrase = "a default-valued field equals an unset one"
+        assert phrase not in _file_prose(_DIFFER_PATH), _returned(
+            phrase, _WHERE_FOLD_IN, "a message whose sub-field is set to a default is reported"
+        )
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "a scalar extension set to its default, or an empty message extension",
+            "is reported field by field, as a declared message field is",
+        ],
+    )
+    def test_changelog_states_the_rule(self, phrase: str) -> None:
+        assert phrase in _changelog_unreleased(), _missing(phrase, _WHERE_CHANGELOG_EXTENSIONS)
+
+    def test_changelog_does_not_generalise(self) -> None:
+        phrase = "(set to its default on one side and unset on the other collapses"
+        assert phrase not in _changelog_unreleased(), _returned(
+            phrase,
+            _WHERE_CHANGELOG_EXTENSIONS,
+            "a message extension whose sub-field is set to a default is reported",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Re-audit claim 3: what ``complete`` and SARIF ``executionSuccessful`` compute
+# ---------------------------------------------------------------------------
+
+
+def _render(name: str, kind: FormatterKind, report: object) -> typing.Any:
+    out = get_formatter(name, kind)(report, FormatterContext(subcommand="guard"))  # type: ignore[arg-type]
+    return json.loads(out)
+
+
+def _lint_sarif_succeeded(report: LintReport) -> bool:
+    # ``lint`` renders through its own functions, not the formatter registry.
+    document = json.loads(lint_sarif(report, FormatterContext(subcommand="guard")))
+    succeeded: bool = document["runs"][0]["invocations"][0]["executionSuccessful"]
+    return succeeded
+
+
+def _unknown_field_only_pair() -> tuple[Message, Message]:
+    """Two ``u.M`` messages that differ only in field 2, which ``u.M`` does not declare."""
+    pool = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="u.proto", package="u", syntax="proto3")
+    fdp.message_type.add(name="M").field.add(
+        name="a", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL
+    )
+    pool.Add(fdp)
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("u.M"))
+    left, right = cls(), cls()
+    left.ParseFromString(bytes([0x10, 1]))
+    right.ParseFromString(bytes([0x10, 2]))
+    return left, right
+
+
+_COMPLETE_DOCSTRINGS = [
+    pytest.param(
+        lambda: get_formatter("json", FormatterKind.DIFF).__doc__,
+        "a difference the differ does not look for",
+        id="diff_json",
+    ),
+    pytest.param(
+        lambda: get_formatter("json", FormatterKind.COMPAT).__doc__,
+        "it is not a coverage check",
+        id="compat_json",
+    ),
+    pytest.param(
+        lambda: history_report_to_dict.__doc__,
+        "nothing else about the walk is checked",
+        id="history_report_to_dict",
+    ),
+    pytest.param(
+        lambda: bisect_report_to_dict.__doc__,
+        "false when the walk recorded an error-level diagnostic",
+        id="bisect_report_to_dict",
+    ),
+    pytest.param(
+        lambda: lint_sarif.__doc__,
+        "``executionSuccessful`` is false when ``protokit._trust`` distrusts the report",
+        id="lint_sarif",
+    ),
+]
+
+
+class TestCompleteReportsWhatTheRunRecorded:
+    """``complete`` and ``executionSuccessful`` are a record, not a coverage check.
+
+    Both are ``protokit._trust``'s answer: false when the report carries a
+    reason the run knows it did not finish, true otherwise. 0.16.0's prose
+    said more ("a green exit now means the analysis ran", "false whenever the
+    analysis did not complete"), which reads as a promise that every input
+    was analysed. An input skipped without a record leaves both true.
+
+    The two skipped-input tests measure open gaps scheduled for later
+    releases: unknown fields are not compared, and the ``extension_unresolved``
+    warning is not gated. When either closes, its test fails; that is the
+    signal to drop the example from the prose in the same change.
+    """
+
+    def test_a_difference_in_unknown_fields_leaves_complete_true(self) -> None:
+        payload = _render("json", FormatterKind.DIFF, diff_messages(*_unknown_field_only_pair()))
+        assert (payload["equal"], payload["complete"], payload["diagnostics"]) == (True, True, [])
+
+    def test_a_depth_cut_or_an_error_diagnostic_makes_diff_incomplete(self) -> None:
+        truncated = _render("json", FormatterKind.DIFF, truncated_diff_result())
+        assert (truncated["equal"], truncated["complete"]) == (False, False)
+        assert truncated["truncated_paths"]
+        with_error = DiffResult(differences=(), diagnostics=(error_diagnostic(),))
+        errored = _render("json", FormatterKind.DIFF, with_error)
+        assert (errored["equal"], errored["complete"]) == (False, False)
+        assert errored["truncated_paths"] == []
+        with_warning = DiffResult(differences=(), diagnostics=(warning_diagnostic(),))
+        warned = _render("json", FormatterKind.DIFF, with_warning)
+        assert (warned["equal"], warned["complete"]) == (True, True)
+
+    @pytest.mark.parametrize(
+        ("diagnostic", "complete"),
+        [
+            pytest.param(None, True, id="no-diagnostic"),
+            pytest.param(warning_diagnostic(), True, id="warning"),
+            pytest.param(error_diagnostic(), False, id="error"),
+        ],
+    )
+    def test_compat_complete_is_the_absence_of_an_error_diagnostic(
+        self, diagnostic: typing.Any, complete: bool
+    ) -> None:
+        report = compat_report(*([diagnostic] if diagnostic else []))
+        assert _render("json", FormatterKind.COMPAT, report)["complete"] is complete
+
+    def test_history_and_bisect_complete_follow_the_same_rule(self) -> None:
+        assert history_report_to_dict(history_report())["complete"] is True
+        broken = history_report(entry_diags=(error_diagnostic(),))
+        assert history_report_to_dict(broken)["complete"] is False
+        assert bisect_report_to_dict(bisect_report())["complete"] is True
+
+    @pytest.mark.parametrize(
+        ("category", "succeeded"),
+        [
+            pytest.param("rule_exception", False, id="rule_exception"),
+            pytest.param("unloaded_rule", False, id="unloaded_rule"),
+            pytest.param("all_files_excluded", False, id="all_files_excluded"),
+            pytest.param("extension_unresolved", True, id="extension_unresolved"),
+            pytest.param(
+                "custom_annotation_extension_unresolved",
+                True,
+                id="custom_annotation_extension_unresolved",
+            ),
+        ],
+    )
+    def test_sarif_execution_successful_follows_the_gated_categories(
+        self, category: str, succeeded: bool
+    ) -> None:
+        assert _lint_sarif_succeeded(lint_report(categories=(category,))) is succeeded
+
+    def test_sarif_execution_successful_is_false_for_a_compile_error(self) -> None:
+        assert _lint_sarif_succeeded(lint_report(compile_error="boom")) is False
+        assert _lint_sarif_succeeded(lint_report()) is True
+
+    @pytest.mark.parametrize(("docstring", "phrase"), _COMPLETE_DOCSTRINGS)
+    def test_docstring_states_what_the_field_computes(
+        self, docstring: typing.Callable[[], str | None], phrase: str
+    ) -> None:
+        assert phrase in _prose(docstring()), _missing(phrase, "The formatter's docstring")
+
+    def test_lint_sarif_docstring_does_not_credit_compile_errors_alone(self) -> None:
+        phrase = '``"error"`` and flip ``executionSuccessful`` to false'
+        doc = _prose(lint_sarif.__doc__)
+        assert phrase not in doc, _returned(
+            phrase, "lint_sarif's docstring", "a rule that raised or never loaded flips it too"
+        )
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "`complete` reports what the run recorded, not what it covered",
+            "(unknown fields) are not compared",
+            "A run that records it could not finish",
+            "`extension_unresolved` and `custom_annotation_extension_unresolved` warnings leave it",
+        ],
+    )
+    def test_readme_states_what_the_fields_compute(self, phrase: str) -> None:
+        assert phrase in _file_prose(_README_PATH), _missing(phrase, "README.md")
+
+    @pytest.mark.parametrize(
+        "prose",
+        [
+            pytest.param(lambda: _file_prose(_README_PATH), id="README.md"),
+            # Scoped to the release that made the claim: older sections are history.
+            pytest.param(_changelog_unreleased, id="CHANGELOG.md"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "green exit now means the analysis ran",
+            "a green exit mean the analysis ran",
+            "false whenever the analysis did not complete",
+        ],
+    )
+    def test_prose_does_not_promise_the_analysis_covered_everything(
+        self, prose: typing.Callable[[], str], phrase: str
+    ) -> None:
+        assert phrase not in prose(), _returned(
+            phrase,
+            "README.md or CHANGELOG.md's Unreleased section",
+            "an input skipped without a record still reads as success",
         )

@@ -43,10 +43,10 @@ The protobuf Python package ships two runtime backends, upb (C, the default)
 and pure-Python (`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python`), and until
 PR #59 this suite's CI had only ever expressed upb's opinion: the `test` matrix
 in `.github/workflows/ci.yml` resolves protobuf's default backend on every cell
-(`.github/workflows/ci.yml:178-179`). Two audit defects (V1, V10) rely on an
+(`.github/workflows/ci.yml:181-182`). Two audit defects (V1, V10) rely on an
 exception only upb raises (V9, first listed with them, fails alike on both); under
 pure-Python each degrades silently to a wrong value, and nothing exercised that runtime
-(`.github/workflows/ci.yml:179-181`). Plan decision KTD6 — backend behaviour is
+(`.github/workflows/ci.yml:182-184`). Plan decision KTD6 — backend behaviour is
 asserted, never inferred from an exception — needed a second cell that runs the
 whole suite under the other backend.
 
@@ -91,7 +91,7 @@ PR #69). U3 (#69) emptied the inventory and U23 (#70, 2026-09-18) promoted the
 job: `test-pure-python` now carries a required-check banner and no
 `continue-on-error` at job level or on any step (current-state — re-verified by
 `tests/meta/test_pure_python_cell_presence_ratchet.py` on every run;
-`.github/workflows/ci.yml:204-213`), and `main`'s branch protection lists it as
+`.github/workflows/ci.yml:207-216`), and `main`'s branch protection lists it as
 a required context with `parity` removed (provenance — measured 2026-09-18 and
 pasted into PR #70's description; branch protection lives outside the repo, so
 nothing in-tree re-verifies that list). The promotion was proven the way the
@@ -101,7 +101,7 @@ the required check alone.
 
 **Harvest run versus merge run.** The inventory's entries are not measured
 locally. The cell is Python 3.12 on Linux with apt `protoc` and `.[compiler,dev]`
-only (`.github/workflows/ci.yml:224-238`, restated at `CONTRIBUTING.md:45-48`),
+only (`.github/workflows/ci.yml:227-241`, restated at `CONTRIBUTING.md:45-48`),
 and a developer venv differs from it on five axes at once: the Python minor,
 the operating system, which optional extras are installed (a local venv may carry
 the parquet and hamcrest extras the cell does not), whether a system `protoc`
@@ -255,8 +255,8 @@ says explicitly when the session ended with a usage error so an empty harvest
 never reads as a clean run (`:455-461`), and writes nothing at all under upb
 (`pytest_configure`, `:439-441`). The cell passes
 `--pure-python-inventory-harvest=pure-python-harvest.txt`
-(`.github/workflows/ci.yml:257`) and an `if: always()` step prints the file and
-appends it to the step summary (`.github/workflows/ci.yml:259-278`).
+(`.github/workflows/ci.yml:260`) and an `if: always()` step prints the file and
+appends it to the step summary (`.github/workflows/ci.yml:262-281`).
 
 **One spelling for the backend-skip predicate.** A test whose premise is a upb
 runtime fact rather than a protokit defect is not an inventory entry; it gets
