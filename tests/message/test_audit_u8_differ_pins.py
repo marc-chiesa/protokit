@@ -664,7 +664,7 @@ def _message_class(file_proto: descriptor_pb2.FileDescriptorProto) -> type[Messa
 # ---------------------------------------------------------------------------
 
 
-def _noisy_items_pool() -> ProtoBuilder:
+def _noisy_items_builder() -> ProtoBuilder:
     """``Outer { repeated Item items }``, ``Item { id, noise }``."""
     b = ProtoBuilder()
     b.message("test.Item", {"id": (T.TYPE_STRING, 1), "noise": (T.TYPE_STRING, 2)})
@@ -695,7 +695,7 @@ class TestV28TreatAsSetDropsIgnoreFields:
         the ignore it is gone. This is the reference answer the pin asserts
         for the same data once ``treat_as_set`` is also configured.
         """
-        b = _noisy_items_pool()
+        b = _noisy_items_builder()
         left = _noisy_outer(b, ("a", "x"))
         right = _noisy_outer(b, ("a", "y"))
 
@@ -715,7 +715,7 @@ class TestV28TreatAsSetDropsIgnoreFields:
         and the pin's failure is specific to elements that differ in the
         ignored field.
         """
-        b = _noisy_items_pool()
+        b = _noisy_items_builder()
         left = _noisy_outer(b, ("a", "x"), ("b", "y"))
         right = _noisy_outer(b, ("b", "y"), ("a", "x"))
 
@@ -745,7 +745,7 @@ class TestV28TreatAsSetDropsIgnoreFields:
         name ``items[0].id`` — the field that did not change — rather than the
         ignored field that did.
         """
-        b = _noisy_items_pool()
+        b = _noisy_items_builder()
         left = _noisy_outer(b, ("a", "x"))
         right = _noisy_outer(b, ("a", "y"))
 

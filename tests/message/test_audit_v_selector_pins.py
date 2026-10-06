@@ -186,7 +186,7 @@ class TestV8FieldPathBracketGrammar:
 # ---------------------------------------------------------------------------
 
 
-def _depth_pool() -> ProtoBuilder:
+def _depth_builder() -> ProtoBuilder:
     """``Outer { name, value, tags, Inner inner }`` and ``Inner { name, value, tags }``.
 
     Every plain field name exists at the top level AND one level down, so a
@@ -209,7 +209,7 @@ def _depth_pool() -> ProtoBuilder:
 
 def _names_differ_at_both_depths() -> tuple[Message, Message]:
     """Two ``Outer`` messages whose ``name`` AND ``inner.name`` both differ."""
-    b = _depth_pool()
+    b = _depth_builder()
     inner = b.get_message_class("test.Inner")
     left = b.build("test.Outer", name="a", inner=inner(name="x"))
     right = b.build("test.Outer", name="b", inner=inner(name="y"))
@@ -218,7 +218,7 @@ def _names_differ_at_both_depths() -> tuple[Message, Message]:
 
 def _values_differ_within_tolerance(*, nested: bool) -> tuple[Message, Message]:
     """Two ``Outer`` messages whose ``value`` is 1.0 vs 1.0000001 at one depth."""
-    b = _depth_pool()
+    b = _depth_builder()
     inner = b.get_message_class("test.Inner")
     if nested:
         return (
@@ -230,7 +230,7 @@ def _values_differ_within_tolerance(*, nested: bool) -> tuple[Message, Message]:
 
 def _tags_reordered(*, nested: bool) -> tuple[Message, Message]:
     """Two ``Outer`` messages holding the same ``tags`` in a different order at one depth."""
-    b = _depth_pool()
+    b = _depth_builder()
     inner = b.get_message_class("test.Inner")
     if nested:
         return (

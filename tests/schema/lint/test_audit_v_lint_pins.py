@@ -1,7 +1,7 @@
 """Regression pins for deferred lint audit findings (family V, lint).
 
-Every ``xfail`` in this module pins a LIVE defect that a later release owns
-(requirement R15 of the 0.16.0 re-audit fix wave). Each pin is
+Every ``xfail`` in this module pins a LIVE defect that a later release owns.
+Each pin is
 ``@pytest.mark.xfail(strict=True, raises=...)`` on the test function itself,
 with a ``reason`` that begins with the finding ID and names the owning release.
 The suite stays green while the defect exists and the pin flips to a hard
@@ -74,6 +74,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from protokit.schema.lint.cli import main as lint_main
+from tests.schema.lint.cli._helpers import runtime_warnings_from_json
 
 _ANALYSIS_INCOMPLETE = "error[lint-analysis-incomplete]:"
 
@@ -102,7 +103,7 @@ def _payload(result: Result) -> dict[str, Any]:
 
 def _skips(result: Result, category: str) -> list[dict[str, Any]]:
     """Runtime warnings of ``category`` in the rendered report."""
-    return [w for w in _payload(result)["runtime_warnings"] if w["category"] == category]
+    return [w for w in runtime_warnings_from_json(result.stdout) if w["category"] == category]
 
 
 def _outcome(result: Result) -> str:

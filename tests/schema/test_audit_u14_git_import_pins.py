@@ -77,7 +77,7 @@ def _init_repo(path: Path) -> Path:
 def _write(repo: Path, rel: str, text: str) -> None:
     full = repo / rel
     full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(text)
+    full.write_text(text, encoding="utf-8")
 
 
 def _commit_all(repo: Path, msg: str) -> str:
@@ -485,13 +485,6 @@ def _import_header(dep: str) -> str:
     return f'syntax = "proto3";\npackage acme;\nimport "{dep}";\n'
 
 
-def _write_utf8(repo: Path, rel: str, text: str) -> None:
-    """``_write`` with the encoding fixed: V30's root file names a non-ASCII path."""
-    full = repo / rel
-    full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(text, encoding="utf-8")
-
-
 def _dep_break_repo(
     base: Path,
     name: str,
@@ -505,16 +498,17 @@ def _dep_break_repo(
     c1: ``acme/user.proto`` imports ``dep`` and uses ``acme.Date``; c2 removes
     ``Date.month`` from ``dep`` and touches nothing else. ``prefix`` puts both
     files under a source root; ``header`` replaces the root file's
-    syntax/package/import lines.
+    syntax/package/import lines, and then ``dep`` only names the dependency's
+    path (the import spelling is whatever ``header`` wrote).
 
     Returns ``(repo, base_sha, breaking_sha)``.
     """
     repo = _init_repo(base / name)
     user = (header or _import_header(dep)) + "message User { string name = 1; Date bday = 2; }\n"
-    _write_utf8(repo, f"{prefix}{dep}", _DATE_WITH_MONTH)
-    _write_utf8(repo, f"{prefix}acme/user.proto", user)
+    _write(repo, f"{prefix}{dep}", _DATE_WITH_MONTH)
+    _write(repo, f"{prefix}acme/user.proto", user)
     base_sha = _commit_all(repo, "c1: user imports date")
-    _write_utf8(repo, f"{prefix}{dep}", _DATE_WITHOUT_MONTH)
+    _write(repo, f"{prefix}{dep}", _DATE_WITHOUT_MONTH)
     breaking_sha = _commit_all(repo, "c2: remove Date.month (breaking, dependency only)")
     return repo, base_sha, breaking_sha
 
@@ -744,7 +738,8 @@ def test_r20_c1_walk_with_a_dot_slash_proto_root_must_report_the_break(
 
 # --- R20-C2: run from a repository subdirectory ---------------------------
 
-_EXACT_AND_FAST = pytest.mark.parametrize("mode", [(), ("--fast",)], ids=["exact", "fast"])
+_WALK_MODES: tuple[tuple[str, ...], ...] = ((), ("--fast",))
+_EXACT_AND_FAST = pytest.mark.parametrize("mode", _WALK_MODES, ids=["exact", "fast"])
 
 
 @pytest.fixture
@@ -765,7 +760,7 @@ def test_r20_c2_control_the_repo_root_is_walked_and_check_since_works_from_the_s
     """
     repo, base_sha, breaking_sha = subdir_repo
     for walk in _WALKS:
-        for mode in ((), ("--fast",)):
+        for mode in _WALK_MODES:
             _assert_walk_names_the_break(
                 _compat(monkeypatch, repo, _walk_args(walk, base_sha, *mode)), breaking_sha,
             )

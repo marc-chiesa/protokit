@@ -1,7 +1,7 @@
 """Regression pins for deferred storage audit findings (family V, storage).
 
-Every ``xfail`` in this module pins a LIVE defect that a later release owns
-(requirement R15 of the 0.16.0 re-audit fix wave). Each pin is
+Every ``xfail`` in this module pins a LIVE defect that a later release owns.
+Each pin is
 ``@pytest.mark.xfail(strict=True, raises=...)`` on the test function itself,
 with a ``reason`` that begins with the finding ID and names the owning unit and
 release. The suite stays green while the defect exists and the pin flips to a
@@ -80,7 +80,8 @@ from protokit.storage import (
     to_parquet,
 )
 from protokit.storage.schema_source import FileDescriptorSetSchema
-from tests.storage.proto_fixtures import delimited, fds, file_proto, registry_and_class
+from tests.storage.cli.conftest import DECODE_BAD, a_fds, pq_cmd
+from tests.storage.proto_fixtures import delimited, registry_and_class
 
 _F = descriptor_pb2.FieldDescriptorProto
 _PKG = "auditvstorage"
@@ -361,15 +362,20 @@ def test_v16_projection_of_an_any_the_default_pool_resolves_control() -> None:
 # The storage CLI's JSON renders of one record: --fields goes through project;
 # the last two are the full-record renders in storage/cli.py.
 _JSON_RENDERS = pytest.mark.parametrize(
-    "flags",
-    [("--fields", "n"), ("--fields", "payload"), (), ("--explicit-defaults",)],
+    ("flags", "keys"),
+    [
+        (("--fields", "n"), ("n",)),
+        (("--fields", "payload"), ("payload",)),
+        ((), ("n", "payload")),
+        (("--explicit-defaults",), ("n", "payload")),
+    ],
     ids=["fields-unselected", "fields-selected", "full-record", "explicit-defaults"],
 )
 
 
-def _expected_json(flags: tuple[str, ...], payload: dict[str, object]) -> dict[str, object]:
-    full = {"n": 7, "payload": payload}
-    return {flags[1]: full[flags[1]]} if flags[:1] == ("--fields",) else full
+def _expected_json(keys: tuple[str, ...], payload: dict[str, object]) -> dict[str, object]:
+    full: dict[str, object] = {"n": 7, "payload": payload}
+    return {key: full[key] for key in keys}
 
 
 def _scan(tmp_path: Path, record: Message, *flags: str) -> Result:
@@ -396,21 +402,21 @@ def _scan(tmp_path: Path, record: Message, *flags: str) -> Result:
 )
 @_JSON_RENDERS
 def test_v16_cli_json_scan_renders_a_record_whose_any_packs_a_schema_own_type(
-    tmp_path: Path, flags: tuple[str, ...]
+    tmp_path: Path, flags: tuple[str, ...], keys: tuple[str, ...]
 ) -> None:
     result = _scan(tmp_path, _any_event(_inner(1)), "--format", "json", *flags)
     assert result.exit_code == 0, result.stderr
-    assert json.loads(result.stdout) == _expected_json(flags, _INNER_JSON)
+    assert json.loads(result.stdout) == _expected_json(keys, _INNER_JSON)
 
 
 @_JSON_RENDERS
 def test_v16_cli_json_scan_renders_an_any_the_default_pool_resolves_control(
-    tmp_path: Path, flags: tuple[str, ...]
+    tmp_path: Path, flags: tuple[str, ...], keys: tuple[str, ...]
 ) -> None:
     record = _any_event(duration_pb2.Duration(seconds=1))
     result = _scan(tmp_path, record, "--format", "json", *flags)
     assert result.exit_code == 0, result.stderr
-    assert json.loads(result.stdout) == _expected_json(flags, _DURATION_JSON)
+    assert json.loads(result.stdout) == _expected_json(keys, _DURATION_JSON)
 
 
 def test_v16_cli_human_scan_prints_the_schema_own_any_record_control(tmp_path: Path) -> None:
@@ -427,8 +433,6 @@ def test_v16_cli_human_scan_prints_the_schema_own_any_record_control(tmp_path: P
 
 _PRIOR_ROWS = {"important_prior_data": [1, 2, 3]}
 _NEW_ROWS = {"x": [7]}
-# A 1-byte body that is a truncated ``a.A { int32 x = 1 }``: one collected decode fault.
-_TRUNCATED = b"\x08"
 
 
 @pytest.fixture
@@ -457,7 +461,7 @@ def _make_read_only(dest: Path) -> None:
 def _records(*, faulting: bool) -> list[bytes]:
     _registry, cls = registry_and_class()
     good = cls(x=7).SerializeToString()
-    return [good, _TRUNCATED] if faulting else [good]
+    return [good, DECODE_BAD] if faulting else [good]
 
 
 def _to_parquet(dest: Path, *, faulting: bool) -> None:
@@ -470,12 +474,10 @@ def _to_parquet(dest: Path, *, faulting: bool) -> None:
 def _cli_to_parquet(tmp_path: Path, dest: Path, *, faulting: bool) -> Result:
     """``protokit storage scan --format parquet -o dest`` over the same records."""
     desc = tmp_path / "a.desc"
-    desc.write_bytes(fds(file_proto("a.proto", "a", message="A")).SerializeToString())
+    desc.write_bytes(a_fds().SerializeToString())
     data = tmp_path / "a.bin"
     data.write_bytes(delimited(*_records(faulting=faulting)))
-    argv = ["storage", "scan", str(data), "--desc", str(desc), "--type", "a.A"]
-    argv += ["--format", "parquet", "-o", str(dest)]
-    return CliRunner().invoke(main, argv, catch_exceptions=False)
+    return CliRunner().invoke(main, pq_cmd(data, desc, dest), catch_exceptions=False)
 
 
 def _assert_all_or_nothing(dest: Path, *, run_failed: bool) -> None:
