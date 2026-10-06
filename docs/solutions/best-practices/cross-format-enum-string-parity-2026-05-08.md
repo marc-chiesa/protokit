@@ -286,7 +286,7 @@ transitive dep". It was transitive only through mypy in the `[dev]`
 extra. On a runtime-only 3.10 install the import failed, and because the
 CLI loads `_builtin_lint` on every invocation, every subcommand crashed,
 `--help` included (R22-C1, fixed in 0.16.0 U11). CI never saw it because
-every cell installed `[dev]`. A backport import needs its own conditional
+every CI job that installed protokit installed `[dev]`. A backport import needs its own conditional
 entry in `dependencies`, not a dev extra that happens to pull it in. The
 `test-minimal-install` job in `.github/workflows/ci.yml` now runs every
 command's `--help` on the declared floor with only runtime dependencies.

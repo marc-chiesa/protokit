@@ -284,10 +284,10 @@ jobs:
   # Minimal-install cell — the declared runtime dependencies are enough.
   # =====================================================================
   #
-  # Every other job installs `.[dev]` (or more), so none of them can see
-  # a runtime import the package forgot to declare: the dev extras
-  # supply it. That hid R22-C1 from 2026-05-08 until the 0.16.0
-  # re-audit found it. On Python 3.10,
+  # Every other job that installs protokit installs `.[dev]` (or more),
+  # so none of them can see a runtime import the package forgot to
+  # declare: the dev extras supply it. That hid R22-C1 from 2026-05-08
+  # until the 0.16.0 re-audit found it. On Python 3.10,
   # `formatters/_builtin_lint.py` imports `typing_extensions`, the CLI
   # loads that module on every invocation, and only mypy (via `[dev]`)
   # ever installed it, so every subcommand crashed for users, `--help`
@@ -299,7 +299,9 @@ jobs:
   # happens to ship a dependency cannot make the smoke pass vacuously.
   # The smoke walks the real click tree and runs `--help` on every
   # command, so a subcommand added later is covered without editing this
-  # file. No matrix (include/exclude would trip test_perf_smoke_coverage)
+  # file. Both checks stay a single `python -c` command each: shell
+  # around one (`exit 0` first, `|| true` after) would skip it and go
+  # green. No matrix (include/exclude would trip test_perf_smoke_coverage)
   # and no job-level PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION (the backend
   # is not this cell's axis).
   # tests/meta/test_minimal_install_cell_presence_ratchet.py asserts

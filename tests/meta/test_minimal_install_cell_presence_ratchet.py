@@ -4,8 +4,9 @@ R22-C1: on Python 3.10, every ``protokit`` subcommand crashed, ``--help``
 included. ``formatters/_builtin_lint.py`` imports ``typing_extensions`` there,
 the CLI loads that module on every invocation, and nothing declared the
 package. CI's own 3.10 cells never saw it: ``[dev]`` pulls mypy, mypy pulls
-``typing_extensions``, and every cell installed ``[dev]``. A cell that installs
-more than a user does cannot catch a missing runtime dependency.
+``typing_extensions``, and every CI job that installed protokit installed
+``[dev]``. A job that installs more than a user does cannot catch a missing
+runtime dependency.
 
 The ``test-minimal-install`` job in ``.github/workflows/ci.yml`` is the guard:
 the declared Python floor, a non-editable ``pip install .`` with no extras,
@@ -32,6 +33,8 @@ Asserted properties of the job:
 * no job-level ``PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION``: the backend is not
   this cell's axis, and ``tests/meta/test_pure_python_cell_presence_ratchet.py``
   counts the jobs that set it there;
+* the sanity and smoke steps are each one ``python -c "..."`` command with
+  nothing around it, so no ``exit 0`` or ``|| true`` can skip the check;
 * no ``continue-on-error`` on the job or any step, and no ``if:`` or
   ``working-directory:`` on the sanity, install or smoke steps.
 
@@ -112,6 +115,24 @@ def _runs_with(step: dict[str, Any], fragments: tuple[str, ...]) -> bool:
     return isinstance(run, str) and all(f in run for f in fragments)
 
 
+def _single_python_c(step: dict[str, Any]) -> bool:
+    """The step's ``run`` is one ``python -c "..."`` command and nothing else.
+
+    The body may hold no double quote, so it cannot close the string early
+    and run shell after it: no ``exit 0`` ahead of the check, no ``|| true``
+    behind it, no ``"; exit 0; "`` inside it. What the Python body itself
+    does is beyond a shape check; the ratchet guards drift, not a check
+    rewritten to pass.
+    """
+    run = step.get("run")
+    if not isinstance(run, str):
+        return False
+    lines = run.strip().splitlines()
+    if len(lines) < 3 or lines[0].strip() != 'python -c "' or lines[-1].strip() != '"':
+        return False
+    return '"' not in "\n".join(lines[1:-1])
+
+
 def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
     """Every way the workflow fails to carry the minimal-install cell.
 
@@ -183,6 +204,12 @@ def cell_violations(workflow: dict[str, Any], floor: str) -> list[str]:
     elif install_at is not None and not any(i > install_at for i in walk):
         violations.append(f"{JOB_ID}'s --help smoke step must run after the install")
 
+    for i in sorted({*bare, *walk}):
+        if not _single_python_c(steps[i]):
+            violations.append(
+                f"{JOB_ID}'s step {_label(steps[i])!r} must be a single python -c "
+                f'"..." command, with no shell before, after or inside it'
+            )
     gated = sorted({*bare, *walk, *([install_at] if install_at is not None else [])})
     for i in gated:
         if "if" in steps[i] or "working-directory" in steps[i]:
@@ -374,6 +401,35 @@ class TestMinimalInstallCellPresenceRatchetSelfCheck:
         )
         (violation,) = _violations(mutated)
         assert "unconditionally" in violation and step in violation
+
+    # The last line of each python -c body in _SYNTHETIC, closing quote included.
+    _BODY_END = {
+        "Sanity": "          assert not extra, extra\n          \"\n",
+        "Smoke": "          argv = ['protokit', '--help']\n          \"\n",
+    }
+
+    @pytest.mark.parametrize("step", ["Sanity", "Smoke"])
+    @pytest.mark.parametrize(
+        "bypass", ["exit-before", "or-true-after", "exit-after", "quote-inside"],
+    )
+    def test_shell_around_the_python_check_is_named(self, step: str, bypass: str) -> None:
+        # Each edit keeps every fragment the step is recognised by, yet lets
+        # the job go green when the check fails or never runs (exit-before is
+        # the gpt-6-astra counterexample). Only a step that is one
+        # ``python -c "..."`` command and nothing else is accepted.
+        head = f"      - name: {step}\n        run: |\n"
+        body_end = self._BODY_END[step]
+        assert _SYNTHETIC.count(head) == 1 and _SYNTHETIC.count(body_end) == 1
+        if bypass == "exit-before":
+            mutated = _SYNTHETIC.replace(head, head + "          exit 0\n")
+        elif bypass == "quote-inside":
+            opener = head + '          python -c "\n'
+            mutated = _SYNTHETIC.replace(opener, opener + '          "; exit 0; "\n')
+        else:
+            tail = " || true" if bypass == "or-true-after" else "; exit 0"
+            mutated = _SYNTHETIC.replace(body_end, body_end.rstrip("\n") + tail + "\n")
+        violations = _violations(mutated)
+        assert any("single python -c" in v and step in v for v in violations), violations
 
     def test_the_floor_is_read_from_requires_python(self) -> None:
         assert python_floor('[project]\nrequires-python = ">=3.10"\n') == "3.10"

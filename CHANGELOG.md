@@ -689,8 +689,8 @@ under the pure-Python runtime with no known-failure list, and the
   declares `typing_extensions>=4.1` for Python older than 3.11. Python 3.11
   and later install nothing new. A new CI job installs the package with no
   extras on Python 3.10 and runs every command's `--help`; before, every CI
-  job installed the dev extras, which pull in `typing_extensions`
-  through mypy.
+  job that installed protokit installed the dev extras, which pull in
+  `typing_extensions` through mypy.
 
 ### Fixed — documentation
 
