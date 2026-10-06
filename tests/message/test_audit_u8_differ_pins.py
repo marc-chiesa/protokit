@@ -637,7 +637,8 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
 #   "Messages are equal." and exits 0. The pins assert what U10 delivers: a
 #   diagnostic whenever unknown fields are present. Whether the differences
 #   themselves are reported stays opt-in under that unit, so the pins do not
-#   assert on ``has_changes()`` or the exit code.
+#   assert on ``has_changes()`` or on exit 0 versus 1. An error is not that
+#   fix: an error-level diagnostic or exit 2 fails the pin outright.
 #   ``tests/meta/test_doc_claims.py`` measures today's output as a guard on
 #   the 0.16.0 prose; these are its strict-xfail counterpart.
 # * V5 (U14b, 0.17.0) — ``_is_default_value`` compares a field's value to
@@ -823,6 +824,17 @@ def _run_diff_cli(
     return result.exit_code, result.stdout
 
 
+def _fail_on_an_error_outcome(*, errors: object = (), exit_code: int = 0) -> None:
+    """Turn a V18 pin red when unknown fields became an error instead of a note.
+
+    ``pytest.fail`` is outside the pins' ``raises=AssertionError``. Without it,
+    a change that made such input exit 2, or raised an error-level diagnostic,
+    would satisfy "a diagnostic is present" and read as V18 fixed.
+    """
+    if errors or exit_code == 2:
+        pytest.fail(f"unknown fields produced an error: errors={errors!r}, exit {exit_code}")
+
+
 class TestV18UnknownFieldOnlyDifferenceIsSilent:
     """V18: the differ never reads unknown fields and says nothing about them."""
 
@@ -892,6 +904,7 @@ class TestV18UnknownFieldOnlyDifferenceIsSilent:
 
         result = MessageDifferencer().compare(left, right)
 
+        _fail_on_an_error_outcome(errors=result.errors)
         # Today: no differences and diagnostics == ().
         assert list(result.diagnostics) != []
 
@@ -951,8 +964,9 @@ class TestV18UnknownFieldOnlyDifferenceIsSilent:
         """
         payloads = _payloads(amounts=(100, 999))
 
-        _exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--format", "json")
+        exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--format", "json")
 
+        _fail_on_an_error_outcome(exit_code=exit_code)
         # Today: "diagnostics": [].
         assert json.loads(stdout)["diagnostics"] != []
 
@@ -975,8 +989,9 @@ class TestV18UnknownFieldOnlyDifferenceIsSilent:
         """
         payloads = _payloads(amounts=(100, 999))
 
-        _exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--verbose")
+        exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--verbose")
 
+        _fail_on_an_error_outcome(exit_code=exit_code)
         # Today: exactly "Messages are equal.\n", exit 0. The warning has to be
         # about the unknown fields; a reworded verdict alone is not the fix.
         assert "unknown" in stdout.lower(), stdout

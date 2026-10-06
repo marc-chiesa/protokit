@@ -492,6 +492,17 @@ def _silent_levels(by_level: dict[str, tuple[str, ...]], *levels: str) -> list[s
     return [name for name in (levels or tuple(by_level)) if by_level[name] == ()]
 
 
+def _require_reported_at(by_level: dict[str, tuple[str, ...]], *levels: str) -> None:
+    """Fail outright when a level a pin takes for granted reports nothing.
+
+    The premise of a "not a total miss" pin, checked through ``pytest.fail``
+    so that losing it turns the pin red instead of reading as its xfail.
+    """
+    silent = _silent_levels(by_level, *levels)
+    if silent:
+        pytest.fail(f"premise lost: {silent} report nothing -> {by_level}")
+
+
 class TestNumberAndLabelDataHazards:
     """Protobuf-runtime facts: what each change pinned below costs a reader."""
 
@@ -660,7 +671,7 @@ def test_removing_a_required_field_is_reported_at_the_wire_profile(editions: boo
     )
 
     # Control: the removal is visible where SEMANTIC findings are kept.
-    assert _silent_levels(by_level, "CONSUMER_SAFE", "STRICT") == [], by_level
+    _require_reported_at(by_level, "CONSUMER_SAFE", "STRICT")
 
     assert by_level["WIRE"] != (), (
         f"removing a required field passed the WIRE profile with zero findings -> {by_level}"
@@ -720,7 +731,7 @@ def test_field_number_reuse_is_reported_at_wire_and_producer_safe(
     by_level = _rule_ids_by_level(*_two_pools(old_field, new_field))
 
     # Control: the two unpaired names are visible where SEMANTIC/BACKWARD is kept.
-    assert _silent_levels(by_level, "CONSUMER_SAFE", "STRICT") == [], by_level
+    _require_reported_at(by_level, "CONSUMER_SAFE", "STRICT")
 
     assert _silent_levels(by_level, "WIRE", "PRODUCER_SAFE") == [], (
         f"number reuse ({label}) passed with zero findings -> {by_level}"
@@ -752,7 +763,7 @@ def test_extension_number_reuse_is_reported_at_wire_and_producer_safe(
     by_level = _rule_ids_by_level(*_two_extension_pools(old_ext, new_ext))
 
     # Control: the two unpaired extensions are visible where SEMANTIC/BACKWARD is kept.
-    assert _silent_levels(by_level, "CONSUMER_SAFE", "STRICT") == [], by_level
+    _require_reported_at(by_level, "CONSUMER_SAFE", "STRICT")
 
     assert _silent_levels(by_level, "WIRE", "PRODUCER_SAFE") == [], (
         f"extension number reuse ({label}) passed with zero findings -> {by_level}"

@@ -55,6 +55,7 @@ import functools
 import json
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -436,7 +437,7 @@ _NEW_ROWS = {"x": [7]}
 
 
 @pytest.fixture
-def prior_dest(tmp_path: Path) -> Path:
+def prior_dest(tmp_path: Path) -> Iterator[Path]:
     """A destination, alone in its own directory under ``tmp_path``, already holding a Parquet file.
 
     Skips without the ``protokit[parquet]`` extra, so the module still collects
@@ -449,7 +450,9 @@ def prior_dest(tmp_path: Path) -> Path:
     directory.mkdir()
     dest = directory / "data.parquet"
     pq.write_table(pa.table(_PRIOR_ROWS), dest)
-    return dest
+    yield dest
+    if dest.exists():
+        dest.chmod(0o644)  # the read-only tests leave it 0400
 
 
 def _make_read_only(dest: Path) -> None:

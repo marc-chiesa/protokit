@@ -784,6 +784,7 @@ class TestR11C2ImportsUnusedPublicReexport:
             "imports/unused",
             imports_pack,
         )
+        _require_the_rule_ran(report)
         offending = [
             f
             for f in _findings_for(report, "imports/unused")
@@ -813,6 +814,23 @@ _STRING_OPTION_RULES: tuple[tuple[str, str], ...] = (
 _STRING_OPTION_IDS = [option for option, _ in _STRING_OPTION_RULES]
 
 
+def _require_the_rule_ran(report: Any) -> None:
+    """Fail outright when the lint run did not complete.
+
+    The engine catches a rule that raises and records a runtime warning, so
+    a broken rule leaves no findings, which is exactly what the pins below
+    that expect a clean result assert. ``pytest.fail`` is outside their
+    ``raises=AssertionError``, so that outcome turns the pin red instead of
+    reading as the defect fixed.
+    """
+    errors = [d for d in report.diagnostics if d.level == "error"]
+    if report.runtime_warnings or errors:
+        pytest.fail(
+            f"the lint run did not complete: runtime_warnings="
+            f"{list(report.runtime_warnings)}, compile errors={errors}"
+        )
+
+
 def _package_same_payloads(
     tmp_path: Path,
     option: str,
@@ -833,6 +851,7 @@ def _package_same_payloads(
             f'syntax = "proto3";\npackage smoke.p;\n{declaration}'
         )
     report = _run_single(tmp_path, sources, rule_id, package_same_pack)
+    _require_the_rule_ran(report)
     return [f.params["values_payload"] for f in _findings_for(report, rule_id)]
 
 
