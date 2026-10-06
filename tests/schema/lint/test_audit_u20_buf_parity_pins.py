@@ -59,6 +59,13 @@ on load-bearing imports.
     is still open, so this is a deferred defect, not a declared posture:
     it has no ``_PARITY_EXCEPTIONS`` entry and no per-branch parity test.
 
+``R11-C2`` (``imports/unused`` on an import used only through ``import
+public``) and ``R25-C3`` (the ``package/same-*`` rules on an empty-string
+option value) were found by the 0.16.0 re-audit, cycle 1. Neither is a U20
+finding, and both are owned by the same unit as the U20 pins. They are
+pinned in the last section of this file; the comment block that opens the
+section gives each one's mechanism and evidence.
+
 Finding dropped
 ---------------
 
@@ -124,6 +131,7 @@ import pytest
 
 from protokit.schema.lint.rules import imports as imports_pack
 from protokit.schema.lint.rules import package as package_pack
+from protokit.schema.lint.rules import package_same as package_same_pack
 from tests.schema.lint.rules.conftest import _compile, _run_single
 
 # ---------------------------------------------------------------------------
@@ -591,4 +599,355 @@ class TestU20ImportsUnusedFalsePositives:
             f"'google/protobuf/descriptor.proto' — it supplies "
             f"google.protobuf.MethodOptions for the extend block; got "
             f"{[f.params for f in offending]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 0.16.0 re-audit, cycle 1 — R11-C2 and R25-C3, owned by U15 (0.18.0)
+# ---------------------------------------------------------------------------
+#
+# Two more places where a rule diverges from the buf rule its ``source_spec``
+# names. Neither is a U20 finding, and U15's planned fixes do not reach either
+# mechanism, so each has pins of its own. Every pin in this section is
+# ``xfail(strict=True)`` with a specific ``raises=``, its ``reason`` leads with
+# the finding ID, and it flips to XPASS (a hard failure under strict mode) the
+# day the rule is fixed. A passing control or guard sits beside each pin and
+# shares its construction.
+#
+# ``R11-C2`` — ``imports/unused`` (``buf:IMPORT_USED``) reports an import that
+# is used only through ``import public``.
+#
+#     *Mechanism.* ``check_unused_imports`` records the file that DEFINES each
+#     referenced type and compares that set with the importing file's own
+#     ``dependency`` list. When ``a.proto`` imports ``b.proto`` and ``b.proto``
+#     re-exports ``c.proto`` with ``import public``, a reference to ``c.C``
+#     records ``c.proto``. ``b.proto`` is never in the set, so the import is
+#     reported unused at severity ERROR, and it is the import that makes
+#     ``c.C`` visible: delete it and the tree stops compiling. The advice is as
+#     destructive as U20-2's and the mechanism is different. Tracing options
+#     and extensions, which is U15's planned fix for U20-2, does not follow
+#     ``public_dependency``.
+#
+#     *Evidence.* buf v1.69.0 with ``lint.use: [IMPORT_USED]`` is silent on the
+#     consumer's import, and ``buf build`` on the tree without it fails with
+#     "cannot find `c.C` in this scope". On the same chain with nothing
+#     referenced buf reports ``Import "b.proto" is unused.``, which is the
+#     control below. As with U20-2 the assertions take no dependency on buf:
+#     the guard proves the import load-bearing with protokit's own compiler.
+#
+# ``R25-C3`` — the six string-valued ``package/same-*`` rules
+# (``buf:PACKAGE_SAME_GO_PACKAGE`` and its siblings) count
+# ``option go_package = "";`` as a declared value, and choose the message arm
+# from the number of declared values alone.
+#
+#     *Mechanism.* ``_check_package_option`` builds ``declared_set`` from every
+#     value that ``is not None``, so an explicit empty string is a value, and
+#     it says ``multiple values`` whenever ``len(declared_set) >= 2`` without
+#     consulting ``has_omitter``. buf reads an empty string as "not set", and
+#     says ``both values "..." and no value`` whenever some file sets nothing.
+#     Three inputs diverge (package ``smoke.p``, one file per value):
+#
+#     - ``""`` and a file omitting the option: buf reports nothing and exits
+#       0; protokit reports two ERRORs, ``both values "" and no value``. Under
+#       the default ``recommended`` profile that is a false ERROR and exit 1.
+#     - ``x/X``, ``x/Y`` and an omitter: buf says ``both values "x/X,x/Y" and
+#       no value``; protokit says ``multiple values "x/X,x/Y"``.
+#     - ``""`` and ``x/X``: buf says ``both values "x/X" and no value``;
+#       protokit says ``multiple values ",x/X"``.
+#
+#     *Evidence.* Unlike U20-2 and R11-C2 there is no tool-independent oracle:
+#     what an empty string means here is buf's decision. The expected values
+#     are buf v1.69.0's output, verbatim, from ``version: v2`` module configs
+#     enabling one ``PACKAGE_SAME_*`` rule each. For every one of the six
+#     string options buf is clean on ``""`` plus an omitter and fires on a
+#     non-empty value plus an omitter, so that pin and its control are
+#     parametrized over the six rules; the message-arm rows were run for
+#     ``go_package``. v1.69.0 is the version the pack's recorded snapshots
+#     are locked to (``rules/fixtures/package_same/_buf_smoke/recorded/``).
+#     ``_BUF_PARITY_PIN`` is v1.70.0, which was not available to run, and no
+#     test here runs buf. The fix should record ``empty-string`` and
+#     ``mixed-value-with-omitter`` snapshots at the pinned version; if they
+#     disagree with a value asserted below, the snapshot wins.
+
+# ---------------------------------------------------------------------------
+# R11-C2 — imports/unused on an import used only through `import public`
+# ---------------------------------------------------------------------------
+
+#: Defines the type the consumer references.
+_REEXPORTED = """\
+syntax = "proto3";
+package acme.c;
+message C { int32 x = 1; }
+"""
+
+#: Re-exports ``acme/c/c.proto`` and declares nothing of its own.
+_REEXPORTER = """\
+syntax = "proto3";
+package acme.b;
+import public "acme/c/c.proto";
+"""
+
+#: Imports only the re-exporter and references the re-exported type.
+_REEXPORT_CONSUMER = """\
+syntax = "proto3";
+package acme.a;
+import "acme/b/b.proto";
+message A { acme.c.C c = 1; }
+"""
+
+#: The same import with nothing from the chain referenced: genuinely unused.
+_REEXPORT_NON_CONSUMER = """\
+syntax = "proto3";
+package acme.a;
+import "acme/b/b.proto";
+message A { int32 x = 1; }
+"""
+
+
+def _reexport_tree(consumer: str) -> dict[str, str]:
+    """The three-file re-export chain with ``consumer`` as ``acme/a/a.proto``."""
+    return {
+        "acme/c/c.proto": _REEXPORTED,
+        "acme/b/b.proto": _REEXPORTER,
+        "acme/a/a.proto": consumer,
+    }
+
+
+class TestR11C2ImportsUnusedPublicReexport:
+    """``imports/unused`` on ``a -> b -(import public)-> c`` where ``a`` uses ``c.C``."""
+
+    def test_guard_reexporting_import_is_load_bearing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The chain compiles with the consumer's import and not without it.
+
+        Carries the weight of the pin, the way the U20-2 guards do: no buf
+        and no version claim, only the fact that following the rule's
+        advice breaks the schema. If this ever fails the pin has lost its
+        premise and needs re-triage.
+        """
+        sources = _reexport_tree(_REEXPORT_CONSUMER)
+        assert _compiles(tmp_path / "with", sources), (
+            "the re-export chain must compile before the removal half of "
+            "this test means anything"
+        )
+        stripped = dict(sources)
+        stripped["acme/a/a.proto"] = _without_import(
+            _REEXPORT_CONSUMER, "acme/b/b.proto",
+        )
+        assert not _compiles(tmp_path / "without", stripped), (
+            "'acme/b/b.proto' was expected to be load-bearing for "
+            "'acme/a/a.proto', but the tree still compiled without it — the "
+            "R11-C2 pin is no longer justified"
+        )
+
+    def test_control_unreferenced_reexporting_import_is_reported(
+        self, tmp_path: Path,
+    ) -> None:
+        """The same chain with nothing referenced: the import IS unused.
+
+        buf v1.69.0 agrees (``Import "b.proto" is unused.``). Whether the
+        consumer references the re-exported type is the only variable
+        between this correct finding and the false positive pinned below,
+        and it shows the rule runs on this tree.
+        """
+        report = _run_single(
+            tmp_path,
+            _reexport_tree(_REEXPORT_NON_CONSUMER),
+            "imports/unused",
+            imports_pack,
+        )
+        findings = _findings_for(report, "imports/unused")
+        assert [(f.location.file, f.params) for f in findings] == [
+            ("acme/a/a.proto", {"imported": "acme/b/b.proto"}),
+        ]
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason=(
+            "R11-C2: owned by U15 (0.18.0). imports/unused compares the files "
+            "that define the referenced types with the importing file's own "
+            "dependency list and never follows public_dependency, so an "
+            "import whose types arrive through `import public` is reported "
+            "unused at severity ERROR even though deleting it breaks "
+            "compilation. buf v1.69.0 IMPORT_USED is silent"
+        ),
+    )
+    def test_import_used_only_through_a_public_reexport(
+        self, tmp_path: Path,
+    ) -> None:
+        """``import "acme/b/b.proto";`` supplying ``acme.c.C`` is clean."""
+        report = _run_single(
+            tmp_path,
+            _reexport_tree(_REEXPORT_CONSUMER),
+            "imports/unused",
+            imports_pack,
+        )
+        offending = [
+            f
+            for f in _findings_for(report, "imports/unused")
+            if f.params.get("imported") == "acme/b/b.proto"
+        ]
+        assert offending == [], (
+            f"imports/unused must not report 'acme/b/b.proto' — it re-exports "
+            f"'acme/c/c.proto', which supplies acme.c.C to acme.a.A; got "
+            f"{[f.params for f in offending]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# R25-C3 — package/same-* on an empty-string value and on values + omitter
+# ---------------------------------------------------------------------------
+
+#: (option, rule id) for the six string-valued ``package/same-*`` rules.
+#: ``java_multiple_files`` is a bool and presence-based in buf too.
+_STRING_OPTION_RULES: tuple[tuple[str, str], ...] = (
+    ("go_package", "package/same-go-package"),
+    ("java_package", "package/same-java-package"),
+    ("csharp_namespace", "package/same-csharp-namespace"),
+    ("php_namespace", "package/same-php-namespace"),
+    ("ruby_package", "package/same-ruby-package"),
+    ("swift_prefix", "package/same-swift-prefix"),
+)
+_STRING_OPTION_IDS = [option for option, _ in _STRING_OPTION_RULES]
+
+
+def _package_same_payloads(
+    tmp_path: Path,
+    option: str,
+    rule_id: str,
+    values: dict[str, str | None],
+) -> list[str]:
+    """Lint one ``smoke.p`` package; return each finding's ``values_payload``.
+
+    ``values`` maps a file stem to the value that file declares for
+    ``option``, or to ``None`` for a file that omits the option. One
+    finding is emitted per file of a disagreeing package, so the length of
+    the result is part of what each caller asserts.
+    """
+    sources: dict[str, str] = {}
+    for stem, value in values.items():
+        declaration = "" if value is None else f'option {option} = "{value}";\n'
+        sources[f"smoke/p/{stem}.proto"] = (
+            f'syntax = "proto3";\npackage smoke.p;\n{declaration}'
+        )
+    report = _run_single(tmp_path, sources, rule_id, package_same_pack)
+    return [f.params["values_payload"] for f in _findings_for(report, rule_id)]
+
+
+class TestR25C3PackageSameControls:
+    """Inputs where protokit and buf v1.69.0 agree, built the way the pins are.
+
+    They show each rule is live in this harness, that both message arms are
+    reachable, and that a zero-finding result is a meaningful signal — so the
+    pins below fail on the empty string and the omitter, not on the harness.
+    """
+
+    @pytest.mark.parametrize(
+        ("option", "rule_id"), _STRING_OPTION_RULES, ids=_STRING_OPTION_IDS,
+    )
+    def test_control_one_value_plus_omitter_reports_both_values_and_no_value(
+        self, tmp_path: Path, option: str, rule_id: str,
+    ) -> None:
+        """A non-empty value beside an omitter fires, for each string option."""
+        payloads = _package_same_payloads(
+            tmp_path, option, rule_id, {"a": "x/X", "b": None},
+        )
+        assert payloads == ['both values "x/X" and no value'] * 2
+
+    def test_control_two_values_without_an_omitter_reports_multiple_values(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two declared values and no omitter is the ``multiple values`` arm."""
+        payloads = _package_same_payloads(
+            tmp_path, "go_package", "package/same-go-package",
+            {"a": "x/X", "b": "x/Y"},
+        )
+        assert payloads == ['multiple values "x/X,x/Y"'] * 2
+
+    def test_control_every_file_omitting_the_option_is_clean(
+        self, tmp_path: Path,
+    ) -> None:
+        """No file declares the option: nothing to disagree about."""
+        payloads = _package_same_payloads(
+            tmp_path, "go_package", "package/same-go-package",
+            {"a": None, "b": None},
+        )
+        assert payloads == []
+
+
+class TestR25C3PackageSameEmptyStringAndOmitter:
+    """The divergences themselves — pinned as defects."""
+
+    @pytest.mark.parametrize(
+        ("option", "rule_id"), _STRING_OPTION_RULES, ids=_STRING_OPTION_IDS,
+    )
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason=(
+            "R25-C3: owned by U15 (0.18.0). _check_package_option counts an "
+            'explicit empty string as a declared value, so `option X = "";` '
+            "beside a file that omits X is reported as two ERRORs (`both "
+            'values "" and no value`). buf v1.69.0 reads an empty string as '
+            "unset and reports nothing"
+        ),
+    )
+    def test_empty_string_plus_omitter_is_clean(
+        self, tmp_path: Path, option: str, rule_id: str,
+    ) -> None:
+        """``option X = "";`` in one file and no option in the other is clean."""
+        payloads = _package_same_payloads(
+            tmp_path, option, rule_id, {"a": "", "b": None},
+        )
+        assert payloads == [], (
+            f"{rule_id} must not report a package whose only declared "
+            f"{option} is the empty string; got {payloads}"
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason=(
+            "R25-C3: owned by U15 (0.18.0). _check_package_option says "
+            "`multiple values` whenever two or more values are declared and "
+            "never consults has_omitter. With an omitter present buf v1.69.0 "
+            'says `both values "x/X,x/Y" and no value`'
+        ),
+    )
+    def test_two_values_plus_omitter_reports_both_values_and_no_value(
+        self, tmp_path: Path,
+    ) -> None:
+        """Two values and an omitter take the ``and no value`` arm, on all three files."""
+        payloads = _package_same_payloads(
+            tmp_path, "go_package", "package/same-go-package",
+            {"a": "x/X", "b": "x/Y", "c": None},
+        )
+        assert payloads == ['both values "x/X,x/Y" and no value'] * 3, (
+            f"two go_package values beside a file that omits the option must "
+            f"be reported as values and no value, once per file; got {payloads}"
+        )
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason=(
+            "R25-C3: owned by U15 (0.18.0). An empty string beside a real "
+            'value is counted as a second value (`multiple values ",x/X"`). '
+            "buf v1.69.0 reads it as unset, which makes this one value plus "
+            'an omitter: `both values "x/X" and no value`'
+        ),
+    )
+    def test_empty_string_plus_one_value_reports_that_value_and_no_value(
+        self, tmp_path: Path,
+    ) -> None:
+        """``""`` beside ``x/X`` reads as an omitter beside ``x/X``."""
+        payloads = _package_same_payloads(
+            tmp_path, "go_package", "package/same-go-package",
+            {"a": "", "b": "x/X"},
+        )
+        assert payloads == ['both values "x/X" and no value'] * 2, (
+            f"an empty-string go_package beside \"x/X\" must be reported as "
+            f"one value and no value, once per file; got {payloads}"
         )

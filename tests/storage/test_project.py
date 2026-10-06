@@ -202,15 +202,26 @@ class TestNonScalarTerminalsRecursiveFill:
 
 class TestWellKnownTypeDescent:
     """A WKT submessage (Timestamp) renders as a *non-dict* (a string) under
-    ``MessageToDict``. Descending *into* it (``ts.seconds``) must resolve to
-    "absent" — no crash, no wrong key — while selecting the whole ``ts`` shows
-    the WKT's string form."""
+    ``MessageToDict``. Descending *into* it (``ts.seconds``) does not crash and
+    today resolves to "absent", while selecting the whole ``ts`` shows the WKT's
+    string form. "Absent" for a value that is set is audit finding V15, not a
+    contract: see ``test_descent_into_set_wkt_currently_projects_empty_v15``."""
 
-    def test_descent_into_wkt_is_absent_not_crash(self, event_cls: type) -> None:
+    def test_descent_into_set_wkt_currently_projects_empty_v15(self, event_cls: type) -> None:
+        """Documents CURRENT behaviour, which audit finding V15 records as wrong.
+
+        ``ts.seconds`` is set to 5 and the projection silently returns ``{}``.
+        The correct outcome (the selection is rejected with
+        ``FieldSelectionError``) is pinned as a strict xfail in
+        ``tests/storage/test_audit_v_storage_pins.py``
+        (``test_v15_descent_into_a_set_well_known_type_is_rejected_not_projected_empty``).
+        This test only keeps the no-crash half honest until then: the fix that
+        flips that pin makes this test fail, and it is deleted in the same change.
+        """
         m = event_cls()
         m.ts.seconds = 5  # ts is set, but it renders as a string, not a dict
         out = project(m, _sel("ts.seconds", event_cls))
-        assert out == {}  # the descent finds a non-dict parent -> absent
+        assert out == {}  # V15: the descent finds a non-dict parent -> silently absent
 
     def test_descent_into_wkt_when_unset_is_absent(self, event_cls: type) -> None:
         # ts unset: presence-bearing ancestor missing -> also absent (same result).

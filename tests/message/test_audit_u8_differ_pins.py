@@ -40,15 +40,34 @@ Pinned here:
 * **U8-5** — ``ignore_fields``' ``treat_as_map`` key-conflict check only
   recognises the exact ``f"{map_sel}.{key_name}"`` spelling, so a more deeply
   qualified path naming the same key field is accepted and then erases the key.
+
+Three V-series findings a later release owns are pinned at the end of this
+module, in the same shape: **V28** (``treat_as_set`` drops ``ignore_fields``),
+**V18** (a difference only in unknown fields is a silent EQUAL) and **V5** (a
+proto2 ``[default = nan]`` never collapses as a default). They are defined in
+``docs/plans/AUDIT-whole-codebase-2026-08-30.md``; the comment block above
+that section gives each one's mechanism and owner.
 """
 
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
+
 import pytest
-from google.protobuf import descriptor_pb2
+from click.testing import CliRunner
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.message import Message
 
-from protokit.message import ChangeType, DuplicateKeyError, MessageDifferencer
+from protokit.message import (
+    ChangeType,
+    DiffResult,
+    DuplicateKeyError,
+    MessageDifferencer,
+    MessageFieldComparison,
+)
+from protokit.message.cli import main as diff_main
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -591,3 +610,457 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
 
         # Today: has_changes() is False and the diff list is empty.
         assert result.has_changes()
+
+
+# ===========================================================================
+# Deferred V-series findings owned by a later release (V28, V18, V5)
+# ===========================================================================
+#
+# These three were found by the whole-codebase audit
+# (``docs/plans/AUDIT-whole-codebase-2026-08-30.md``) and reproduced again,
+# unpinned, by the cycle-1 re-audit (``docs/plans/AUDIT-cycle-1-2026-09-27.md``,
+# rows R13-C6, R13-X1/C5 and R05-X1). The stability release plan assigns each
+# to a 0.17.0 unit. The pins below are strict, each ``reason`` leads with the
+# finding ID and names the owning unit and release, and each pin flips to XPASS
+# (a hard failure) the day its mechanism is fixed. Every control shares its
+# pin's construction and asserts behaviour that stays correct after the fix.
+#
+# * V28 (U10, 0.17.0) — ``_set_elements_equal`` decides message-element
+#   equality with a fresh default-config ``MessageDifferencer()``, so the
+#   caller's ``ignore_fields`` is dropped inside ``treat_as_set`` pairing.
+#   Elements that differ only in an ignored field fail to pair, and the
+#   difference is reported on a field that did not change.
+# * V18 (U10, 0.17.0) — ``compare()`` walks declared fields only and never
+#   reads either side's unknown-field set. Two messages that differ only in
+#   bytes the reader's schema does not declare give no difference and no
+#   diagnostic, and ``protokit diff`` with a stale ``--desc`` prints
+#   "Messages are equal." and exits 0. The pins assert what U10 delivers: a
+#   diagnostic whenever unknown fields are present. Whether the differences
+#   themselves are reported stays opt-in under that unit, so the pins do not
+#   assert on ``has_changes()`` or the exit code.
+#   ``tests/meta/test_doc_claims.py`` measures today's output as a guard on
+#   the 0.16.0 prose; these are its strict-xfail counterpart.
+# * V5 (U14b, 0.17.0) — ``_is_default_value`` compares a field's value to
+#   ``fd.default_value`` with ``==``. ``nan == nan`` is False, so a proto2
+#   field set explicitly to its declared ``[default = nan]`` never collapses
+#   as a default in EQUIVALENT presence mode.
+
+
+def _observed(result: DiffResult) -> list[tuple[str, str]]:
+    """The result's differences as ``(path, change type name)`` pairs."""
+    return [(str(diff.path), diff.change_type.name) for diff in result]
+
+
+def _message_class(file_proto: descriptor_pb2.FileDescriptorProto) -> type[Message]:
+    """The class of ``<package>.M`` from ``file_proto``, built in its own pool."""
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(file_proto)
+    descriptor = pool.FindMessageTypeByName(f"{file_proto.package}.M")
+    return message_factory.GetMessageClass(descriptor)
+
+
+# ---------------------------------------------------------------------------
+# V28 — treat_as_set drops the caller's ignore_fields
+# ---------------------------------------------------------------------------
+
+
+def _noisy_items_pool() -> ProtoBuilder:
+    """``Outer { repeated Item items }``, ``Item { id, noise }``."""
+    b = ProtoBuilder()
+    b.message("test.Item", {"id": (T.TYPE_STRING, 1), "noise": (T.TYPE_STRING, 2)})
+    b.message_with_repeated(
+        "test.Outer",
+        {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
+        repeated_fields={"items"},
+    )
+    return b
+
+
+def _noisy_outer(builder: ProtoBuilder, *items: tuple[str, str]) -> Message:
+    """Build ``Outer`` holding one ``Item(id, noise)`` per ``(id, noise)`` pair."""
+    item = builder.get_message_class("test.Item")
+    return builder.build(
+        "test.Outer",
+        items=[item(id=item_id, noise=noise) for item_id, noise in items],
+    )
+
+
+class TestV28TreatAsSetDropsIgnoreFields:
+    """V28: set pairing compares elements with a differ that has no configuration."""
+
+    def test_ignore_alone_hides_the_noise_field_control(self) -> None:
+        """Control: under index pairing ``ignore_fields("noise")`` is honoured.
+
+        Unconfigured, the one element's ``noise`` is the only difference; with
+        the ignore it is gone. This is the reference answer the pin asserts
+        for the same data once ``treat_as_set`` is also configured.
+        """
+        b = _noisy_items_pool()
+        left = _noisy_outer(b, ("a", "x"))
+        right = _noisy_outer(b, ("a", "y"))
+
+        assert _observed(MessageDifferencer().compare(left, right)) == [
+            ("items[0].noise", "MODIFIED"),
+        ]
+
+        d = MessageDifferencer()
+        d.ignore_fields("noise")
+        assert _observed(d.compare(left, right)) == []
+
+    def test_set_pairing_with_an_ignore_pairs_identical_elements_control(self) -> None:
+        """Control: ``treat_as_set`` plus ``ignore_fields`` is a supported configuration.
+
+        With both registered, the same elements in a different order pair up
+        and compare equal. So the two policies coexist on this construction,
+        and the pin's failure is specific to elements that differ in the
+        ignored field.
+        """
+        b = _noisy_items_pool()
+        left = _noisy_outer(b, ("a", "x"), ("b", "y"))
+        right = _noisy_outer(b, ("b", "y"), ("a", "x"))
+
+        d = MessageDifferencer()
+        d.ignore_fields("noise")
+        d.treat_as_set("items")
+
+        assert _observed(d.compare(left, right)) == []
+
+    @pytest.mark.parametrize("set_first", [False, True], ids=["ignore-then-set", "set-then-ignore"])
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="V28: owned by U10 (0.17.0). _set_elements_equal decides message-element "
+               "equality with a fresh default-config MessageDifferencer(), so the caller's "
+               "ignore_fields is dropped inside treat_as_set pairing: elements that differ "
+               "only in the ignored field fail to pair, and the unchanged items[0].id is "
+               "reported as both ADDED and REMOVED",
+    )
+    def test_ignored_field_must_stay_ignored_under_set_pairing(self, set_first: bool) -> None:
+        """``ignore_fields`` plus ``treat_as_set`` must equal ``ignore_fields`` alone here.
+
+        User-visible consequence: the same configuration and the same data
+        give opposite answers depending on how the list is paired. Adding
+        ``treat_as_set("items")`` to a differ that already ignores ``noise``
+        turns an equal comparison into a failing one, and the reported paths
+        name ``items[0].id`` — the field that did not change — rather than the
+        ignored field that did.
+        """
+        b = _noisy_items_pool()
+        left = _noisy_outer(b, ("a", "x"))
+        right = _noisy_outer(b, ("a", "y"))
+
+        d = MessageDifferencer()
+        if set_first:
+            d.treat_as_set("items")
+            d.ignore_fields("noise")
+        else:
+            d.ignore_fields("noise")
+            d.treat_as_set("items")
+
+        # Today: [('items[0].id', 'ADDED'), ('items[0].id', 'REMOVED')].
+        assert _observed(d.compare(left, right)) == []
+
+
+# ---------------------------------------------------------------------------
+# V18 — a difference only in unknown fields is a silent EQUAL
+# ---------------------------------------------------------------------------
+
+# The reader's schema is one version behind the writer's: the writer added
+# ``amount`` (field 2), which the old schema does not declare.
+_OLD_FIELDS = {"id": (T.TYPE_INT32, 1)}
+_NEW_FIELDS = {"id": (T.TYPE_INT32, 1), "amount": (T.TYPE_INT64, 2)}
+
+
+def _schema_file(fields: dict[str, tuple[int, int]]) -> descriptor_pb2.FileDescriptorProto:
+    """A proto3 file declaring ``test.M`` with ``fields`` (name -> (type, number))."""
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name="m.proto", package="test", syntax="proto3",
+    )
+    msg = file_proto.message_type.add(name="M")
+    for name, (field_type, number) in fields.items():
+        msg.field.add(name=name, number=number, type=field_type, label=T.LABEL_OPTIONAL)
+    return file_proto
+
+
+def _payloads(*, amounts: tuple[int, int]) -> tuple[bytes, bytes]:
+    """Two payloads written with the NEW schema: same ``id``, the given ``amount`` each."""
+    new_cls = _message_class(_schema_file(_NEW_FIELDS))
+    left, right = (new_cls(id=1, amount=amount).SerializeToString() for amount in amounts)
+    return left, right
+
+
+def _read_with(
+    fields: dict[str, tuple[int, int]], payloads: tuple[bytes, bytes],
+) -> tuple[Message, Message]:
+    """Parse both payloads with a reader whose schema declares ``fields``."""
+    cls = _message_class(_schema_file(fields))
+    return cls.FromString(payloads[0]), cls.FromString(payloads[1])
+
+
+def _run_diff_cli(
+    tmp_path: Path,
+    fields: dict[str, tuple[int, int]],
+    payloads: tuple[bytes, bytes],
+    *options: str,
+) -> tuple[int, str]:
+    """Run ``protokit diff`` on ``payloads`` with a descriptor set declaring ``fields``.
+
+    Returns ``(exit code, stdout)``. ``catch_exceptions=False`` so a crash
+    surfaces as itself instead of as Click's exit 1.
+    """
+    descriptor_set = descriptor_pb2.FileDescriptorSet(file=[_schema_file(fields)])
+    desc = tmp_path / "schema.desc"
+    desc.write_bytes(descriptor_set.SerializeToString())
+    left, right = tmp_path / "left.bin", tmp_path / "right.bin"
+    left.write_bytes(payloads[0])
+    right.write_bytes(payloads[1])
+
+    result = CliRunner().invoke(
+        diff_main,
+        [str(left), str(right), "--desc", str(desc), "--message-type", "test.M", *options],
+        catch_exceptions=False,
+    )
+    return result.exit_code, result.stdout
+
+
+class TestV18UnknownFieldOnlyDifferenceIsSilent:
+    """V18: the differ never reads unknown fields and says nothing about them."""
+
+    def test_stale_reader_keeps_the_differing_bytes_as_unknown_fields_control(self) -> None:
+        """Control: the two messages really do differ, in bytes the reader kept.
+
+        Both backends retain an undeclared field in the unknown-field set and
+        write it back out, and protobuf's own ``==`` sees the difference. A
+        backend that dropped the bytes at parse time would make the pins below
+        vacuous; this goes red first.
+        """
+        left, right = _read_with(_OLD_FIELDS, _payloads(amounts=(100, 999)))
+
+        assert left.id == right.id == 1
+        assert left.SerializeToString() != right.SerializeToString()
+        assert left != right
+
+    def test_reader_that_declares_the_field_reports_the_difference_control(self) -> None:
+        """Control: with the current schema the same payloads differ at ``amount``.
+
+        No diagnostic accompanies it, so a diagnostic in the pin below can
+        only be about the unknown fields.
+        """
+        left, right = _read_with(_NEW_FIELDS, _payloads(amounts=(100, 999)))
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert _observed(result) == [("amount", "MODIFIED")]
+        assert list(result.diagnostics) == []
+
+    def test_messages_without_unknown_fields_get_no_diagnostic_control(self) -> None:
+        """Control: equal messages whose every field the reader declares stay silent.
+
+        The new-schema reader declares ``amount``, so nothing is unknown, and
+        an equal pair gives no difference and no diagnostic. This stays true
+        after the fix: the diagnostic is for unknown fields, not for every run.
+        """
+        left, right = _read_with(_NEW_FIELDS, _payloads(amounts=(100, 100)))
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert not result.has_changes()
+        assert list(result.diagnostics) == []
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="V18: owned by U10 (0.17.0). compare() walks declared fields only and never "
+               "reads either side's unknown-field set, so two messages that differ only in "
+               "bytes the reader's schema does not declare give no difference AND no "
+               "diagnostic — a silent EQUAL",
+    )
+    def test_unknown_field_only_difference_must_emit_a_diagnostic(self) -> None:
+        """A comparison that skipped unknown fields must say so.
+
+        User-visible consequence: a consumer one schema version behind
+        compares two payloads whose ``amount`` is 100 and 999 and is told they
+        are identical — ``has_changes()`` is False, ``diagnostics`` is empty —
+        while protobuf's own ``==`` says they differ. Nothing in the result
+        lets the caller learn that bytes went uncompared.
+
+        U10 emits a diagnostic whenever either side carries unknown fields and
+        keeps reporting the differences themselves opt-in, so this pin asserts
+        the diagnostic only.
+        """
+        left, right = _read_with(_OLD_FIELDS, _payloads(amounts=(100, 999)))
+
+        result = MessageDifferencer().compare(left, right)
+
+        # Today: no differences and diagnostics == ().
+        assert list(result.diagnostics) != []
+
+    def test_diff_cli_with_the_current_schema_reports_the_difference_control(
+        self, tmp_path: Path
+    ) -> None:
+        """Control: ``protokit diff`` reads these files and finds ``amount`` when it can.
+
+        Given a descriptor set that declares ``amount``, the JSON report names
+        the difference with an empty ``diagnostics`` list and the command
+        exits 1. The human report under ``--verbose`` names it too.
+        """
+        payloads = _payloads(amounts=(100, 999))
+
+        exit_code, stdout = _run_diff_cli(tmp_path, _NEW_FIELDS, payloads, "--format", "json")
+        report = json.loads(stdout)
+        assert exit_code == 1
+        assert [diff["path"] for diff in report["differences"]] == ["amount"]
+        assert report["diagnostics"] == []
+
+        exit_code, stdout = _run_diff_cli(tmp_path, _NEW_FIELDS, payloads, "--verbose")
+        assert exit_code == 1
+        assert "amount" in stdout
+
+    def test_diff_cli_bare_equal_verdict_without_unknown_fields_control(
+        self, tmp_path: Path
+    ) -> None:
+        """Control: with nothing unknown, ``--verbose`` prints the bare verdict, rightly.
+
+        Equal payloads read with a schema that declares every field have no
+        warning to show, so "Messages are equal." alone is the correct output
+        and stays correct after the fix.
+        """
+        payloads = _payloads(amounts=(100, 100))
+
+        exit_code, stdout = _run_diff_cli(tmp_path, _NEW_FIELDS, payloads, "--verbose")
+
+        assert (exit_code, stdout) == (0, "Messages are equal.\n")
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="V18: owned by U10 (0.17.0). The same silent EQUAL through `protokit diff` "
+               "with a stale --desc: the differ records nothing about the unknown fields, "
+               "so --format json reports equal true and complete true with an EMPTY "
+               "diagnostics list for payloads whose amount is 100 vs 999",
+    )
+    def test_diff_cli_json_must_carry_a_diagnostic_for_a_stale_schema(
+        self, tmp_path: Path
+    ) -> None:
+        """The JSON report must record that unknown fields were present.
+
+        User-visible consequence: a CI job that diffs two payloads against a
+        descriptor set one version old gets ``"equal": true, "complete":
+        true, "diagnostics": []`` and exit 0. Every field a consumer could
+        gate on says the run was whole and the payloads match.
+        """
+        payloads = _payloads(amounts=(100, 999))
+
+        _exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--format", "json")
+
+        # Today: "diagnostics": [].
+        assert json.loads(stdout)["diagnostics"] != []
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="V18: owned by U10 (0.17.0). `protokit diff --verbose` exists to show "
+               "warnings on an equal result, but with a stale --desc the differ records "
+               "nothing about the unknown fields, so the whole output is the bare verdict "
+               "'Messages are equal.' for payloads whose amount is 100 vs 999",
+    )
+    def test_diff_cli_verbose_must_not_print_a_bare_equal_verdict_for_a_stale_schema(
+        self, tmp_path: Path
+    ) -> None:
+        """``--verbose`` must show something beyond "Messages are equal." here.
+
+        User-visible consequence: the person at the terminal asks for warnings
+        as well as the verdict and is shown the verdict alone, in green, for
+        two payloads that differ.
+        """
+        payloads = _payloads(amounts=(100, 999))
+
+        _exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--verbose")
+
+        # Today: exactly "Messages are equal.\n", exit 0.
+        assert stdout != "Messages are equal.\n"
+
+
+# ---------------------------------------------------------------------------
+# V5 — a proto2 [default = nan] never collapses as a default
+# ---------------------------------------------------------------------------
+
+
+def _proto2_double_with_default(default: str) -> type[Message]:
+    """proto2 ``M { optional double x = 1 [default = <default>]; }`` in its own pool."""
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name="m.proto", package="test", syntax="proto2",
+    )
+    file_proto.message_type.add(name="M").field.add(
+        name="x",
+        number=1,
+        type=T.TYPE_DOUBLE,
+        label=T.LABEL_OPTIONAL,
+        default_value=default,
+    )
+    return _message_class(file_proto)
+
+
+class TestV5NanDefaultNeverCollapses:
+    """V5: the set-to-default test is ``==``, which NaN never satisfies."""
+
+    @pytest.mark.parametrize("set_on_left", [True, False], ids=["set-on-left", "set-on-right"])
+    def test_finite_default_set_explicitly_collapses_control(self, set_on_left: bool) -> None:
+        """Control: a field set explicitly to a FINITE declared default equals unset.
+
+        Same proto2 construction with ``[default = 1.5]``: the field has
+        presence on one side only, and the default EQUIVALENT mode collapses
+        it. This is the behaviour the pin asks for when the default is NaN.
+        """
+        cls = _proto2_double_with_default("1.5")
+        explicit, unset = cls(x=1.5), cls()
+        assert explicit.HasField("x")
+        assert not unset.HasField("x")
+
+        left, right = (explicit, unset) if set_on_left else (unset, explicit)
+
+        assert _observed(MessageDifferencer().compare(left, right)) == []
+
+    def test_nan_default_is_declared_and_other_values_are_still_reported_control(self) -> None:
+        """Control: the NaN default is real, and collapse is not "report nothing".
+
+        The descriptor's default and the unset field's value are both NaN on
+        this backend. A NON-default value against unset is reported, and so is
+        the explicit NaN once the caller opts in to
+        ``MessageFieldComparison.EQUAL``. Both stay true after the fix.
+        """
+        cls = _proto2_double_with_default("nan")
+        assert math.isnan(cls.DESCRIPTOR.fields_by_name["x"].default_value)
+        assert math.isnan(cls().x)
+
+        assert _observed(MessageDifferencer().compare(cls(), cls(x=2.0))) == [("x", "ADDED")]
+
+        strict_presence = MessageDifferencer()
+        strict_presence.set_message_field_comparison(MessageFieldComparison.EQUAL)
+        assert _observed(strict_presence.compare(cls(), cls(x=math.nan))) == [("x", "ADDED")]
+
+    @pytest.mark.parametrize("set_on_left", [True, False], ids=["set-on-left", "set-on-right"])
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="V5: owned by U14b (0.17.0). _is_default_value compares the field's value "
+               "to fd.default_value with ==, and nan == nan is False, so a proto2 double "
+               "set explicitly to its declared [default = nan] never collapses in "
+               "EQUIVALENT presence mode and is reported as REMOVED/ADDED against unset",
+    )
+    def test_nan_default_set_explicitly_must_collapse(self, set_on_left: bool) -> None:
+        """A field set to its own declared NaN default must equal the unset field.
+
+        User-visible consequence: EQUIVALENT mode promises that set-to-default
+        and unset compare equal, and keeps that promise for every default
+        except NaN. A writer that sets the field explicitly and one that
+        leaves it unset produce messages the differ reports as different,
+        although both read back the same value.
+        """
+        cls = _proto2_double_with_default("nan")
+        explicit, unset = cls(x=math.nan), cls()
+
+        left, right = (explicit, unset) if set_on_left else (unset, explicit)
+
+        # Today: [('x', 'REMOVED')] with the field set on the left, [('x', 'ADDED')] on the right.
+        assert _observed(MessageDifferencer().compare(left, right)) == []

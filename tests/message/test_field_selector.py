@@ -79,11 +79,23 @@ class TestPathForm:
         fd = _field("test.Msg", "name")
         assert sel.matches(fd, FieldPath.parse("id")) is False
 
-    def test_bracketed_selector_string_is_bracket_blind(self) -> None:
-        # FieldPath.parse accepts bracket syntax (bracket rejection lives in the
-        # engine's ignore_fields boundary, not the parser). Because the shared
-        # matcher is bracket-blind, a bracketed selector behaves identically to
-        # its bracket-free form.
+    def test_bracketed_selector_is_accepted_and_bracket_blind_current_behaviour(self) -> None:
+        """Documents CURRENT behaviour that audit finding V13 records as a defect.
+
+        ``FieldPath.parse`` accepts bracket syntax (bracket rejection lives in
+        the engine's ``ignore_fields`` string boundary, not the parser), so
+        ``FieldSelector.of("items[0].name")`` is accepted. Because the shared
+        matcher is bracket-blind, it then behaves identically to its
+        bracket-free form and selects ``items[N].name`` for every ``N``.
+
+        This test does not say that is right. The correct behaviour — a
+        bracket selector is refused at construction, as the ``of`` and
+        ``from_path`` docstrings already state — is pinned strict-xfail in
+        ``tests/message/test_audit_v_selector_pins.py``
+        (``TestV13BracketSelectorsAcceptedAndWidened``), owned by U9 (0.17.0).
+        The fix that flips those pins turns this test red: delete it in the
+        same change.
+        """
         fd = _field("test.Msg", "name")
         bracketed = FieldSelector.of("items[0].name")
         plain = FieldSelector.of("items.name")
