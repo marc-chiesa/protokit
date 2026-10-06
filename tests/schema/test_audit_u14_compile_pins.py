@@ -11,10 +11,10 @@ backend is invoked:
 
 Both guards reason about ``fd.name`` shadowing — but neither computes
 ``fd.name``. The module that does is two files over:
-:func:`protokit._cli_utils._resolve_expected_name` (``_cli_utils.py:593``),
+:func:`protokit._cli_utils._resolve_expected_name` (top-level ``_cli_utils.py``),
 which walks ``includes = [*include_paths, *parents]`` in declared order and
-returns the first prefix-relative form. That is exactly what both backends
-emit as ``fd.name`` (``_cli_utils.py:406-428``). The two detectors instead
+returns the first prefix-relative form. That is what both backends emit as
+``fd.name`` (``_compile_with_protoxy`` / ``_compile_with_protoc``). The two detectors instead
 compare ``Path.name`` — the bare basename — so their verdicts diverge from
 the logical names they claim to protect.
 
@@ -165,7 +165,7 @@ def _effective_includes(paths: list[Path], proto_paths: list[str]) -> list[str]:
     """Reproduce the backend's include list: user ``-I`` first, then parents.
 
     Mirrors ``_compile_with_protoxy`` / ``_compile_with_protoc``
-    (``_cli_utils.py:406-428``): ``includes = [*include_paths, *parents]``
+    (top-level ``_cli_utils.py``): ``includes = [*include_paths, *parents]``
     with parents deduplicated in input order.
     """
     parents = list(dict.fromkeys(str(p.parent) for p in paths))

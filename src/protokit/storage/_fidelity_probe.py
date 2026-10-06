@@ -35,10 +35,10 @@ def unmodeled_byte_delta(message: Message) -> int | None:
     **The initialization test is an explicit predicate, not an exception**
     (KTD6, V1). This previously inferred "cannot measure" from ``ByteSize``
     raising ``EncodeError``, which is upb behaviour and upb behaviour only:
-    under the pure-Python runtime ``ByteSize`` returns ``0`` for an
-    uninitialized message and raises nothing, so the probe returned ``0`` —
-    "the descriptor modeled every byte" — for a message it had in fact not
-    measured. That is a fail-open of the exact shape this release exists to
+    under the pure-Python runtime ``ByteSize`` returns the size of an
+    uninitialized message and raises nothing, so the probe returned a delta
+    (``0``, "the descriptor modeled every byte", when it held no unknown
+    fields) where upb cannot measure. That is a fail-open of the shape this release exists to
     close, and it degraded *silently*, since a backend that never raises makes
     the ``except`` arm dead code rather than a visible error.
 

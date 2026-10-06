@@ -1095,16 +1095,16 @@ class MessageDifferencer:
                 # Only SET extensions can be discovered, so one set on a
                 # single side would look schema-absent on the other and take
                 # the one-sided route — bypassing presence reconciliation
-                # (EQUIVALENT: a default-valued field equals an unset one),
-                # ``treat_as_map`` keying and its duplicate-key check, and
-                # handing hooks a one-sided context. A declared field never
-                # takes that route while both descriptors carry it, so an
-                # extension is filed under both names whenever both schemas
-                # declare it. Sides sharing a descriptor share the extension
-                # descriptor too; across pools each side resolves it from its
-                # OWN pool by full name (V19: never borrow the other side's),
-                # and a pool that does not declare it on this message keeps
-                # the one-sided route, as a genuinely schema-absent field.
+                # (EQUIVALENT: a scalar at its default or an empty message
+                # equals an unset one; a message with a sub-field set does
+                # not), ``treat_as_map`` keying and its duplicate-key check,
+                # and handing hooks a one-sided context. A declared field
+                # never takes that route while both descriptors carry it, so
+                # an extension is filed under both names whenever both schemas
+                # declare it. Sides sharing a descriptor share its descriptor
+                # too; across pools each side resolves it from its OWN pool by
+                # full name (V19: never borrow the other side's), and a pool
+                # not declaring it on this message keeps the one-sided route.
                 if left_view.has_extension_ranges or right_view.has_extension_ranges:
                     if item.left_msg.DESCRIPTOR is item.right_msg.DESCRIPTOR:
                         for name, efd in left_fields.items():

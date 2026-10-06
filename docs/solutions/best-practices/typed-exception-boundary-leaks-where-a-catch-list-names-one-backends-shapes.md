@@ -64,8 +64,9 @@ grep -rnE 'ParseFromString|MergeFromString|FromString\(' src
 grep -rnE '\.Add\(' src
 ```
 
-Mark each hit as user input or not. At the end of U16 the user-input parse
-sites were:
+Mark each hit as user input or not. At the end of U16 the parse sites marked as
+user input were the seven below, and all seven are still where the grep finds
+them after 0.16.0's re-audit fix wave:
 
 - descriptor sets: `src/protokit/_pools.py:218`,
   `src/protokit/schema/lint/_cli_utils.py:353`,
@@ -73,10 +74,21 @@ sites were:
 - message payloads: `src/protokit/forensics/_match.py:133`,
   `src/protokit/storage/engine.py:319`, `src/protokit/message/cli.py:125`
 
-The two parse sites that were left alone read bytes protokit produced itself:
-protoc's output at `src/protokit/_cli_utils.py:558`, and a re-serialized options
-message at `src/protokit/_extensions.py:103`, which already maps
-`UnicodeDecodeError`. The build sites are `add_and_resolve`
+The two parse sites that were left alone at U16 were taken to read bytes
+protokit produced itself: protoc's output at `src/protokit/_cli_utils.py:558`,
+and a re-serialized options message at `src/protokit/_extensions.py:103`. The
+second one does read user input. On an isolated pool a custom option's bytes
+stay unparsed in the options message until that re-read gives them a type, so a
+malformed option first fails there. Since the fix wave the site catches
+`DecodeError` and `UnicodeDecodeError` and falls back to a second parse of only
+the requested option's records (`_only_extension`,
+`src/protokit/_extensions.py:156`), which raises both as `DecodeError`. Neither
+catch names `RecursionError`. The grep now also finds
+`FileDescriptorProto.FromString(file.serialized_pb)` twice in
+`src/protokit/_fieldview.py` (in `may_hold_unvalidated_string` and
+`StringWalk._is_proto3`). Both re-read a file the pool has already built.
+
+The build sites are `add_and_resolve`
 (`src/protokit/_pools.py:182-183`) and lint's inline copy
 (`src/protokit/schema/lint/_cli_utils.py:400` and `src/protokit/schema/lint/_cli_utils.py:412`). Every other product caller
 goes through `add_and_resolve` or `build_pool`.
@@ -85,7 +97,9 @@ goes through `add_and_resolve` or `build_pool`.
 
 (provenance — observed on protobuf 5.27.5 under both backends; the exception
 types can change between releases, and what stays re-asserted on both backends
-is the outcome, a typed error or a clean load, by the regression tests named below.)
+is the outcome, a typed error or a clean load, by the regression tests named below.
+No test re-asserts the two payload rows marked "open": there the backends reach
+different outcomes, and section 4 says why they are left that way.)
 
 | Site kind | Input | upb | pure-Python |
 |---|---|---|---|
@@ -98,8 +112,20 @@ is the outcome, a typed error or a clean load, by the regression tests named bel
 | Descriptor-set parse | non-UTF-8 string (e.g. file name `0xff`) | parses; the field comes back as `bytes` | `UnicodeDecodeError` |
 | Descriptor-set parse | 2000 nested messages / 500 nested groups | `DecodeError` | `RecursionError` |
 | Payload parse | non-UTF-8 proto3 string | `DecodeError` | `UnicodeDecodeError` |
-| Payload parse | very deep nesting | `DecodeError` | `RecursionError` |
+| Payload parse | non-UTF-8 proto2 string, or editions string with `utf8_validation = NONE` | parses; the field comes back as `bytes` | `UnicodeDecodeError` |
+| Payload parse | nesting past both parsers' limits (2000 messages deep) | `DecodeError` | `RecursionError` |
+| Payload parse (open) | nesting between the two limits (101 to a few hundred messages deep) | `DecodeError` | parses |
+| Payload parse (open) | a set extension of a `message_set_wire_format` message, when the extension's message class has not been built yet | parses | `NameError` from protobuf's own decoder |
 | Lazy (after `Add`) | non-UTF-8 file name | `UnicodeDecodeError` wherever `.name` is read | (already rejected at parse) |
+
+The two parsers stop at different depths (provenance — protobuf 5.27.5 on
+Python 3.13 under both backends; nothing re-asserts these numbers). upb counts
+nested messages and refuses the 101st with `DecodeError`, whatever the
+interpreter's recursion limit. Pure-Python has no limit of its own: it recurses
+until the interpreter's limit runs out, so its depth depends on that limit and
+on how deep the call stack already is. In a bare script it parsed 496 nested
+messages and raised `RecursionError` on the 497th at the default limit of 1000,
+and parsed 1496 at a limit of 3000.
 
 The last build row matters for wording. Pure-Python accepts several sets that
 upb rejects, so the docstring cannot promise that "a malformed file raises". It
@@ -163,7 +189,73 @@ catch for two reasons:
   typed catch so a programming error does not become a data fault.
 
 Every parse site gives all three shapes the same handling it gives
-`DecodeError`, so the result doesn't depend on the backend.
+`DecodeError`. That makes a parse *failure* typed on both backends. An earlier
+version of this section went further and said the result doesn't depend on the
+backend. A re-audit disproved that: a catch tuple can only convert an exception,
+and for three kinds of payload one backend raises nothing, or raises a shape the
+tuple leaves out. (provenance — each case below was measured on protobuf 5.27.5,
+Python 3.13, under both backends; the exit codes are those of `storage count`,
+`forensics match` and binary `diff`.)
+
+**A proto2 string that is not UTF-8: fixed, by a walk after the parse.** upb
+does not validate a proto2 string, or an editions string with
+`utf8_validation = NONE`. It parses the payload and hands the field back as
+`bytes`, at any depth. Pure-Python raises `UnicodeDecodeError` while parsing.
+So until 0.16.0's re-audit fix wave, upb counted such a record (`storage count`
+exit 0), ranked it `clean` (`forensics match` exit 0) and compared its raw bytes
+(`diff` exit 0 or 1), where pure-Python exited 2 from all three. Each payload
+seam now walks the parsed message and reports a string that came back as
+`bytes` as its own decode fault, so both backends exit 2:
+
+- the storage engine keeps one `StringWalk` for the whole scan
+  (`ScanResult._iterate` in `src/protokit/storage/engine.py`) and dispatches a hit
+  as a `FrameError` through `on_error`;
+- `fit_candidate` (`src/protokit/forensics/_match.py:139`) records it as a
+  `decode_error` fit;
+- `_parse_message` (`src/protokit/message/cli.py:134`) exits 2 for binary input.
+  Text and JSON input skip the walk, because both of those parsers reject such
+  a string on both backends.
+
+The walk is `first_undecodable_string`, the one section 5 describes. It runs
+after each seam's `try`, not inside it, so a bug in the walk is not recorded as
+a data fault. Only the verdict matches across backends. The message differs:
+the walk's `string field <name> is not valid UTF-8` on upb, the decoder's own
+text on pure-Python. The outcome is re-asserted on both backends by
+`TestProto2StringsThatAreNotUtf8` in `tests/storage/test_engine.py` and in
+`tests/message/test_cli.py`, and by
+`test_a_proto2_string_that_is_not_utf8_is_a_decode_error` in
+`tests/forensics/test_match_core.py`.
+
+Two limits of the walk, each measured on upb:
+
+- It reads only fields that can hold an unvalidated string, and skips a type
+  that has none, such as one built only from proto3 files. That rule
+  (`may_hold_unvalidated_string`) assumes protobuf's standard feature defaults.
+  A caller-built pool given custom `FeatureSetDefaults` that turn proto3
+  validation off gets `bytes` back from upb, and the walk skips the type.
+  protokit's own loaders never set custom defaults.
+- It reads the parsed message, not the wire. A singular proto2 string written
+  twice, with a first copy that is not UTF-8 and a valid last copy, parses on
+  upb to the last value, and the walk finds nothing. Pure-Python faults on the
+  first copy. The descriptor-set walk has the same limit.
+
+**Nesting between the two parsers' limits: not fixed.** Section 2 has the two
+limits. A payload nested deeper than upb's 100 messages but short of
+pure-Python's recursion limit faults on upb and parses on pure-Python. A
+payload nested 480 deep exited 2 from all three commands on upb and 0 on
+pure-Python. Each backend's failure is typed. The two just disagree about
+which payloads fail.
+
+**`NameError` from protobuf's own decoder: left out of the tuple on purpose.**
+A set extension of a message with `message_set_wire_format = true` parses on
+upb. Pure-Python's decoder raises
+`NameError: name 'message_factory' is not defined` from inside protobuf when
+the extension's own message class has not been built yet, and parses once it
+has. The commands never build that class first, so all three exit 1 with a
+traceback. `NameError` is the shape of a
+programming error, and a tuple wide enough to catch it would also turn
+protokit's own bugs into data faults, which the narrow tuple exists to prevent.
+So the narrow tuple does not make every payload failure typed.
 
 ### 5. upb needs a UTF-8 walk at the boundary
 
@@ -186,7 +278,9 @@ decode seams can share it. It runs in `build_pool` (`src/protokit/_pools.py:200`
 site (`src/protokit/schema/lint/_cli_utils.py:353`), and after each payload parse in storage
 scans, `forensics match` and binary `diff` input, each of which reports a hit as its own
 decode fault. This isn't new validation.
-It makes upb reject input at the same point pure-Python already does.
+It makes upb reject, at the same point pure-Python already does, any string the
+parsed message still holds as `bytes`. Section 4 lists the two cases the walk
+does not reach.
 
 The first version of the walk had two bugs, and a later audit found a third.
 

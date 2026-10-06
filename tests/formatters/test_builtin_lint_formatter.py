@@ -705,7 +705,7 @@ class TestLintJson:
 class TestBumpContractDocstring:
     """Presence ratchet for the bump-contract block above `_LINT_JSON_SCHEMA_VERSION`.
 
-    The block at ``src/protokit/formatters/_builtin_lint.py:227-270``
+    The block above that constant in ``formatters/_builtin_lint.py``
     is a ``#:`` Sphinx-style comment, NOT a Python ``__doc__``
     attribute — so the test reads source via ``inspect.getsource``
     (Pattern B per [[presence-ratchet-test-pattern-for-prose-substrings-2026-05-14]]).
@@ -722,7 +722,7 @@ class TestBumpContractDocstring:
 
     Substring 2 (``"additions DO bump the"``) is deliberately the
     5-word fragment rather than the full ``"additions DO bump the
-    version"`` clause: the latter spans lines 262-263 via ``#:``
+    version"`` clause: the latter spans two lines via ``#:``
     continuation prefix in the source comment block, so
     ``inspect.getsource`` returns it interrupted by
     ``\\n#:         ``; the 5-word fragment is the longest

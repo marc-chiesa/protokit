@@ -868,10 +868,10 @@ def lint_sarif(report: LintReport, _ctx: FormatterContext) -> str:
 
     Single ``run`` containing one ``result`` per finding, with
     every fired rule_id declared in ``run.tool.driver.rules``.
-    Compile-time error diagnostics surface in
-    ``invocations[0].toolExecutionNotifications`` with level
-    ``"error"`` and flip ``executionSuccessful`` to false; non-error
-    diagnostics surface in the same array with level ``"warning"``.
+    Compile diagnostics surface in ``toolExecutionNotifications`` of
+    ``invocations[0]``, level ``"error"`` or ``"warning"``.
+    ``executionSuccessful`` is false when ``protokit._trust`` distrusts the
+    report: a compile error, or a runtime warning in a category it gates.
 
     Adopts ``_sarif_json`` constants (``TOOL_NAME``, schema URL,
     ``build_document``) for structural parity with ``compat_sarif``.

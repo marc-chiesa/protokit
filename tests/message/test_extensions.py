@@ -584,8 +584,8 @@ class TestExtensionPresenceSemantics:
 
     Only SET extensions can be discovered (``ListFields``), so an extension
     set on one side used to look schema-absent on the other and took the
-    one-sided route, which bypasses the EQUIVALENT rule ("a field set to its
-    default equals an unset field") and hands hooks a one-sided context.
+    one-sided route, which bypasses the EQUIVALENT rule ("a scalar set to its
+    default, or an empty message, equals unset") and hands hooks a one-sided context.
     When both sides share a descriptor the extension descriptor reads on
     either message, so it is filed under both names and compared two-sided.
     """

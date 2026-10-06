@@ -495,9 +495,10 @@ def history_report_to_dict(report: HistoryReport) -> dict[str, Any]:
     pre-refactor output.
 
     Since 0.16.0 the payload and each entry also carry ``complete``:
-    whether ``protokit._trust`` vouches for the walk / the entry's
-    check. An entry's ``compatible`` is a verdict and needs that
-    consent — zero findings from a check that broke is
+    false when ``protokit._trust`` finds an error-level diagnostic on
+    the walk / the entry's check, true otherwise; nothing else about
+    the walk is checked. An entry's ``compatible`` is a verdict and
+    needs it — zero findings from a check that broke is
     ``"compatible": false, "complete": false``, not a pass (R4).
     """
     return {
@@ -552,8 +553,8 @@ def bisect_report_to_dict(report: BisectReport) -> dict[str, Any]:
     ``findings`` (for the breaking commit), ``commits_walked``,
     ``diagnostics``.
 
-    Since 0.16.0 it also carries ``complete``: whether
-    ``protokit._trust`` vouches for the walk. This payload has no
+    Since 0.16.0 it also carries ``complete``: false when the walk
+    recorded an error-level diagnostic, true otherwise. This payload has no
     verdict boolean — ``"breaking_commit": null`` *is* the "no break"
     answer — so ``complete`` is how a consumer tells that answer from
     a walk in which a commit's check broke (R4).

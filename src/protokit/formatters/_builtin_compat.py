@@ -112,10 +112,10 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
     ``compatible`` (bool), ``level`` (string), ``findings`` (list of
     dicts), ``diagnostics`` (list of dicts), ``summary``
     (severity-bucket counts) — plus, since 0.16.0, ``complete``
-    (bool): whether ``protokit._trust`` vouches for the report.
-    ``compatible`` is a verdict and needs that consent: zero findings
-    from a check that broke is ``"compatible": false, "complete":
-    false``, matching the human renderer's ``INCOMPLETE`` (R4).
+    (bool): false when ``protokit._trust`` finds an error-level
+    diagnostic on the report, true otherwise; it is not a coverage
+    check. ``compatible`` needs it: zero findings from a check that broke
+    is ``"compatible": false, "complete": false``, the human ``INCOMPLETE`` (R4).
 
     Args:
         report: The report to render.

@@ -737,8 +737,8 @@ def _exit_after_scan(on_error: str, matched: int, run: _Run, code: int) -> NoRet
     keeps everything the mode promised; what it no longer gets is an exit code
     saying the scan succeeded.
 
-    The verdict is ``protokit._trust``'s, the same predicate every renderer
-    and every other exit path asks, so a reason it learns tomorrow lands here
+    The verdict is ``protokit._trust``'s, the predicate the other commands'
+    exit gates ask, so a reason it learns tomorrow lands here
     without a second gate growing beside it. Incompleteness outranks
     ``count --quiet``'s grep-like 0/1: "I could not read the file" is not an
     answer to "did anything match".

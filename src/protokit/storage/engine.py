@@ -19,11 +19,11 @@ implicit:
   ``FrameError``; ``skip`` / ``collect`` are opt-in and never produce silent
   partial results.
 - **Narrow, typed catch (KD-3).** Only ``FrameError`` (the engine's own
-  per-record faults) and protobuf ``DecodeError`` (wrapped into one) are subject
-  to ``on_error``. ``BaseException`` (``SystemExit`` / ``KeyboardInterrupt`` /
-  ``GeneratorExit``) **always** propagates, and a **predicate exception always
-  propagates** — a predicate bug is programmer error, not a corrupt-data
-  condition.
+  per-record faults) and a failed parse (``DecodeError``, ``UnicodeDecodeError``
+  or ``RecursionError``, wrapped into one) are subject to ``on_error``.
+  ``BaseException`` (``SystemExit`` / ``KeyboardInterrupt`` / ``GeneratorExit``)
+  **always** propagates, and a **predicate exception always propagates** — a
+  predicate bug is programmer error, not a corrupt-data condition.
 - **Loud ``.errors`` guard (KD-3 / R6).** Reading ``ScanResult.errors`` before
   the iterator is exhausted raises ``RuntimeError`` rather than returning a
   silent partial tuple.

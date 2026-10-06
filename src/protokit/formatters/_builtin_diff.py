@@ -296,7 +296,9 @@ def diff_json(result: DiffResult, ctx: FormatterContext) -> str:
     every protokit JSON format: false for a ``max_depth``-truncated result (the
     cut subtrees are in ``truncated_paths``) and for one carrying an error
     diagnostic. It is wider than ``DiffResult.is_complete``, which is about
-    truncation alone. ``equal`` is true only when no difference was found
+    truncation alone. It records those two reasons and nothing else: a
+    difference the differ does not look for, such as one in unknown fields,
+    leaves it true. ``equal`` is true only when no difference was found
     **and** the result is ``complete``. The object is open/additive -- consumers should ignore
     unknown keys. Each entry carries canonical ``left_value`` / ``right_value``
     plus deprecated ``old_value`` / ``new_value`` (removed at 1.0; gate on

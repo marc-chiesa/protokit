@@ -36,8 +36,8 @@ declared field's name on the same message, so a merged map could shadow a
 real field. It also keeps ``--where`` / ``--fields`` path resolution
 unchanged: those split a user path on ``.`` and require each segment to be
 a Python identifier, so a dotted extension name can never match a segment
-anyway. Extension access is therefore explicit at the one consumer that
-wants it (the differ), instead of implicit everywhere.
+anyway. Extension access is therefore explicit at each consumer that wants
+it (the differ and the compat checker), instead of implicit everywhere.
 """
 
 from __future__ import annotations

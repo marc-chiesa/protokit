@@ -1,7 +1,7 @@
 ---
 title: "Use the same enum string representation across all sibling output formats"
 date: 2026-05-08
-last_updated: 2026-10-05
+last_updated: 2026-10-06
 category: docs/solutions/best-practices
 module: tooling/cli
 problem_type: best_practice
@@ -257,21 +257,26 @@ findings_payload: list[dict[str, Any]] = [
 ```
 
 **`lint_sarif` boundary helper (correct since first ship,
-`_builtin_lint.py:403`):**
+`_lint_severity_to_sarif_level` in `_builtin_lint.py`):**
 
 ```python
-# Import guard: typing.assert_never landed in 3.11; on 3.10 it
-# comes from typing_extensions, declared in pyproject.toml for <3.11.
-import sys
 if sys.version_info >= (3, 11):
     from typing import assert_never
 else:
     from typing_extensions import assert_never
 
+# ... the guard sits with the module's imports; the helper is further down
+
 
 def _lint_severity_to_sarif_level(
     severity: LintSeverity,
 ) -> Literal["none", "note", "warning", "error"]:
+    """Map a LintSeverity to SARIF's level enum.
+
+    SARIF defines four levels: ``"none" | "note" | "warning" | "error"``.
+    LintSeverity has three; INFO maps to ``"note"`` (SARIF's
+    informational level), WARNING and ERROR map directly.
+    """
     if severity is LintSeverity.ERROR:
         return "error"
     if severity is LintSeverity.WARNING:
@@ -281,15 +286,25 @@ def _lint_severity_to_sarif_level(
     assert_never(severity)
 ```
 
-The guard's original comment called `typing_extensions` "already a
-transitive dep". It was transitive only through mypy in the `[dev]`
-extra. On a runtime-only 3.10 install the import failed, and because the
+`typing.assert_never` landed in 3.11. On 3.10 the guard imports it from
+`typing_extensions`, which `pyproject.toml` declares as
+`typing_extensions>=4.1; python_version<'3.11'`.
+
+Until 0.16.0 U11 this learning's copy of the guard carried a comment
+calling `typing_extensions` "already a transitive dep". The comment was
+this learning's own: the source guard has none. It was also wrong.
+`typing_extensions` was transitive only through the `[dev]` extra, where
+mypy, jsonschema and pytest each pull it in on 3.10 (provenance — resolved
+for Python 3.10 on 2026-10-06; the runtime dependencies and the
+`[compiler]`, `[parquet]` and `[hamcrest]` extras did not pull it in).
+On a runtime-only 3.10 install the import failed, and because the
 CLI loads `_builtin_lint` on every invocation, every subcommand crashed,
 `--help` included (R22-C1, fixed in 0.16.0 U11). CI never saw it because
-every CI job that installed protokit installed `[dev]`. A backport import needs its own conditional
-entry in `dependencies`, not a dev extra that happens to pull it in. The
-`test-minimal-install` job in `.github/workflows/ci.yml` now runs every
-command's `--help` on the declared floor with only runtime dependencies.
+every CI job that installed protokit installed `[dev]`. A backport import
+needs its own conditional entry in `dependencies`, not a dev extra that
+happens to pull it in. The `test-minimal-install` job in
+`.github/workflows/ci.yml` now runs every command's `--help` on the
+declared floor with only runtime dependencies.
 
 The `Literal["none", ...]` return type widens beyond what
 this three-arm helper can actually emit (`"none"` is in the
@@ -313,7 +328,7 @@ json_severity = entry["severity"]            # "warning"
 
 ### JUnit's `.name.lower()` as a documented exception
 
-`lint_junit` at `_builtin_lint.py:344` uses
+`lint_junit` (through `_build_lint_testsuite` in `_builtin_lint.py`) uses
 `finding.severity.name.lower()`:
 
 ```python
@@ -338,7 +353,7 @@ re-flag it as a bug.
 
 ### Compat side: the bug is unreachable
 
-`compat_json` (`src/protokit/formatters/_builtin_compat.py:112`):
+`compat_json` (in `src/protokit/formatters/_builtin_compat.py`):
 
 ```python
 "severity": f.severity.value,   # "WIRE", "SEMANTIC", or "POLICY"
