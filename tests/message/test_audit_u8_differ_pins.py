@@ -977,8 +977,9 @@ class TestV18UnknownFieldOnlyDifferenceIsSilent:
 
         _exit_code, stdout = _run_diff_cli(tmp_path, _OLD_FIELDS, payloads, "--verbose")
 
-        # Today: exactly "Messages are equal.\n", exit 0.
-        assert stdout != "Messages are equal.\n"
+        # Today: exactly "Messages are equal.\n", exit 0. The warning has to be
+        # about the unknown fields; a reworded verdict alone is not the fix.
+        assert "unknown" in stdout.lower(), stdout
 
 
 # ---------------------------------------------------------------------------

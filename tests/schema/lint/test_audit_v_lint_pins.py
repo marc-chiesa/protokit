@@ -205,7 +205,12 @@ def test_v35_a_run_that_records_the_field_behavior_rule_skipped_exits_2(tmp_path
     """A plain schema under the default profile: the rule never ran, exit 0."""
     result = _lint_user_schema(tmp_path, define_extension=False)
     skipped = _skips(result, "extension_unresolved")
-    assert result.exit_code == 2 or not skipped, (
+    # Exactly the two fixed outcomes: the skip is recorded and gated, or nothing
+    # is skipped and the run is clean. An exit 2 with no skip on the report (a
+    # compile that failed) is neither.
+    gated = result.exit_code == 2 and bool(skipped)
+    nothing_skipped = result.exit_code == 0 and not skipped
+    assert gated or nothing_skipped, (
         f"the report records a rule that did not run "
         f"({[w['message'] for w in skipped]}) and the run did not exit 2: {_outcome(result)}"
     )
@@ -334,6 +339,9 @@ def test_v36_unresolved_custom_rule_is_skipped_and_recorded_control(
 def test_v36_unresolved_error_severity_custom_rule_exits_2(tmp_path: Path, option: str) -> None:
     """The one rule the user configured did not run; that is not a clean run."""
     result = _lint_audited_service(tmp_path, option)
+    # The skip has to be on the report: an exit 2 from anything else (a compile
+    # that failed, a usage error) is not this finding being fixed.
+    assert _skips(result, "custom_annotation_extension_unresolved"), _outcome(result)
     assert result.exit_code == 2, (
         f"custom rule with option {option!r} cannot have run, and the run did not exit 2: "
         f"{_outcome(result)}"
