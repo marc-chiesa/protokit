@@ -70,7 +70,11 @@ from protokit.message.model import DiffResult
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.lint.model import LintReport
-from protokit.schema.model import bisect_report_to_dict, history_report_to_dict
+from protokit.schema.model import (
+    CommitDiagnostic,
+    bisect_report_to_dict,
+    history_report_to_dict,
+)
 from tests._trust_reports import (
     bisect_report,
     compat_report,
@@ -483,6 +487,14 @@ def _duplicate_field_number(fdp: descriptor_pb2.FileDescriptorProto) -> None:
         message.field.add(name=name, number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
 
 
+#: A set holding one file, ``a.proto``, whose only fault is a leading comment
+#: of the single byte ``ff``. Written as bytes because neither runtime lets a
+#: ``str`` field be assigned one, and with nothing else wrong so that only
+#: the UTF-8 check can refuse it (a non-UTF-8 *name* would also break the
+#: dependency sort).
+_NON_UTF8_COMMENT_SET = bytes.fromhex("0a10" "0a07612e70726f746f" "4a05" "0a03" "1a01ff")
+
+
 def _dangling_type_reference(fdp: descriptor_pb2.FileDescriptorProto) -> None:
     fdp.message_type.add(name="M").field.add(
         name="x", number=1, type=T.TYPE_MESSAGE, label=T.LABEL_OPTIONAL, type_name=".a.Absent"
@@ -506,7 +518,7 @@ class TestDescriptorSetLoadingNote:
         [
             pytest.param(_unbuildable_set(), id="missing-import"),
             pytest.param(_one_file_set(_dangling_type_reference), id="dangling-type-reference"),
-            pytest.param(bytes.fromhex("0a060a01ff1a01ff"), id="string-not-utf8"),
+            pytest.param(_NON_UTF8_COMMENT_SET, id="string-not-utf8"),
         ],
     )
     def test_the_three_aligned_kinds_are_refused(self, tmp_path: Path, data: bytes) -> None:
@@ -765,6 +777,8 @@ class TestCompleteReportsWhatTheRunRecorded:
         broken = history_report(entry_diags=(error_diagnostic(),))
         assert history_report_to_dict(broken)["complete"] is False
         assert bisect_report_to_dict(bisect_report())["complete"] is True
+        walk_error = CommitDiagnostic("d" * 40, "error", None, "walk broke")
+        assert bisect_report_to_dict(bisect_report(walk_error))["complete"] is False
 
     @pytest.mark.parametrize(
         ("category", "succeeded"),

@@ -115,7 +115,7 @@ different outcomes, and section 4 says why they are left that way.)
 | Payload parse | non-UTF-8 proto2 string, or editions string with `utf8_validation = NONE` | parses; the field comes back as `bytes` | `UnicodeDecodeError` |
 | Payload parse | nesting past both parsers' limits (2000 messages deep) | `DecodeError` | `RecursionError` |
 | Payload parse (open) | nesting between the two limits (101 to a few hundred messages deep) | `DecodeError` | parses |
-| Payload parse (open) | a set extension of a `message_set_wire_format` message | parses | `NameError` from protobuf's own decoder |
+| Payload parse (open) | a set extension of a `message_set_wire_format` message, when the extension's message class has not been built yet | parses | `NameError` from protobuf's own decoder |
 | Lazy (after `Add`) | non-UTF-8 file name | `UnicodeDecodeError` wherever `.name` is read | (already rejected at parse) |
 
 The two parsers stop at different depths (provenance — protobuf 5.27.5 on
@@ -249,8 +249,10 @@ which payloads fail.
 **`NameError` from protobuf's own decoder: left out of the tuple on purpose.**
 A set extension of a message with `message_set_wire_format = true` parses on
 upb. Pure-Python's decoder raises
-`NameError: name 'message_factory' is not defined` from inside protobuf, and
-all three commands exit 1 with a traceback. `NameError` is the shape of a
+`NameError: name 'message_factory' is not defined` from inside protobuf when
+the extension's own message class has not been built yet, and parses once it
+has. The commands never build that class first, so all three exit 1 with a
+traceback. `NameError` is the shape of a
 programming error, and a tuple wide enough to catch it would also turn
 protokit's own bugs into data faults, which the narrow tuple exists to prevent.
 So the narrow tuple does not make every payload failure typed.
