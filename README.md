@@ -982,7 +982,10 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    kinds of descriptor set are now refused with exit 2 on both
    protobuf runtimes, by every command that loads one. Under upb,
    a set containing a string that is not UTF-8 (a file name, a
-   comment) is now refused where it was accepted. Under the
+   comment) is now refused where it was accepted; the check reads
+   the set as parsed, so a string written twice on the wire, with
+   an invalid first copy and a valid last one, is still accepted
+   there and refused under pure-Python. Under the
    pure-Python runtime, a set with a missing import or a type
    reference that resolves nowhere, even in a file the command
    does not use, is now refused as upb always did. The runtimes

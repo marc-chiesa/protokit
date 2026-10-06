@@ -65,7 +65,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
 > | `diff --ignore`, `--treat-as-map` or `--filter` with a value the path grammar rejects | exits 2 with an `Error:` line instead of a traceback and 1 |
 > | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime cannot build or parse (an unreadable field default, an out-of-range `public_dependency` or `oneof_index`, a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1 |
-> | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set |
+> | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set. One shape is still accepted under upb: a string written twice on the wire, with an invalid first copy and a valid last one |
 > | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
 > | *(pure-Python)* a message payload nested past Python's recursion limit (a few hundred levels at the default limit), or carrying a string that is not UTF-8 (proto2 or proto3) | `diff` exits 2 on the deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1. Nesting between upb's limit of 100 levels and Python's recursion limit still differs by runtime, as it did in 0.15.1: upb refuses the payload (exit 2) and pure-Python reads it |
 > | a message payload carrying a proto2 string that is not UTF-8 (or an editions string with UTF-8 validation off), at any depth, under upb | `diff` exits 2 on binary input instead of comparing the raw bytes (exit 0 or 1); `storage` counts the record as a fault under `--on-error` (`count` exits 2 instead of 0 with the record counted), and `to_parquet` raises `IncompleteScanError` instead of a raw `ValueError` from the Arrow converter; `forensics match` ranks the candidate `decode_error` instead of `clean`, and exits 2 when no candidate parses. Under pure-Python, `diff` already exited 2 for such a payload; `storage` and `forensics match` crashed with exit 1 (the row above), and `to_parquet` raised a raw `UnicodeDecodeError` |
@@ -88,7 +88,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint --proto` given a file through a path that steps back out of an include with `..` (`proto/a/../b/bad.proto` with `-I proto`) | lints that file (exit 0 or 1) instead of skipping it and exiting 0 on the other files alone |
 > | `lint --proto` given a file the compiler emits under a name lint did not predict (under protoc, a `-I VIRTUAL=DIR` mapping; under either compiler, an absolute file path whose include is written with a doubled leading slash, `-I //abs/dir`) | exits 2 (`error[lint-compile-failed]`, after a `not linted:` line naming the file) instead of skipping it and exiting 0 |
 > | `storage scan\|head\|count` (human or JSON) when reading the data file fails partway (an I/O error from a failing disk or a dropped mount), or when closing it fails after the last record | exits 2 with `Error: cannot read <file>: …` instead of a traceback and 1, under every `--on-error` mode; the records read before the error still reach stdout, `count` still prints its partial count, and `count --quiet` exits 2 instead of 1 ("zero matches") even after a match. `--format parquet` already exited 2 |
-> | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta of `0` |
+> | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta (`0` when the message held no unknown fields, their size otherwise) |
 
 ### Security
 
@@ -225,7 +225,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
   payload still differs: a singular string written twice on the wire, the
   first copy not UTF-8 and the last one valid, parses to its last value under
   upb and is accepted, where pure-Python refuses it, because the walk reads
-  the parsed message.
+  the parsed message. The descriptor-set check has the same limit.
 
 - **`lint` accepts a complete descriptor set in any file order** (audit
   finding R23-C2). The loader added files to the pool in the order the
@@ -669,8 +669,9 @@ backend-neutral rather than merely fixed (KTD6).
   and a missing import routes to `error[lint-missing-imports]` with exit 2 on
   both runtimes (V10).
 - **The storage fidelity probe reports "cannot measure" (`None`), not a byte
-  delta of `0`, for a proto2 message missing a required field.** It no longer
-  depends on the `EncodeError` only upb raises (V1).
+  delta, for a proto2 message missing a required field.** Under pure-Python
+  it returned `0` when the message held no unknown fields and their size
+  otherwise. It no longer depends on the `EncodeError` only upb raises (V1).
 - **A descriptor set the pure-Python runtime rejects now fails cleanly.** A set
   that parses but that the runtime refuses to build (an unreadable field
   default, an out-of-range `public_dependency` or `oneof_index`) raised a raw

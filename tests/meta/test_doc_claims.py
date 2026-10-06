@@ -91,7 +91,10 @@ from tests.meta.test_import_layers import (
     build_import_graph,
     import_in_fresh_interpreter,
 )
-from tests.meta.test_upgrade_notes_presence_ratchet import _readme_section
+from tests.meta.test_upgrade_notes_presence_ratchet import (
+    _changelog_release_section,
+    _readme_section,
+)
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -458,13 +461,13 @@ def _file_prose(path: Path) -> str:
     return _as_prose(path.read_text(encoding="utf-8"))
 
 
-def _changelog_unreleased() -> str:
-    """The CHANGELOG's ``## Unreleased`` section, as prose."""
-    body = _CHANGELOG_PATH.read_text(encoding="utf-8")
-    sections = re.split(r"^(?=## )", body, flags=re.MULTILINE)
-    unreleased = [section for section in sections if section.startswith("## Unreleased")]
-    assert len(unreleased) == 1, "CHANGELOG.md has no single `## Unreleased` section"
-    return _as_prose(unreleased[0])
+def _changelog_release() -> str:
+    """The CHANGELOG section that carries the 0.16.0 upgrade note, as prose.
+
+    Found by its note, not by a ``## Unreleased`` heading, so the guards keep
+    reading the same text once the release is cut and the heading is renamed.
+    """
+    return _as_prose(_changelog_release_section())
 
 
 def _readme_upgrade_note(number: int) -> str:
@@ -472,9 +475,9 @@ def _readme_upgrade_note(number: int) -> str:
     body = _readme_section()
     start = re.search(rf"^{number}\. \*\*", body, flags=re.MULTILINE)
     assert start, f"README's 0.16.0 upgrade notes have no item numbered {number}"
-    rest = body[start.start():]
-    end = re.search(r"^(?:\d+\. \*\*|\*\*|#)", rest[1:], flags=re.MULTILINE)
-    return _prose(rest[: end.start() + 1] if end else rest)
+    item = body[start.end():]
+    end = re.search(r"^(?:\d+\. \*\*|\*\*|#)", item, flags=re.MULTILINE)
+    return _prose(item[: end.start()] if end else item)
 
 
 def _one_file_set(build: typing.Callable[[descriptor_pb2.FileDescriptorProto], None]) -> bytes:
@@ -495,6 +498,12 @@ def _duplicate_field_number(fdp: descriptor_pb2.FileDescriptorProto) -> None:
 #: the UTF-8 check can refuse it (a non-UTF-8 *name* would also break the
 #: dependency sort).
 _NON_UTF8_COMMENT_SET = bytes.fromhex("0a10" "0a07612e70726f746f" "4a05" "0a03" "1a01ff")
+#: The same file with that comment written twice: ``ff``, then ``valid``. A
+#: parser keeps the last copy of a singular field, so the parsed set holds no
+#: invalid string, and only a runtime that validates while parsing refuses it.
+_OVERWRITTEN_COMMENT_SET = bytes.fromhex(
+    "0a17" "0a07612e70726f746f" "4a0c" "0a0a" "1a01ff" "1a0576616c6964"
+)
 
 
 def _dangling_type_reference(fdp: descriptor_pb2.FileDescriptorProto) -> None:
@@ -539,12 +548,23 @@ class TestDescriptorSetLoadingNote:
             with pytest.raises(DescriptorPoolError):
                 load_pool_from_path(path)
 
+    def test_string_overwritten_on_the_wire_loads_on_upb_only(self, tmp_path: Path) -> None:
+        # The limit the note states: the UTF-8 check reads the parsed set.
+        path = tmp_path / "schema.descriptor_set"
+        path.write_bytes(_OVERWRITTEN_COMMENT_SET)
+        if _PURE_PYTHON:
+            with pytest.raises(DescriptorPoolError):
+                load_pool_from_path(path)
+        else:
+            assert load_pool_from_path(path).FindFileByName("a.proto").name == "a.proto"
+
     @pytest.mark.parametrize(
         "phrase",
         [
             "a missing import",
             "a type reference that resolves nowhere",
             "a string that is not UTF-8",
+            "a string written twice on the wire",
             "pure-Python accepts some that upb refuses, such as a duplicate field number",
         ],
     )
@@ -660,11 +680,11 @@ class TestEquivalentExtensionCollapse:
         ],
     )
     def test_changelog_states_the_rule(self, phrase: str) -> None:
-        assert phrase in _changelog_unreleased(), _missing(phrase, _WHERE_CHANGELOG_EXTENSIONS)
+        assert phrase in _changelog_release(), _missing(phrase, _WHERE_CHANGELOG_EXTENSIONS)
 
     def test_changelog_does_not_generalise(self) -> None:
         phrase = "(set to its default on one side and unset on the other collapses"
-        assert phrase not in _changelog_unreleased(), _returned(
+        assert phrase not in _changelog_release(), _returned(
             phrase,
             _WHERE_CHANGELOG_EXTENSIONS,
             "a message extension whose sub-field is set to a default is reported",
@@ -804,24 +824,35 @@ class TestCompleteReportsWhatTheRunRecorded:
             "`complete` reports what the run recorded, not what it covered",
             "(unknown fields) are not compared",
             "A run that records it could not finish",
-            "`extension_unresolved` and `custom_annotation_extension_unresolved` warnings leave it",
+            "`custom_annotation_extension_unresolved` warnings leave it `true`",
         ],
     )
     def test_readme_states_what_the_fields_compute(self, phrase: str) -> None:
         assert phrase in _file_prose(_README_PATH), _missing(phrase, _WHERE_README)
 
     @pytest.mark.parametrize(
+        "phrase",
+        [
+            "says nothing else about what the check covered",
+            "It is not a check that every rule ran",
+            "an input skipped without a record still exits 0",
+        ],
+    )
+    def test_changelog_states_what_the_fields_compute(self, phrase: str) -> None:
+        assert phrase in _changelog_release(), _missing(phrase, "The CHANGELOG's 0.16.0 section")
+
+    @pytest.mark.parametrize(
         "prose",
         [
             pytest.param(lambda: _file_prose(_README_PATH), id="README.md"),
             # Scoped to the release that made the claim: older sections are history.
-            pytest.param(_changelog_unreleased, id="CHANGELOG.md"),
+            pytest.param(_changelog_release, id="CHANGELOG.md"),
         ],
     )
     @pytest.mark.parametrize(
         "phrase",
         [
-            "green exit now means the analysis ran",
+            "now means the analysis ran",
             "a green exit mean the analysis ran",
             "false whenever the analysis did not complete",
         ],
@@ -831,6 +862,6 @@ class TestCompleteReportsWhatTheRunRecorded:
     ) -> None:
         assert phrase not in prose(), _returned(
             phrase,
-            "README.md or CHANGELOG.md's Unreleased section",
+            "README.md or the CHANGELOG's 0.16.0 section",
             "an input skipped without a record still reads as success",
         )
