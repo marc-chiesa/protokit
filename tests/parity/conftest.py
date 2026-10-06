@@ -4,7 +4,7 @@ This conftest powers ``tests/parity/`` — the in-repo harness that
 runs every D6a buf-equivalent rule's fixtures through both
 ``protokit lint`` and ``buf lint`` and asserts equivalent findings.
 The ``parity`` marker is **documentary**: default ``pytest tests/``
-DOES collect parity tests (verified at ``pyproject.toml:86-87``);
+DOES collect parity tests (verified at ``pyproject.toml:136-137``);
 the marker is only honored by jobs that explicitly select via
 ``-m parity`` (e.g., the advisory CI ``parity`` job). Per-module
 opt-in via ``pytestmark = pytest.mark.parity`` therefore decides

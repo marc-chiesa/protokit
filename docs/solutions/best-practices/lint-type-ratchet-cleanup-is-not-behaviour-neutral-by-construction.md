@@ -41,8 +41,8 @@ static-analysis ratchet (the `_LINT_PATHS` / `_TYPE_CHECK_PATHS` tuples in
 Under `src/protokit/` that meant `_descriptors.py`, `_pools.py`, the schema
 checker, rules and CLI modules, and the whole formatters and message packages,
 including `src/protokit/message/differ.py`. The project's ruff config selects the `SIM` family
-(`pyproject.toml:148`) and mypy runs with `strict = true` and
-`warn_return_any = true` (`pyproject.toml:152-153`).
+(`pyproject.toml:152`) and mypy runs with `strict = true` and
+`warn_return_any = true` (`pyproject.toml:156-157`).
 
 The unit's contract was that the cleanup is type- and lint-only: no change to
 return values, exceptions, output, exit codes or `--help`, on either protobuf

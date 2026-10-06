@@ -10,7 +10,7 @@ This module deliberately does NOT apply ``pytestmark = pytest.mark.parity``
 dependency, so the tests run in the required ``test`` CI job on every
 PR rather than the advisory ``parity`` job. The marker would gate them
 behind the advisory job (per ``.github/workflows/ci.yml`` and
-``pyproject.toml:86-87``), which is exactly the visibility gap U6 is
+``pyproject.toml:136-137``), which is exactly the visibility gap U6 is
 built to close.
 
 Since D6b U7 added the PACKAGE_SAME_* family to ``BUILTIN_PACKS``,

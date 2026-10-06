@@ -678,6 +678,20 @@ backend-neutral rather than merely fixed (KTD6).
 under the pure-Python runtime with no known-failure list, and the
 `test-pure-python` CI cell is a required check (see Internal).
 
+### Fixed — installation
+
+- **Every command runs on Python 3.10 with only the runtime dependencies**
+  (audit finding R22-C1). On 3.10, `protokit` imports `assert_never` from
+  `typing_extensions`, which it did not declare, and the CLI loads that
+  import on every run. So since 0.7.0, every command crashed with
+  `ModuleNotFoundError: No module named 'typing_extensions'`, `--help`
+  included, unless something else had installed the package. protokit now
+  declares `typing_extensions>=4.1` for Python older than 3.11. Python 3.11
+  and later install nothing new. A new CI job installs the package with no
+  extras on Python 3.10 and runs every command's `--help`; before, every CI
+  job that installed protokit installed the dev extras, which pull in
+  `typing_extensions` through mypy.
+
 ### Fixed — documentation
 
 - **`protokit lint --help` no longer promises exit 0 for a run that did not

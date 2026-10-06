@@ -222,7 +222,7 @@ the run collected everything. `is_full_suite_run`
 `--deselect` / `--ignore` / `--ignore-glob` / `--lf` / `--sw` and that every
 positional argument resolve to the tests root or one of its ancestors; the root
 is `_tests_root` (`tests/_pure_python_inventory.py:389-398`), which reads
-`testpaths` from `pyproject.toml:121`:
+`testpaths` from `pyproject.toml:130`:
 
 ```python
 # tests/_pure_python_inventory.py:389-398
