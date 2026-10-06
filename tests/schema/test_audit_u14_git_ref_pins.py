@@ -16,11 +16,17 @@ Findings pinned here:
 * **U14-5** — an *empty* ref degenerates to ``git show :path``, which reads the
   staging index, so ``extract_pool_from_ref("", path)`` silently builds a pool
   from staged, uncommitted content.
+* **V29** — ``resolve_ref_sha()`` promises a commit SHA and is a bare
+  ``git rev-parse <ref>``: a git option is executed, a path or a range is
+  answered as if it were a ref, and an annotated tag yields the tag object
+  rather than its commit. Owned by the parent plan's U13 (0.18.0); the comment
+  above the V29 section at the end of this file has the detail.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -29,7 +35,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from protokit.schema.cli import main as compat_main
 from protokit.schema.git import (
     GitRefNotFoundError,
     extract_pool_from_ref,
@@ -563,3 +571,200 @@ def test_u14_5_empty_ref_must_not_silently_read_the_index(
         f"rejecting the ref; demo.M fields = {_field_names(pool, 'demo.M')!r} "
         "(the staging index's content, matching neither HEAD nor the worktree)"
     )
+
+
+# ---------------------------------------------------------------------------
+# V29 — resolve_ref_sha() promises a commit SHA and returns other things
+# ---------------------------------------------------------------------------
+#
+# Owned by the parent plan's U13 (0.18.0), which passes ``--end-of-options``
+# before every caller-supplied ref and checks that what came back is a commit.
+# The cycle-1 re-audit recorded two shapes under V29. Both are pinned below
+# with strict xfails whose reasons lead with the ID; each flips to XPASS on
+# the fix.
+#
+# * **Not a commit at all** (R20-C8 / R20-X5, and V29 as first reported):
+#   ``resolve_ref_sha`` runs a bare ``git rev-parse <ref>`` with no
+#   ``--verify`` and no option guard. A git *option* is therefore executed
+#   (``--show-toplevel`` answers with a filesystem path), an unknown option or
+#   a path that exists in the worktree is echoed back as though it were a
+#   SHA, a range answers with two lines, ``^HEAD`` answers ``^<sha>``, and
+#   ``HEAD:<path>`` answers with a blob id. The docstring's contract for an
+#   argument that names no commit is ``GitRefNotFoundError``.
+# * **An annotated tag** (R21-C4): ``rev-parse <tag>`` answers with the *tag
+#   object's* id, so ``compat history`` / ``compat bisect`` record an id that
+#   is not a commit as the JSON ``old`` endpoint. A lightweight tag on the
+#   same commit answers with the commit, which is the control.
+
+_TAGGED_V1 = (
+    'syntax = "proto3";\n'
+    'package demo;\n'
+    'message M { int32 a = 1; }\n'
+)
+_TAGGED_V2 = (
+    'syntax = "proto3";\n'
+    'package demo;\n'
+    'message M { int32 a = 1; int32 b = 2; }\n'
+)
+
+# What each of these makes a bare ``git rev-parse`` print, in order: the
+# worktree path, the argument itself (twice), a blob id, two lines, ``^<sha>``.
+_NOT_A_COMMIT = (
+    "--show-toplevel",
+    "--not-a-ref",
+    "README.md",
+    "HEAD:demo/m.proto",
+    "HEAD~1..HEAD",
+    "^HEAD",
+)
+
+
+@pytest.fixture
+def tagged_repo(git_repo: Path) -> tuple[Path, str]:
+    """Three commits; the first carries an annotated and a lightweight tag.
+
+    Returns ``(repo, c1_sha)``. ``demo/m.proto`` gains a field at c2 (a
+    compatible change, so a history walk from c1 has a commit to visit), and
+    c3 adds the ``README.md`` that one V29 input needs in the worktree.
+    """
+    c1 = _commit(git_repo, "demo/m.proto", _TAGGED_V1, msg="c1")
+    _commit(git_repo, "demo/m.proto", _TAGGED_V2, msg="c2: add M.b")
+    _commit(git_repo, "README.md", "readme\n", msg="c3: readme")
+    # A signing default in the developer's own git config must not reach the
+    # annotated tag.
+    _git("config", "tag.gpgsign", "false", cwd=git_repo)
+    _git("tag", "-a", "-m", "release 1", "v1-annotated", c1, cwd=git_repo)
+    _git("tag", "v1-lightweight", c1, cwd=git_repo)
+    return git_repo, c1
+
+
+def _names_exactly_one_commit(ref: str, *, repo: Path) -> bool:
+    """Git's own answer, asked with the option guard and the commit peel."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    return proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", proc.stdout.strip()) is not None
+
+
+def _walk_json(monkeypatch: pytest.MonkeyPatch, repo: Path, walk: str, *, old: str) -> dict:
+    """Run ``compat history`` or ``compat bisect`` over ``old..HEAD``; return its JSON.
+
+    A run that could not produce a report prints nothing on stdout, so it
+    fails here on ``json.loads`` rather than on a caller's assertion.
+    """
+    endpoints = (
+        ["--range", f"{old}..HEAD"] if walk == "history" else ["--old", old, "--new", "HEAD"]
+    )
+    monkeypatch.chdir(repo)
+    result = CliRunner().invoke(
+        compat_main,
+        [walk, *endpoints, "--proto-file", "demo/m.proto", "--type", "demo.M", "--format", "json"],
+        catch_exceptions=False,
+    )
+    return json.loads(result.stdout)
+
+
+def test_v29_control_commit_refs_resolve_and_an_unknown_name_raises(
+    tagged_repo: tuple[Path, str],
+) -> None:
+    """Control: on refs that name a commit the function keeps its contract.
+
+    The same repository as the pins below. It also shows that git itself
+    calls every ``_NOT_A_COMMIT`` input "not one commit", so the pins assert
+    git's answer and not a preference of this file.
+    """
+    repo, c1 = tagged_repo
+    head = _git("rev-parse", "HEAD", cwd=repo)
+    for ref, sha in (("HEAD", head), ("main", head), ("HEAD~2", c1), (c1[:10], c1)):
+        assert _names_exactly_one_commit(ref, repo=repo)
+        assert resolve_ref_sha(ref, cwd=repo) == sha
+    with pytest.raises(GitRefNotFoundError):
+        resolve_ref_sha("no-such-ref", cwd=repo)
+    for ref in _NOT_A_COMMIT:
+        assert not _names_exactly_one_commit(ref, repo=repo), ref
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=pytest.fail.Exception,
+    reason=(
+        "V29: owned by the parent plan's U13 (0.18.0). resolve_ref_sha() runs a "
+        "bare `git rev-parse <ref>`, so an argument that names no commit is "
+        "answered instead of refused: a git option is executed "
+        "(--show-toplevel returns the worktree path), an unknown option or a "
+        "worktree path is echoed back, a range returns two lines, ^HEAD returns "
+        "'^<sha>' and HEAD:<path> returns a blob id. The contract is "
+        "GitRefNotFoundError."
+    ),
+)
+@pytest.mark.parametrize("not_a_commit", _NOT_A_COMMIT)
+def test_v29_resolve_ref_sha_must_refuse_what_names_no_commit(
+    tagged_repo: tuple[Path, str], not_a_commit: str,
+) -> None:
+    repo, _c1 = tagged_repo
+    try:
+        answer = resolve_ref_sha(not_a_commit, cwd=repo)
+    except GitRefNotFoundError:
+        return
+    pytest.fail(
+        f"V29: resolve_ref_sha({not_a_commit!r}) returned {answer!r} where a "
+        "commit SHA is promised, instead of raising GitRefNotFoundError"
+    )
+
+
+def test_v29_control_lightweight_tag_resolves_to_its_commit(
+    tagged_repo: tuple[Path, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: a lightweight tag on the same commit is recorded as the commit.
+
+    Also the premise of the two pins below: the annotated tag really is a
+    separate tag object, and git peels it to the same commit.
+    """
+    repo, c1 = tagged_repo
+    tag_object = _git("rev-parse", "v1-annotated", cwd=repo)
+    assert _git("cat-file", "-t", tag_object, cwd=repo) == "tag"
+    assert _git("rev-parse", "v1-annotated^{commit}", cwd=repo) == c1
+
+    assert resolve_ref_sha("v1-lightweight", cwd=repo) == c1
+    for walk in ("history", "bisect"):
+        payload = _walk_json(monkeypatch, repo, walk, old="v1-lightweight")
+        assert payload["old"] == c1
+        assert payload["new"] == _git("rev-parse", "HEAD", cwd=repo)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "V29: owned by the parent plan's U13 (0.18.0). For an annotated tag "
+        "`git rev-parse <tag>` prints the tag object's id, and resolve_ref_sha() "
+        "returns it unpeeled, so the 'SHA the ref names' is not a commit "
+        "(R21-C4)."
+    ),
+)
+def test_v29_annotated_tag_must_resolve_to_the_commit_it_names(
+    tagged_repo: tuple[Path, str],
+) -> None:
+    repo, c1 = tagged_repo
+    assert resolve_ref_sha("v1-annotated", cwd=repo) == c1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "V29: owned by the parent plan's U13 (0.18.0). compat history and "
+        "compat bisect resolve their endpoints through resolve_ref_sha(), so "
+        "with an annotated tag as the old endpoint the JSON `old` field carries "
+        "the tag object's id, which `git cat-file -t` reports as 'tag', where "
+        "the payload promises the commit that was examined (R21-C4)."
+    ),
+)
+@pytest.mark.parametrize("walk", ["history", "bisect"])
+def test_v29_walk_json_must_record_the_commit_an_annotated_tag_names(
+    tagged_repo: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, walk: str,
+) -> None:
+    repo, c1 = tagged_repo
+    payload = _walk_json(monkeypatch, repo, walk, old="v1-annotated")
+    assert payload["old"] == c1
