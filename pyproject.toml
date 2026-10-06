@@ -40,6 +40,10 @@ dependencies = [
     # Python 3.11+ ships tomllib in stdlib; tomli is the 3.10 fallback.
     # Standard import pattern: `import tomllib if sys.version_info >= (3, 11) else import tomli as tomllib`.
     "tomli>=2.0,<3; python_version<'3.11'",
+    # `typing.assert_never` is 3.11+. formatters/_builtin_lint.py imports the
+    # typing_extensions backport on 3.10, and the CLI loads that module on
+    # every invocation. 4.1 is the first release with assert_never.
+    "typing_extensions>=4.1; python_version<'3.11'",
     # gitignore-style glob matching for [tool.protokit.lint] exclude /
     # --exclude PATTERN. Pure-Python; used by mypy/dvc/pre-commit.
     "pathspec>=0.12,<2",

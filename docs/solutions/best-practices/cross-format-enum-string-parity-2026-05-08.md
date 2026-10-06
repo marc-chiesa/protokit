@@ -1,6 +1,7 @@
 ---
 title: "Use the same enum string representation across all sibling output formats"
 date: 2026-05-08
+last_updated: 2026-10-05
 category: docs/solutions/best-practices
 module: tooling/cli
 problem_type: best_practice
@@ -259,8 +260,8 @@ findings_payload: list[dict[str, Any]] = [
 `_builtin_lint.py:403`):**
 
 ```python
-# Import guard: typing.assert_never landed in 3.11; for 3.10
-# fall back to typing_extensions (already a transitive dep).
+# Import guard: typing.assert_never landed in 3.11; on 3.10 it
+# comes from typing_extensions, declared in pyproject.toml for <3.11.
 import sys
 if sys.version_info >= (3, 11):
     from typing import assert_never
@@ -279,6 +280,16 @@ def _lint_severity_to_sarif_level(
         return "note"
     assert_never(severity)
 ```
+
+The guard's original comment called `typing_extensions` "already a
+transitive dep". It was transitive only through mypy in the `[dev]`
+extra. On a runtime-only 3.10 install the import failed, and because the
+CLI loads `_builtin_lint` on every invocation, every subcommand crashed,
+`--help` included (R22-C1, fixed in 0.16.0 U11). CI never saw it because
+every cell installed `[dev]`. A backport import needs its own conditional
+entry in `dependencies`, not a dev extra that happens to pull it in. The
+`test-minimal-install` job in `.github/workflows/ci.yml` now runs every
+command's `--help` on the declared floor with only runtime dependencies.
 
 The `Literal["none", ...]` return type widens beyond what
 this three-arm helper can actually emit (`"none"` is in the
