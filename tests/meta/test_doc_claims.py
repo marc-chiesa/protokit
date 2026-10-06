@@ -66,7 +66,7 @@ from protokit._pools import DescriptorPoolError, load_pool_from_path
 from protokit.formatters import FormatterContext, FormatterKind, get_formatter
 from protokit.formatters._builtin_lint import lint_sarif
 from protokit.message import diff_messages
-from protokit.message.model import DiffResult
+from protokit.message.model import Diagnostic, DiffResult
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.checker import SchemaChecker
 from protokit.schema.lint.model import LintReport
@@ -91,6 +91,7 @@ from tests.meta.test_import_layers import (
     build_import_graph,
     import_in_fresh_interpreter,
 )
+from tests.meta.test_upgrade_notes_presence_ratchet import _readme_section
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -445,6 +446,7 @@ _README_PATH = _REPO_ROOT / "README.md"
 _CHANGELOG_PATH = _REPO_ROOT / "CHANGELOG.md"
 _PURE_PYTHON = api_implementation.Type() == "python"
 _WHERE_NOTE_9 = "README upgrade note 9"
+_WHERE_README = "README.md"
 
 
 def _as_prose(text: str) -> str:
@@ -467,9 +469,9 @@ def _changelog_unreleased() -> str:
 
 def _readme_upgrade_note(number: int) -> str:
     """Item ``number`` of the README's 0.16.0 pre-upgrade checklist, as prose."""
-    body = _README_PATH.read_text(encoding="utf-8")
+    body = _readme_section()
     start = re.search(rf"^{number}\. \*\*", body, flags=re.MULTILINE)
-    assert start, f"README.md has no upgrade note numbered {number}"
+    assert start, f"README's 0.16.0 upgrade notes have no item numbered {number}"
     rest = body[start.start():]
     end = re.search(r"^(?:\d+\. \*\*|\*\*|#)", rest[1:], flags=re.MULTILINE)
     return _prose(rest[: end.start() + 1] if end else rest)
@@ -552,7 +554,7 @@ class TestDescriptorSetLoadingNote:
     def test_readme_does_not_claim_every_set_loads_alike(self) -> None:
         phrase = "the same way on both"
         assert phrase not in _file_prose(_README_PATH), _returned(
-            phrase, "README.md", "pure-Python builds sets upb refuses to build"
+            phrase, _WHERE_README, "pure-Python builds sets upb refuses to build"
         )
 
 
@@ -561,6 +563,7 @@ class TestDescriptorSetLoadingNote:
 # ---------------------------------------------------------------------------
 
 _DIFFER_PATH = _SRC_ROOT / PACKAGE / "message" / "differ.py"
+_FOLD_IN = "if left_view.has_extension_ranges or right_view.has_extension_ranges:"
 _WHERE_FOLD_IN = "The comment above the extension fold-in in message/differ.py"
 _WHERE_CHANGELOG_EXTENSIONS = "CHANGELOG's entry on declared proto2 extensions"
 
@@ -639,11 +642,13 @@ class TestEquivalentExtensionCollapse:
         "phrase", ["a scalar at its default or an empty message", "a sub-field set does not"]
     )
     def test_fold_in_comment_states_the_rule(self, phrase: str) -> None:
-        assert phrase in _file_prose(_DIFFER_PATH), _missing(phrase, _WHERE_FOLD_IN)
+        comment = _prose(_comment_above(_DIFFER_PATH, _FOLD_IN))
+        assert phrase in comment, _missing(phrase, _WHERE_FOLD_IN)
 
     def test_fold_in_comment_does_not_generalise(self) -> None:
         phrase = "a default-valued field equals an unset one"
-        assert phrase not in _file_prose(_DIFFER_PATH), _returned(
+        comment = _prose(_comment_above(_DIFFER_PATH, _FOLD_IN))
+        assert phrase not in comment, _returned(
             phrase, _WHERE_FOLD_IN, "a message whose sub-field is set to a default is reported"
         )
 
@@ -685,45 +690,23 @@ def _lint_sarif_succeeded(report: LintReport) -> bool:
 
 def _unknown_field_only_pair() -> tuple[Message, Message]:
     """Two ``u.M`` messages that differ only in field 2, which ``u.M`` does not declare."""
-    pool = descriptor_pool.DescriptorPool()
-    fdp = descriptor_pb2.FileDescriptorProto(name="u.proto", package="u", syntax="proto3")
-    fdp.message_type.add(name="M").field.add(
-        name="a", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL
-    )
-    pool.Add(fdp)
-    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("u.M"))
+    builder = ProtoBuilder()
+    builder.message("u.M", {"a": (T.TYPE_INT32, 1)})
+    cls = builder.get_message_class("u.M")
     left, right = cls(), cls()
     left.ParseFromString(bytes([0x10, 1]))
     right.ParseFromString(bytes([0x10, 2]))
     return left, right
 
 
-_COMPLETE_DOCSTRINGS = [
-    pytest.param(
-        lambda: get_formatter("json", FormatterKind.DIFF).__doc__,
-        "a difference the differ does not look for",
-        id="diff_json",
-    ),
-    pytest.param(
-        lambda: get_formatter("json", FormatterKind.COMPAT).__doc__,
-        "it is not a coverage check",
-        id="compat_json",
-    ),
-    pytest.param(
-        lambda: history_report_to_dict.__doc__,
-        "nothing else about the walk is checked",
-        id="history_report_to_dict",
-    ),
-    pytest.param(
-        lambda: bisect_report_to_dict.__doc__,
-        "false when the walk recorded an error-level diagnostic",
-        id="bisect_report_to_dict",
-    ),
-    pytest.param(
-        lambda: lint_sarif.__doc__,
-        "``executionSuccessful`` is false when ``protokit._trust`` distrusts the report",
-        id="lint_sarif",
-    ),
+#: Each function that emits one of the two fields, with the phrase its
+#: docstring uses for what the field computes.
+_COMPLETE_DOCSTRINGS: list[tuple[typing.Callable[..., object], str]] = [
+    (get_formatter("json", FormatterKind.DIFF), "a difference the differ does not look for"),
+    (get_formatter("json", FormatterKind.COMPAT), "it is not a coverage check"),
+    (history_report_to_dict, "nothing else about the walk is checked"),
+    (bisect_report_to_dict, "false when the walk recorded an error-level diagnostic"),
+    (lint_sarif, "``executionSuccessful`` is false when ``protokit._trust`` distrusts the report"),
 ]
 
 
@@ -759,17 +742,17 @@ class TestCompleteReportsWhatTheRunRecorded:
         assert (warned["equal"], warned["complete"]) == (True, True)
 
     @pytest.mark.parametrize(
-        ("diagnostic", "complete"),
+        ("diagnostics", "complete"),
         [
-            pytest.param(None, True, id="no-diagnostic"),
-            pytest.param(warning_diagnostic(), True, id="warning"),
-            pytest.param(error_diagnostic(), False, id="error"),
+            pytest.param((), True, id="no-diagnostic"),
+            pytest.param((warning_diagnostic(),), True, id="warning"),
+            pytest.param((error_diagnostic(),), False, id="error"),
         ],
     )
     def test_compat_complete_is_the_absence_of_an_error_diagnostic(
-        self, diagnostic: typing.Any, complete: bool
+        self, diagnostics: tuple[Diagnostic, ...], complete: bool
     ) -> None:
-        report = compat_report(*([diagnostic] if diagnostic else []))
+        report = compat_report(*diagnostics)
         assert _render("json", FormatterKind.COMPAT, report)["complete"] is complete
 
     def test_history_and_bisect_complete_follow_the_same_rule(self) -> None:
@@ -783,15 +766,11 @@ class TestCompleteReportsWhatTheRunRecorded:
     @pytest.mark.parametrize(
         ("category", "succeeded"),
         [
-            pytest.param("rule_exception", False, id="rule_exception"),
-            pytest.param("unloaded_rule", False, id="unloaded_rule"),
-            pytest.param("all_files_excluded", False, id="all_files_excluded"),
-            pytest.param("extension_unresolved", True, id="extension_unresolved"),
-            pytest.param(
-                "custom_annotation_extension_unresolved",
-                True,
-                id="custom_annotation_extension_unresolved",
-            ),
+            ("rule_exception", False),
+            ("unloaded_rule", False),
+            ("all_files_excluded", False),
+            ("extension_unresolved", True),
+            ("custom_annotation_extension_unresolved", True),
         ],
     )
     def test_sarif_execution_successful_follows_the_gated_categories(
@@ -803,11 +782,14 @@ class TestCompleteReportsWhatTheRunRecorded:
         assert _lint_sarif_succeeded(lint_report(compile_error="boom")) is False
         assert _lint_sarif_succeeded(lint_report()) is True
 
-    @pytest.mark.parametrize(("docstring", "phrase"), _COMPLETE_DOCSTRINGS)
+    @pytest.mark.parametrize(
+        ("function", "phrase"), _COMPLETE_DOCSTRINGS, ids=lambda v: getattr(v, "__name__", None)
+    )
     def test_docstring_states_what_the_field_computes(
-        self, docstring: typing.Callable[[], str | None], phrase: str
+        self, function: typing.Callable[..., object], phrase: str
     ) -> None:
-        assert phrase in _prose(docstring()), _missing(phrase, "The formatter's docstring")
+        where = f"{function.__name__}'s docstring"
+        assert phrase in _prose(function.__doc__), _missing(phrase, where)
 
     def test_lint_sarif_docstring_does_not_credit_compile_errors_alone(self) -> None:
         phrase = '``"error"`` and flip ``executionSuccessful`` to false'
@@ -826,7 +808,7 @@ class TestCompleteReportsWhatTheRunRecorded:
         ],
     )
     def test_readme_states_what_the_fields_compute(self, phrase: str) -> None:
-        assert phrase in _file_prose(_README_PATH), _missing(phrase, "README.md")
+        assert phrase in _file_prose(_README_PATH), _missing(phrase, _WHERE_README)
 
     @pytest.mark.parametrize(
         "prose",
