@@ -439,10 +439,22 @@ with the `bool` row above, a change from `7` to `8` compared `1` with `1` and
 reported nothing. It now serializes `options_of(fd)` (`_option_bytes`, at the
 end of `src/protokit/schema/rules.py`). One difference had to be removed
 first: read from the file, the options hold `features` as an editions file
-declares them, and `GetOptions()` leaves them out. Compared as they come, a
-`features`-only change would be reported in a process whose default pool
-declares something and not in one where it declares nothing, so
-`_option_bytes` drops `features` before serializing.
+declares them, and `GetOptions()` on protobuf 5.27.5 leaves them out.
+Compared as they come, a `features`-only change would be reported in a
+process whose default pool declares something and not in one where it
+declares nothing. protobuf 4.25 keeps `features` in `GetOptions()`, so
+dropping them always would have changed the verdict there instead.
+`_option_bytes` drops them exactly when `GetOptions()` on the same field has
+none.
+
+A cross-model pass on that change found the file read wrong for one more
+input. Pure-Python builds a file that declares two messages, or two enums,
+of one name (upb refuses it), and a message or enum descriptor carries no
+index. Found by name, the first declaration answered for the second: a
+changed option on the unused twin was reported, and a field looked up in
+the wrong twin raised `LookupError`. `options_of` now returns `GetOptions()`
+when a name is declared twice in its scope, which is right under
+pure-Python, the only backend that gets there.
 
 Registering an extension in the default pool cannot be undone, so
 `tests/core/test_extensions_default_pool.py` runs each of those rows in a

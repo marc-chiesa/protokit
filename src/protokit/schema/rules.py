@@ -1199,29 +1199,36 @@ MESSAGE_RULES: tuple[tuple[str, MessageRuleFn], ...] = (
 )
 
 
-def _option_bytes(fd: proto_descriptor.FieldDescriptor) -> bytes:
-    """``fd``'s options as bytes, without ``features``.
+# Down here, import included, not beside ``options_changed``: published docs
+# cite line numbers in this file.
+from typing import Any  # noqa: E402
 
-    Defined down here, not beside :func:`options_changed`: published docs cite
-    line numbers in this file.
+
+def _option_bytes(fd: proto_descriptor.FieldDescriptor) -> bytes:
+    """``fd``'s options as bytes, with ``features`` only where ``GetOptions()`` has them.
 
     The options come from :func:`protokit._extensions.options_of`, so an
     extension the process has registered in protobuf's default pool cannot hide
     a change (under upb, ``GetOptions()`` re-decodes through that pool and can
     drop or rewrite what follows a record it does not decode). Where that reads
-    the schema's file it also returns ``features`` as an editions file declares
-    them, which ``GetOptions()`` leaves out; they are dropped here too, so the
-    verdict does not depend on which of the two was read.
+    the schema's file it returns ``features`` as an editions file declares
+    them. ``GetOptions()`` leaves them out on protobuf 5.27 and keeps them on
+    4.25, so they are dropped here exactly when it left them out: the verdict
+    then does not depend on which of the two was read.
     """
     options = _extensions.options_of(fd)
-    try:
-        declares_features = options.HasField("features")
-    except ValueError:  # protobuf before editions: options have no such field
-        declares_features = False
-    if declares_features:
+    if _declares_features(options) and not _declares_features(fd.GetOptions()):
         bare = type(options)()
         bare.CopyFrom(options)
         bare.ClearField("features")
         options = bare
     data: bytes = options.SerializeToString()
     return data
+
+
+def _declares_features(options: Any) -> bool:
+    try:
+        declared: bool = options.HasField("features")
+    except ValueError:  # protobuf before editions: options have no such field
+        return False
+    return declared

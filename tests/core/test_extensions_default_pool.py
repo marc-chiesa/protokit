@@ -337,8 +337,8 @@ _LATER_VERSIONS = {
     "the_same_schema": [],
     "a_changed_count": ["options_changed"],
     "a_changed_count_under_editions": ["options_changed"],
-    # ``GetOptions()`` leaves ``features`` out and the file read holds them; the
-    # verdict must not depend on which of the two the default pool selected.
+    # On protobuf 5.27 ``GetOptions()`` leaves ``features`` out and the file read
+    # holds them; the verdict must not depend on which the default pool selected.
     "changed_features_alone": [],
 }
 
@@ -625,6 +625,128 @@ class TestTwoFieldsOfOneName:
             return
         fields = build_pool(self._set()).FindMessageTypeByName("Twice").fields
         assert [options_of(field).deprecated for field in fields] == [True, False]
+
+
+class TestTwoMessagesOfOneName:
+    """Pure-Python builds such a file; upb refuses it. A message carries no index to find it by."""
+
+    @staticmethod
+    def _pool(first_field: str, *, first_deprecated: bool) -> Any:
+        from google.protobuf import descriptor_pool
+
+        f = descriptor_pb2.FileDescriptorProto(name="pkoptfile_twins.proto", syntax="proto2")
+        f.message_type.add(name="Twin").field.add(
+            name=first_field, number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        ).options.deprecated = first_deprecated
+        f.message_type.add(name="Twin").field.add(
+            name="f", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.AddSerializedFile(f.SerializeToString())
+        return pool
+
+    @pytest.mark.parametrize("first_field", ["f", "g"])
+    def test_the_file_read_gives_way_to_get_options(
+        self, first_field: str, default_pool_declares_something: None,
+    ) -> None:
+        from google.protobuf.internal import api_implementation
+
+        if api_implementation.Type() != "python":
+            with pytest.raises(TypeError, match="duplicate symbol"):
+                self._pool(first_field, first_deprecated=True)
+            return
+        # The pool resolves the name to the second declaration, whose field has
+        # no options. Read by name, the file would answer for the first: its
+        # deprecated ``f``, or a ``g`` where the descriptor says ``f``.
+        pool = self._pool(first_field, first_deprecated=True)
+        field = pool.FindMessageTypeByName("Twin").fields[0]
+        assert options_of(field) is field.GetOptions()
+        assert options_of(field.containing_type) is field.containing_type.GetOptions()
+        assert options_of(field).deprecated is False
+
+    def test_the_rule_agrees_with_what_it_said_before_the_default_pool_changed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from google.protobuf.internal import api_implementation
+
+        from protokit.message.model import FieldPath
+        from protokit.schema.rules import options_changed
+
+        if api_implementation.Type() != "python":
+            pytest.skip("upb refuses a file that declares one message name twice")
+        old, new = (
+            self._pool("f", first_deprecated=deprecated).FindMessageTypeByName("Twin").fields[0]
+            for deprecated in (False, True)
+        )
+        path = FieldPath(segments=("f",))
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: False)
+        before = options_changed(old, new, path)
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: True)
+        assert options_changed(old, new, path) == before == []
+
+
+class TestAnEnumDeclaredTwice:
+    def test_the_file_read_gives_way_to_get_options(
+        self, default_pool_declares_something: None,
+    ) -> None:
+        from google.protobuf import descriptor_pool
+        from google.protobuf.internal import api_implementation
+
+        f = descriptor_pb2.FileDescriptorProto(name="pkoptfile_enum_twins.proto", syntax="proto2")
+        for deprecated in (True, False):
+            enum = f.enum_type.add(name="Twin")
+            enum.value.add(name=f"TWIN_{'A' if deprecated else 'B'}", number=0)
+            enum.options.deprecated = deprecated
+        pool = descriptor_pool.DescriptorPool()
+        if api_implementation.Type() != "python":
+            with pytest.raises(TypeError, match="duplicate symbol"):
+                pool.AddSerializedFile(f.SerializeToString())
+            return
+        pool.AddSerializedFile(f.SerializeToString())
+        enum_desc = pool.FindEnumTypeByName("Twin")
+        assert options_of(enum_desc) is enum_desc.GetOptions()
+        assert options_of(enum_desc.values[0]) is enum_desc.values[0].GetOptions()
+
+
+class TestOptionBytesHoldFeaturesOnlyWhereGetOptionsHasThem:
+    """protobuf 5.27 leaves ``features`` out of ``GetOptions()``; 4.25 keeps them there."""
+
+    @staticmethod
+    def _field(live: descriptor_pb2.FieldOptions) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(GetOptions=lambda: live)
+
+    @staticmethod
+    def _options(*, features: bool) -> descriptor_pb2.FieldOptions:
+        options = descriptor_pb2.FieldOptions(deprecated=True)
+        if features:
+            options.features.SetInParent()
+        return options
+
+    @pytest.mark.parametrize(
+        ("live_has_them", "expected"), [(False, False), (True, True)],
+    )
+    def test_the_file_read_keeps_them_only_if_get_options_did(
+        self, live_has_them: bool, expected: bool, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from protokit.schema import rules
+
+        from_the_file = self._options(features=True)
+        monkeypatch.setattr(_extensions, "options_of", lambda fd: from_the_file)
+        data = rules._option_bytes(self._field(self._options(features=live_has_them)))
+        assert descriptor_pb2.FieldOptions.FromString(data).HasField("features") is expected
+        assert descriptor_pb2.FieldOptions.FromString(data).deprecated is True
+        assert from_the_file.HasField("features")  # the shared message is not modified
+
+    def test_get_options_itself_is_serialized_as_it_is(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from protokit.schema import rules
+
+        live = self._options(features=True)
+        monkeypatch.setattr(_extensions, "options_of", lambda fd: fd.GetOptions())
+        assert rules._option_bytes(self._field(live)) == live.SerializeToString()
 
 
 class TestAFileTooDeepForTheStackThatIsLeft:

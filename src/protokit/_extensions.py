@@ -289,8 +289,9 @@ def options_of(desc: Any) -> Any:
     The result is then not a ``descriptor_pb2`` class; it has the same declared
     fields, and :func:`rebind_options` reads an extension from it as it does
     from ``GetOptions()``. It also holds ``features`` as an editions file
-    declares them, which ``GetOptions()`` leaves out. A descriptor that names
-    no file gets ``GetOptions()``.
+    declares them, which ``GetOptions()`` leaves out on protobuf 5.27 (4.25
+    keeps them). A descriptor that names no file gets ``GetOptions()``, and so
+    does one the file cannot tell from another (see :class:`_AmbiguousNameError`).
 
     Args:
         desc: Any descriptor exposing ``GetOptions()``.
@@ -313,7 +314,20 @@ def options_of(desc: Any) -> Any:
         # Pure-Python only: its parser recurses once per nested message, and a
         # file its pool built from a shallower stack can be too deep for this one.
         return options
-    return find(file_proto, desc).options
+    try:
+        return find(file_proto, desc).options
+    except _AmbiguousNameError:
+        return options
+
+
+class _AmbiguousNameError(LookupError):
+    """Two declarations in one scope share a name, so the file cannot say which one is meant.
+
+    Pure-Python builds a file that declares two messages, or two enums, of one
+    name; upb refuses it. Neither kind of descriptor carries an index, so the
+    file read gives way to ``GetOptions()``, which pure-Python builds from the
+    right declaration and never re-decodes through the default pool.
+    """
 
 
 def _default_pool_extends(options_type: str) -> bool:
@@ -354,10 +368,12 @@ def _bare_file_class() -> Any:
 
 def _named(protos: Any, name: str) -> Any:
     """The declaration called ``name``: how a message or an enum, which carry no index, is found."""
-    for proto in protos:
-        if proto.name == name:
-            return proto
-    raise LookupError(f"{name!r} is not declared where its descriptor says it is")
+    found = [proto for proto in protos if proto.name == name]
+    if len(found) > 1:
+        raise _AmbiguousNameError(f"{name!r} is declared {len(found)} times in one scope")
+    if not found:
+        raise LookupError(f"{name!r} is not declared where its descriptor says it is")
+    return found[0]
 
 
 def _indexed(protos: Any, desc: Any) -> Any:
