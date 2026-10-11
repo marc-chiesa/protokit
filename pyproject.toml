@@ -34,7 +34,7 @@ dependencies = [
     # the same range the [compiler] extra's protoxy 0.7.x package
     # transitively pins (``protobuf<6``), so users get a working
     # install whether or not they install [compiler].
-    "protobuf>=4.21.0,<6",
+    "protobuf>=4.25.0,<6",
     "click>=8.0",
     # TOML parsing for pyproject [tool.protokit.lint] configuration.
     # Python 3.11+ ships tomllib in stdlib; tomli is the 3.10 fallback.
@@ -62,7 +62,7 @@ compiler = [
 # stability promise, and its Rust core bundles a specific arrow-rs that must
 # stay ABI-compatible with the resolved pyarrow (verified against pyarrow 24).
 # ptars is decoupled from the protobuf Python API (it reads descriptors only),
-# so it composes with the base ``protobuf>=4.21,<6`` pin without conflict.
+# so it composes with the base ``protobuf>=4.25,<6`` pin without conflict.
 # Neither package is a base dependency — the core install is unaffected when
 # this extra is absent (a missing extra raises ParquetExtraNotInstalledError,
 # never a raw ImportError).

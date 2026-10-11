@@ -62,6 +62,7 @@ import typing
 from pathlib import Path
 
 import pytest
+import yaml
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.internal import api_implementation
 from google.protobuf.message import Message
@@ -1035,4 +1036,52 @@ class TestReadmeRequirements:
         assert floors == [floor], (
             f"{_WHERE_REQUIREMENTS} should carry one '- Python {floor}+' bullet, the "
             f"floor requires-python sets; it carries {floors}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The protobuf floor: what pyproject.toml declares is what CI installs
+# ---------------------------------------------------------------------------
+
+_CI_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_FLOOR_JOB = "storage-protobuf-floor"
+_FLOOR_INSTALL = re.compile(r'pip install "protobuf==(\d+\.\d+)\.\*"')
+
+
+class TestProtobufFloor:
+    """The oldest protobuf ``pyproject.toml`` admits is the one a CI job installs.
+
+    The declared floor was ``4.21.0`` while the one job on an old protobuf
+    installed ``4.25.*``, so 4.21 to 4.24 were supported on paper and run by
+    nothing. Under pure-Python, 4.21 to 4.23 read every custom option on a
+    schema in its own pool as absent.
+    """
+
+    @staticmethod
+    def _declared_floor() -> str:
+        (specifier,) = [
+            Requirement(raw).specifier
+            for raw in _project_table()["dependencies"]
+            if canonicalize_name(Requirement(raw).name) == "protobuf"
+        ]
+        (lower,) = [bound.version for bound in specifier if bound.operator == ">="]
+        major, minor = lower.split(".")[:2]
+        return f"{major}.{minor}"
+
+    @staticmethod
+    def _installed_by_the_floor_job() -> list[str]:
+        workflow = yaml.safe_load(_CI_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = workflow["jobs"][_FLOOR_JOB]["steps"]
+        return [
+            match.group(1)
+            for step in steps
+            for match in _FLOOR_INSTALL.finditer(step.get("run", ""))
+        ]
+
+    def test_the_floor_job_installs_the_declared_floor(self) -> None:
+        declared = self._declared_floor()
+        assert self._installed_by_the_floor_job() == [declared], (
+            f"pyproject.toml declares protobuf>={declared}; the {_FLOOR_JOB} job in "
+            f"{_CI_WORKFLOW_PATH.name} should install exactly that line, with "
+            f'pip install "protobuf=={declared}.*". Move the two together.'
         )

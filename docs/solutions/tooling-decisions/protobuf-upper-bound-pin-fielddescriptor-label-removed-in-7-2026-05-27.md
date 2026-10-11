@@ -1,5 +1,5 @@
 ---
-title: "`protobuf>=4.21,<6` upper-bound pin is load-bearing because protobuf 6+ removed FieldDescriptor.label"
+title: "`protobuf>=4.25,<6` upper-bound pin is load-bearing because protobuf 6+ removed FieldDescriptor.label"
 date: 2026-05-27
 category: docs/solutions/tooling-decisions
 module: protokit
@@ -25,11 +25,11 @@ related_components:
   - tooling
 ---
 
-# `protobuf>=4.21,<6` upper-bound pin is load-bearing because protobuf 6+ removed FieldDescriptor.label
+# `protobuf>=4.25,<6` upper-bound pin is load-bearing because protobuf 6+ removed FieldDescriptor.label
 
 ## Context
 
-protokit's lint rule packs and compatibility checker introspect `FileDescriptor` / `FieldDescriptor` / `MessageDescriptor` objects via `.label`, `.type`, and similar attributes. The `google.protobuf` Python package shipped these as the public API surface from 4.21 through 5.x. **protobuf 6+ removed several of them** (`FieldDescriptor.label` notably) as part of a descriptor API restructuring (provenance — verified against protobuf 6/7.x during the 0.7.1 spike, 2026-05-27; the live guard is the `protobuf>=4.21.0,<6` pin re-tested by the `has_protoxy` CI matrix, not a re-test against protobuf 6+ itself). Code that calls `field.label == FieldDescriptor.LABEL_REPEATED` either `AttributeError`s mid-walk or silently fails to produce findings, depending on the call site.
+protokit's lint rule packs and compatibility checker introspect `FileDescriptor` / `FieldDescriptor` / `MessageDescriptor` objects via `.label`, `.type`, and similar attributes. The `google.protobuf` Python package shipped these as the public API surface from 4.21 through 5.x. **protobuf 6+ removed several of them** (`FieldDescriptor.label` notably) as part of a descriptor API restructuring (provenance — verified against protobuf 6/7.x during the 0.7.1 spike, 2026-05-27; the live guard is the `protobuf>=4.25.0,<6` pin re-tested by the `has_protoxy` CI matrix, not a re-test against protobuf 6+ itself). Code that calls `field.label == FieldDescriptor.LABEL_REPEATED` either `AttributeError`s mid-walk or silently fails to produce findings, depending on the call site.
 
 The asymmetric problem: protokit's optional `[compiler]` extra installs `protoxy`, which transitively pins `protobuf<6`. So users who run `pip install protokit[compiler]` were always safe — pip resolved to protobuf 5.x and everything worked. But users running plain `pip install protokit==0.7.0` had no upper bound, and pip's "give the user the latest compatible version" resolver picked protobuf 7.x. Result: same protokit version, same install command shape, two completely different runtime behaviors depending on whether `[compiler]` was specified.
 
@@ -48,7 +48,7 @@ dependencies = [
     # the same range the [compiler] extra's protoxy 0.7.x package
     # transitively pins (``protobuf<6``), so users get a working
     # install whether or not they install [compiler].
-    "protobuf>=4.21.0,<6",
+    "protobuf>=4.25.0,<6",
     "click>=8.0",
     # ... other deps ...
 ]
@@ -86,7 +86,7 @@ Optional dependencies that transitively pin upstream versions create an asymmetr
 
 The user-facing consequence is "the same `pip install <package>==X.Y.Z` produces a working install on my laptop (where I installed `[extras]`) and a broken install in production (where I didn't)." That's the worst category of bug — silent, environment-dependent, and only surfaces on the user's first real workflow invocation.
 
-Explicit pins also document intent. When a future maintainer sees `protobuf>=4.21.0,<6` they know the upper bound is deliberate, not stale. A missing upper bound looks like an oversight; the maintainer is likely to assume "we can support newer protobuf, just bump it" without auditing every descriptor introspection call.
+Explicit pins also document intent. When a future maintainer sees `protobuf>=4.25.0,<6` they know the upper bound is deliberate, not stale. A missing upper bound looks like an oversight; the maintainer is likely to assume "we can support newer protobuf, just bump it" without auditing every descriptor introspection call.
 
 There's a process implication too: any time you discover an upstream library has dropped public API surface in a major version, audit your own consumption of that surface AND tighten your dependency bound. The audit might reveal you weren't actually using the dropped attribute (in which case the pin can be wider), or it might reveal a non-trivial migration path (in which case the pin should stay strict until the migration ships).
 
@@ -104,7 +104,7 @@ There's a process implication too: any time you discover an upstream library has
 
 ```toml
 dependencies = [
-    "protobuf>=4.21.0",
+    "protobuf>=4.25.0",
     "click>=8.0",
 ]
 ```
@@ -117,7 +117,7 @@ User runs `pip install protokit==0.7.0`. pip resolves `protobuf-7.35.0`. First `
 dependencies = [
     # Upper bound: protobuf 6+ removed several FieldDescriptor /
     # MessageDescriptor attributes (notably ``.label``) ...
-    "protobuf>=4.21.0,<6",
+    "protobuf>=4.25.0,<6",
     "click>=8.0",
 ]
 ```

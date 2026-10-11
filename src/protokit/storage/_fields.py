@@ -184,7 +184,7 @@ def _walk_path(
 #
 # The ``json_format.MessageToDict``/``MessageToJson`` keyword that fills
 # no-presence fields at their default was renamed across the pinned
-# ``protobuf>=4.21.0,<6`` range:
+# ``protobuf>=4.25.0,<6`` range:
 #
 #   - ``including_default_value_fields`` — protobuf 4.21 .. 5.26 (old name).
 #   - ``always_print_fields_with_no_presence`` — protobuf 5.27+ (new name).
@@ -211,7 +211,7 @@ def _detect_no_presence_kwarg() -> str:
 
     Raises:
         RuntimeError: the installed protobuf exposes neither kwarg (outside the
-            pinned ``>=4.21.0,<6`` range — the KTD2 worst-case fallback).
+            pinned ``>=4.25.0,<6`` range — the KTD2 worst-case fallback).
     """
     params = inspect.signature(json_format.MessageToDict).parameters
     if _NEW_NO_PRESENCE_KWARG in params:
@@ -221,7 +221,7 @@ def _detect_no_presence_kwarg() -> str:
     raise RuntimeError(  # pragma: no cover - outside the pinned protobuf range
         "json_format.MessageToDict exposes neither "
         f"{_NEW_NO_PRESENCE_KWARG!r} nor {_OLD_NO_PRESENCE_KWARG!r}; "
-        "the installed protobuf is outside the supported >=4.21.0,<6 range"
+        "the installed protobuf is outside the supported >=4.25.0,<6 range"
     )
 
 

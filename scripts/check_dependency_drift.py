@@ -11,7 +11,7 @@ This script surfaces two distinct drifts, because they call for opposite
 responses:
 
 **Ceiling drift** — the specifier in ``pyproject.toml`` does not admit the
-latest release on PyPI. ``protobuf>=4.21.0,<6`` against an upstream that
+latest release on PyPI. ``protobuf>=4.25.0,<6`` against an upstream that
 shipped 6.x and 7.x is the motivating case. The response is to re-test
 against the new release and lift the bound.
 

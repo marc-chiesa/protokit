@@ -918,6 +918,11 @@ starts failing is one where protokit did not analyse what it was
 asked to, and the exit code was the last surface still saying
 otherwise.
 
+**protobuf 4.25 or later.** 0.16.0 requires `protobuf>=4.25.0`;
+0.15.1 accepted 4.21.0. An environment that pins `protobuf` below
+4.25 has to move that pin before it can install 0.16.0. The `< 6`
+ceiling is unchanged.
+
 **Pre-upgrade checklist.** These are the changes most likely to
 turn an existing pipeline red, in rough order of likelihood. The
 full list, including the Python API changes, is the upgrade table
@@ -1908,7 +1913,7 @@ is not yet exposed on the single-stream CLI.
 ## Requirements
 
 - Python 3.10+
-- `protobuf` >= 4.21.0, < 6
+- `protobuf` >= 4.25.0, < 6
 - `click` >= 8.0
 - `pathspec` >= 0.12, < 2
 - `tomli` >= 2.0, < 3 (Python 3.10 only)

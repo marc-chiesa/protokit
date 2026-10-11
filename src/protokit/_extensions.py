@@ -112,9 +112,9 @@ def _options_class(options_desc: Any) -> Any:
     """Build the message class for ``options_desc`` in its own pool.
 
     ``message_factory.GetMessageClass`` is absent from protobuf 4.21, the
-    declared floor, and present by 4.25, the floor CI runs; a release without
-    it reaches the same class through ``MessageFactory(pool).GetPrototype``,
-    which newer ones deprecate.
+    declared floor until 0.16.0, and present in 4.25, the floor since. A
+    release without it reaches the same class through
+    ``MessageFactory(pool).GetPrototype``, which newer ones deprecate.
     """
     get_message_class = getattr(message_factory, "GetMessageClass", None)
     if get_message_class is not None:

@@ -10,7 +10,7 @@ severity: high
 applies_when:
   - "Choosing a proto-to-Arrow / proto-reflection dependency for an engine that resolves messages through isolated (non-default) DescriptorPools"
   - "The candidate library detects well-known types by default-pool descriptor identity (Python `is`/`==` on a WKT DESCRIPTOR)"
-  - "A constrained protobuf pin is in force (protokit pins `protobuf>=4.21,<6`) and a candidate transitively couples to the protobuf Python API version"
+  - "A constrained protobuf pin is in force (protokit pins `protobuf>=4.25,<6`) and a candidate transitively couples to the protobuf Python API version"
   - "Adopting a young (`0.0.x`, single-maintainer) dependency that is nonetheless the best technical fit"
 tags:
   - proto-to-arrow
@@ -37,7 +37,7 @@ When picking a proto-introspection dependency for an engine that uses anything o
 
 1. **Spike against your real descriptor-provenance model, not a toy default-pool example.** A library that detects well-known types (WKTs) by **default-pool descriptor identity** — Python `is`/`==` against `Timestamp.DESCRIPTOR` — silently fails on isolated pools. The isolated `Timestamp` is a *different descriptor object*, so the identity check returns false and the WKT degrades to a raw `struct` instead of a native Arrow `timestamp`. protarrow falls into exactly this trap (`proto_to_arrow.py`) (provenance — verified against protarrow at the 2026-06-02 spike; protarrow's behavior is external and not re-asserted by protokit's test suite). The failure is silent — no error, just wrong output — and a default-pool demo would never surface it.
 
-2. **Check the dependency's transitive protobuf-version coupling against your pin.** Pure-Python descriptor-walkers are coupled to the protobuf *Python API* version. protarrow `>=0.15` requires protobuf 6 because it calls `FieldDescriptor.is_repeated`; protobuf 6/7 removed `FieldDescriptor.label`, which protokit's lint/compat engine depends on, so protokit pins `protobuf>=4.21,<6`. The newest usable protarrow is therefore 0.14.0 — a version lock layered on top of the WKT shim (provenance — protarrow/protobuf versions verified at the 2026-06-02 spike; these external-version cutoffs are not re-asserted by protokit's test suite, so re-check before relying on the protarrow 0.14.0 ceiling). (See the load-bearing pin: [`protobuf>=4.21,<6` upper-bound pin](protobuf-upper-bound-pin-fielddescriptor-label-removed-in-7-2026-05-27.md).)
+2. **Check the dependency's transitive protobuf-version coupling against your pin.** Pure-Python descriptor-walkers are coupled to the protobuf *Python API* version. protarrow `>=0.15` requires protobuf 6 because it calls `FieldDescriptor.is_repeated`; protobuf 6/7 removed `FieldDescriptor.label`, which protokit's lint/compat engine depends on, so protokit pins `protobuf>=4.25,<6`. The newest usable protarrow is therefore 0.14.0 — a version lock layered on top of the WKT shim (provenance — protarrow/protobuf versions verified at the 2026-06-02 spike; these external-version cutoffs are not re-asserted by protokit's test suite, so re-check before relying on the protarrow 0.14.0 ceiling). (See the load-bearing pin: [`protobuf>=4.25,<6` upper-bound pin](protobuf-upper-bound-pin-fielddescriptor-label-removed-in-7-2026-05-27.md).)
 
 3. **Prefer a Rust/decoupled core when your protobuf pin is constrained.** ptars parses wire bytes in Rust over the descriptors it is *handed*; the Python `protobuf` package is used only to register `FileDescriptor`s into a ptars `HandlerPool`. Its conversion correctness does not depend on the protobuf Python API version, so it runs cleanly on protobuf 5.x. The spike verified it maps WKTs correctly on isolated pools (including nested at depth), plus map/repeated/nested/oneof and PR2 presence parity.
 
@@ -91,6 +91,6 @@ The rule in one line: *spike the candidate against your actual descriptor-proven
 ## Related
 
 - [Faithful proto-to-Arrow mapping (presence structure + Arrow-native values)](../design-patterns/proto-to-arrow-faithful-mapping-presence-structure-arrow-native-values.md) — the conversion fidelity model this library choice enables (this doc = the dependency; that doc = the mapping).
-- [`protobuf>=4.21,<6` upper-bound pin is load-bearing](protobuf-upper-bound-pin-fielddescriptor-label-removed-in-7-2026-05-27.md) — the pin that disqualifies protarrow `>=0.15`; the binding premise for rule 2.
+- [`protobuf>=4.25,<6` upper-bound pin is load-bearing](protobuf-upper-bound-pin-fielddescriptor-label-removed-in-7-2026-05-27.md) — the pin that disqualifies protarrow `>=0.15`; the binding premise for rule 2.
 - [Recursive proto schemas segfault ptars during Arrow schema build](../security-issues/recursive-proto-schema-segfaults-ptars-arrow-build.md) — a realized instance of this backend's maturity risk; ptars 0.0.17 segfaults on recursive descriptors, now guarded by a Python descriptor pre-flight.
 - Origin: PR #17 (`feat/storage-pr3-columnar`); sink at `src/protokit/storage/_columnar.py`; decision recorded in `docs/brainstorms/2026-06-02-storage-pr3-columnar-parquet-requirements.md` — maintainer-local and not in this repo.
