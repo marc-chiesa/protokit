@@ -101,9 +101,9 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
     rebound = _options_class(target)()
     try:
         rebound.MergeFromString(options.SerializeToString())
-    except (message.DecodeError, UnicodeDecodeError):
-        # Any option's bytes can fail the whole read (pure-Python also rejects
-        # a bad string while parsing), so read just this one's records instead.
+    except (message.DecodeError, UnicodeDecodeError, RecursionError):
+        # Any option's bytes can fail the whole read (pure-Python also rejects a bad
+        # string, and overflows the stack on deep nesting): read just this one's.
         rebound = _only_extension(target, options.SerializeToString(), ext_desc)
     return _checked(rebound, ext_desc)
 
@@ -154,7 +154,7 @@ def _only_extension(options_desc: Any, data: bytes, ext_desc: Any) -> Any:
     rebound = _options_class(options_desc)()
     try:
         rebound.MergeFromString(kept)
-    except (message.DecodeError, UnicodeDecodeError) as exc:
+    except (message.DecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise message.DecodeError(f"{ext_desc.full_name}: {exc}") from exc
     return rebound
 

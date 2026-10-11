@@ -201,7 +201,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
   every option; the lint failure was in 0.15.1 too.) When the whole read
   fails, the requested option's own
   records are now read on their own. A framing error anywhere still
-  raises rather than returning part of a repeated option. A string option
+  raises rather than returning part of a repeated option. An option nested
+  deeper than the parser reads is one whose bytes do not parse: under
+  pure-Python that parse raises `RecursionError`, which is now handled as
+  the other parse failures are, so there the option beside it reads and the
+  deep one raises `DecodeError` naming it. A string option
   that is not UTF-8 now raises `DecodeError` naming the option on both
   backends; under upb a proto2 one used to come back as `bytes`. One case
   still differs: a singular string option written twice on the wire, the

@@ -602,15 +602,42 @@ class TestSyntheticRuleSpecRegistryContract:
         }
 
 
+# Imported here, not at the top: published docs cite line numbers in this file.
+import pytest  # noqa: E402
+
+
+def _nested_too_deep() -> bytes:
+    """``example.audit_tree`` (50103) holding more nested messages than either parser reads.
+
+    upb refuses the bytes with ``DecodeError``. Pure-Python has no depth limit
+    of its own and runs out of stack instead, raising ``RecursionError``.
+    """
+    import sys
+
+    from tests.storage.proto_fixtures import encode_varint
+
+    body = b""
+    for _ in range(2 * sys.getrecursionlimit()):
+        body = b"\x0a" + encode_varint(len(body)) + body
+    return encode_varint(50103 << 3 | 2) + encode_varint(len(body)) + body
+
+
 class TestOptionBesideAMalformedOne:
     """A rule reading a valid option still runs when another option is malformed.
 
     ``example.audit_note`` is a proto3 string option holding bytes that are not
-    UTF-8. Reading the options message whole failed on it, so every rule on any
-    option of that method raised ``rule_exception``.
+    UTF-8, and ``example.audit_tree`` is a message option nested too deep to
+    parse. Reading the options message whole failed on either, so every rule on
+    any option of that method raised ``rule_exception``.
     """
 
-    def test_the_rule_runs(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "malformed",
+        # audit_note = 0xff 0xfe (50101, wire type 2).
+        [bytes.fromhex("aabb18" "02fffe"), _nested_too_deep()],
+        ids=["not-utf8", "nested-too-deep"],
+    )
+    def test_the_rule_runs(self, tmp_path: Path, malformed: bytes) -> None:
         from google.protobuf import descriptor_pb2
 
         from protokit.schema.lint._cli_utils import _load_descriptor_sets_to_result
@@ -629,6 +656,14 @@ class TestOptionBesideAMalformedOne:
                 name=name, number=number, type=kind, label=fd.LABEL_OPTIONAL,
                 extendee=".google.protobuf.MethodOptions",
             )
+        ext_file.message_type.add(name="Tree").field.add(
+            name="child", number=1, type=fd.TYPE_MESSAGE, label=fd.LABEL_OPTIONAL,
+            type_name=".example.Tree",
+        )
+        ext_file.extension.add(
+            name="audit_tree", number=50103, type=fd.TYPE_MESSAGE, label=fd.LABEL_OPTIONAL,
+            type_name=".example.Tree", extendee=".google.protobuf.MethodOptions",
+        )
         svc_file = descriptor_pb2.FileDescriptorProto(
             name="example/svc.proto", package="example", syntax="proto3",
             dependency=["example/note.proto"],
@@ -638,8 +673,8 @@ class TestOptionBesideAMalformedOne:
         method = svc.method.add(
             name="Annotated", input_type=".example.Req", output_type=".example.Req",
         )
-        # audit_note = 0xff 0xfe (50101, wire type 2), audit_level = 42 (50102, wire type 0).
-        method.options.MergeFromString(bytes.fromhex("aabb18" "02fffe" "b0bb18" "2a"))
+        # The malformed option, then audit_level = 42 (50102, wire type 0).
+        method.options.MergeFromString(malformed + bytes.fromhex("b0bb18" "2a"))
         fds = descriptor_pb2.FileDescriptorSet()
         fds.file.extend([descriptor_proto, ext_file, svc_file])
         path = tmp_path / "set.binpb"
