@@ -728,6 +728,12 @@ under the pure-Python runtime with no known-failure list, and the
   reads "clean run that completed", and `2` names the incomplete analysis
   alongside the lint-internal and usage errors it already listed. Help text
   only; no behaviour change.
+- **README's Requirements section lists every runtime dependency.** It named
+  `protobuf >= 4.21.0` and `click` and nothing else, so the `< 6` ceiling on
+  `protobuf` was missing, and so were `pathspec` and the two Python 3.10
+  backports (`tomli`, `typing_extensions`). The section now matches what
+  `pip install protokit` resolves, and a test compares it with
+  `pyproject.toml`. Documentation only; no dependency changed.
 
 ### Internal
 

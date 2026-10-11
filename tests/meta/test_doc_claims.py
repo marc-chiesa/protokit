@@ -38,12 +38,18 @@ a default-valued extension always equals an unset one, and that ``complete``
 and SARIF's ``executionSuccessful`` say the analysis covered its input. Their
 prose lives in ``README.md`` and ``CHANGELOG.md`` as well as in the source.
 
+The final class is a claim nobody rewrote. The README's Requirements section
+had fallen to two of the five runtime dependencies and had lost ``protobuf``'s
+upper bound; it is compared with ``pyproject.toml``, the list pip acts on.
+
 KTD3 proof: a doc-shaped fix has no guarded branch to mutate. Each prose
 check was proven instead by using ``scripts/mutation_check.py`` to rewrite the
 corrected text back to the original wrong claim and watching the check fail.
 Each behavioural half was proven by breaking the behaviour it measures: the
 ``DecodeError`` conversion, the ``TYPE_CHECKING`` gate, an importer of
-``_cli_utils`` removed or added.
+``_cli_utils`` removed or added. The Requirements comparison was proven from
+both files: a bound changed in the README, and a bound changed in
+``pyproject.toml``.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from __future__ import annotations
 import builtins
 import json
 import re
+import sys
 import typing
 from pathlib import Path
 
@@ -58,6 +65,9 @@ import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.internal import api_implementation
 from google.protobuf.message import Message
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 
 import protokit._pools as pools
 import protokit.schema.lint._cli_utils as cli_utils
@@ -91,11 +101,17 @@ from tests.meta.test_import_layers import (
     build_import_graph,
     import_in_fresh_interpreter,
 )
+from tests.meta.test_minimal_install_cell_presence_ratchet import python_floor
 from tests.meta.test_upgrade_notes_presence_ratchet import (
     _changelog_release_section,
     _readme_section,
 )
 from tests.proto_builder import ProtoBuilder
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 T = descriptor_pb2.FieldDescriptorProto
 
@@ -864,4 +880,159 @@ class TestCompleteReportsWhatTheRunRecorded:
             phrase,
             "README.md or the CHANGELOG's 0.16.0 section",
             "an input skipped without a record still reads as success",
+        )
+
+
+# ---------------------------------------------------------------------------
+# README Requirements: the dependencies pip installs
+# ---------------------------------------------------------------------------
+
+_PYPROJECT_PATH = _REPO_ROOT / "pyproject.toml"
+_WHERE_REQUIREMENTS = "README.md's Requirements section"
+_PYTHON_CLASSIFIER = re.compile(r"Programming Language :: Python :: (\d+\.\d+)")
+_PYTHON_BULLET = re.compile(r"- Python (\d+\.\d+)\+")
+# One bound is an operator, one space, and a version with no space inside it, so
+# dropping the spaces to compare cannot join two tokens into a different version.
+_BOUND = r"(?:~=|==|!=|<=|>=|<|>) \d[0-9A-Za-z.*]*"
+_DEPENDENCY_BULLET = re.compile(
+    rf"- `(?P<name>[A-Za-z0-9._-]+)` (?P<bounds>{_BOUND}(?:, {_BOUND})*)"
+    r"(?: \(Python (?P<pythons>\d+\.\d+(?:(?:, | and )\d+\.\d+)*) only\))?"
+)
+# A marker on anything but the interpreter's minor version cannot be written as
+# "Python X.Y only", and evaluating one here would read this machine.
+_OTHER_MARKER_VARIABLE = re.compile(
+    r"\b(?:os_name|sys_platform|platform_\w+|implementation_\w+|python_full_version|extra)\b"
+)
+
+# One requirement as both files state it: canonical name, version bounds, and
+# the supported Python versions a conditional one is installed on. An
+# unconditional requirement carries ``()``, which no conditional one can: a
+# README note naming every supported version is still a condition, and it
+# would wrongly rule out the next Python release.
+_Stated = tuple[str, str, tuple[str, ...]]
+
+
+def _project_table() -> dict[str, typing.Any]:
+    table: dict[str, typing.Any] = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))[
+        "project"
+    ]
+    return table
+
+
+def _supported_pythons() -> tuple[str, ...]:
+    """Every ``X.Y`` the package's classifiers say it supports."""
+    found = tuple(
+        match.group(1)
+        for classifier in _project_table()["classifiers"]
+        if (match := _PYTHON_CLASSIFIER.fullmatch(classifier))
+    )
+    assert found, "pyproject.toml classifies no 'Programming Language :: Python :: X.Y'"
+    return found
+
+
+def _declared_requirements() -> list[_Stated]:
+    """``[project].dependencies``, each with the supported Pythons its marker admits."""
+    pythons = _supported_pythons()
+    declared: list[_Stated] = []
+    for raw in _project_table()["dependencies"]:
+        requirement = Requirement(raw)
+        if requirement.extras or requirement.url:
+            pytest.fail(
+                f"{raw!r} names an extra or a URL. Decide how {_WHERE_REQUIREMENTS} "
+                "should say that, then teach this test to read it."
+            )
+        installed_on: tuple[str, ...] = ()
+        if requirement.marker is not None:
+            if _OTHER_MARKER_VARIABLE.search(str(requirement.marker)):
+                pytest.fail(
+                    f"{raw!r} is conditional on more than the Python version. Decide how "
+                    f"{_WHERE_REQUIREMENTS} should say that, then teach this test to read it."
+                )
+            installed_on = tuple(
+                python
+                for python in pythons
+                if requirement.marker.evaluate({"python_version": python})
+            )
+            if not installed_on:
+                pytest.fail(f"{raw!r} is installed on no Python the classifiers list.")
+        declared.append(
+            (canonicalize_name(requirement.name), str(requirement.specifier), installed_on)
+        )
+    return sorted(declared)
+
+
+def _requirements_lines() -> list[str]:
+    """Every non-blank line of the section, sub-headings included, up to the next ``##``."""
+    body = _README_PATH.read_text(encoding="utf-8")
+    heading = re.search(r"^## Requirements\n", body, flags=re.MULTILINE)
+    assert heading, "README.md has no '## Requirements' section"
+    section = body[heading.end():]
+    end = re.search(r"^#{1,2} ", section, flags=re.MULTILINE)
+    lines = (section[: end.start()] if end else section).splitlines()
+    return [line for line in lines if line.strip()]
+
+
+def _listed_requirements() -> list[_Stated]:
+    """Every dependency the README section lists; a line that is not one fails.
+
+    The section is its bullets and nothing else. A sentence beside them, or a
+    bullet in another shape, would be a claim about requirements that nothing
+    here compares with ``pyproject.toml``.
+    """
+    pythons = _supported_pythons()
+    listed: list[_Stated] = []
+    for line in _requirements_lines():
+        if _PYTHON_BULLET.fullmatch(line):
+            continue
+        match = _DEPENDENCY_BULLET.fullmatch(line)
+        if match is None:
+            pytest.fail(
+                f"{_WHERE_REQUIREMENTS} has a line this test cannot read: {line!r}. "
+                'Every line there is "- Python X.Y+" or "- `name` >= X, < Y", with '
+                '" (Python X.Y only)" after the bounds when the dependency is conditional.'
+            )
+        only = match.group("pythons")
+        installed_on = tuple(re.findall(r"\d+\.\d+", only)) if only else ()
+        if unknown := [python for python in installed_on if python not in pythons]:
+            pytest.fail(
+                f"{_WHERE_REQUIREMENTS} conditions {match.group('name')} on Python "
+                f"{unknown}, which pyproject.toml's classifiers do not list."
+            )
+        bounds = str(SpecifierSet(match.group("bounds").replace(" ", "")))
+        listed.append((canonicalize_name(match.group("name")), bounds, installed_on))
+    return sorted(listed)
+
+
+class TestReadmeRequirements:
+    """The README's Requirements section is what ``pip install protokit`` resolves.
+
+    It listed ``protobuf >= 4.21.0`` and ``click`` and nothing else. A reader took
+    protobuf 6 to be supported, which ``pyproject.toml`` rules out, and could not
+    see ``pathspec`` or the two Python 3.10 backports at all. ``pyproject.toml`` is
+    the side pip acts on, so the README is held to it: every runtime dependency,
+    its bounds, and the Python versions it is installed on.
+    """
+
+    def test_every_runtime_dependency_is_listed_with_its_bounds(self) -> None:
+        declared = _declared_requirements()
+        assert declared, "pyproject.toml declares no runtime dependencies"
+        listed = _listed_requirements()
+        assert listed == declared, (
+            f"{_WHERE_REQUIREMENTS} and pyproject.toml's [project].dependencies disagree "
+            "(name, bounds, Python versions installed on).\n"
+            f"  README only:    {[entry for entry in listed if entry not in declared]}\n"
+            f"  pyproject only: {[entry for entry in declared if entry not in listed]}\n"
+            "pyproject.toml is what pip acts on; change the README to match it."
+        )
+
+    def test_python_floor_is_the_one_requires_python_sets(self) -> None:
+        floors = [
+            match.group(1)
+            for line in _requirements_lines()
+            if (match := _PYTHON_BULLET.fullmatch(line))
+        ]
+        floor = python_floor(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+        assert floors == [floor], (
+            f"{_WHERE_REQUIREMENTS} should carry one '- Python {floor}+' bullet, the "
+            f"floor requires-python sets; it carries {floors}."
         )
