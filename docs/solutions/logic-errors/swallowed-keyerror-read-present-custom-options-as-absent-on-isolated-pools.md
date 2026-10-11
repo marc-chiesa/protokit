@@ -286,7 +286,8 @@ usually come from different pools.
 Both lint sites now call the seam and nothing else:
 `src/protokit/schema/lint/_custom_rules.py:244` and
 `src/protokit/schema/lint/rules/options/field_behavior.py:302`, each
-`parsed = rebind_options(<descriptor>.GetOptions(), ext_desc)`.
+`parsed = rebind_options(options_of(<descriptor>), ext_desc)` (it was
+`<descriptor>.GetOptions()` until the follow-up below).
 `_extension_access.get_pool_bound_options_class` was deleted, not re-exported
 as the plan's seam table had it. A re-export would have left a second public
 way to get the class.
@@ -397,12 +398,55 @@ pool-bound options class" cannot be detected statically:
 `message_factory.GetMessageClass` call for ordinary message classes
 (`src/protokit/_pools.py:251`), so a name-match ratchet would fire on day one.
 Instead the builder is private, and the only exported entry points are
-`rebind_options` and `extends`. `TestConstructionGuard`
+`rebind_options`, `extends` and (since the follow-up below) `options_of`, none
+of which hands out the class. `TestConstructionGuard`
 (`tests/core/test_extensions.py:230`) pins both modules' exported surfaces, and
 counts a builder re-exported from protobuf or wrapped in a `typing` alias as
 exported: the first version checked only locally defined functions, and a
 cross-model refuter bypassed it both ways. Its docstring says a from-scratch
 hand-roll is outside what it can rule out.
+
+**Follow-up (2026-10-11): under upb, `GetOptions()` is not the file's bytes
+either.** The fix above still started from `desc.GetOptions()`, on the premise
+that the bytes there are intact. Under upb they are a second decode: the
+descriptor's options are serialized and parsed again through the *default*
+pool's extension registry, and when that parse fails upb keeps what it had and
+raises nothing. So what the process has registered in the default pool decides
+what an isolated-pool schema reads as. Measured on protobuf 5.27.5:
+
+| The default pool declares | Before, under upb | Pure-Python |
+|---|---|---|
+| the schema's own extensions, one option's bytes malformed | the options after the malformed one read as `None`; the malformed one returns a partly-filled message instead of raising | right |
+| an unrelated message extension at the number of a string option | `'hello world'` reads as `'he'`, every option after it as `None`, with all bytes well formed | right |
+| an unrelated `bool` extension at the number of an `int32` option | `7` reads as `1` | right |
+| an unrelated extension of `FeatureSet`, on an editions field that declares `features` | every custom option on the field reads as `None` | right |
+
+`options_of(desc)` (`src/protokit/_extensions.py`, below everything the line
+numbers above cite) returns `desc.GetOptions()` unless the default pool
+declares an extension of that options message or of `FeatureSet`; then it
+parses `desc.file.serialized_pb` with a `FileDescriptorProto` class built in a
+pool of its own, which knows no extension, and returns the declaration's
+`options`. A field, extension, oneof, enum value, service or method is found
+by its `index`, not its name: pure-Python builds a message that declares one
+field name twice, and both backends a service that declares one method name
+twice. Under pure-Python that parse recurses once per nested message and can
+run out of stack on a file its pool built from a shallower one; `options_of`
+then returns `GetOptions()`, as before. All three readers pass `options_of(desc)` to `rebind_options`, and
+`TestNoReaderBypassesTheFile` fails a caller that passes `GetOptions()`.
+
+Registering an extension in the default pool cannot be undone, so
+`tests/core/test_extensions_default_pool.py` runs each of those rows in a
+fresh interpreter, through `get_option_value`, a `custom/<suffix>` rule and
+`options/field-behavior-consistent`. Two things in that file are easy to get
+wrong. The schema has to be loaded *before* the registration: afterwards the
+loader parses the set through the same registry, on both backends, and either
+refuses it or, where the bytes decode as the other type, rewrites the value
+before any pool sees it (an `int32` 7 is stored as 1). `options_of` cannot
+recover that, because the file it reads is already changed; the loader is a
+separate defect, not fixed here. And a test
+suite's own default pool is not empty (some test in this one registers
+`FieldOptions` extensions), so a test whose premise is "nothing is declared"
+has to patch the check, not assume it.
 
 ## Prevention
 

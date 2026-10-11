@@ -7,8 +7,8 @@ only the default pool, so for an extension declared anywhere else protobuf
 refuses ``HasExtension`` / ``Extensions[]`` **by identity**, raising
 ``KeyError`` even though the full names match. That is every schema protokit
 loads from a descriptor set: ``protokit._pools`` builds each one into a fresh,
-isolated pool. The option's bytes are intact on the message; only the class
-reading them is wrong.
+isolated pool. The option's bytes are intact in the schema's file (and, see
+:func:`options_of`, usually on the message); the class reading them is wrong.
 
 So the fix is to re-read those bytes through the class of the options message
 the extension actually extends — ``ext_desc.containing_type``, from the
@@ -28,9 +28,9 @@ site builds "a pool-bound options class" is not statically decidable — the
 same ``message_factory.GetMessageClass`` call builds ordinary message classes
 in ``protokit._pools`` — so the guard is **by construction**, not a name
 match: the class builder here is private and the only exported ways in are
-:func:`rebind_options` and :func:`extends`. A caller cannot get the class
-without writing the construction from scratch, and nothing short of that
-reproduces the defect.
+:func:`rebind_options`, :func:`extends` and :func:`options_of`, none of which
+hands out the class. A caller cannot get it without writing the construction
+from scratch, and nothing short of that reproduces the defect.
 
 **Layer 0 (KTD8).** This module imports nothing from ``protokit`` at any
 scope, so ``protokit.options`` (core) and ``protokit.schema.lint`` can both
@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from google.protobuf import descriptor, message, message_factory
+from google.protobuf import descriptor, descriptor_pb2, descriptor_pool, message, message_factory
 
 
 def extends(options: Any, ext_desc: Any) -> bool:
@@ -265,3 +265,160 @@ def _list_fields(msg: Any) -> Any:
         if attr is not None and callable(attr) and not isinstance(attr, property):
             return attr(msg)
     raise AttributeError(f"{type(msg).__name__} has no ListFields")
+
+
+# Imported here, not at the top: published docs cite line numbers in this file.
+import functools  # noqa: E402
+
+
+def options_of(desc: Any) -> Any:
+    """Return ``desc``'s options, every custom option's bytes as the schema's file holds them.
+
+    That is ``desc.GetOptions()`` unless the default pool declares an extension
+    those options could hold. upb builds ``GetOptions()`` by decoding the
+    options again through the *default* pool's extension registry, and when
+    that decode fails it keeps what it had and raises nothing. So an extension
+    registered there — the schema's own, or an unrelated one that uses the same
+    number for another type — decides what an isolated-pool schema reads as:
+    the options after a record that does not decode are gone, that record keeps
+    only what decoded, and a record that does decode is written back as the
+    other type (an ``int32`` 7 under a ``bool`` comes back as 1).
+
+    The file ``desc`` was built from still holds every byte, so in that case the
+    options are read from it, through a class that knows no extension at all.
+    The result is then not a ``descriptor_pb2`` class; it has the same declared
+    fields, and :func:`rebind_options` reads an extension from it as it does
+    from ``GetOptions()``. It also holds ``features`` as an editions file
+    declares them, which ``GetOptions()`` leaves out. A descriptor that names
+    no file gets ``GetOptions()``.
+
+    Args:
+        desc: Any descriptor exposing ``GetOptions()``.
+
+    Returns:
+        An options message of ``desc``'s options type. It is shared, like the
+        one ``GetOptions()`` returns: do not modify it.
+    """
+    options = desc.GetOptions()
+    kind: str = options.DESCRIPTOR.name
+    if kind not in _DECLARATION or not _default_pool_extends(kind):
+        return options
+    file, find = _DECLARATION[kind]
+    file_desc = file(desc)
+    if file_desc is None:
+        return options
+    try:
+        file_proto = _file_proto(file_desc)
+    except RecursionError:
+        # Pure-Python only: its parser recurses once per nested message, and a
+        # file its pool built from a shallower stack can be too deep for this one.
+        return options
+    return find(file_proto, desc).options
+
+
+def _default_pool_extends(options_type: str) -> bool:
+    """Whether the default pool declares an extension ``options_type`` could hold.
+
+    Its own, or one of ``FeatureSet``: every options message holds ``features``,
+    the one other message in ``descriptor.proto`` that takes extensions, and
+    decodes it through the same registry.
+    """
+    pool = descriptor_pool.Default()
+    for name in (options_type, "FeatureSet"):
+        try:
+            holder = pool.FindMessageTypeByName(f"google.protobuf.{name}")
+        except KeyError:  # protobuf before editions has no FeatureSet
+            continue
+        if pool.FindAllExtensions(holder):
+            return True
+    return False
+
+
+# Parsing a file is the cost of one read; the files a caller is working through
+# stay parsed. Each entry keeps its file, and so that file's pool, alive.
+@functools.lru_cache(maxsize=32)
+def _file_proto(file_desc: Any) -> Any:
+    """``file_desc`` as a ``FileDescriptorProto`` whose options hold every extension unread."""
+    proto = _bare_file_class()()
+    proto.MergeFromString(file_desc.serialized_pb)
+    return proto
+
+
+@functools.cache
+def _bare_file_class() -> Any:
+    """``FileDescriptorProto`` in a pool of its own, which no extension is ever added to."""
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(descriptor_pb2.DESCRIPTOR.serialized_pb)
+    return _options_class(pool.FindMessageTypeByName("google.protobuf.FileDescriptorProto"))
+
+
+def _named(protos: Any, name: str) -> Any:
+    """The declaration called ``name``: how a message or an enum, which carry no index, is found."""
+    for proto in protos:
+        if proto.name == name:
+            return proto
+    raise LookupError(f"{name!r} is not declared where its descriptor says it is")
+
+
+def _indexed(protos: Any, desc: Any) -> Any:
+    """The declaration of ``desc`` among ``protos``, by its position.
+
+    Not by name: pure-Python builds a message that declares two fields of one
+    name (upb refuses the file), and both backends a service with two methods
+    of one name. A name would find the first declaration for either.
+    """
+    proto = protos[desc.index]
+    if proto.name != desc.name:
+        raise LookupError(f"{desc.name!r} is not declared where its descriptor says it is")
+    return proto
+
+
+def _message_proto(file_proto: Any, desc: Any) -> Any:
+    parent = desc.containing_type
+    if parent is None:
+        return _named(file_proto.message_type, desc.name)
+    return _named(_message_proto(file_proto, parent).nested_type, desc.name)
+
+
+def _enum_proto(file_proto: Any, desc: Any) -> Any:
+    parent = desc.containing_type
+    scope = file_proto if parent is None else _message_proto(file_proto, parent)
+    return _named(scope.enum_type, desc.name)
+
+
+def _field_proto(file_proto: Any, desc: Any) -> Any:
+    if not desc.is_extension:
+        return _indexed(_message_proto(file_proto, desc.containing_type).field, desc)
+    # An extension is declared in a file or inside a message, neither of which
+    # is the message it extends (its ``containing_type``).
+    scope = desc.extension_scope
+    return _indexed(
+        (file_proto if scope is None else _message_proto(file_proto, scope)).extension, desc,
+    )
+
+
+def _method_proto(file_proto: Any, desc: Any) -> Any:
+    return _indexed(_indexed(file_proto.service, desc.containing_service).method, desc)
+
+
+# Options message name -> (the file of a descriptor carrying it, its declaration in that file).
+_DECLARATION: dict[str, tuple[Any, Any]] = {
+    "FileOptions": (lambda desc: desc, lambda file_proto, desc: file_proto),
+    "MessageOptions": (lambda desc: desc.file, _message_proto),
+    "FieldOptions": (lambda desc: desc.file, _field_proto),
+    "OneofOptions": (
+        lambda desc: desc.containing_type.file,
+        lambda file_proto, desc: _indexed(
+            _message_proto(file_proto, desc.containing_type).oneof_decl, desc,
+        ),
+    ),
+    "EnumOptions": (lambda desc: desc.file, _enum_proto),
+    "EnumValueOptions": (
+        lambda desc: desc.type.file,
+        lambda file_proto, desc: _indexed(_enum_proto(file_proto, desc.type).value, desc),
+    ),
+    "ServiceOptions": (
+        lambda desc: desc.file, lambda file_proto, desc: _indexed(file_proto.service, desc),
+    ),
+    "MethodOptions": (lambda desc: desc.containing_service.file, _method_proto),
+}
