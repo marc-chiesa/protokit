@@ -257,9 +257,9 @@ rebind_options`):
     rebound = _options_class(target)()
     try:
         rebound.MergeFromString(options.SerializeToString())
-    except (message.DecodeError, UnicodeDecodeError):
-        # Any option's bytes can fail the whole read (pure-Python also rejects
-        # a bad string while parsing), so read just this one's records instead.
+    except (message.DecodeError, UnicodeDecodeError, RecursionError):
+        # Any option's bytes can fail the whole read (pure-Python also rejects a bad
+        # string, and overflows the stack on deep nesting): read just this one's.
         rebound = _only_extension(target, options.SerializeToString(), ext_desc)
     return _checked(rebound, ext_desc)
 ```
@@ -268,7 +268,10 @@ rebind_options`):
 `UnicodeDecodeError` as `DecodeError` and returned `rebound`. A malformed
 option anywhere on the element then made every option on it unreadable, and a
 proto2 string option that was not UTF-8 came back as `bytes` on upb.
-`_only_extension` and `_checked` are defined below `_options_class`.)
+`_only_extension` and `_checked` are defined below `_options_class`.
+`RecursionError` joined both catch tuples after U7: under pure-Python an option
+nested past the interpreter's stack raised it from the first parse, which
+skipped the fall-back and left every option on that element unreadable.)
 
 **The absent-case predicate**, `src/protokit/_extensions.py:47-62` (anchor `def
 extends`), compares `options.DESCRIPTOR.full_name` with

@@ -284,6 +284,7 @@ class TestConstructionGuard:
 
 # Imported here, not at the top: published docs cite line numbers in this file.
 import struct  # noqa: E402
+import sys  # noqa: E402
 
 from tests._pure_python_inventory import skip_under_pure_python  # noqa: E402
 from tests.storage.proto_fixtures import encode_varint as _varint  # noqa: E402
@@ -307,7 +308,24 @@ _SIBLING_EXTS = {
     "levels": (68406, "pkoptsibling_p2.proto", FD.TYPE_INT32, FD.LABEL_REPEATED, None),
     "ratio": (68408, "pkoptsibling_p2.proto", FD.TYPE_DOUBLE, FD.LABEL_OPTIONAL, None),
     "scale": (68409, "pkoptsibling_p2.proto", FD.TYPE_FLOAT, FD.LABEL_OPTIONAL, None),
+    "tree": (
+        68411, "pkoptsibling_p2.proto", FD.TYPE_MESSAGE, FD.LABEL_OPTIONAL, f".{_SIBLING_PKG}.Tree",
+    ),
 }
+
+
+def _tree(depth: int) -> bytes:
+    """A ``Tree`` with ``v = 7`` at the bottom of ``depth`` nested ``child`` messages."""
+    body = _record(2, 0, b"\x07")
+    for _ in range(depth):
+        body = _record(1, 2, body)
+    return body
+
+
+# Past both parsers' limits. upb refuses more than 100 levels with DecodeError;
+# pure-Python has no limit of its own and runs out of stack, so what it raises
+# is RecursionError. Twice the interpreter's limit is past it from any caller.
+_TOO_DEEP = 2 * sys.getrecursionlimit()
 _BAD = b"\xff\xfe"
 _SIBLING_FIELDS = {
     "bad3": _record(68401, 2, _BAD) + _record(68402, 0, b"\x07"),
@@ -331,6 +349,8 @@ _SIBLING_FIELDS = {
         + _varint(1 << 3 | 4) + _varint(68410 << 3 | 4)
         + _record(68405, 2, b"\x0a\x05ab") + _record(68402, 0, b"\x07")
     ),
+    "deep_tree": _record(68411, 2, _tree(_TOO_DEEP)) + _record(68402, 0, b"\x07"),
+    "shallow_tree": _record(68411, 2, _tree(50)) + _record(68402, 0, b"\x07"),
 }
 
 
@@ -345,6 +365,12 @@ def _sibling_pool() -> object:
     files["pkoptsibling_p2.proto"].message_type.add(name="Info").field.add(
         name="s", number=1, type=FD.TYPE_STRING, label=FD.LABEL_OPTIONAL,
     )
+    tree = files["pkoptsibling_p2.proto"].message_type.add(name="Tree")
+    tree.field.add(
+        name="child", number=1, type=FD.TYPE_MESSAGE, label=FD.LABEL_OPTIONAL,
+        type_name=f".{_SIBLING_PKG}.Tree",
+    )
+    tree.field.add(name="v", number=2, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL)
     for name, (number, file_name, kind, label, type_name) in _SIBLING_EXTS.items():
         ext = files[file_name].extension.add()
         ext.name, ext.number, ext.type, ext.label = name, number, kind, label
@@ -378,7 +404,7 @@ class TestOneMalformedOptionCannotHideAnother:
         "field_name",
         [
             "bad3", "bad2", "good_info", "truncated_info", "truncated_levels",
-            "beside_fixed", "beside_nested_group",
+            "beside_fixed", "beside_nested_group", "deep_tree", "shallow_tree",
         ],
     )
     def test_a_valid_option_reads_beside_a_malformed_one(self, field_name: str) -> None:
@@ -406,7 +432,7 @@ class TestOneMalformedOptionCannotHideAnother:
         ("field_name", "option"),
         [
             ("bad3", "text3"), ("bad2", "text2"), ("bad_info", "info"), ("bad_info", "info.s"),
-            ("truncated_info", "info"), ("truncated_levels", "levels"),
+            ("truncated_info", "info"), ("truncated_levels", "levels"), ("deep_tree", "tree"),
         ],
     )
     def test_reading_the_malformed_option_raises_naming_it(
@@ -447,6 +473,18 @@ class TestOneMalformedOptionCannotHideAnother:
         )
         with pytest.raises(DecodeError):
             rebind_options(options, _SIBLING_POOL.FindExtensionByName(f"{_SIBLING_PKG}.tags"))
+
+    def test_an_option_nested_within_both_parsers_limits_reads_whole(self) -> None:
+        """The control for ``deep_tree``: depth alone does not fail a read."""
+        from protokit.options import get_option_value
+
+        node = get_option_value(
+            _sibling_field("shallow_tree"), f"{_SIBLING_PKG}.tree", pool=_SIBLING_POOL,
+        )
+        for _ in range(50):
+            assert node.HasField("child")
+            node = node.child
+        assert node.v == 7
 
     def test_an_option_the_element_does_not_set_still_reads_as_absent(self) -> None:
         from protokit.options import get_option_value

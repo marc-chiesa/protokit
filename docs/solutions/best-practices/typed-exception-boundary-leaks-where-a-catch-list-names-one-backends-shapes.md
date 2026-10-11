@@ -82,8 +82,11 @@ stay unparsed in the options message until that re-read gives them a type, so a
 malformed option first fails there. Since the fix wave the site catches
 `DecodeError` and `UnicodeDecodeError` and falls back to a second parse of only
 the requested option's records (`_only_extension`,
-`src/protokit/_extensions.py:156`), which raises both as `DecodeError`. Neither
-catch names `RecursionError`. The grep now also finds
+`src/protokit/_extensions.py:156`), which raises both as `DecodeError`. Both
+catches name `RecursionError` too, added after the wave. Under pure-Python an
+option nested past the interpreter's stack made the first parse raise it, which
+skipped the fall-back, so that option and every valid option on the same
+element raised `RecursionError`. The grep now also finds
 `FileDescriptorProto.FromString(file.serialized_pb)` twice in
 `src/protokit/_fieldview.py` (in `may_hold_unvalidated_string` and
 `StringWalk._is_proto3`). Both re-read a file the pool has already built.
@@ -114,6 +117,7 @@ different outcomes, and section 4 says why they are left that way.)
 | Payload parse | non-UTF-8 proto3 string | `DecodeError` | `UnicodeDecodeError` |
 | Payload parse | non-UTF-8 proto2 string, or editions string with `utf8_validation = NONE` | parses; the field comes back as `bytes` | `UnicodeDecodeError` |
 | Payload parse | nesting past both parsers' limits (2000 messages deep) | `DecodeError` | `RecursionError` |
+| Option re-read | a custom option nested past both parsers' limits | `DecodeError` | `RecursionError` |
 | Payload parse (open) | nesting between the two limits (101 to a few hundred messages deep) | `DecodeError` | parses |
 | Payload parse (open) | a set extension of a `message_set_wire_format` message, when the extension's message class has not been built yet | parses | `NameError` from protobuf's own decoder |
 | Lazy (after `Add`) | non-UTF-8 file name | `UnicodeDecodeError` wherever `.name` is read | (already rejected at parse) |
@@ -365,6 +369,14 @@ with 0 rejections.
   `test_descriptor_set_the_runtime_cannot_parse_is_exit_2`
   (`tests/storage/cli/test_schema_flags.py:131`),
   `test_a_message_nested_too_deep_exits_2` (`tests/message/test_cli.py:814`).
+- Option re-read: the `deep_tree` cases of
+  `test_a_valid_option_reads_beside_a_malformed_one` and
+  `test_reading_the_malformed_option_raises_naming_it`
+  (`tests/core/test_extensions.py:410` and `tests/core/test_extensions.py:438`),
+  and the `nested-too-deep` case of `test_the_rule_runs`
+  (`tests/schema/lint/test_custom_rules_loader.py:640`). The option is nested
+  twice the interpreter's recursion limit deep, so it is past pure-Python's
+  stack from any caller.
 
 ### Three test-writing traps
 
