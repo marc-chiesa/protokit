@@ -38,7 +38,7 @@ from typing import Any
 from google.protobuf import descriptor_pool
 
 from protokit._descriptors import is_repeated
-from protokit._extensions import extends, rebind_options
+from protokit._extensions import extends, options_of, rebind_options
 
 _UOP_VALUE_FIELDS: tuple[str, ...] = (
     "identifier_value",
@@ -140,7 +140,7 @@ def get_option_value(
             not UTF-8 (on both backends). Another option's bad bytes
             do not stop this one from being read.
     """
-    options = desc.GetOptions()
+    options = options_of(desc)
     if pool is None:
         pool = _owning_pool(desc)
     parts = option_path.split(".")

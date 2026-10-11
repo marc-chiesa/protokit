@@ -94,7 +94,7 @@ from collections.abc import Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-from protokit._extensions import rebind_options
+from protokit._extensions import options_of, rebind_options
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint._engine_run_state import per_run_state
 from protokit.schema.lint._extension_access import (
@@ -241,7 +241,7 @@ def _make_synthetic_closure(
         # Raises ``KeyError`` when the option extends another element
         # kind's options — surfaced by the engine as ``rule_exception``.
         descriptor = getattr(ctx, ctx_attr)
-        parsed = rebind_options(descriptor.GetOptions(), ext_desc)
+        parsed = rebind_options(options_of(descriptor), ext_desc)
 
         if not parsed.HasExtension(ext_desc):
             # Presence violation. Compose a violation_kind that lets

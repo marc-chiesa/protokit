@@ -261,7 +261,7 @@ class TestConstructionGuard:
     def test_seam_exports_only_the_re_read(self) -> None:
         import protokit._extensions as seam
 
-        assert self._public_functions(seam) == {"extends", "rebind_options"}
+        assert self._public_functions(seam) == {"extends", "options_of", "rebind_options"}
 
     def test_lint_helper_module_offers_no_options_class(self) -> None:
         import protokit.schema.lint._extension_access as lint_helpers

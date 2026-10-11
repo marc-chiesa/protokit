@@ -110,7 +110,7 @@ from collections import Counter
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from protokit._extensions import rebind_options
+from protokit._extensions import options_of, rebind_options
 from protokit.schema.lint._cli_utils import _safe_for_stderr
 from protokit.schema.lint._engine_run_state import engine_for_ctx, per_run_state
 from protokit.schema.lint._extension_access import (
@@ -299,7 +299,7 @@ def check_field_behavior_consistent(ctx: FieldLintContext) -> None:
         _emit_unresolved_extension(ctx)
         return
 
-    parsed = rebind_options(ctx.field.GetOptions(), ext_desc)
+    parsed = rebind_options(options_of(ctx.field), ext_desc)
     raw_values = list(parsed.Extensions[ext_desc])
     if not raw_values:
         return

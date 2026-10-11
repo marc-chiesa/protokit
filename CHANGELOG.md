@@ -562,12 +562,41 @@ re-read by hand.
   expose no `file`, so the helper raised `AttributeError` for them there and
   worked under pure-Python; they now reach their pool through their service and
   message. `ServiceDescriptor` already worked and is now documented.
+- **Under upb, what the process has registered in protobuf's default pool no
+  longer changes what a custom option reads as.** upb builds `GetOptions()` by
+  decoding an element's options a second time, through the default pool's
+  extension registry, and keeps what it had when that decode fails. Once the
+  process had registered an extension of the same options message there
+  (importing a generated `_pb2` module does), a schema already loaded into its
+  own pool could read wrong. With the schema's own extensions registered and
+  one option's bytes malformed, the options after it read as absent and the
+  malformed one came back as a partly-filled message instead of raising. With
+  an unrelated extension that uses the same number for another type, every
+  byte well formed, a string option `'hello world'` read as `'he'` and the
+  options after it as absent, or an `int32` option `7` read as `1` under a
+  `bool`. An unrelated extension of `FeatureSet` did the same to every custom
+  option on an editions field that declares `features`. `get_option_value`,
+  `custom/<suffix>` rules and `options/field-behavior-consistent` now read
+  the option's bytes from the file the descriptor was built from. Pure-Python
+  read all of these correctly. Two things nearby are unchanged. A descriptor
+  set loaded *after* an unrelated extension took one of its numbers is itself
+  parsed through that registry, on both backends: it is refused as
+  unparseable where the option's bytes do not decode as the other type, and
+  loaded with the value rewritten where they do (the `7` above is stored, and
+  read, as `1`). And `compat`'s `options_changed` still compares
+  `GetOptions()` bytes, so under upb it can miss a changed option in the same
+  setup.
 
-*Upgrade impact:* no built-in command's verdict or findings change — no built-in
-check calls the helper, and the lint rules already read options this way. One
+*Upgrade impact:* in a process whose default pool declares no extension that
+overlaps the schema's, no built-in command's verdict or findings change — no
+built-in check calls the helper, and the lint rules already re-read options
+through the schema's pool. One
 message does: a `custom/<suffix>` rule configured for an element kind its option
 cannot annotate still reports a `rule_exception` warning, but its text is now the
-same on both protobuf backends instead of each backend's own wording. A differ hook
+same on both protobuf backends instead of each backend's own wording. Where the
+default pool does overlap, under upb, a `custom/<suffix>` or
+`options/field-behavior-consistent` rule now reports on options it read as
+absent in 0.15.1. A differ hook
 or a checker plugin that gates on `get_option_value(...) is not None` over such a
 schema starts firing on annotations it silently skipped until now. Those
 annotations were always there; the helper could not see them. An option whose
