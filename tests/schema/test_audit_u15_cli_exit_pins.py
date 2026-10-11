@@ -625,11 +625,11 @@ def merged_repo(git_repo: Path) -> dict[str, str]:
     strict=True,
     raises=AssertionError,
     reason=(
-        "U15-5: history pairs commits by chaining the flat "
-        "`git log --reverse` enumeration (anchor = commits[0]^, then "
-        "prev = sha), so HistoryEntry.parent_sha is 'the previously "
-        "walked commit', which on a merged history is not a parent. "
-        "Branch B is compared against branch A and charged with "
+        "U15-5: owned by U13 (0.18.0) since the re-audit. History pairs "
+        "commits by chaining the flat `git log --reverse` enumeration "
+        "(anchor = commits[0]^, then prev = sha), so parent_sha is 'the "
+        "previously walked commit', which on a merged history is not a "
+        "parent. Branch B is compared against branch A and charged with "
         "field_removed:a_field — a removal no commit in the range "
         "performed."
     ),

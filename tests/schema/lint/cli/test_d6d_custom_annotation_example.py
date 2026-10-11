@@ -428,7 +428,7 @@ class TestExtensionUnresolvedWarning:
     misconfiguration without parsing prose.
     """
 
-    def test_parenthesized_option_emits_extension_unresolved_warning(
+    def test_parenthesized_option_currently_skips_the_rule_without_exit_2_v36(
         self, tmp_path: Path,
     ) -> None:
         """An invalid option form silently no-ops + emits one warning.
@@ -436,6 +436,19 @@ class TestExtensionUnresolvedWarning:
         Confirms the warning is surfaced through the JSON wire format
         (per the closed-Literal contract pinned at
         ``_LINT_JSON_SCHEMA_VERSION``).
+
+        **Documents current behaviour, not the contract (V36).** The
+        rule is configured at ``severity = "error"`` and the fixture
+        schema violates it, yet the run exits 0 or 1 on unrelated
+        findings because ``custom_annotation_extension_unresolved`` is
+        not a gated category. The warning assertions below are the
+        contract; the closing ``exit_code in (0, 1)`` and the same
+        range check inside ``_run_lint`` record the open defect. The
+        correct exit code is 2, pinned strict-xfail by
+        ``test_v36_unresolved_error_severity_custom_rule_exits_2`` in
+        ``tests/schema/lint/test_audit_v_lint_pins.py``. The change
+        that flips that pin must update this test in the same commit:
+        ``_run_lint`` rejects exit 2, so it goes red with the fix.
         """
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
@@ -480,7 +493,7 @@ class TestExtensionUnresolvedWarning:
         # Exit code is whatever other builtin-rule findings produce.
         # Allowed range checked inside _run_lint; assert specifically
         # that the gate did not trip on a phantom finding from the
-        # unresolved rule.
+        # unresolved rule. Current behaviour, V36: see the docstring.
         assert exit_code in (0, 1)
 
 
