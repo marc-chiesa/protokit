@@ -25,7 +25,7 @@ from collections.abc import Callable, Iterable
 
 from google.protobuf import descriptor as proto_descriptor
 
-from protokit import _descriptors, _fieldview
+from protokit import _descriptors, _extensions, _fieldview
 from protokit._descriptors import (
     has_presence,
     is_map_field,
@@ -619,8 +619,8 @@ def options_changed(
 ) -> list[Finding]:
     """Detect any change to a field's serialized options.
 
-    Severity POLICY, direction BOTH. Backend-agnostic:
-    ``GetOptions().SerializeToString()`` is compared byte-for-byte. A
+    Severity POLICY, direction BOTH. Backend-agnostic: each side's options
+    are read from its schema (:func:`_option_bytes`) and compared byte-for-byte. A
     plugin rule can provide finer-grained interpretation; this
     built-in only flags that *something* changed.
 
@@ -635,8 +635,8 @@ def options_changed(
     """
     if old_fd is None or new_fd is None:
         return []
-    old_bytes = old_fd.GetOptions().SerializeToString()
-    new_bytes = new_fd.GetOptions().SerializeToString()
+    old_bytes = _option_bytes(old_fd)
+    new_bytes = _option_bytes(new_fd)
     if old_bytes == new_bytes:
         return []
     return [Finding(
@@ -1197,3 +1197,31 @@ ENUM_RULES: tuple[tuple[str, EnumRuleFn], ...] = (
 MESSAGE_RULES: tuple[tuple[str, MessageRuleFn], ...] = (
     ("reserved_field_reused", reserved_field_reused),
 )
+
+
+def _option_bytes(fd: proto_descriptor.FieldDescriptor) -> bytes:
+    """``fd``'s options as bytes, without ``features``.
+
+    Defined down here, not beside :func:`options_changed`: published docs cite
+    line numbers in this file.
+
+    The options come from :func:`protokit._extensions.options_of`, so an
+    extension the process has registered in protobuf's default pool cannot hide
+    a change (under upb, ``GetOptions()`` re-decodes through that pool and can
+    drop or rewrite what follows a record it does not decode). Where that reads
+    the schema's file it also returns ``features`` as an editions file declares
+    them, which ``GetOptions()`` leaves out; they are dropped here too, so the
+    verdict does not depend on which of the two was read.
+    """
+    options = _extensions.options_of(fd)
+    try:
+        declares_features = options.HasField("features")
+    except ValueError:  # protobuf before editions: options have no such field
+        declares_features = False
+    if declares_features:
+        bare = type(options)()
+        bare.CopyFrom(options)
+        bare.ClearField("features")
+        options = bare
+    data: bytes = options.SerializeToString()
+    return data
