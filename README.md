@@ -1908,8 +1908,11 @@ is not yet exposed on the single-stream CLI.
 ## Requirements
 
 - Python 3.10+
-- `protobuf` >= 4.21.0
+- `protobuf` >= 4.21.0, < 6
 - `click` >= 8.0
+- `pathspec` >= 0.12, < 2
+- `tomli` >= 2.0, < 3 (Python 3.10 only)
+- `typing_extensions` >= 4.1 (Python 3.10 only)
 
 ## Acknowledgments
 
