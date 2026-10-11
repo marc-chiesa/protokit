@@ -256,7 +256,7 @@ rebind_options`):
         )
     rebound = _options_class(target)()
     try:
-        rebound.MergeFromString(options.SerializeToString())
+        _merge(rebound, options.SerializeToString())
     except (message.DecodeError, UnicodeDecodeError, RecursionError):
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
@@ -271,7 +271,15 @@ proto2 string option that was not UTF-8 came back as `bytes` on upb.
 `_only_extension` and `_checked` are defined below `_options_class`.
 `RecursionError` joined both catch tuples after U7: under pure-Python an option
 nested past the interpreter's stack raised it from the first parse, which
-skipped the fall-back and left every option on that element unreadable.)
+skipped the fall-back and left every option on that element unreadable.
+Since 2026-10-11 both parses go through `_merge`, defined at the end of the
+file. Under pure-Python (protobuf 5.27.5) a repeated message-typed option
+raised `AttributeError: 'Descriptor' object has no attribute
+'_concrete_class'` from either one, for that option and for every option
+beside it: the runtime builds a message class only when asked, and nothing
+asks for that option's element type. `_merge` catches the error, builds the
+class of each such extension the bytes hold, at any depth, and parses again;
+an `AttributeError` with nothing left to build propagates.)
 
 **The absent-case predicate**, `src/protokit/_extensions.py:47-62` (anchor `def
 extends`), compares `options.DESCRIPTOR.full_name` with

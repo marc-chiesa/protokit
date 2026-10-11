@@ -249,7 +249,7 @@ def get_message_class(
     # the codebase pattern (schema/lint/_extension_access.py) and satisfies
     # mypy's warn_return_any under strict mode (protobuf ships no stubs).
     cls: type = message_factory.GetMessageClass(desc)
-    return cls
+    return _ready_to_parse(cls)
 
 
 def require_decodable_strings(
@@ -276,3 +276,17 @@ def require_decodable_strings(
         field, value = hit
         raise DescriptorPoolError(f"{field.full_name} is not valid UTF-8: {value[:64]!r}")
     return fds
+
+
+def _ready_to_parse(message_class: type) -> type:
+    """``message_class``, once every repeated extension its messages can hold has a class.
+
+    Under pure-Python a payload holding a repeated message-typed extension
+    otherwise fails to parse with ``AttributeError``; see
+    :func:`protokit._fieldview.build_extension_classes`. Defined down here
+    because published docs cite line numbers in this file.
+    """
+    from protokit._fieldview import build_extension_classes
+
+    build_extension_classes(message_class.DESCRIPTOR)  # type: ignore[attr-defined]
+    return message_class

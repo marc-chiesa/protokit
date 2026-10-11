@@ -86,7 +86,9 @@ the requested option's records (`_only_extension`,
 catches name `RecursionError` too, added after the wave. Under pure-Python an
 option nested past the interpreter's stack made the first parse raise it, which
 skipped the fall-back, so that option and every valid option on the same
-element raised `RecursionError`. The grep now also finds
+element raised `RecursionError`. Both sites now reach `MergeFromString`
+through `_merge`, at the end of the same file, so that is where the grep
+finds the call; the two lines cited above are its callers. The grep now also finds
 `FileDescriptorProto.FromString(file.serialized_pb)` twice in
 `src/protokit/_fieldview.py` (in `may_hold_unvalidated_string` and
 `StringWalk._is_proto3`). Both re-read a file the pool has already built.

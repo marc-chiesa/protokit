@@ -57,7 +57,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `diff` over messages holding a proto2 group or an editions DELIMITED field | the group is compared field by field: identical groups from two descriptor sets compare equal (exit 0 instead of 1), a change is reported at the inner field instead of the whole group, and `--ignore`, float tolerance and presence mode apply inside it. `--filter` on a path inside a group now matches (exit 1 instead of 0 with `Messages are equal.`), `--treat-as-map` keys a repeated group (exit 0 instead of 1 for reordered elements), and `--max-depth` counts a group as a level, so a limit that cuts inside one exits 2 instead of 0 or 1 |
 > | *(API)* `MessageDifferencer`, `diff_messages`, `proto_match` / `expect_proto`, the hamcrest `equals_proto` matcher and the pytest `proto_matcher` fixture over the same messages | the same verdicts as `diff`, so a matcher that raised `AssertionError` on identical groups from two descriptor pools now passes; field hooks (`register_validate_hook`, `register_compare_hook`, `register_report_hook`) run on each field inside the group instead of once at the group, and `register_message_validate_hook` hooks also run for the group |
 > | *(API)* an extension path, `(pkg.ext)` or `parent.(pkg.ext)`, given to `ignore_fields`, `treat_as_map`, `treat_as_set`, a float overlay (`set_float_comparison(selector=…)`, `.approximately(selector=…)`) or `proto_match(as_set=…)` | is accepted instead of raising `ValueError` (`Expected field name …`); a lone `(pkg.ext)` applies to that extension at any depth. Registrations that conflict through an extension path (a `treat_as_set` and a `treat_as_map` on one extension, two `treat_as_map` keys for it, an ignore of its key) still raise `ValueError`, now naming the conflict |
-> | `diff --ignore`, `--treat-as-map` or `--filter` given an extension path such as `'(pkg.ext)'` | is accepted, and the comparison decides the exit code (0 or 1), instead of a traceback and 1. `--treat-as-map '(pkg.ext)' KEY` with an `--ignore` path that names the key (`'(pkg.ext).KEY'`, `'parent.(pkg.ext).KEY'`) exits 2 (usage error) instead of that traceback. Under pure-Python, a payload that holds a repeated message-typed extension still crashes `diff` with a traceback and 1, as it did in 0.15.1 |
+> | `diff --ignore`, `--treat-as-map` or `--filter` given an extension path such as `'(pkg.ext)'` | is accepted, and the comparison decides the exit code (0 or 1), instead of a traceback and 1. `--treat-as-map '(pkg.ext)' KEY` with an `--ignore` path that names the key (`'(pkg.ext).KEY'`, `'parent.(pkg.ext).KEY'`) exits 2 (usage error) instead of that traceback. |
 > | `compat` where a declared proto2 extension changes (type, number, removal or addition), or a field inside a proto2 group or an editions DELIMITED field changes | exits 1 (INCOMPATIBLE) instead of 0 at each level that reports the same change to a declared field; a group retargeted to another message type is reported at STRICT. `--ignore '(pkg.ext)'` is accepted, where it exited 2 as an invalid path |
 > | `compat` with a rule pack whose field plugin reports on, or raises on, a declared extension or a field inside a group | the plugin is now called for those fields, so with the schema unchanged a run can exit 1 (the plugin's finding) or 2 (its error) instead of 0 |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
@@ -68,6 +68,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set. One shape is still accepted under upb: a string written twice on the wire, with an invalid first copy and a valid last one |
 > | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
 > | *(pure-Python)* a message payload nested past Python's recursion limit (a few hundred levels at the default limit), or carrying a string that is not UTF-8 (proto2 or proto3) | `diff` exits 2 on the deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1. Nesting between upb's limit of 100 levels and Python's recursion limit still differs by runtime, as it did in 0.15.1: upb refuses the payload (exit 2) and pure-Python reads it |
+> | *(pure-Python)* `diff`, `storage scan`, `storage count` or `forensics match` over a payload that holds a repeated message-typed extension | parses the payload and answers as under upb (identical payloads: `diff` exits 0, `storage count` prints the count, `forensics match` ranks the candidate), instead of an `AttributeError` traceback and exit 1 |
 > | a message payload carrying a proto2 string that is not UTF-8 (or an editions string with UTF-8 validation off), at any depth, under upb | `diff` exits 2 on binary input instead of comparing the raw bytes (exit 0 or 1); `storage` counts the record as a fault under `--on-error` (`count` exits 2 instead of 0 with the record counted), and `to_parquet` raises `IncompleteScanError` instead of a raw `ValueError` from the Arrow converter; `forensics match` ranks the candidate `decode_error` instead of `clean`, and exits 2 when no candidate parses. Under pure-Python, `diff` already exited 2 for such a payload; `storage` and `forensics match` crashed with exit 1 (the row above), and `to_parquet` raised a raw `UnicodeDecodeError` |
 > | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
 > | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
@@ -733,6 +734,26 @@ backend-neutral rather than merely fixed (KTD6).
   `protokit forensics match` crashed instead of ranking the candidate as
   `decode_error`, and `protokit storage` let the exception escape past
   `--on-error`. All three now treat it exactly as a `DecodeError`.
+
+- **A repeated message-typed extension no longer crashes the pure-Python
+  runtime.** That runtime builds a message class only when asked, and nothing
+  asks for the element type of a *repeated* message-typed extension, so
+  parsing one raised `AttributeError: 'Descriptor' object has no attribute
+  '_concrete_class'`. Singular message extensions, scalar ones and repeated
+  scalar ones were unaffected, and so was upb. Two things changed:
+  - **Payloads.** `protokit diff`, `storage scan`, `storage count` and
+    `forensics match` crashed with that traceback and exit 1 on any payload
+    holding such an extension, at the top of the message or anywhere inside
+    it, even when comparing a payload with itself. The class protokit
+    resolves for a message type now comes with the class of every such
+    extension the message can reach.
+  - **Custom options.** `get_option_value` raised the same error for a
+    repeated message-typed option (the shape of
+    `(google.api.resource_definition)`), and for every other option on an
+    element that carried one, and the option-aware lint rules read options
+    through the same code. The read now builds the classes the option's
+    bytes need and parses again. 0.15.1 returned `None` for all of these
+    (see U5), so this error never shipped.
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
 under the pure-Python runtime with no known-failure list, and the

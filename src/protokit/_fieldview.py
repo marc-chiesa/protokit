@@ -550,3 +550,43 @@ class StringWalk:
 def not_utf8_detail(field: _d.FieldDescriptor) -> str:
     """How a seam words a :func:`first_undecodable_string` hit on ``field``."""
     return f"string field {field.full_name} is not valid UTF-8"
+
+
+def build_extension_classes(descriptor: _d.Descriptor) -> None:
+    """Build the message class of every repeated extension a ``descriptor`` message can hold.
+
+    Pure-Python keeps a message class on its descriptor and builds it only
+    when asked. It asks for a declared field's type when it builds the message
+    that declares the field, and for a singular message-typed extension's type
+    the first time one is read or parsed. A *repeated* message-typed extension
+    gets neither: parsing one adds an element through a class nothing built,
+    and raises ``AttributeError: 'Descriptor' object has no attribute
+    '_concrete_class'``. So before a payload is parsed, this walks every
+    message type ``descriptor`` can reach, through declared fields and through
+    extensions, and builds the element class of each such extension.
+
+    upb parses one without this; asking for a class it would have built
+    anyway costs it nothing that matters at the one call per resolved type
+    this gets. Like :attr:`FieldView.extensions`, the walk sees an extension
+    declared in another file only once the pool has built that file.
+    """
+    from google.protobuf import message_factory
+
+    pool = descriptor.file.pool
+    seen: set[str] = set()
+    stack: list[_d.Descriptor] = [descriptor]
+    while stack:
+        current = stack.pop()
+        if current.full_name in seen:
+            continue
+        seen.add(current.full_name)
+        for field in current.fields:
+            if field.message_type is not None:
+                stack.append(field.message_type)
+        for extension in pool.FindAllExtensions(current):
+            element = extension.message_type
+            if element is None:
+                continue
+            if extension.label == _FD.LABEL_REPEATED:
+                message_factory.GetMessageClass(element)
+            stack.append(element)

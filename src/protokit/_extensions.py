@@ -100,7 +100,7 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
         )
     rebound = _options_class(target)()
     try:
-        rebound.MergeFromString(options.SerializeToString())
+        _merge(rebound, options.SerializeToString())
     except (message.DecodeError, UnicodeDecodeError, RecursionError):
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
@@ -153,7 +153,7 @@ def _only_extension(options_desc: Any, data: bytes, ext_desc: Any) -> Any:
     kept = b"".join(record for number, record in _records(data) if number == ext_desc.number)
     rebound = _options_class(options_desc)()
     try:
-        rebound.MergeFromString(kept)
+        _merge(rebound, kept)
     except (message.DecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise message.DecodeError(f"{ext_desc.full_name}: {exc}") from exc
     return rebound
@@ -422,3 +422,77 @@ _DECLARATION: dict[str, tuple[Any, Any]] = {
     ),
     "MethodOptions": (lambda desc: desc.containing_service.file, _method_proto),
 }
+
+
+def _merge(options: Any, data: bytes) -> None:
+    """``options.MergeFromString(data)``, building first any class pure-Python did not.
+
+    Pure-Python builds a message class only when asked, and nothing asks for
+    the element type of a *repeated* message-typed extension: parsing one
+    raises ``AttributeError: 'Descriptor' object has no attribute
+    '_concrete_class'``, and one such option in an element's bytes failed the
+    read of every option beside it. When the parse raises that, the classes
+    ``data`` needs are built from its own records and it is parsed again. An
+    ``AttributeError`` with nothing left to build is not this one, and
+    propagates. upb never raises it, so the first parse is the only one there.
+    """
+    try:
+        options.MergeFromString(data)
+    except AttributeError:
+        if not _build_element_classes(options.DESCRIPTOR, data):
+            raise
+        options.Clear()
+        options.MergeFromString(data)
+
+
+def _build_element_classes(root: Any, data: bytes) -> bool:
+    """Build the class of each repeated message-typed extension ``data`` holds, at any depth.
+
+    It follows the records, not the schema: only what the bytes hold can fail
+    the parse, and this module may not enumerate a message's declared fields
+    (``protokit._fieldview.build_extension_classes`` walks the schema, for a
+    payload whose bytes are not at hand when its class is built).
+
+    Returns:
+        Whether any class was missing.
+    """
+    pool = root.file.pool
+    built = False
+    stack: list[tuple[Any, bytes]] = [(root, data)]
+    while stack:
+        current, chunk = stack.pop()
+        try:
+            records = _records(chunk)
+        except message.DecodeError:
+            continue  # malformed, which the parse reports
+        for number, record in records:
+            field = current.fields_by_number.get(number)
+            if field is None:
+                try:
+                    field = pool.FindExtensionByNumber(current, number)
+                except KeyError:
+                    continue
+            element, body = field.message_type, _body(record)
+            if element is None or body is None:
+                continue
+            if (
+                field.is_extension
+                and field.label == _REPEATED
+                and not hasattr(element, "_concrete_class")
+            ):
+                message_factory.GetMessageClass(element)
+                built = True
+            stack.append((element, body))
+    return built
+
+
+def _body(record: bytes) -> bytes | None:
+    """The bytes inside one length-delimited or group record; ``None`` for any other."""
+    _number, wire_type, pos = _key(record, 0)
+    if wire_type == _LENGTH_DELIMITED:
+        _length, pos = _varint(record, pos)
+        return record[pos:]
+    if wire_type == _START_GROUP:
+        # The end-group key is as long as the start-group key: same number.
+        return record[pos : len(record) - pos]
+    return None
