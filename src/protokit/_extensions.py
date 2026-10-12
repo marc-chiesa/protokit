@@ -87,10 +87,10 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
             way protobuf itself does.
         google.protobuf.message.DecodeError: the bytes ``options`` holds for ``ext_desc`` do
             not parse as its type or hold a string that is not UTF-8 (under upb a singular
-            proto2 string written twice is checked on its last copy only), or ``ext_desc`` is
-            typed as a map entry. Another option's bad bytes do not raise: it is read alone.
+            proto2 string written twice is checked on its last copy only), or it or an extension
+            in its value is typed as a map entry. Another option's bad bytes do not raise.
     """
-    target = _extendee_of(ext_desc)
+    target = ext_desc.containing_type
     if options.DESCRIPTOR is target:
         return _checked(options, ext_desc)
     if not extends(options, ext_desc):
@@ -249,7 +249,7 @@ def _holds_undecodable(field: Any, value: Any) -> bool:
 def _field_items(field: Any, value: Any) -> Any:
     """Yield ``(descriptor, item)`` for each value one set field holds, map keys first."""
     entry = field.message_type
-    if field.label == _REPEATED and entry is not None and entry.GetOptions().map_entry:
+    if _is_map(field, entry):
         yield from ((entry.fields_by_name["key"], key) for key in value)
         yield from ((entry.fields_by_name["value"], item) for item in value.values())
     elif field.label == _REPEATED:
@@ -534,20 +534,22 @@ def _without_undeclared_enum(rebound: Any, source: Any, ext_desc: Any) -> Any:
     return rebound
 
 
-def _extendee_of(ext_desc: Any) -> Any:
-    """The type ``ext_desc`` extends; ``DecodeError`` for an extension typed as a map entry.
+def _is_map(field: Any, entry: Any) -> bool:
+    """Whether ``field`` is a map field; ``DecodeError`` for an extension typed as a map entry.
 
     Protobuf has no map extensions and no compiler writes one, but a descriptor
     set can declare a repeated extension whose type has ``map_entry`` set, and
     both runtimes build it. upb then hands the value back as a map over storage
-    that is not one, and reading it ends the process. The read is refused by
-    name on both backends instead.
+    that is not one, and iterating it ends the process. The walk meets every
+    value before a caller does, the option's own and any its message holds, so
+    it refuses such a value by name on both backends instead of reading it.
     """
-    entry = ext_desc.message_type
-    if ext_desc.label == _REPEATED and entry is not None and entry.GetOptions().map_entry:
+    if field.label != _REPEATED or entry is None or not entry.GetOptions().map_entry:
+        return False
+    if field.is_extension:
         raise message.DecodeError(
-            f"{ext_desc.full_name}: an extension cannot be a map, and its type "
+            f"{field.full_name}: an extension cannot be a map, and its type "
             f"{entry.full_name} is a map entry"
         )
-    return ext_desc.containing_type
+    return True
 

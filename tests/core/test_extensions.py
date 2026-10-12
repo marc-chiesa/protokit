@@ -783,11 +783,30 @@ field = user.message_type.add(name="M").field.add(
 )
 # (ph.labels) = { key: "k" value: "v" }, then (ph.num) = 7
 field.options.MergeFromString(bytes.fromhex("8a8e25060a016b120176") + bytes.fromhex("908e2507"))
+# One level down: (ph.rules) = { max: 5 [ph.inner]: { key: "k" value: "v" } }
+rules = ext_file.message_type.add(name="Rules")
+rules.field.add(name="max", number=1, type=F.TYPE_INT32, label=F.LABEL_OPTIONAL)
+rules.extension_range.add(start=100, end=200)
+ext_file.extension.add(
+    name="rules", number=76003, type=F.TYPE_MESSAGE, label=F.LABEL_OPTIONAL,
+    type_name=".ph.Rules", extendee=".google.protobuf.FieldOptions",
+)
+ext_file.extension.add(
+    name="inner", number=100, type=F.TYPE_MESSAGE, label=F.LABEL_REPEATED,
+    type_name=".ph.LabelsEntry", extendee=".ph.Rules",
+)
+nested = user.message_type[0].field.add(
+    name="y", number=2, type=F.TYPE_INT32, label=F.LABEL_OPTIONAL,
+)
+# tag 76003 wire 2 = 9a 8e 25; body = max 5 (08 05) + inner (a2 06, 6 bytes)
+nested.options.MergeFromString(bytes.fromhex("9a8e250b0805a206060a016b120176"))
+user.message_type[0].field.add(name="bare", number=3, type=F.TYPE_INT32, label=F.LABEL_OPTIONAL)
 fds = d.FileDescriptorSet()
 fds.file.add().ParseFromString(d.DESCRIPTOR.serialized_pb)
 fds.file.extend([ext_file, user])
 pool = build_pool(fds)
-x = pool.FindMessageTypeByName("ph.M").fields_by_name["x"]
+fields = pool.FindMessageTypeByName("ph.M").fields_by_name
+x, y, bare = fields["x"], fields["y"], fields["bare"]
 labels = pool.FindExtensionByName("ph.labels")
 
 
@@ -813,6 +832,9 @@ print(json.dumps({
     "re_read": outcome(lambda: rebind_options(options_of(x), labels)),
     "read": outcome(lambda: get_option_value(x, "ph.labels")),
     "another_option": outcome(lambda: get_option_value(x, "ph.num")),
+    "not_carried": outcome(lambda: get_option_value(bare, "ph.labels")),
+    "one_level_down": outcome(lambda: get_option_value(y, "ph.rules")),
+    "beside_one_level_down": outcome(lambda: get_option_value(y, "ph.rules.max")),
     "lint_exit": lint.exit_code,
     "lint_says": "rule_exception" in lint.output,
 }))
@@ -822,9 +844,10 @@ print(json.dumps({
 def test_an_extension_typed_as_a_map_entry_is_refused_on_both_backends() -> None:
     """Protobuf has no map extensions, but a descriptor set can declare one.
 
-    Both runtimes build the pool. Reading the option is refused by name; the
-    element's other options still read, and ``lint`` reports the rule could
-    not run instead of dying.
+    Both runtimes build the pool. Reading the option is refused by name, and so
+    is an option whose message holds one. The element's other options still
+    read, an element that does not carry the option reads it as absent, and
+    ``lint`` reports the rule could not run instead of dying.
     """
     import json
     import os
@@ -844,5 +867,8 @@ def test_an_extension_typed_as_a_map_entry_is_refused_on_both_backends() -> None
     assert seen["re_read"][0] == "DecodeError" and "ph.labels" in seen["re_read"][1]
     assert seen["read"][0] == "DecodeError" and "ph.labels" in seen["read"][1]
     assert seen["another_option"] == ["value", "7"]
+    assert seen["not_carried"] == ["value", "None"]
+    for read in ("one_level_down", "beside_one_level_down"):
+        assert seen[read][0] == "DecodeError" and "ph.inner" in seen[read][1]
     assert (seen["lint_exit"], seen["lint_says"]) == (2, True)
 
