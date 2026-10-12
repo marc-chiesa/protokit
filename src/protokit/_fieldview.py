@@ -567,12 +567,17 @@ def build_extension_classes(descriptor: _d.Descriptor) -> None:
     each message-typed extension, which leaves the parser nothing to ask for.
 
     A runtime that parses such a payload unaided is left alone: under upb this
-    returns at once, and what it resolves for a type is what it always did. A
-    chain of types too deep to build in the stack that is left stays unbuilt,
-    as it was. Like :attr:`FieldView.extensions`, the walk sees an extension
-    declared in another file only once the pool has built that file.
+    returns at once, and what it resolves for a type is what it always did.
+    This never raises. A class the runtime cannot build stays unbuilt, as it
+    was: a chain of types too deep for the stack that is left, or (under
+    pure-Python) a message with a field named ``DESCRIPTOR``. Like
+    :attr:`FieldView.extensions`, the walk sees an extension declared in
+    another file only once the pool has built that file.
     """
-    if _parses_extensions_unaided():
+    try:
+        if _parses_extensions_unaided():
+            return
+    except RecursionError:  # no stack left to ask; not cached, so the next call asks again
         return
     from google.protobuf import message_factory
 
@@ -591,10 +596,12 @@ def build_extension_classes(descriptor: _d.Descriptor) -> None:
             element = extension.message_type
             if element is None:
                 continue
+            # Broad on purpose: the try holds one protobuf call, and whatever it
+            # raises, the type is left as it was before this walk existed.
             try:
                 message_factory.GetMessageClass(element)
-            except RecursionError:
-                continue  # too deep to build here, so nothing under it can be parsed either
+            except Exception:
+                continue  # nothing under a type that cannot be built can be parsed either
             stack.append(element)
 
 

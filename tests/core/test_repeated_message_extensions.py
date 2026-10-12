@@ -414,6 +414,34 @@ class TestThePayloadWalk:
         assert root.FromString(b"").ByteSize() == 0  # type: ignore[attr-defined]
 
 
+class TestAClassTheRuntimeCannotBuild:
+    """The walk builds eagerly what a payload might never hold, so it must not fail the lookup."""
+
+    def test_an_element_with_a_field_named_descriptor(self, walk_needed: None) -> None:
+        # Pure-Python cannot build a class for such a message at all.
+        f = descriptor_pb2.FileDescriptorProto(name="rx/odd.proto", package="rxn", syntax="proto2")
+        f.message_type.add(name="Root").extension_range.add(start=100, end=101)
+        f.message_type.add(name="Odd").field.add(
+            name="DESCRIPTOR", number=1, type=FD.TYPE_INT32, label=_OPTIONAL,
+        )
+        f.extension.add(
+            name="odd", number=100, type=FD.TYPE_MESSAGE, label=_REPEATED,
+            type_name=".rxn.Odd", extendee=".rxn.Root",
+        )
+        pool = build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        root = get_message_class(pool, "rxn.Root")
+        assert root.FromString(b"").ByteSize() == 0  # type: ignore[attr-defined]
+
+    def test_no_stack_left_to_ask_the_runtime(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def no_stack() -> bool:
+            raise RecursionError("maximum recursion depth exceeded")
+
+        monkeypatch.setattr(_fieldview, "_parses_extensions_unaided", no_stack)
+        pool = build_pool(_payload_set())
+        _fieldview.build_extension_classes(pool.FindMessageTypeByName("rx.Node"))
+        assert _unbuilt(pool, "rx.Elem", "rx.Deep") == ["rx.Elem", "rx.Deep"]
+
+
 class TestAMessageSetParses:
     """Pure-Python's message-set decoder asks for an unbuilt item class through a name it lacks."""
 
