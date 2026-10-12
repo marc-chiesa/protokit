@@ -1282,6 +1282,8 @@ class TestEachStringFieldAnswersForItself:
         import warnings
 
         pool = _syntax_pool()
+        if hasattr(pool.FindMessageTypeByName("own2.M").fields_by_name["s"], "_GetFeatures"):
+            pytest.skip("this protobuf answers per field; the file's syntax is never read")
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             assert _planned(pool.FindMessageTypeByName("own3.M")) == []
@@ -1307,3 +1309,65 @@ class TestEachStringFieldAnswersForItself:
         walk._plan(desc)
         walk._plan(pool.FindMessageTypeByName("own2.M.TagsEntry"))
         assert reads == ["own2.proto"]
+
+
+def _bad_default_class() -> type[Message]:
+    """``dflt.M``: ``optional string s = 1 [default = <not UTF-8>]`` and ``optional int32 n = 2``.
+
+    protoc accepts such a default and upb builds the type; an unset ``s`` then
+    reads as ``bytes``. Pure-Python refuses the file, which is why the tests
+    that use this run on upb only.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="dflt.proto", package="dflt", syntax="proto2")
+    message = fdp.message_type.add(name="M")
+    field = descriptor_pb2.FieldDescriptorProto
+    message.field.add(
+        name="s", number=1, type=field.TYPE_STRING, label=field.LABEL_OPTIONAL, default_value="?",
+    )
+    message.field.add(name="n", number=2, type=field.TYPE_INT32, label=field.LABEL_OPTIONAL)
+    placeholder = b"\x3a\x01?"  # default_value is field 7 of FieldDescriptorProto
+    serialized = fdp.SerializeToString()
+    assert serialized.count(placeholder) == 1
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(serialized.replace(placeholder, b"\x3a\x01\xff"))
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("dflt.M"))
+
+
+@skip_under_pure_python(
+    "premise holds only on upb: it builds a type whose string default is not UTF-8, "
+    "while pure-Python refuses the file"
+)
+class TestOnlyASetFieldIsReported:
+    """A schema default is the schema's, not the record's: the walk reports set fields only."""
+
+    def test_an_unset_field_that_reads_a_default_that_is_not_utf8_is_no_hit(self) -> None:
+        cls = _bad_default_class()
+        message = cls.FromString(b"\x10\x05")  # n = 5; s is not set
+        assert isinstance(message.s, bytes)  # the premise: the default reads as bytes
+        assert first_undecodable_string(message) is None
+
+    def test_the_same_field_set_to_bytes_that_are_not_utf8_is_a_hit(self) -> None:
+        cls = _bad_default_class()
+        hit = first_undecodable_string(cls.FromString(b"\x0a\x01\xfe"))
+        assert hit is not None
+        assert (hit[0].full_name, hit[1]) == ("dflt.M.s", b"\xfe")
+
+    def test_a_field_without_presence_is_reported_for_what_it_holds(self) -> None:
+        """Such a field has no default of its own, and asking whether it is set raises."""
+        fdp = _editions_file("implicit.proto", "implicit")
+        field = fdp.message_type.add(name="M").field.add(
+            name="s", number=1, type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+        )
+        field.options.features.utf8_validation = _FS.NONE
+        field.options.features.field_presence = _FS.IMPLICIT
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        desc = pool.FindMessageTypeByName("implicit.M")
+        assert desc.fields_by_name["s"].has_presence is False
+        cls = message_factory.GetMessageClass(desc)
+        assert first_undecodable_string(cls()) is None
+        hit = first_undecodable_string(cls.FromString(b"\x0a\x01\xfe"))
+        assert hit is not None
+        assert (hit[0].full_name, hit[1]) == ("implicit.M.s", b"\xfe")
+

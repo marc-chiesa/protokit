@@ -14,13 +14,14 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.message import Message
 
 from protokit.storage.engine import ScanRecord, ScanResult, scan
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.schema_source import FileDescriptorSetSchema
 from protokit.storage.source import FrameError
+from tests._pure_python_inventory import skip_under_pure_python
 from tests.storage.proto_fixtures import (
     fds,
     file_proto,
@@ -707,3 +708,51 @@ def test_a_scan_continues_past_a_field_that_cannot_say_whether_it_was_validated(
     )
     records = list(scan(iter([("s", b"\x0a\x01a"), ("s", b"\x0a\x01b")]), registry))
     assert [r.message.s for r in records] == ["a", "b"]
+
+
+class _CallerBuiltSchema:
+    """A schema source over a type the test built itself, past protokit's loaders."""
+
+    def __init__(self, message_class: type[Message]) -> None:
+        self._message_class = message_class
+
+    def resolve(self) -> tuple[descriptor_pool.DescriptorPool, type[Message]]:
+        return self._message_class.DESCRIPTOR.file.pool, self._message_class
+
+
+@skip_under_pure_python(
+    "premise holds only on upb: it builds a type whose string default is not UTF-8, "
+    "while pure-Python refuses the file"
+)
+@pytest.mark.parametrize("on_error", ["raise", "skip", "collect"])
+def test_a_record_is_not_faulted_for_a_schema_default_it_does_not_set(on_error: str) -> None:
+    """``optional string s = 1 [default = <not UTF-8>]``: protoc accepts it, and so does upb.
+
+    A record that leaves ``s`` unset is a valid record. One that sets ``s`` to
+    bytes that are not UTF-8 is still a fault.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="dflt.proto", package="dflt", syntax="proto2")
+    message = fdp.message_type.add(name="M")
+    field_proto = descriptor_pb2.FieldDescriptorProto
+    message.field.add(
+        name="s", number=1, type=_TYPE_STRING, label=field_proto.LABEL_OPTIONAL, default_value="?",
+    )
+    message.field.add(
+        name="n", number=2, type=field_proto.TYPE_INT32, label=field_proto.LABEL_OPTIONAL,
+    )
+    placeholder = b"\x3a\x01?"  # default_value is field 7 of FieldDescriptorProto
+    serialized = fdp.SerializeToString()
+    assert serialized.count(placeholder) == 1
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(serialized.replace(placeholder, b"\x3a\x01\xff"))
+    registry = StreamRegistry()
+    message_class = message_factory.GetMessageClass(pool.FindMessageTypeByName("dflt.M"))
+    registry.register_stream("u", _CallerBuiltSchema(message_class))
+    unset = [("u", b"\x10\x05"), ("u", b"\x10\x06"), ("u", b"")]
+    assert [r.message.n for r in scan(iter(unset), registry, on_error=on_error)] == [5, 6, 0]  # type: ignore[arg-type]
+    if on_error != "raise":
+        result = scan(iter([*unset, ("u", b"\x0a\x01\xfe")]), registry, on_error=on_error)  # type: ignore[arg-type]
+        assert [r.message.n for r in result] == [5, 6, 0]
+        if on_error == "collect":
+            assert [e.record_index for e in result.errors] == [3]
+

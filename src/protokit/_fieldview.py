@@ -254,8 +254,8 @@ def first_undecodable_string(message: Message) -> tuple[_d.FieldDescriptor, byte
     on protobuf 4.25) and otherwise hands the field back as ``bytes``, at any
     depth. Nothing downstream complains about those bytes, so a seam that wants
     pure-Python's verdict on upb walks the parsed message with this and classifies
-    a hit its own way. Only set fields are walked: an unset field reads its schema
-    default, and protokit's pool loaders reject a schema whose default is not UTF-8.
+    a hit its own way. Only a set field is reported: an unset one reads its schema
+    default, and a default that is not UTF-8 is the schema's fault, not the record's.
 
     The walk reads only fields that can hold such a string (:class:`StringWalk`
     has the rule), so a proto3 message costs one lookup per type: each string
@@ -463,7 +463,7 @@ class StringWalk:
                     continue
                 value = getattr(current, name)
                 if kind == _STRING:
-                    if isinstance(value, bytes):
+                    if isinstance(value, bytes) and _is_set(current, field):
                         return field, value
                 elif kind == _STRINGS:
                     for item in value:
@@ -673,3 +673,14 @@ def _unvalidated(field: _d.FieldDescriptor, proto3_files: dict[_d.FileDescriptor
         return not proto3
     except Exception:
         return True
+
+
+def _is_set(message: Message, field: _d.FieldDescriptor) -> bool:
+    """Whether ``field``, a singular declared field, holds a value ``message`` carries.
+
+    A field with presence that is not set reads its schema default, which is
+    not the record's data. A field without presence has no default of its own
+    to read, so whatever it holds was parsed.
+    """
+    return not field.has_presence or bool(message.HasField(field.name))
+
