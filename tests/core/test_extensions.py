@@ -469,7 +469,8 @@ class TestOneMalformedOptionCannotHideAnother:
         from types import SimpleNamespace
 
         options = SimpleNamespace(
-            DESCRIPTOR=descriptor_pb2.FieldOptions.DESCRIPTOR, SerializeToString=lambda: raw,
+            DESCRIPTOR=descriptor_pb2.FieldOptions.DESCRIPTOR,
+            SerializePartialToString=lambda: raw,
         )
         with pytest.raises(DecodeError):
             rebind_options(options, _SIBLING_POOL.FindExtensionByName(f"{_SIBLING_PKG}.tags"))

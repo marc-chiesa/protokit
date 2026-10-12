@@ -643,3 +643,106 @@ class TestPoolArgument:
         assert get_option_value(fd, "marker") == b"present"
         # Passing the same pool explicitly behaves identically.
         assert get_option_value(fd, "marker", pool=pool) == b"present"
+
+
+# ---------------------------------------------------------------------------
+# An option beside an uninterpreted_option with required fields unset
+# ---------------------------------------------------------------------------
+
+
+def _pool_with_an_unfinished_uninterpreted_option(
+    count: int, *, written_after: bytes = b"",
+) -> descriptor_pool.DescriptorPool:
+    """``upo.M.f`` carries ``upo.count`` and an ``uninterpreted_option`` naming nothing.
+
+    The ``uninterpreted_option`` has one ``name`` part with ``name_part`` and
+    ``is_extension`` unset, both required. protoc never writes that; upb loads
+    it, and pure-Python refuses the file.
+    """
+    field_type = descriptor_pb2.FieldDescriptorProto
+    opts = descriptor_pb2.FileDescriptorProto(
+        name="upo/opts.proto", package="upo", syntax="proto2",
+        dependency=["google/protobuf/descriptor.proto"],
+    )
+    opts.extension.add(
+        name="count", number=70003, type=field_type.TYPE_INT32,
+        label=field_type.LABEL_OPTIONAL, extendee=".google.protobuf.FieldOptions",
+    )
+    opts.message_type.add(name="Info").field.add(
+        name="s", number=1, type=field_type.TYPE_STRING, label=field_type.LABEL_OPTIONAL,
+    )
+    opts.extension.add(
+        name="info", number=70004, type=field_type.TYPE_MESSAGE, type_name=".upo.Info",
+        label=field_type.LABEL_OPTIONAL, extendee=".google.protobuf.FieldOptions",
+    )
+    target = descriptor_pb2.FileDescriptorProto(
+        name="upo/t.proto", package="upo", syntax="proto2", dependency=["upo/opts.proto"],
+    )
+    field = target.message_type.add(name="M").field.add(
+        name="f", number=1, type=field_type.TYPE_INT32, label=field_type.LABEL_OPTIONAL,
+    )
+    field.options.uninterpreted_option.add().name.add()
+    field.options.MergeFromString(b"\x98\x97\x22" + bytes([count]) + written_after)  # upo.count
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(descriptor_pb2.DESCRIPTOR.serialized_pb)
+    pool.AddSerializedFile(opts.SerializeToString())
+    pool.AddSerializedFile(target.SerializePartialToString())
+    return pool
+
+
+_Pools = tuple[descriptor_pool.DescriptorPool, descriptor_pool.DescriptorPool]
+
+
+class TestAnUninterpretedOptionWithRequiredFieldsUnset:
+    """Serializing such options with the required-field check raised ``EncodeError`` under upb."""
+
+    @pytest.fixture
+    def pools(self) -> _Pools:
+        from google.protobuf.internal import api_implementation
+        from google.protobuf.message import EncodeError
+
+        if api_implementation.Type() == "python":
+            with pytest.raises(EncodeError, match="missing required fields"):
+                _pool_with_an_unfinished_uninterpreted_option(7)
+            pytest.skip("pure-Python refuses a file whose options leave a required field unset")
+        return (
+            _pool_with_an_unfinished_uninterpreted_option(7),
+            _pool_with_an_unfinished_uninterpreted_option(8),
+        )
+
+    def test_the_premise_serializing_them_checked_raises(self, pools: _Pools) -> None:
+        from google.protobuf.message import EncodeError
+
+        field = pools[0].FindMessageTypeByName("upo.M").fields[0]
+        with pytest.raises(EncodeError, match="missing required fields"):
+            field.GetOptions().SerializeToString()
+
+    def test_the_option_beside_it_reads(self, pools: _Pools) -> None:
+        field = pools[0].FindMessageTypeByName("upo.M").fields[0]
+        assert get_option_value(field, "upo.count") == 7
+
+    def test_it_reads_beside_an_option_that_does_not_parse_too(self, pools: _Pools) -> None:
+        # ``upo.info`` claims five bytes for its string and holds two, so the
+        # whole read fails and ``count`` is read on its own: a second
+        # serialization of the same options.
+        malformed = b"\xa2\x97\x22\x04\x0a\x05ab"
+        pool = _pool_with_an_unfinished_uninterpreted_option(7, written_after=malformed)
+        field = pool.FindMessageTypeByName("upo.M").fields[0]
+        assert get_option_value(field, "upo.count") == 7
+        with pytest.raises(DecodeError, match="upo.info"):
+            get_option_value(field, "upo.info")
+
+    def test_compat_reports_the_changed_option(self, pools: _Pools) -> None:
+        from protokit.schema import CompatibilityLevel, check_compatibility
+
+        old, new = pools
+        report = check_compatibility(old, "upo.M", new, "upo.M", level=CompatibilityLevel.STRICT)
+        assert [finding.rule_id for finding in report.findings] == ["options_changed"]
+
+    def test_compat_reports_nothing_when_nothing_changed(self, pools: _Pools) -> None:
+        from protokit.schema import CompatibilityLevel, check_compatibility
+
+        old = pools[0]
+        same = _pool_with_an_unfinished_uninterpreted_option(7)
+        report = check_compatibility(old, "upo.M", same, "upo.M", level=CompatibilityLevel.STRICT)
+        assert report.findings == ()
