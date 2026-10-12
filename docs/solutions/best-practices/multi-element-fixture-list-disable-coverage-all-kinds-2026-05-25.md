@@ -125,7 +125,7 @@ The path4 test now consumes `sad_multi_element.proto`. The baseline test asserts
 
 ### Source references
 
-- `tests/schema/lint/cli/test_cli_r6_migration_recipe.py:164-265` (post-fix line range)
+- `tests/schema/lint/cli/test_cli_r6_migration_recipe.py:164-264` (post-fix line range)
 - `tests/schema/lint/cli/cli_fixtures/d6f_r6_migration/sad_multi_element.proto` (introduced in commit `dfd5f87`)
 - D6b U6 precedent (session history): `test_parity_package_same.py` parametrized fixture extended for the package_same family at May 18 ce:review
 
