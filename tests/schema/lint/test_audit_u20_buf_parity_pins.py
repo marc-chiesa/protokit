@@ -63,8 +63,9 @@ on load-bearing imports.
 public``) and ``R25-C3`` (the ``package/same-*`` rules on an empty-string
 option value) were found by the 0.16.0 re-audit, cycle 1. Neither is a U20
 finding, and both are owned by the same unit as the U20 pins. They are
-pinned in the last section of this file; the comment block that opens the
-section gives each one's mechanism and evidence.
+pinned in the section that follows the U20 pins; the comment block that opens
+it gives each one's mechanism and evidence. The file ends with R11-C2 again,
+through two ``import public`` hops.
 
 Finding dropped
 ---------------
@@ -124,6 +125,7 @@ would fail loudly if the premise ever rotted.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -657,17 +659,19 @@ class TestU20ImportsUnusedFalsePositives:
 #
 #     *Evidence.* Unlike U20-2 and R11-C2 there is no tool-independent oracle:
 #     what an empty string means here is buf's decision. The expected values
-#     are buf v1.69.0's output, verbatim, from ``version: v2`` module configs
+#     are buf's output, verbatim, from ``version: v2`` module configs
 #     enabling one ``PACKAGE_SAME_*`` rule each. For every one of the six
 #     string options buf is clean on ``""`` plus an omitter and fires on a
 #     non-empty value plus an omitter, so that pin and its control are
 #     parametrized over the six rules; the message-arm rows were run for
-#     ``go_package``. v1.69.0 is the version the pack's recorded snapshots
-#     are locked to (``rules/fixtures/package_same/_buf_smoke/recorded/``).
-#     ``_BUF_PARITY_PIN`` is v1.70.0, which was not available to run, and no
-#     test here runs buf. The fix should record ``empty-string`` and
-#     ``mixed-value-with-omitter`` snapshots at the pinned version; if they
-#     disagree with a value asserted below, the snapshot wins.
+#     ``go_package``. Every row was run on v1.69.0, the version the pack's
+#     recorded snapshots are locked to
+#     (``rules/fixtures/package_same/_buf_smoke/recorded/``), and again on
+#     2026-10-11 on v1.70.0, which is ``_BUF_PARITY_PIN``: the two outputs
+#     are identical. No test here runs buf. The fix should record
+#     ``empty-string`` and ``mixed-value-with-omitter`` snapshots at the
+#     pinned version; if they disagree with a value asserted below, the
+#     snapshot wins.
 
 # ---------------------------------------------------------------------------
 # R11-C2 — imports/unused on an import used only through `import public`
@@ -856,7 +860,7 @@ def _package_same_payloads(
 
 
 class TestR25C3PackageSameControls:
-    """Inputs where protokit and buf v1.69.0 agree, built the way the pins are.
+    """Inputs where protokit and buf (v1.69.0 and v1.70.0) agree, built as the pins are.
 
     They show each rule is live in this harness, that both message arms are
     reachable, and that a zero-finding result is a meaningful signal — so the
@@ -909,8 +913,8 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
             "R25-C3: owned by U15 (0.18.0). _check_package_option counts an "
             'explicit empty string as a declared value, so `option X = "";` '
             "beside a file that omits X is reported as two ERRORs (`both "
-            'values "" and no value`). buf v1.69.0 reads an empty string as '
-            "unset and reports nothing"
+            'values "" and no value`). buf v1.69.0 and v1.70.0 read an empty '
+            "string as unset and report nothing"
         ),
     )
     def test_empty_string_plus_omitter_is_clean(
@@ -932,7 +936,7 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
             "R25-C3: owned by U15 (0.18.0). _check_package_option says "
             "`multiple values` whenever two or more values are declared and "
             "never consults has_omitter. With an omitter present buf v1.69.0 "
-            'says `both values "x/X,x/Y" and no value`'
+            'and v1.70.0 say `both values "x/X,x/Y" and no value`'
         ),
     )
     def test_two_values_plus_omitter_reports_both_values_and_no_value(
@@ -954,8 +958,8 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
         reason=(
             "R25-C3: owned by U15 (0.18.0). An empty string beside a real "
             'value is counted as a second value (`multiple values ",x/X"`). '
-            "buf v1.69.0 reads it as unset, which makes this one value plus "
-            'an omitter: `both values "x/X" and no value`'
+            "buf v1.69.0 and v1.70.0 read it as unset, which makes this one "
+            'value plus an omitter: `both values "x/X" and no value`'
         ),
     )
     def test_empty_string_plus_one_value_reports_that_value_and_no_value(
@@ -969,4 +973,143 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
         assert payloads == ['both values "x/X" and no value'] * 2, (
             f"an empty-string go_package beside \"x/X\" must be reported as "
             f"one value and no value, once per file; got {payloads}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# R11-C2 (two hops) — the same false positive through a chain of re-exports
+#
+# Reproduced during the 0.16.0 re-audit and pinned on 2026-10-11, owned by U15
+# (0.18.0) with R11-C2. ``import public`` is transitive: when ``b.proto``
+# re-exports ``c.proto`` and ``c.proto`` re-exports ``d.proto``, a file that
+# imports ``b.proto`` may use ``d.D``. A fix that follows one
+# ``public_dependency`` hop and stops clears the pin above and leaves this one.
+#
+# The bundled compiler cannot resolve a two-hop chain today
+# (``tests/schema/test_audit_bundled_compiler_public_import_pins.py``), so
+# these tests need ``protoc`` on ``PATH`` and skip where it is absent. Every
+# CI cell installs it.
+# ---------------------------------------------------------------------------
+
+#: Re-exports ``acme/d/d.proto`` and declares nothing of its own.
+_SECOND_REEXPORTER = """\
+syntax = "proto3";
+package acme.c;
+import public "acme/d/d.proto";
+"""
+
+#: Defines the type the two-hop consumer references.
+_TWICE_REEXPORTED = """\
+syntax = "proto3";
+package acme.d;
+message D { int32 x = 1; }
+"""
+
+#: Imports only the first re-exporter and references the type two hops away.
+_TWO_HOP_CONSUMER = """\
+syntax = "proto3";
+package acme.a;
+import "acme/b/b.proto";
+message A { acme.d.D d = 1; }
+"""
+
+
+def _two_hop_tree(consumer: str) -> dict[str, str]:
+    """``a -> b -(import public)-> c -(import public)-> d`` with ``consumer`` as ``a``."""
+    return {
+        "acme/d/d.proto": _TWICE_REEXPORTED,
+        "acme/c/c.proto": _SECOND_REEXPORTER,
+        "acme/b/b.proto": _REEXPORTER,
+        "acme/a/a.proto": consumer,
+    }
+
+
+@pytest.fixture
+def _needs_protoc() -> None:
+    """Skip where no ``protoc`` is on ``PATH`` to compile a two-hop re-export chain."""
+    if shutil.which("protoc") is None:
+        pytest.skip(
+            "a two-hop `import public` chain needs protoc on PATH: the bundled "
+            "compiler cannot resolve it"
+        )
+
+
+@pytest.mark.usefixtures("_needs_protoc")
+class TestR11C2ImportsUnusedTwoHopPublicReexport:
+    """``imports/unused`` on a two-hop re-export chain where ``a`` uses ``d.D``."""
+
+    def test_guard_two_hop_reexporting_import_is_load_bearing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The chain compiles with the consumer's import and not without it.
+
+        Same oracle as the one-hop guard: following the rule's advice breaks
+        the schema. If this ever fails the pin has lost its premise.
+        """
+        sources = _two_hop_tree(_TWO_HOP_CONSUMER)
+        assert _compiles(tmp_path / "with", sources), (
+            "the two-hop re-export chain must compile before the removal half "
+            "of this test means anything"
+        )
+        stripped = dict(sources)
+        stripped["acme/a/a.proto"] = _without_import(
+            _TWO_HOP_CONSUMER, "acme/b/b.proto",
+        )
+        assert not _compiles(tmp_path / "without", stripped), (
+            "'acme/b/b.proto' was expected to be load-bearing for "
+            "'acme/a/a.proto', but the tree still compiled without it"
+        )
+
+    def test_control_unreferenced_two_hop_import_is_reported(
+        self, tmp_path: Path,
+    ) -> None:
+        """The same chain with nothing referenced: the import IS unused.
+
+        Shows the rule runs on a tree the bundled compiler handed to
+        ``protoc``, and that the consumer's reference is the only variable
+        between this correct finding and the false positive pinned below.
+        """
+        report = _run_single(
+            tmp_path,
+            _two_hop_tree(_REEXPORT_NON_CONSUMER),
+            "imports/unused",
+            imports_pack,
+        )
+        _require_the_rule_ran(report)
+        findings = _findings_for(report, "imports/unused")
+        assert [(f.location.file, f.params) for f in findings] == [
+            ("acme/a/a.proto", {"imported": "acme/b/b.proto"}),
+        ]
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason=(
+            "R11-C2 (two hops): owned by U15 (0.18.0). imports/unused never "
+            "follows public_dependency, so an import whose types arrive through "
+            "two `import public` hops is reported unused at severity ERROR even "
+            "though deleting it breaks compilation. A fix that follows a single "
+            "hop does not clear this"
+        ),
+    )
+    def test_import_used_only_through_two_public_reexports(
+        self, tmp_path: Path,
+    ) -> None:
+        """``import "acme/b/b.proto";`` supplying ``acme.d.D`` two hops away is clean."""
+        report = _run_single(
+            tmp_path,
+            _two_hop_tree(_TWO_HOP_CONSUMER),
+            "imports/unused",
+            imports_pack,
+        )
+        _require_the_rule_ran(report)
+        offending = [
+            f
+            for f in _findings_for(report, "imports/unused")
+            if f.params.get("imported") == "acme/b/b.proto"
+        ]
+        assert offending == [], (
+            f"imports/unused must not report 'acme/b/b.proto' — it re-exports "
+            f"'acme/c/c.proto', which re-exports 'acme/d/d.proto', which "
+            f"supplies acme.d.D to acme.a.A; got {[f.params for f in offending]}"
         )

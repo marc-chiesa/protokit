@@ -196,8 +196,7 @@ def test_an_already_gated_skip_exits_2_through_this_harness_control(tmp_path: Pa
     strict=True,
     raises=AssertionError,
     reason=(
-        "V35: owned by 0.17.0 (lint row, unit not yet numbered in the parent "
-        "plan). `extension_unresolved` is not in "
+        "V35: owned by U24 (0.17.0). `extension_unresolved` is not in "
         "protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES, so a run that records "
         "options/field-behavior-consistent as skipped still exits 0"
     ),
@@ -330,8 +329,7 @@ def test_v36_unresolved_custom_rule_is_skipped_and_recorded_control(
     strict=True,
     raises=AssertionError,
     reason=(
-        "V36: owned by 0.17.0 (lint row, unit not yet numbered in the parent "
-        "plan). `custom_annotation_extension_unresolved` is not in "
+        "V36: owned by U24 (0.17.0). `custom_annotation_extension_unresolved` is not in "
         "protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES, so an error-severity "
         "custom annotation rule whose option does not resolve is skipped and "
         "the schema that violates it exits 0"
