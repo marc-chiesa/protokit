@@ -20,7 +20,7 @@ tags: [protobuf, message-to-json, json-format, version-compat, deprecationwarnin
 `protokit storage` PR2 fills no-presence fields when rendering proto to JSON
 (both the `--fields` faithful view and `--explicit-defaults` dense output rely
 on it). The `json_format.MessageToJson` / `MessageToDict` keyword that does this
-was **renamed** within protokit's supported `protobuf>=4.21.0,<6` range, so a
+was **renamed** within protokit's supported `protobuf>=4.25.0,<6` range, so a
 single hard-coded kwarg name breaks on part of the range. (provenance — verified against protobuf 4.25.9 / 5.27.5; current kwarg selection re-asserted by `tests/storage/test_project.py::TestNoPresenceFillShim` on both the default matrix and the `storage-protobuf-floor` CI cell)
 
 ## Guidance
@@ -49,7 +49,7 @@ def _detect_no_presence_kwarg() -> str:
         return _NEW
     if _OLD in params:
         return _OLD
-    raise RuntimeError(  # outside the supported >=4.21,<6 range
+    raise RuntimeError(  # outside the supported >=4.25,<6 range
         "json_format.MessageToDict exposes neither fill-defaults kwarg"
     )
 
@@ -88,7 +88,7 @@ that pins `protobuf==4.25.*` and runs the affected suite, so the old-kwarg path
 stays verified rather than assumed. (`protokit`'s existing `has_protoxy:
 {true,false}` matrix axis is the precedent for an edge-pinning cell.)
 
-Note on the pin: protokit pins `protobuf>=4.21.0,<6`, and the new name lands at
+Note on the pin: protokit pins `protobuf>=4.25.0,<6`, and the new name lands at
 5.27 — i.e. entirely *inside* the pinned window (5.27 ≤ x < 6). The shim's two
 branches both live within the supported range; this does not assume protobuf 6+.
 

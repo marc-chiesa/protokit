@@ -281,7 +281,7 @@ usually come from different pools.
 `_options_class` (`src/protokit/_extensions.py:111-123`) calls
 `message_factory.GetMessageClass` and falls back to
 `MessageFactory(pool).GetPrototype`. `GetMessageClass` is absent from protobuf
-4.21, the declared floor, and present by 4.25, the floor CI runs.
+4.21, the declared floor until 0.16.0, and present in 4.25, the floor since.
 
 Both lint sites now call the seam and nothing else:
 `src/protokit/schema/lint/_custom_rules.py:244` and
@@ -557,11 +557,11 @@ method hop, drop the fast path, and bypass the seam at each lint site.
 `protokit._extensions` joined `LANDED_SEAMS`, and both it and `options.py`
 joined the ruff and `mypy --strict` ratchets.
 
-**Open, out of U5's scope:** `protokit._pools.get_message_class` calls
+**Closed 2026-10-11 by raising the floor:** `protokit._pools.get_message_class` calls
 `message_factory.GetMessageClass` with no fallback (`src/protokit/_pools.py:251`),
-and that call does not exist in protobuf 4.21.0, the declared floor of
-`protobuf>=4.21.0,<6`. CI's floor cell pins 4.25.x, so nothing exercises the
-gap.
+and that call does not exist in protobuf 4.21.0, the declared floor until
+0.16.0. The floor is now 4.25.0 (`protobuf>=4.25.0,<6`), the line CI's floor
+cell pins, and the call exists there.
 
 ## Related
 

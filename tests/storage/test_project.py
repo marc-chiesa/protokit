@@ -314,7 +314,7 @@ class TestNoPresenceFillShim:
         new = "always_print_fields_with_no_presence"
         old = "including_default_value_fields"
         present = [k for k in (new, old) if k in params]
-        # The pinned protobuf>=4.21,<6 range exposes exactly one of the two.
+        # The pinned protobuf>=4.25,<6 range exposes exactly one of the two.
         assert len(present) == 1, present
         selected = present[0]
         assert no_presence_kwarg() == selected

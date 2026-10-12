@@ -742,6 +742,22 @@ backend-neutral rather than merely fixed (KTD6).
 under the pure-Python runtime with no known-failure list, and the
 `test-pure-python` CI cell is a required check (see Internal).
 
+### Changed — BREAKING (protobuf 4.25 or later)
+
+- **protokit requires `protobuf>=4.25.0`; 0.15.1 accepted `4.21.0`.** The
+  declared floor sat four minor lines below anything CI ran: the one job on
+  an old protobuf installs `4.25.*`. Under pure-Python on protobuf 4.21 to
+  4.23, `get_option_value` reads every custom option on a schema in its own
+  pool as absent (measured on 4.21.0, 4.21.12, 4.22.5 and 4.23.4; 4.24.0 and
+  later read them, and upb reads them on every line), so the U5 fix above
+  did not hold there. The floor is now the line CI installs, and a test
+  holds the two together. CI runs the storage suite on that line and the
+  whole suite on the newest one. The `< 6` ceiling is unchanged.
+
+*Upgrade impact:* an environment that pins `protobuf` below 4.25 cannot
+install 0.16.0 without moving that pin; `pip` reports the conflict instead of
+installing. Nothing changes for an environment already on 4.25 or later.
+
 ### Fixed — installation
 
 - **Every command runs on Python 3.10 with only the runtime dependencies**
