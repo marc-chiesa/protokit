@@ -14,13 +14,14 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from google.protobuf.message import Message
 
 from protokit.storage.engine import ScanRecord, ScanResult, scan
 from protokit.storage.registry import StreamRegistry
 from protokit.storage.schema_source import FileDescriptorSetSchema
 from protokit.storage.source import FrameError
+from tests._pure_python_inventory import skip_under_pure_python
 from tests.storage.proto_fixtures import (
     fds,
     file_proto,
@@ -644,3 +645,114 @@ class TestProto2StringsThatAreNotUtf8:
         assert [r.stream_id for r in result] == ["v3"]
         if on_error == "collect":
             assert [e.stream_id for e in result.errors] == ["v2"]
+
+    @pytest.mark.parametrize(
+        ("half", "bad"),
+        [("value", "0a060a016b1201ff"), ("key", "0a060a01ff12016b")],
+    )
+    def test_a_map_entry_declared_in_a_proto2_file_answers_for_itself(
+        self, half: str, bad: str,
+    ) -> None:
+        """A proto3 message whose map entry type a proto2 file declares.
+
+        protoc nests an entry type in the message that uses it, so only a
+        hand-built set has this shape. upb validates neither half of such a map.
+        """
+        field_proto = descriptor_pb2.FieldDescriptorProto
+        p2 = descriptor_pb2.FileDescriptorProto(name="p2.proto", package="p2", syntax="proto2")
+        holder = p2.message_type.add(name="Holder")
+        entry = holder.nested_type.add(name="TagsEntry")
+        entry.options.map_entry = True
+        for name, number in (("key", 1), ("value", 2)):
+            entry.field.add(
+                name=name, number=number, type=_TYPE_STRING, label=field_proto.LABEL_OPTIONAL,
+            )
+        p3 = descriptor_pb2.FileDescriptorProto(
+            name="p3.proto", package="p3", syntax="proto3", dependency=["p2.proto"],
+        )
+        p3.message_type.add(name="M").field.add(
+            name="tags", number=1, type=field_proto.TYPE_MESSAGE,
+            label=field_proto.LABEL_REPEATED, type_name=".p2.Holder.TagsEntry",
+        )
+        registry = StreamRegistry()
+        registry.register_stream("m", FileDescriptorSetSchema(fds(p2, p3), "p3.M"))
+        # tags { key: "k" value: "v" } is the clean record.
+        src = [("m", bytes.fromhex(bad)), ("m", bytes.fromhex("0a060a016b120176"))]
+        result = scan(iter(src), registry, on_error="collect")
+        assert [dict(r.message.tags) for r in result] == [{"k": "v"}]
+        assert [e.record_index for e in result.errors] == [0]
+        assert f"p2.Holder.TagsEntry.{half}" in result.errors[0].reason
+
+
+def test_a_scan_continues_past_a_field_that_cannot_say_whether_it_was_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The walk reads such a field instead of failing the scan."""
+    fdp = file_proto("s.proto", "s", message="S", field_name="s", field_type=_TYPE_STRING)
+    registry, cls = _registry_and_class("s", "s.S", fdp)
+    field_type = type(cls.DESCRIPTOR.fields_by_name["s"])
+    real = getattr(field_type, "_GetFeatures", None)
+
+    class _NoUtf8Answer:
+        def __init__(self, field: object) -> None:
+            self._field = field
+
+        def __getattr__(self, name: str) -> object:
+            # Pure-Python reads other features to answer ``label`` and ``type``.
+            if name == "utf8_validation" or real is None:
+                raise TypeError("no answer for this field")
+            return getattr(real(self._field), name)
+
+    monkeypatch.setattr(
+        field_type, "_GetFeatures", lambda field: _NoUtf8Answer(field), raising=False,
+    )
+    records = list(scan(iter([("s", b"\x0a\x01a"), ("s", b"\x0a\x01b")]), registry))
+    assert [r.message.s for r in records] == ["a", "b"]
+
+
+class _CallerBuiltSchema:
+    """A schema source over a type the test built itself, past protokit's loaders."""
+
+    def __init__(self, message_class: type[Message]) -> None:
+        self._message_class = message_class
+
+    def resolve(self) -> tuple[descriptor_pool.DescriptorPool, type[Message]]:
+        return self._message_class.DESCRIPTOR.file.pool, self._message_class
+
+
+@skip_under_pure_python(
+    "premise holds only on upb: it builds a type whose string default is not UTF-8, "
+    "while pure-Python refuses the file"
+)
+@pytest.mark.parametrize("on_error", ["raise", "skip", "collect"])
+def test_a_record_is_not_faulted_for_a_schema_default_it_does_not_set(on_error: str) -> None:
+    """``optional string s = 1 [default = <not UTF-8>]``: protoc accepts it, and so does upb.
+
+    A record that leaves ``s`` unset is a valid record. One that sets ``s`` to
+    bytes that are not UTF-8 is still a fault.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="dflt.proto", package="dflt", syntax="proto2")
+    message = fdp.message_type.add(name="M")
+    field_proto = descriptor_pb2.FieldDescriptorProto
+    message.field.add(
+        name="s", number=1, type=_TYPE_STRING, label=field_proto.LABEL_OPTIONAL, default_value="?",
+    )
+    message.field.add(
+        name="n", number=2, type=field_proto.TYPE_INT32, label=field_proto.LABEL_OPTIONAL,
+    )
+    placeholder = b"\x3a\x01?"  # default_value is field 7 of FieldDescriptorProto
+    serialized = fdp.SerializeToString()
+    assert serialized.count(placeholder) == 1
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(serialized.replace(placeholder, b"\x3a\x01\xff"))
+    registry = StreamRegistry()
+    message_class = message_factory.GetMessageClass(pool.FindMessageTypeByName("dflt.M"))
+    registry.register_stream("u", _CallerBuiltSchema(message_class))
+    unset = [("u", b"\x10\x05"), ("u", b"\x10\x06"), ("u", b"")]
+    assert [r.message.n for r in scan(iter(unset), registry, on_error=on_error)] == [5, 6, 0]  # type: ignore[arg-type]
+    if on_error != "raise":
+        result = scan(iter([*unset, ("u", b"\x0a\x01\xfe")]), registry, on_error=on_error)  # type: ignore[arg-type]
+        assert [r.message.n for r in result] == [5, 6, 0]
+        if on_error == "collect":
+            assert [e.record_index for e in result.errors] == [3]
+
