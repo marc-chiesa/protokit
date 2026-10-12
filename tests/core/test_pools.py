@@ -549,7 +549,7 @@ class TestTheRuntimeProbe:
         import google.protobuf
         from packaging.version import Version
 
-        _pools._implements_editions.cache_clear()
+        _pools._editions_probe.cache_clear()
         installed = Version(google.protobuf.__version__)
         assert _pools._implements_editions() is (installed >= Version("5.26"))
 
@@ -562,12 +562,84 @@ class TestTheRuntimeProbe:
             def AddSerializedFile(self, serialized: bytes) -> None:  # noqa: N802
                 raise TypeError("Couldn't build proto file into descriptor pool")
 
-        _pools._implements_editions.cache_clear()
+        _pools._editions_probe.cache_clear()
         monkeypatch.setattr(_pools, "descriptor_pool", SimpleNamespace(DescriptorPool=Refusing))
         try:
             assert _pools._implements_editions() is False
         finally:
-            _pools._implements_editions.cache_clear()
+            _pools._editions_probe.cache_clear()
+
+
+class TestTheProbeWithNoStackLeft:
+    def test_the_schema_is_not_refused_and_the_guess_is_not_kept(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        asked: list[int] = []
+
+        def probe() -> bool:
+            asked.append(1)
+            if len(asked) == 1:
+                raise RecursionError("maximum recursion depth exceeded")
+            return False
+
+        monkeypatch.setattr(_pools, "_editions_probe", probe)
+        assert _pools._implements_editions() is True
+        assert _pools._implements_editions() is False
+
+    def test_the_probe_does_not_take_an_overflow_for_an_answer(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        class Overflowing:
+            def AddSerializedFile(self, serialized: bytes) -> None:  # noqa: N802
+                raise RecursionError("maximum recursion depth exceeded")
+
+        real = _pools.descriptor_pool
+        _pools._editions_probe.cache_clear()
+        monkeypatch.setattr(_pools, "descriptor_pool", SimpleNamespace(DescriptorPool=Overflowing))
+        try:
+            with pytest.raises(RecursionError):
+                _pools._editions_probe()
+            # Nothing was cached: with the stack back, the runtime answers for itself.
+            monkeypatch.setattr(_pools, "descriptor_pool", real)
+            import google.protobuf
+            from packaging.version import Version
+
+            assert _pools._editions_probe() is (
+                Version(google.protobuf.__version__) >= Version("5.26")
+            )
+        finally:
+            _pools._editions_probe.cache_clear()
+
+
+class TestWhatCountsAsAnEditionsFile:
+    @pytest.mark.parametrize(
+        ("fields", "declares"),
+        [
+            ({"syntax": "editions", "edition": descriptor_pb2.EDITION_2023}, True),
+            ({"syntax": "editions"}, True),
+            ({"edition": descriptor_pb2.EDITION_2023}, True),
+            ({"syntax": "proto2", "edition": descriptor_pb2.EDITION_2023}, True),
+            ({}, False),
+            ({"syntax": "proto2"}, False),
+            ({"syntax": "proto3"}, False),
+            ({"syntax": "proto3", "edition": 999}, False),
+            ({"syntax": "proto2", "edition": 998}, False),
+            ({"edition": 0}, False),
+        ],
+    )
+    def test_either_field_alone_declares_one(
+        self, fields: dict[str, object], declares: bool,
+    ) -> None:
+        file = descriptor_pb2.FileDescriptorProto(name="ed/x.proto", **fields)  # type: ignore[arg-type]
+        assert _pools._declares_an_edition(file) is declares
+
+    def test_a_file_that_sets_only_edition_is_refused(self, runtime_without_editions: None) -> None:
+        fds = _editions_set(syntax="proto2")
+        fds.file[0].edition = descriptor_pb2.EDITION_2023
+        with pytest.raises(_pools.EditionsNotImplementedError):
+            _pools.build_pool(fds)
 
 
 class TestAnEditionsFileOnARuntimeWithoutEditions:

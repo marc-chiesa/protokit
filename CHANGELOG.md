@@ -780,7 +780,7 @@ under the pure-Python runtime with no known-failure list, and the
   refuses it.** protobuf 4.25 loads an `edition = "2023"` file without
   complaint and reads every feature in it as unset: a `DELIMITED` field is an
   ordinary length-prefixed message, a `LEGACY_REQUIRED` field is not
-  required, and a field with explicit presence has none. Every answer
+  required, and a scalar field with explicit presence has none. Every answer
   protokit gave about such a schema there was computed from a different
   schema. On 0.15.1 with protobuf 4.25.9, `protokit diff` over two payloads
   that differ inside a `DELIMITED` field printed `Messages are equal.` and
