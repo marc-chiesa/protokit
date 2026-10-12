@@ -20,10 +20,14 @@ on the command:
   compile fails with ``backend_missing``.
 - ``compat`` and ``diff`` compile through ``compile_proto``, which has no
   fallback: they exit 2 with "protoxy compile failed" whether or not
-  ``protoc`` is installed. That surface is described here and not pinned.
+  ``protoc`` is installed, and accept the same schema when the bundled
+  compiler is absent. Installing ``protoc`` does not help.
 
 The first pin takes ``protoc`` out of reach and asserts the tree compiles, so
-only the bundled compiler can satisfy it.
+only the bundled compiler can satisfy it. The pin at the end of the file runs
+``compat check`` and ``diff`` with ``protoc`` on ``PATH`` and asserts they
+accept the schema, so it flips whether the bundled compiler learns the second
+hop or ``compile_proto`` learns to fall back.
 
 **The parser's own message is lost.** When the bundled compiler rejects a
 schema and there is no ``protoc`` to fall back to, ``compile_protos_to_result``
@@ -51,6 +55,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner, Result
 
+import protokit._cli_utils as cli_utils
 import protokit.schema.compile as compile_module
 from protokit.cli import main
 from tests.schema.lint.rules.conftest import _compile
@@ -305,3 +310,109 @@ def test_a_rejected_schema_is_reported_in_the_parsers_words(
     # Today: "compile backend missing: install protokit[compiler] or put protoc on PATH".
     assert message in result.stderr, result.stderr
     assert "compile backend missing" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# compat and diff have no fallback: the two-hop schema is refused outright
+# ---------------------------------------------------------------------------
+
+_COMMANDS_WITHOUT_A_FALLBACK = pytest.mark.parametrize("command", ["compat-check", "diff"])
+
+
+def _write_tree(tmp_path: Path, sources: dict[str, str]) -> Path:
+    """Write ``sources`` (POSIX-relative name -> text) under a fresh root and return it."""
+    root = tmp_path / "tree"
+    for name, text in sources.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return root
+
+
+def _run_on_consumer(command: str, root: Path) -> Result:
+    """``compat check`` of ``acme/a/a.proto`` against itself, or ``diff`` of two empty payloads.
+
+    Either way the right answer is exit 0: a schema is compatible with
+    itself, and two empty ``acme.a.A`` payloads are equal. Only the compile
+    of ``acme/a/a.proto`` stands between the command and that answer.
+    """
+    consumer = str(root / "acme/a/a.proto")
+    if command == "compat-check":
+        argv = ["compat", "check", "--proto", consumer, consumer, "-I", str(root),
+                "--type", "acme.a.A"]
+    else:
+        empty = root / "empty.bin"
+        empty.write_bytes(b"")
+        argv = ["diff", str(empty), str(empty), "--proto", consumer,
+                "--proto-path", str(root), "--message-type", "acme.a.A"]
+    return CliRunner().invoke(main, argv, catch_exceptions=False)
+
+
+@pytest.fixture
+def protoc_on_path() -> None:
+    """Skip where no ``protoc`` is installed: these tests are about having one."""
+    if shutil.which("protoc") is None:
+        pytest.skip("needs protoc on PATH")
+
+
+@_COMMANDS_WITHOUT_A_FALLBACK
+def test_one_hop_schema_is_accepted_with_the_bundled_compiler_control(
+    tmp_path: Path, command: str,
+) -> None:
+    """Control: one ``import public`` hop, bundled compiler, and the command exits 0.
+
+    Same commands and the same consumer as the pin, one re-export shorter.
+    """
+    result = _run_on_consumer(command, _write_tree(tmp_path, _ONE_HOP))
+
+    assert result.exit_code == 0, result.stderr
+
+
+@pytest.mark.usefixtures("protoc_on_path")
+@_COMMANDS_WITHOUT_A_FALLBACK
+def test_two_hop_schema_is_accepted_without_the_bundled_compiler_control(
+    tmp_path: Path, command: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: with the bundled compiler out of the way, the same command accepts the schema.
+
+    Forces ``compile_proto`` onto its ``protoc`` arm. The schema is valid and
+    the command handles it; the bundled compiler is the only variable between
+    this and the pin below.
+    """
+    monkeypatch.setattr(cli_utils, "_has_protoxy", lambda: False)
+
+    result = _run_on_consumer(command, _write_tree(tmp_path, _TWO_HOPS))
+
+    assert result.exit_code == 0, result.stderr
+
+
+@pytest.mark.usefixtures("protoc_on_path")
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=_TWO_HOPS_OWNER + (
+        "compat and diff compile through compile_proto, which has no fallback to "
+        "protoc: with the bundled compiler installed they exit 2 with 'protoxy compile "
+        "failed: name ... is not defined' on a valid schema even when protoc is on "
+        "PATH, and accept it when the bundled compiler is absent. Both backends."
+    ),
+)
+@_COMMANDS_WITHOUT_A_FALLBACK
+def test_two_hop_schema_is_accepted_when_protoc_is_installed(
+    tmp_path: Path, command: str,
+) -> None:
+    """Installing ``protokit[compiler]`` must not make a valid schema unusable.
+
+    User-visible consequence: ``protokit compat check`` and ``protokit diff``
+    refuse a schema ``protoc`` compiles, and the user has no way through short
+    of uninstalling the bundled compiler. ``lint`` and ``storage`` on the same
+    machine compile the same file.
+
+    Either remedy flips this pin: a bundled compiler that resolves the second
+    hop, or a ``compile_proto`` that falls back to ``protoc`` as
+    ``compile_protos_to_result`` does.
+    """
+    result = _run_on_consumer(command, _write_tree(tmp_path, _TWO_HOPS))
+
+    # Today: exit 2, "Error: protoxy compile failed: name 'acme.d.D' is not defined".
+    assert result.exit_code == 0, result.stderr
