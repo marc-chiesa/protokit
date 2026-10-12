@@ -741,3 +741,108 @@ def test_bytes_the_record_splitter_refuses_keep_what_the_runtime_read() -> None:
             rebind_options(options, ext)
         pytest.skip("upb refuses these bytes itself, so the re-read never holds a value")
     assert rebind_options(options, ext).Extensions[ext] == 2
+
+
+# Runs in a child process: where the refusal is missing, upb ends the interpreter.
+_MAP_ENTRY_EXTENSION = r"""
+import json
+import sys
+from pathlib import Path
+
+from click.testing import CliRunner
+from google.protobuf import descriptor_pb2 as d
+from google.protobuf.message import DecodeError
+
+from protokit._extensions import options_of, rebind_options
+from protokit._pools import build_pool
+from protokit.options import get_option_value
+from protokit.schema.lint.cli import main as lint_main
+
+F = d.FieldDescriptorProto
+ext_file = d.FileDescriptorProto(
+    name="ph/ext.proto", package="ph", syntax="proto2",
+    dependency=["google/protobuf/descriptor.proto"],
+)
+entry = ext_file.message_type.add(name="LabelsEntry")
+entry.options.map_entry = True
+for name, number in (("key", 1), ("value", 2)):
+    entry.field.add(name=name, number=number, type=F.TYPE_STRING, label=F.LABEL_OPTIONAL)
+ext_file.extension.add(
+    name="labels", number=76001, type=F.TYPE_MESSAGE, label=F.LABEL_REPEATED,
+    type_name=".ph.LabelsEntry", extendee=".google.protobuf.FieldOptions",
+)
+ext_file.extension.add(
+    name="num", number=76002, type=F.TYPE_INT32, label=F.LABEL_OPTIONAL,
+    extendee=".google.protobuf.FieldOptions",
+)
+user = d.FileDescriptorProto(
+    name="ph/user.proto", package="ph", syntax="proto3", dependency=["ph/ext.proto"],
+)
+field = user.message_type.add(name="M").field.add(
+    name="x", number=1, type=F.TYPE_INT32, label=F.LABEL_OPTIONAL,
+)
+# (ph.labels) = { key: "k" value: "v" }, then (ph.num) = 7
+field.options.MergeFromString(bytes.fromhex("8a8e25060a016b120176") + bytes.fromhex("908e2507"))
+fds = d.FileDescriptorSet()
+fds.file.add().ParseFromString(d.DESCRIPTOR.serialized_pb)
+fds.file.extend([ext_file, user])
+pool = build_pool(fds)
+x = pool.FindMessageTypeByName("ph.M").fields_by_name["x"]
+labels = pool.FindExtensionByName("ph.labels")
+
+
+def outcome(read):
+    try:
+        return ["value", repr(read())]
+    except DecodeError as exc:
+        return ["DecodeError", str(exc)]
+
+
+scratch = Path(sys.argv[1])
+(scratch / "set.binpb").write_bytes(fds.SerializeToString())
+(scratch / "pyproject.toml").write_text(
+    "[[tool.protokit.lint.custom_annotation_rules]]\n"
+    'rule_suffix = "labels"\noption = "ph.labels"\nelement_kinds = ["field"]\n'
+    'severity = "error"\n'
+)
+lint = CliRunner().invoke(lint_main, [
+    str(scratch / "set.binpb"), "--no-builtin-rules",
+    "--config", str(scratch / "pyproject.toml"), "--format", "json",
+])
+print(json.dumps({
+    "re_read": outcome(lambda: rebind_options(options_of(x), labels)),
+    "read": outcome(lambda: get_option_value(x, "ph.labels")),
+    "another_option": outcome(lambda: get_option_value(x, "ph.num")),
+    "lint_exit": lint.exit_code,
+    "lint_says": "rule_exception" in lint.output,
+}))
+"""
+
+
+def test_an_extension_typed_as_a_map_entry_is_refused_on_both_backends() -> None:
+    """Protobuf has no map extensions, but a descriptor set can declare one.
+
+    Both runtimes build the pool. Reading the option is refused by name; the
+    element's other options still read, and ``lint`` reports the rule could
+    not run instead of dying.
+    """
+    import json
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2] / "src"
+    with tempfile.TemporaryDirectory() as scratch:
+        result = subprocess.run(
+            [sys.executable, "-c", _MAP_ENTRY_EXTENSION, scratch],
+            capture_output=True, text=True, check=False, timeout=300,
+            env={**os.environ, "PYTHONPATH": str(src)},
+        )
+    assert result.returncode == 0, result.stderr[-2000:]
+    seen = json.loads(result.stdout.strip().splitlines()[-1])
+    assert seen["re_read"][0] == "DecodeError" and "ph.labels" in seen["re_read"][1]
+    assert seen["read"][0] == "DecodeError" and "ph.labels" in seen["read"][1]
+    assert seen["another_option"] == ["value", "7"]
+    assert (seen["lint_exit"], seen["lint_says"]) == (2, True)
+

@@ -246,7 +246,7 @@ emptiness for repeated ones. The `except` is gone.
 rebind_options`):
 
 ```python
-    target = ext_desc.containing_type
+    target = _extendee_of(ext_desc)
     if options.DESCRIPTOR is target:
         return _checked(options, ext_desc)
     if not extends(options, ext_desc):

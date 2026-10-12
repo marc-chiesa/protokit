@@ -135,10 +135,10 @@ def get_option_value(
         repeated extension is what reads as ``None``.
 
     Raises:
-        google.protobuf.message.DecodeError: The option's stored bytes do
-            not parse as its type or hold a string that is not UTF-8. Under upb
-            a singular proto2 string written twice is checked on its last copy
-            only. Another option's bad bytes do not stop this one from being read.
+        google.protobuf.message.DecodeError: The option's stored bytes do not parse as
+            its type or hold a string that is not UTF-8 (under upb a singular proto2
+            string written twice is checked on its last copy only), or the option is typed
+            as a map entry. Another option's bad bytes do not stop this one from being read.
     """
     options = options_of(desc)
     if pool is None:

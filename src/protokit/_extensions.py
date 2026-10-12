@@ -86,11 +86,11 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
             method options would decode unrelated bytes, so this refuses, the
             way protobuf itself does.
         google.protobuf.message.DecodeError: the bytes ``options`` holds for ``ext_desc`` do
-            not parse as its type, or hold a string that is not UTF-8. Under upb a singular
-            proto2 string written twice is checked on its last copy only; pure-Python raises
-            for either. Another option's bad bytes do not raise: the option is read on its own.
+            not parse as its type or hold a string that is not UTF-8 (under upb a singular
+            proto2 string written twice is checked on its last copy only), or ``ext_desc`` is
+            typed as a map entry. Another option's bad bytes do not raise: it is read alone.
     """
-    target = ext_desc.containing_type
+    target = _extendee_of(ext_desc)
     if options.DESCRIPTOR is target:
         return _checked(options, ext_desc)
     if not extends(options, ext_desc):
@@ -508,7 +508,9 @@ def _without_undeclared_enum(rebound: Any, source: Any, ext_desc: Any) -> Any:
 
     ``rebound`` is the fresh message :func:`rebind_options` built, never the
     caller's. Bytes the runtime parsed and :func:`_records` refuses keep what
-    the runtime read.
+    the runtime read. Only ``ext_desc`` is corrected: a message
+    :func:`rebind_options` returned, passed back to it for another closed-enum
+    extension, takes its early return and keeps upb's answer for that one.
     """
     enum = ext_desc.enum_type
     if enum is None or ext_desc.label == _REPEATED or not enum.is_closed:
@@ -530,3 +532,22 @@ def _without_undeclared_enum(rebound: Any, source: Any, ext_desc: Any) -> Any:
             return rebound
     rebound.ClearExtension(ext_desc)
     return rebound
+
+
+def _extendee_of(ext_desc: Any) -> Any:
+    """The type ``ext_desc`` extends; ``DecodeError`` for an extension typed as a map entry.
+
+    Protobuf has no map extensions and no compiler writes one, but a descriptor
+    set can declare a repeated extension whose type has ``map_entry`` set, and
+    both runtimes build it. upb then hands the value back as a map over storage
+    that is not one, and reading it ends the process. The read is refused by
+    name on both backends instead.
+    """
+    entry = ext_desc.message_type
+    if ext_desc.label == _REPEATED and entry is not None and entry.GetOptions().map_entry:
+        raise message.DecodeError(
+            f"{ext_desc.full_name}: an extension cannot be a map, and its type "
+            f"{entry.full_name} is a map entry"
+        )
+    return ext_desc.containing_type
+
