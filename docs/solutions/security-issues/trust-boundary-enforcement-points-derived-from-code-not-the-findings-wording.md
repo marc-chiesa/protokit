@@ -132,8 +132,8 @@ scope it counts over ("this function's two", not "both boundaries").
 that surface in one pass. A surface that has just yielded three findings feels
 finished, and that feeling was the confidence that skipped the third site. This
 is the corpus's **sibling blindness** in its purest form — and it survived
-inside the very unit whose stated goal is that no command exits 0 on a run that
-did not complete.
+inside the very unit whose stated goal is that a run which recorded it did not
+complete exits 2.
 
 What caught it was an independent pre-merge review pass, which recorded it as a
 P0 and reproduced it — not the author, and not the suite, which stayed green
