@@ -44,6 +44,7 @@ from protokit.schema.git import (
     resolve_ref_sha,
     verify_ref,
 )
+from tests._editions import requires_editions
 
 # ---------------------------------------------------------------------------
 # Throwaway-repo helpers (never touch the real repository's git state)
@@ -134,6 +135,7 @@ def _editions_descriptor_set_bytes() -> bytes:
     fd = fds.file.add()
     fd.name = "demo/ed.proto"
     fd.package = "probe"
+    requires_editions()
     fd.syntax = "editions"
     fd.edition = descriptor_pb2.Edition.EDITION_2023
     msg = fd.message_type.add()

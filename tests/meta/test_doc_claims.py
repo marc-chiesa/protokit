@@ -1078,6 +1078,21 @@ class TestProtobufFloor:
             for match in _FLOOR_INSTALL.finditer(step.get("run", ""))
         ]
 
+    def test_the_floor_job_runs_the_whole_suite_on_both_backends(self) -> None:
+        """Not a subtree: it ran ``tests/storage`` alone while editions cases failed unseen."""
+        workflow = yaml.safe_load(_CI_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        runs: list[tuple[str, tuple[str, ...]]] = []
+        for step in workflow["jobs"][_FLOOR_JOB]["steps"]:
+            backend = step.get("env", {}).get("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "default")
+            for line in step.get("run", "").splitlines():
+                words = line.split()
+                if words[:1] == ["pytest"]:
+                    runs.append((backend, tuple(word for word in words[1:] if "/" in word)))
+        assert runs == [("default", ("tests/",)), ("python", ("tests/",))], (
+            f"the {_FLOOR_JOB} job should run `pytest tests/` once on the default backend "
+            f"and once under PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python; it runs {runs}."
+        )
+
     def test_the_floor_job_installs_the_declared_floor(self) -> None:
         declared = self._declared_floor()
         assert self._installed_by_the_floor_job() == [declared], (

@@ -518,3 +518,211 @@ def test_a_non_utf8_map_key_in_an_option_raises_the_typed_error() -> None:
     outcome = result.stdout.strip()
     # Naming the key field proves the key was what failed, on either backend.
     assert outcome.startswith("typed-error") and "mk.Holder.MEntry.key" in outcome, outcome
+
+
+# ---------------------------------------------------------------------------
+# An editions file needs a runtime that implements editions
+# ---------------------------------------------------------------------------
+
+
+def _editions_set(*, syntax: str = "editions") -> descriptor_pb2.FileDescriptorSet:
+    """One file holding ``ed.M``; an editions one unless ``syntax`` says otherwise."""
+    file = descriptor_pb2.FileDescriptorProto(name="ed/m.proto", package="ed", syntax=syntax)
+    if syntax == "editions":
+        file.edition = descriptor_pb2.EDITION_2023
+    file.message_type.add(name="M")
+    return descriptor_pb2.FileDescriptorSet(file=[file])
+
+
+@pytest.fixture
+def runtime_without_editions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every loader see what protobuf 4.25 gives it: a runtime that ignores features."""
+    monkeypatch.setattr(_pools, "_implements_editions", lambda: False)
+
+
+class TestTheRuntimeProbe:
+    def test_it_answers_for_the_installed_protobuf(self) -> None:
+        # Measured: 4.25.9 loads an editions file and reads its features as
+        # unset; 5.26.1, 5.27.0, 5.27.5 and 5.29.5 apply them. A probe that
+        # went wrong on a newer line would skip every editions test in the
+        # suite (tests/_editions.py), so its answer is held to the version.
+        import google.protobuf
+        from packaging.version import Version
+
+        _pools._editions_probe.cache_clear()
+        installed = Version(google.protobuf.__version__)
+        assert _pools._implements_editions() is (installed >= Version("5.26"))
+
+    def test_a_runtime_that_refuses_the_probe_does_not_implement_them(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        class Refusing:
+            def AddSerializedFile(self, serialized: bytes) -> None:  # noqa: N802
+                raise TypeError("Couldn't build proto file into descriptor pool")
+
+        _pools._editions_probe.cache_clear()
+        monkeypatch.setattr(_pools, "descriptor_pool", SimpleNamespace(DescriptorPool=Refusing))
+        try:
+            assert _pools._implements_editions() is False
+        finally:
+            _pools._editions_probe.cache_clear()
+
+
+class TestTheProbeWithNoStackLeft:
+    def test_the_schema_is_not_refused_and_the_guess_is_not_kept(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        asked: list[int] = []
+
+        def probe() -> bool:
+            asked.append(1)
+            if len(asked) == 1:
+                raise RecursionError("maximum recursion depth exceeded")
+            return False
+
+        monkeypatch.setattr(_pools, "_editions_probe", probe)
+        assert _pools._implements_editions() is True
+        assert _pools._implements_editions() is False
+
+    def test_the_probe_does_not_take_an_overflow_for_an_answer(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from types import SimpleNamespace
+
+        class Overflowing:
+            def AddSerializedFile(self, serialized: bytes) -> None:  # noqa: N802
+                raise RecursionError("maximum recursion depth exceeded")
+
+        real = _pools.descriptor_pool
+        _pools._editions_probe.cache_clear()
+        monkeypatch.setattr(_pools, "descriptor_pool", SimpleNamespace(DescriptorPool=Overflowing))
+        try:
+            with pytest.raises(RecursionError):
+                _pools._editions_probe()
+            # Nothing was cached: with the stack back, the runtime answers for itself.
+            monkeypatch.setattr(_pools, "descriptor_pool", real)
+            import google.protobuf
+            from packaging.version import Version
+
+            assert _pools._editions_probe() is (
+                Version(google.protobuf.__version__) >= Version("5.26")
+            )
+        finally:
+            _pools._editions_probe.cache_clear()
+
+
+class TestWhatCountsAsAnEditionsFile:
+    @pytest.mark.parametrize(
+        ("fields", "declares"),
+        [
+            ({"syntax": "editions", "edition": descriptor_pb2.EDITION_2023}, True),
+            ({"syntax": "editions"}, True),
+            ({"edition": descriptor_pb2.EDITION_2023}, True),
+            ({"syntax": "proto2", "edition": descriptor_pb2.EDITION_2023}, True),
+            ({}, False),
+            ({"syntax": "proto2"}, False),
+            ({"syntax": "proto3"}, False),
+            ({"syntax": "proto3", "edition": 999}, False),
+            ({"syntax": "proto2", "edition": 998}, False),
+            ({"edition": 0}, False),
+        ],
+    )
+    def test_either_field_alone_declares_one(
+        self, fields: dict[str, object], declares: bool,
+    ) -> None:
+        file = descriptor_pb2.FileDescriptorProto(name="ed/x.proto", **fields)  # type: ignore[arg-type]
+        assert _pools._declares_an_edition(file) is declares
+
+    def test_a_file_that_sets_only_edition_is_refused(self, runtime_without_editions: None) -> None:
+        fds = _editions_set(syntax="proto2")
+        fds.file[0].edition = descriptor_pb2.EDITION_2023
+        with pytest.raises(_pools.EditionsNotImplementedError):
+            _pools.build_pool(fds)
+
+
+class TestAnEditionsFileOnARuntimeWithoutEditions:
+    """protobuf 4.25 reads every feature as unset, so the schema it builds is a different one."""
+
+    def test_build_pool_refuses_it_naming_the_file_and_the_runtime(
+        self, runtime_without_editions: None,
+    ) -> None:
+        import google.protobuf
+
+        with pytest.raises(_pools.EditionsNotImplementedError) as raised:
+            _pools.build_pool(_editions_set())
+        assert raised.value.file_name == "ed/m.proto"
+        assert f"protobuf {google.protobuf.__version__} does not implement editions" in str(
+            raised.value
+        )
+
+    def test_the_refusal_is_a_descriptor_pool_error(self, runtime_without_editions: None) -> None:
+        # Every command already turns that family into exit 2.
+        with pytest.raises(_pools.DescriptorPoolError, match="is an editions file"):
+            _pools.load_pool_from_bytes(_editions_set().SerializeToString())
+
+    def test_a_file_added_on_its_own_is_refused_too(self, runtime_without_editions: None) -> None:
+        # The compile path adds files one at a time, without a set to check.
+        pool = descriptor_pool.DescriptorPool()
+        with pytest.raises(_pools.DescriptorPoolError, match="is an editions file"):
+            _pools.add_and_resolve(pool, _editions_set().file[0])
+        with pytest.raises(KeyError):
+            pool.FindFileByName("ed/m.proto")
+
+    @pytest.mark.parametrize("syntax", ["proto2", "proto3"])
+    def test_a_file_that_is_not_an_editions_file_loads(
+        self, syntax: str, runtime_without_editions: None,
+    ) -> None:
+        pool = _pools.build_pool(_editions_set(syntax=syntax))
+        assert pool.FindMessageTypeByName("ed.M").full_name == "ed.M"
+
+    def test_one_editions_file_among_others_refuses_the_set(
+        self, runtime_without_editions: None,
+    ) -> None:
+        fds = _editions_set(syntax="proto3")
+        fds.file.add().CopyFrom(_editions_set().file[0])
+        fds.file[1].name = "ed/second.proto"
+        fds.file[1].message_type[0].name = "Second"
+        with pytest.raises(_pools.EditionsNotImplementedError) as raised:
+            _pools.build_pool(fds)
+        assert raised.value.file_name == "ed/second.proto"
+
+    def test_lint_reports_bad_input_and_exits_2(
+        self, runtime_without_editions: None, tmp_path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from protokit.schema.lint._cli_utils import _load_descriptor_sets_to_result
+
+        path = tmp_path / "ed.binpb"
+        path.write_bytes(_editions_set().SerializeToString())
+        with pytest.raises(SystemExit) as raised:
+            _load_descriptor_sets_to_result((path,))
+        assert raised.value.code == 2
+        err = capsys.readouterr().err
+        assert "error[lint-bad-input]" in err
+        assert "is an editions file" in err
+
+    def test_diff_exits_2_with_the_reason(self, runtime_without_editions: None, tmp_path) -> None:
+        from click.testing import CliRunner
+
+        from protokit.message.cli import main as diff_main
+
+        desc, payload = tmp_path / "ed.binpb", tmp_path / "m.bin"
+        desc.write_bytes(_editions_set().SerializeToString())
+        payload.write_bytes(b"")
+        result = CliRunner().invoke(
+            diff_main,
+            [str(payload), str(payload), "--desc", str(desc), "--message-type", "ed.M"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 2
+        assert "is an editions file" in result.output
+
+
+class TestAnEditionsFileOnARuntimeWithEditions:
+    def test_it_loads(self) -> None:
+        from tests._editions import requires_editions
+
+        requires_editions()
+        pool = _pools.build_pool(_editions_set())
+        assert pool.FindMessageTypeByName("ed.M").full_name == "ed.M"

@@ -5,6 +5,7 @@ from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.message import ChangeType, MessageDifferencer, diff_messages
 from protokit.message.comparators import FloatComparison, MessageFieldComparison
+from tests._editions import requires_editions
 from tests.proto_builder import ProtoBuilder
 
 T = descriptor_pb2.FieldDescriptorProto
@@ -169,6 +170,7 @@ def _group_schema(
     file whose features make every message field DELIMITED (TYPE_GROUP too).
     """
     if kind == "editions":
+        requires_editions()
         fdp = descriptor_pb2.FileDescriptorProto(
             name="g.proto", package="t", syntax="editions", edition=descriptor_pb2.EDITION_2023,
         )

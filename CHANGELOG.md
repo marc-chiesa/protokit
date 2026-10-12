@@ -69,6 +69,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
 > | *(pure-Python)* a message payload nested past Python's recursion limit (a few hundred levels at the default limit), or carrying a string that is not UTF-8 (proto2 or proto3) | `diff` exits 2 on the deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1. Nesting between upb's limit of 100 levels and Python's recursion limit still differs by runtime, as it did in 0.15.1: upb refuses the payload (exit 2) and pure-Python reads it |
 > | *(pure-Python)* `diff`, `storage scan`, `storage count` or `forensics match` over a payload that holds a repeated message-typed extension | parses the payload and answers as under upb (identical payloads: `diff` exits 0, `storage count` prints the count, `forensics match` ranks the candidate), instead of an `AttributeError` traceback and exit 1 |
+> | any command given an editions schema while the installed `protobuf` is 4.25 | exits 2 naming the file and the installed protobuf (`lint`: `error[lint-bad-input]`), instead of answering from a schema with every feature read as unset: for example `diff` exiting 0 with `Messages are equal.` over payloads that differ inside a `DELIMITED` field. protobuf 5.26 and later are unaffected |
 > | a message payload carrying a proto2 string that is not UTF-8 (or an editions string with UTF-8 validation off), at any depth, under upb | `diff` exits 2 on binary input instead of comparing the raw bytes (exit 0 or 1); `storage` counts the record as a fault under `--on-error` (`count` exits 2 instead of 0 with the record counted), and `to_parquet` raises `IncompleteScanError` instead of a raw `ValueError` from the Arrow converter; `forensics match` ranks the candidate `decode_error` instead of `clean`, and exits 2 when no candidate parses. Under pure-Python, `diff` already exited 2 for such a payload; `storage` and `forensics match` crashed with exit 1 (the row above), and `to_parquet` raised a raw `UnicodeDecodeError` |
 > | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
 > | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
@@ -774,12 +775,33 @@ under the pure-Python runtime with no known-failure list, and the
   pool as absent (measured on 4.21.0, 4.21.12, 4.22.5 and 4.23.4; 4.24.0 and
   later read them, and upb reads them on every line), so the U5 fix above
   did not hold there. The floor is now the line CI installs, and a test
-  holds the two together. CI runs the storage suite on that line and the
-  whole suite on the newest one. The `< 6` ceiling is unchanged.
+  holds the two together. The `< 6` ceiling is unchanged.
+- **An editions schema needs protobuf 5.26 or later; on 4.25 protokit now
+  refuses it.** protobuf 4.25 loads an `edition = "2023"` file without
+  complaint and reads every feature in it as unset: a `DELIMITED` field is an
+  ordinary length-prefixed message, a `LEGACY_REQUIRED` field is not
+  required, and a scalar field with explicit presence has none. Every answer
+  protokit gave about such a schema there was computed from a different
+  schema. On 0.15.1 with protobuf 4.25.9, `protokit diff` over two payloads
+  that differ inside a `DELIMITED` field printed `Messages are equal.` and
+  exited 0; on 5.27.5 the same command reported the difference. Every loader
+  now refuses an editions file on a runtime that does not apply its
+  features, with a message naming the file and the installed protobuf:
+  `diff`, `compat`, `storage` and `forensics` exit 2, and `lint` exits 2
+  with `error[lint-bad-input]`. The check asks the runtime, not its version
+  number. Measured: 4.25.9 ignores features; 5.26.1, 5.27.0, 5.27.5 and
+  5.29.5 apply them. A pool you build yourself and hand to the Python API
+  is not checked.
+- **CI now runs the whole suite on the floor, on both backends.** The floor
+  job ran the storage tests alone, so the defect above failed 50 to 66 tests
+  on protobuf 4.25 with nothing running them. A test fails if the job
+  narrows again.
 
 *Upgrade impact:* an environment that pins `protobuf` below 4.25 cannot
 install 0.16.0 without moving that pin; `pip` reports the conflict instead of
-installing. Nothing changes for an environment already on 4.25 or later.
+installing. An environment on 4.25 that feeds protokit an editions schema
+gets exit 2 where it got an answer, and has to move to protobuf 5.26 or
+later. Nothing else changes for an environment already on 4.25 or later.
 
 ### Fixed — installation
 

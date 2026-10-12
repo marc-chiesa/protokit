@@ -33,6 +33,7 @@ from protokit.schema.lint.rules.field import (
     RULES,
     check_field_not_required,
 )
+from tests._editions import requires_editions
 
 from .conftest import _compile
 from .conftest import _run_single as _run_single_with_pack
@@ -214,6 +215,7 @@ class TestFieldNotRequired:
         # message parent — synthesize one with a normal field.
         fdp = _pb2.FileDescriptorProto()
         fdp.name = "ed.proto"
+        requires_editions()
         fdp.syntax = "editions"
         fdp.edition = _pb2.Edition.EDITION_2023
         fdp.package = "ed"

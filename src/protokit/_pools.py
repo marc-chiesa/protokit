@@ -179,7 +179,7 @@ def add_and_resolve(
     # rejection shapes vary by backend and version (see above). BaseException
     # (KeyboardInterrupt, SystemExit) is not caught and still propagates.
     try:
-        pool.Add(fd)
+        pool.Add(_honoured(fd))
         pool.FindFileByName(fd.name)
     except Exception as exc:
         raise DescriptorPoolError(
@@ -266,7 +266,7 @@ def require_decodable_strings(
     fail at the same boundary pure-Python does.
 
     Raises:
-        DescriptorPoolError: A string field holds bytes that are not UTF-8.
+        DescriptorPoolError: A string is not UTF-8, or a file needs editions (:func:`_honoured`).
     """
     from protokit._fieldview import first_undecodable_string
 
@@ -275,7 +275,7 @@ def require_decodable_strings(
     if hit is not None:
         field, value = hit
         raise DescriptorPoolError(f"{field.full_name} is not valid UTF-8: {value[:64]!r}")
-    return fds
+    return _all_honoured(fds)
 
 
 def _ready_to_parse(message_class: type) -> type:
@@ -290,3 +290,112 @@ def _ready_to_parse(message_class: type) -> type:
 
     build_extension_classes(message_class.DESCRIPTOR)  # type: ignore[attr-defined]
     return message_class
+
+
+# Down here, import included, because published docs cite line numbers in this file.
+import functools  # noqa: E402
+
+
+class EditionsNotImplementedError(DescriptorPoolError):
+    """An editions file, on a protobuf runtime that does not implement editions.
+
+    protobuf 4.25 loads an ``edition = "2023"`` file without complaint and
+    reads every feature in it as unset: a ``DELIMITED`` field is an ordinary
+    length-prefixed message, a ``LEGACY_REQUIRED`` field is not required, and
+    a scalar field with explicit presence has none. Every answer protokit gave about
+    such a schema there was computed from a different schema, so the file is
+    refused instead. protobuf 5.26 and later implement editions.
+    """
+
+    def __init__(self, file_name: str) -> None:
+        from google.protobuf import __version__ as protobuf_version
+
+        self.file_name = file_name
+        super().__init__(
+            f"{file_name!r} is an editions file, and protobuf "
+            f"{protobuf_version} does not implement editions: it would read the "
+            f"file's features as unset. protobuf 5.26 or later is needed."
+        )
+
+
+def _honoured(fd: descriptor_pb2.FileDescriptorProto) -> descriptor_pb2.FileDescriptorProto:
+    """Return ``fd``, or raise if it is an editions file this runtime cannot honour.
+
+    Raises:
+        EditionsNotImplementedError: see there.
+    """
+    if _declares_an_edition(fd) and not _implements_editions():
+        raise EditionsNotImplementedError(fd.name)
+    return fd
+
+
+# EDITION_UNKNOWN, EDITION_PROTO2 and EDITION_PROTO3: what a proto2 or proto3
+# file may carry. By number: protobuf 4.25 does not name the last two.
+_NOT_AN_EDITION = (0, 998, 999)
+
+
+def _declares_an_edition(fd: descriptor_pb2.FileDescriptorProto) -> bool:
+    """Whether ``fd`` says it is an editions file, in either of the two places it can.
+
+    protoc writes both ``syntax = "editions"`` and ``edition``. A file built by
+    hand may carry one: pure-Python 5.27 applies features for either alone,
+    and protobuf 4.25 ignores them for either alone.
+    """
+    return fd.syntax == "editions" or (
+        fd.HasField("edition") and fd.edition not in _NOT_AN_EDITION
+    )
+
+
+def _all_honoured(fds: descriptor_pb2.FileDescriptorSet) -> descriptor_pb2.FileDescriptorSet:
+    """Return ``fds``, or raise for the first file in it that :func:`_honoured` refuses."""
+    for fd in fds.file:
+        _honoured(fd)
+    return fds
+
+
+def _implements_editions() -> bool:
+    """Whether this protobuf runtime applies the features an editions file declares.
+
+    Asked once, of the runtime and not of its version number (see
+    :func:`_editions_probe`). With no stack left to ask, the answer is yes and
+    is not kept: a schema is not refused on a guess, and the next call asks again.
+    """
+    try:
+        return _editions_probe()
+    except RecursionError:
+        return True
+
+
+@functools.cache
+def _editions_probe() -> bool:
+    """Build one ``DELIMITED`` field in a pool of its own and say whether it is a group.
+
+    It is on a runtime that implements editions, and a plain message on one
+    that does not. A runtime that refuses the file outright does not implement
+    them either.
+    """
+    field_type = descriptor_pb2.FieldDescriptorProto
+    probe = descriptor_pb2.FileDescriptorProto(
+        name="protokit/_editions_probe.proto", package="protokit_editions_probe",
+        syntax="editions",
+    )
+    try:
+        probe.edition = descriptor_pb2.EDITION_2023
+        message = probe.message_type.add(name="Probe")
+        message.nested_type.add(name="Inner")
+        field = message.field.add(
+            name="inner", number=1, type=field_type.TYPE_MESSAGE,
+            label=field_type.LABEL_OPTIONAL, type_name=".protokit_editions_probe.Probe.Inner",
+        )
+        # features { message_encoding: DELIMITED }, written as bytes: a runtime
+        # that predates editions has no such field to set.
+        field.options.MergeFromString(bytes.fromhex("aa01022802"))
+        pool = descriptor_pool.DescriptorPool()
+        pool.AddSerializedFile(probe.SerializeToString())
+        built = pool.FindMessageTypeByName("protokit_editions_probe.Probe").fields_by_name["inner"]
+    except RecursionError:
+        raise  # not an answer about the runtime, and not to be cached as one
+    except Exception:  # whatever shape the refusal takes, it is a refusal
+        return False
+    implemented: bool = built.type == field_type.TYPE_GROUP
+    return implemented

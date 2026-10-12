@@ -39,6 +39,7 @@ from google.protobuf.message import DecodeError, EncodeError
 from protokit.message.model import FieldPath
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.rules import options_changed
+from tests._editions import requires_editions
 from tests.schema.helpers import T, build_message
 
 ROOT = FieldPath(segments=())
@@ -385,6 +386,7 @@ def _x_pool(x: str, *, editions: bool) -> descriptor_pool.DescriptorPool:
     """
     fdp = descriptor_pb2.FileDescriptorProto(name="x.proto", package="t", syntax="proto2")
     if editions:
+        requires_editions()
         fdp.syntax = "editions"
         fdp.edition = descriptor_pb2.EDITION_2023
     m = fdp.message_type.add(name="M")
