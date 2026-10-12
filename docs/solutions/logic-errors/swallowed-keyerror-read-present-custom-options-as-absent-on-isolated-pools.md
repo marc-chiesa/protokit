@@ -256,7 +256,7 @@ rebind_options`):
         )
     rebound = _options_class(target)()
     try:
-        rebound.MergeFromString(options.SerializeToString())
+        _merge(rebound, options.SerializeToString())
     except (message.DecodeError, UnicodeDecodeError, RecursionError):
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
@@ -271,7 +271,20 @@ proto2 string option that was not UTF-8 came back as `bytes` on upb.
 `_only_extension` and `_checked` are defined below `_options_class`.
 `RecursionError` joined both catch tuples after U7: under pure-Python an option
 nested past the interpreter's stack raised it from the first parse, which
-skipped the fall-back and left every option on that element unreadable.)
+skipped the fall-back and left every option on that element unreadable.
+Since 2026-10-11 both parses go through `_merge`, defined at the end of the
+file. Under pure-Python (protobuf 5.27.5) a repeated message-typed option
+raised `AttributeError: 'Descriptor' object has no attribute
+'_concrete_class'` from either one, for that option and for every option
+beside it: the runtime builds a message class only when asked, and nothing
+asks for that option's element type. The error carries the descriptor it
+was raised on (`exc.obj`, with `exc.name == "_concrete_class"`), so `_merge`
+builds exactly that class and parses again, once per class the parse turns
+out to miss. An `AttributeError` about anything else propagates, and so does
+one about a class `_merge` has already built. A first version walked the
+option's records to find what to build; it missed a message-set item and
+mis-sized a group whose end tag was not minimally encoded, both found by a
+cross-model pass, and the error already named the answer.)
 
 **The absent-case predicate**, `src/protokit/_extensions.py:47-62` (anchor `def
 extends`), compares `options.DESCRIPTOR.full_name` with

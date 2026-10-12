@@ -100,7 +100,7 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
         )
     rebound = _options_class(target)()
     try:
-        rebound.MergeFromString(options.SerializeToString())
+        _merge(rebound, options.SerializeToString())
     except (message.DecodeError, UnicodeDecodeError, RecursionError):
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
@@ -153,7 +153,7 @@ def _only_extension(options_desc: Any, data: bytes, ext_desc: Any) -> Any:
     kept = b"".join(record for number, record in _records(data) if number == ext_desc.number)
     rebound = _options_class(options_desc)()
     try:
-        rebound.MergeFromString(kept)
+        _merge(rebound, kept)
     except (message.DecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise message.DecodeError(f"{ext_desc.full_name}: {exc}") from exc
     return rebound
@@ -438,3 +438,37 @@ _DECLARATION: dict[str, tuple[Any, Any]] = {
     ),
     "MethodOptions": (lambda desc: desc.containing_service.file, _method_proto),
 }
+
+
+def _merge(options: Any, data: bytes) -> None:
+    """Parse ``data`` into ``options``, an empty message, building any class pure-Python did not.
+
+    Pure-Python builds a message class only when asked, and nothing asks for
+    the element type of a *repeated* message-typed extension: parsing one
+    raises ``AttributeError: 'Descriptor' object has no attribute
+    '_concrete_class'``, and one such option in an element's bytes failed the
+    read of every option beside it. The error carries the descriptor it was
+    raised on, so exactly that class is built and the bytes are parsed again,
+    once for each class the parse turns out to miss.
+
+    An ``AttributeError`` about anything else propagates, and so does one
+    about a class already built here. upb never raises it, so the first parse
+    is the only one there.
+    """
+    built: set[str] = set()
+    while True:
+        try:
+            options.MergeFromString(data)
+        except AttributeError as exc:
+            missing = getattr(exc, "obj", None)
+            if (
+                getattr(exc, "name", None) != "_concrete_class"
+                or not isinstance(missing, descriptor.Descriptor)
+                or missing.full_name in built
+            ):
+                raise
+            built.add(missing.full_name)
+            message_factory.GetMessageClass(missing)
+            options.Clear()
+        else:
+            return
