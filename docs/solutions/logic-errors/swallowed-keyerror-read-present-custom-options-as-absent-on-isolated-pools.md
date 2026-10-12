@@ -434,6 +434,28 @@ run out of stack on a file its pool built from a shallower one; `options_of`
 then returns `GetOptions()`, as before. All three readers pass `options_of(desc)` to `rebind_options`, and
 `TestNoReaderBypassesTheFile` fails a caller that passes `GetOptions()`.
 
+`compat`'s `options_changed` compares option *bytes* and had the same input:
+with the `bool` row above, a change from `7` to `8` compared `1` with `1` and
+reported nothing. It now serializes `options_of(fd)` (`_option_bytes`, at the
+end of `src/protokit/schema/rules.py`). One difference had to be removed
+first: read from the file, the options hold `features` as an editions file
+declares them, and `GetOptions()` on protobuf 5.27.5 leaves them out.
+Compared as they come, a `features`-only change would be reported in a
+process whose default pool declares something and not in one where it
+declares nothing. protobuf 4.25 keeps `features` in `GetOptions()`, so
+dropping them always would have changed the verdict there instead.
+`_option_bytes` drops them exactly when `GetOptions()` on the same field has
+none.
+
+A cross-model pass on that change found the file read wrong for one more
+input. Pure-Python builds a file that declares two messages, or two enums,
+of one name (upb refuses it), and a message or enum descriptor carries no
+index. Found by name, the first declaration answered for the second: a
+changed option on the unused twin was reported, and a field looked up in
+the wrong twin raised `LookupError`. `options_of` now returns `GetOptions()`
+when a name is declared twice in its scope, which is right under
+pure-Python, the only backend that gets there.
+
 Registering an extension in the default pool cannot be undone, so
 `tests/core/test_extensions_default_pool.py` runs each of those rows in a
 fresh interpreter, through `get_option_value`, a `custom/<suffix>` rule and
@@ -443,7 +465,13 @@ loader parses the set through the same registry, on both backends, and either
 refuses it or, where the bytes decode as the other type, rewrites the value
 before any pool sees it (an `int32` 7 is stored as 1). `options_of` cannot
 recover that, because the file it reads is already changed; the loader is a
-separate defect, not fixed here. And a test
+separate defect, not fixed here. It is one instance of a wider one: every
+`CopyToProto` and every `FileDescriptorProto.FromString(file.serialized_pb)`
+in `src/` fills a `descriptor_pb2` class, which decodes options through the
+same registry, so `check_compatibility` raises `DecodeError` on a schema
+loaded before the registration wherever the other type cannot decode the
+bytes. `tests/core/test_audit_default_pool_reparse_pins.py` pins the loaders
+and that call as strict xfails. And a test
 suite's own default pool is not empty (some test in this one registers
 `FieldOptions` extensions), so a test whose premise is "nothing is declared"
 has to patch the check, not assume it.

@@ -576,16 +576,19 @@ re-read by hand.
   options after it as absent, or an `int32` option `7` read as `1` under a
   `bool`. An unrelated extension of `FeatureSet` did the same to every custom
   option on an editions field that declares `features`. `get_option_value`,
-  `custom/<suffix>` rules and `options/field-behavior-consistent` now read
-  the option's bytes from the file the descriptor was built from. Pure-Python
-  read all of these correctly. Two things nearby are unchanged. A descriptor
-  set loaded *after* an unrelated extension took one of its numbers is itself
-  parsed through that registry, on both backends: it is refused as
-  unparseable where the option's bytes do not decode as the other type, and
-  loaded with the value rewritten where they do (the `7` above is stored, and
-  read, as `1`). And `compat`'s `options_changed` still compares
-  `GetOptions()` bytes, so under upb it can miss a changed option in the same
-  setup.
+  `custom/<suffix>` rules, `options/field-behavior-consistent` and `compat`'s
+  `options_changed` now read the option's bytes from the file the descriptor
+  was built from; `options_changed` compared the `7` above with an `8`, both
+  read as `1`, and reported nothing. Pure-Python read all of these correctly.
+  One thing nearby is unchanged, on both backends, and
+  `tests/core/test_audit_default_pool_reparse_pins.py` pins it: protokit
+  itself still parses a schema's files through that registry. A descriptor
+  set loaded *after* an unrelated extension took one of its numbers is
+  refused as unparseable where the option's bytes do not decode as the other
+  type, and loaded with the value rewritten where they do (the `7` above is
+  stored, and read, as `1`). And where they do not decode,
+  `check_compatibility` raises `DecodeError` on a schema loaded *before*
+  that, as it did in 0.15.1 under upb.
 
 *Upgrade impact:* in a process whose default pool declares no extension that
 overlaps the schema's, no built-in command's verdict or findings change — no
@@ -596,7 +599,8 @@ cannot annotate still reports a `rule_exception` warning, but its text is now th
 same on both protobuf backends instead of each backend's own wording. Where the
 default pool does overlap, under upb, a `custom/<suffix>` or
 `options/field-behavior-consistent` rule now reports on options it read as
-absent in 0.15.1. A differ hook
+absent in 0.15.1, and `compat` reports `options_changed` for an option change
+it compared as equal. A differ hook
 or a checker plugin that gates on `get_option_value(...) is not None` over such a
 schema starts firing on annotations it silently skipped until now. Those
 annotations were always there; the helper could not see them. An option whose

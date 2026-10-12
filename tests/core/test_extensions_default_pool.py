@@ -50,7 +50,11 @@ from google.protobuf import descriptor_pb2 as d, descriptor_pool as dp
 from google.protobuf.message import DecodeError
 
 from protokit import _extensions
+from protokit._pools import load_pool_from_bytes
+from protokit.message.model import FieldPath
 from protokit.options import get_option_value
+from protokit.schema import CompatibilityLevel, check_compatibility
+from protokit.schema.rules import options_changed
 from protokit.schema.lint._cli_utils import _load_descriptor_sets_to_result
 from protokit.schema.lint._config import CustomAnnotationRuleSpec
 from protokit.schema.lint._custom_rules import build_synthetic_module, synthetic_rule_ids
@@ -111,41 +115,57 @@ behavior.extension.add(
     name="field_behavior", number=1052, type=FD.TYPE_ENUM, label=FD.LABEL_REPEATED,
     type_name=".google.api.FieldBehavior", extendee=FIELD_OPTIONS,
 )
-target = d.FileDescriptorProto(
-    name="mine/t.proto", package="mine", syntax="proto3",
-    dependency=["mine/opts.proto", "google/api/field_behavior.proto"],
-)
-field = target.message_type.add(name="M").field.add(
-    name="f", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
-)
-field.options.deprecated = True
-# label = "hello world"; info, whose one string claims five bytes and holds two;
-# count = 7; field_behavior = REQUIRED twice (the rule reports the duplicate).
-field.options.MergeFromString(
-    record(70001, 2, b"hello world") + record(70002, 2, b"\x0a\x05ab")
-    + record(70003, 0, varint(7)) + record(1052, 0, varint(2)) + record(1052, 0, varint(2))
-)
-# Under editions a field also declares features, a message with extensions of
-# its own: here one at 9990 holding "hello world", then count = 1.
-editions = d.FileDescriptorProto(
-    name="mine/e.proto", package="mine", syntax="editions", edition=d.EDITION_2023,
-    dependency=["mine/opts.proto"],
-)
-editions.message_type.add(name="E").field.add(
-    name="g", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
-).options.MergeFromString(
-    record(21, 2, record(9990, 2, b"hello world")) + record(70003, 0, varint(1))
-)
-fds = d.FileDescriptorSet()
-d.DESCRIPTOR.CopyToProto(fds.file.add())
-fds.file.extend([mine, behavior, target, editions])
-path = scratch / "set.binpb"
-path.write_bytes(fds.SerializeToString())
 
-# The schema is loaded before the default pool learns anything: afterwards the
+
+def schema(count=7, count_under_editions=1, feature=b"hello world", info=b"\x0a\x05ab"):
+    target = d.FileDescriptorProto(
+        name="mine/t.proto", package="mine", syntax="proto3",
+        dependency=["mine/opts.proto", "google/api/field_behavior.proto"],
+    )
+    field = target.message_type.add(name="M").field.add(
+        name="f", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+    )
+    field.options.deprecated = True
+    # label = "hello world"; info, whose one string claims five bytes and holds
+    # two; count; field_behavior = REQUIRED twice (the rule reports the duplicate).
+    field.options.MergeFromString(
+        record(70001, 2, b"hello world") + record(70002, 2, info)
+        + record(70003, 0, varint(count)) + record(1052, 0, varint(2)) + record(1052, 0, varint(2))
+    )
+    # Under editions a field also declares features, a message with extensions
+    # of its own: here one at 9990 holding a string, then count.
+    editions = d.FileDescriptorProto(
+        name="mine/e.proto", package="mine", syntax="editions", edition=d.EDITION_2023,
+        dependency=["mine/opts.proto"],
+    )
+    editions.message_type.add(name="E").field.add(
+        name="g", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+    ).options.MergeFromString(
+        record(21, 2, record(9990, 2, feature)) + record(70003, 0, varint(count_under_editions))
+    )
+    fds = d.FileDescriptorSet()
+    d.DESCRIPTOR.CopyToProto(fds.file.add())
+    fds.file.extend([mine, behavior, target, editions])
+    return fds.SerializeToString()
+
+
+path = scratch / "set.binpb"
+path.write_bytes(schema())
+
+# Every schema is loaded before the default pool learns anything: afterwards the
 # loader itself parses the set through the same registry, and refuses it or
 # stores the rewritten value.
 result = _load_descriptor_sets_to_result((path,))
+# For compat every option is well formed (info.s = "ab").
+WELL_FORMED = b"\x0a\x02ab"
+earlier = load_pool_from_bytes(schema(info=WELL_FORMED))
+later = {
+    "the_same_schema": schema(info=WELL_FORMED),
+    "a_changed_count": schema(info=WELL_FORMED, count=8),
+    "a_changed_count_under_editions": schema(info=WELL_FORMED, count_under_editions=2),
+    "changed_features_alone": schema(info=WELL_FORMED, feature=b"goodbye"),
+}
+later = {name: load_pool_from_bytes(data) for name, data in later.items()}
 
 if scenario == "its-own-extensions":
     dp.Default().AddSerializedFile(mine.SerializeToString())
@@ -199,6 +219,32 @@ spec = CustomAnnotationRuleSpec(
     element_kinds=(ElementKind.FIELD,), allowed_values=(1,),
 )
 custom = lint(build_synthetic_module([spec], LintEngine()), synthetic_rule_ids([spec]))
+
+
+def changed_field(name):
+    return ("mine.E", "g") if "editions" in name or "features" in name else ("mine.M", "f")
+
+
+def rule(new_pool, message, field_name):
+    old, new = (
+        pool.FindMessageTypeByName(message).fields_by_name[field_name]
+        for pool in (earlier, new_pool)
+    )
+    return [x.rule_id for x in options_changed(old, new, FieldPath(segments=(field_name,)))]
+
+
+def compat(new_pool, message):
+    # check_compatibility also copies each file back to a FileDescriptorProto,
+    # and that copy is parsed through the default pool's registry.
+    try:
+        report = check_compatibility(
+            earlier, message, new_pool, message, level=CompatibilityLevel.STRICT,
+        )
+    except DecodeError:
+        return "DecodeError"
+    return [finding.rule_id for finding in report.findings]
+
+
 behavior_report = lint(field_behavior, frozenset({field_behavior.RULE_ID}))
 print(json.dumps({
     "declared": declared,
@@ -219,6 +265,8 @@ print(json.dumps({
     "custom_absent": sum(kind == "custom-annotation-absent" for kind, _p in custom["findings"]),
     "behavior_warnings": behavior_report["warnings"],
     "behavior": [kind for kind, _params in behavior_report["findings"]],
+    "options_changed": {name: rule(pool, *changed_field(name)) for name, pool in later.items()},
+    "compat": {name: compat(pool, changed_field(name)[0]) for name, pool in later.items()},
 }))
 """
 
@@ -238,7 +286,9 @@ def _outcome(scenario: str) -> dict[str, Any]:
             capture_output=True, text=True, check=False, timeout=300,
             env={**os.environ, "PYTHONPATH": str(_SRC)},
         )
-    assert result.returncode == 0, result.stderr
+    if result.returncode != 0:
+        # Not an assertion: a pin that expects AssertionError must not accept this.
+        raise RuntimeError(f"scenario {scenario!r} did not run:\n{result.stderr}")
     outcome: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
     return outcome
 
@@ -281,6 +331,54 @@ class TestTheDefaultPoolCannotChangeWhatAnOptionReads:
         # upb writes a message's own fields before its extensions, so they are
         # decoded before any record that can fail.
         assert _outcome(scenario)["deprecated"] is True
+
+
+_LATER_VERSIONS = {
+    "the_same_schema": [],
+    "a_changed_count": ["options_changed"],
+    "a_changed_count_under_editions": ["options_changed"],
+    # On protobuf 5.27 ``GetOptions()`` leaves ``features`` out and the file read
+    # holds them; the verdict must not depend on which the default pool selected.
+    "changed_features_alone": [],
+}
+
+# Where the other type cannot decode the option's bytes, ``check_compatibility``
+# raises before any rule runs, on both backends: it copies each file back to a
+# ``FileDescriptorProto``, which is parsed through the default pool's registry.
+# ``tests/core/test_audit_default_pool_reparse_pins.py`` pins each of these.
+COMPAT_DOES_NOT_COMPLETE = (
+    ("another-type-at-the-number", "the_same_schema"),
+    ("another-type-at-the-number", "a_changed_count"),
+    ("an-extension-of-features", "a_changed_count_under_editions"),
+    ("an-extension-of-features", "changed_features_alone"),
+)
+_COMPAT_COMPLETES = tuple(
+    (scenario, later) for scenario in _SCENARIOS for later in _LATER_VERSIONS
+    if (scenario, later) not in COMPAT_DOES_NOT_COMPLETE
+)
+
+
+def compat_outcome(scenario: str, later: str) -> tuple[Any, list[str]]:
+    """``(what check_compatibility returned, what it should)`` for one later version."""
+    return _outcome(scenario)["compat"][later], _LATER_VERSIONS[later]
+
+
+class TestTheDefaultPoolCannotChangeWhatCompatCompares:
+    """One schema against four later versions of it, each loaded before the default pool changed."""
+
+    @pytest.mark.parametrize("scenario", _SCENARIOS)
+    @pytest.mark.parametrize("later", _LATER_VERSIONS)
+    def test_the_rule_reports_a_changed_option_and_nothing_else(
+        self, scenario: str, later: str
+    ) -> None:
+        assert _outcome(scenario)["options_changed"][later] == _LATER_VERSIONS[later]
+
+    @pytest.mark.parametrize(("scenario", "later"), _COMPAT_COMPLETES)
+    def test_check_compatibility_agrees_wherever_it_completes(
+        self, scenario: str, later: str
+    ) -> None:
+        got, expected = compat_outcome(scenario, later)
+        assert got == expected
 
 
 def field_behavior_rule_id() -> str:
@@ -527,6 +625,128 @@ class TestTwoFieldsOfOneName:
             return
         fields = build_pool(self._set()).FindMessageTypeByName("Twice").fields
         assert [options_of(field).deprecated for field in fields] == [True, False]
+
+
+class TestTwoMessagesOfOneName:
+    """Pure-Python builds such a file; upb refuses it. A message carries no index to find it by."""
+
+    @staticmethod
+    def _pool(first_field: str, *, first_deprecated: bool) -> Any:
+        from google.protobuf import descriptor_pool
+
+        f = descriptor_pb2.FileDescriptorProto(name="pkoptfile_twins.proto", syntax="proto2")
+        f.message_type.add(name="Twin").field.add(
+            name=first_field, number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        ).options.deprecated = first_deprecated
+        f.message_type.add(name="Twin").field.add(
+            name="f", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.AddSerializedFile(f.SerializeToString())
+        return pool
+
+    @pytest.mark.parametrize("first_field", ["f", "g"])
+    def test_the_file_read_gives_way_to_get_options(
+        self, first_field: str, default_pool_declares_something: None,
+    ) -> None:
+        from google.protobuf.internal import api_implementation
+
+        if api_implementation.Type() != "python":
+            with pytest.raises(TypeError, match="duplicate symbol"):
+                self._pool(first_field, first_deprecated=True)
+            return
+        # The pool resolves the name to the second declaration, whose field has
+        # no options. Read by name, the file would answer for the first: its
+        # deprecated ``f``, or a ``g`` where the descriptor says ``f``.
+        pool = self._pool(first_field, first_deprecated=True)
+        field = pool.FindMessageTypeByName("Twin").fields[0]
+        assert options_of(field) is field.GetOptions()
+        assert options_of(field.containing_type) is field.containing_type.GetOptions()
+        assert options_of(field).deprecated is False
+
+    def test_the_rule_agrees_with_what_it_said_before_the_default_pool_changed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from google.protobuf.internal import api_implementation
+
+        from protokit.message.model import FieldPath
+        from protokit.schema.rules import options_changed
+
+        if api_implementation.Type() != "python":
+            pytest.skip("upb refuses a file that declares one message name twice")
+        old, new = (
+            self._pool("f", first_deprecated=deprecated).FindMessageTypeByName("Twin").fields[0]
+            for deprecated in (False, True)
+        )
+        path = FieldPath(segments=("f",))
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: False)
+        before = options_changed(old, new, path)
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: True)
+        assert options_changed(old, new, path) == before == []
+
+
+class TestAnEnumDeclaredTwice:
+    def test_the_file_read_gives_way_to_get_options(
+        self, default_pool_declares_something: None,
+    ) -> None:
+        from google.protobuf import descriptor_pool
+        from google.protobuf.internal import api_implementation
+
+        f = descriptor_pb2.FileDescriptorProto(name="pkoptfile_enum_twins.proto", syntax="proto2")
+        for deprecated in (True, False):
+            enum = f.enum_type.add(name="Twin")
+            enum.value.add(name=f"TWIN_{'A' if deprecated else 'B'}", number=0)
+            enum.options.deprecated = deprecated
+        pool = descriptor_pool.DescriptorPool()
+        if api_implementation.Type() != "python":
+            with pytest.raises(TypeError, match="duplicate symbol"):
+                pool.AddSerializedFile(f.SerializeToString())
+            return
+        pool.AddSerializedFile(f.SerializeToString())
+        enum_desc = pool.FindEnumTypeByName("Twin")
+        assert options_of(enum_desc) is enum_desc.GetOptions()
+        assert options_of(enum_desc.values[0]) is enum_desc.values[0].GetOptions()
+
+
+class TestOptionBytesHoldFeaturesOnlyWhereGetOptionsHasThem:
+    """protobuf 5.27 leaves ``features`` out of ``GetOptions()``; 4.25 keeps them there."""
+
+    @staticmethod
+    def _field(live: descriptor_pb2.FieldOptions) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(GetOptions=lambda: live)
+
+    @staticmethod
+    def _options(*, features: bool) -> descriptor_pb2.FieldOptions:
+        options = descriptor_pb2.FieldOptions(deprecated=True)
+        if features:
+            options.features.SetInParent()
+        return options
+
+    @pytest.mark.parametrize(
+        ("live_has_them", "expected"), [(False, False), (True, True)],
+    )
+    def test_the_file_read_keeps_them_only_if_get_options_did(
+        self, live_has_them: bool, expected: bool, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from protokit.schema import rules
+
+        from_the_file = self._options(features=True)
+        monkeypatch.setattr(_extensions, "options_of", lambda fd: from_the_file)
+        data = rules._option_bytes(self._field(self._options(features=live_has_them)))
+        assert descriptor_pb2.FieldOptions.FromString(data).HasField("features") is expected
+        assert descriptor_pb2.FieldOptions.FromString(data).deprecated is True
+        assert from_the_file.HasField("features")  # the shared message is not modified
+
+    def test_get_options_itself_is_serialized_as_it_is(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from protokit.schema import rules
+
+        live = self._options(features=True)
+        monkeypatch.setattr(_extensions, "options_of", lambda fd: fd.GetOptions())
+        assert rules._option_bytes(self._field(live)) == live.SerializeToString()
 
 
 class TestAFileTooDeepForTheStackThatIsLeft:
