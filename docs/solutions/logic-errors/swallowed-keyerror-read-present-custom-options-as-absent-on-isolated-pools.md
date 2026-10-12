@@ -277,9 +277,14 @@ file. Under pure-Python (protobuf 5.27.5) a repeated message-typed option
 raised `AttributeError: 'Descriptor' object has no attribute
 '_concrete_class'` from either one, for that option and for every option
 beside it: the runtime builds a message class only when asked, and nothing
-asks for that option's element type. `_merge` catches the error, builds the
-class of each such extension the bytes hold, at any depth, and parses again;
-an `AttributeError` with nothing left to build propagates.)
+asks for that option's element type. The error carries the descriptor it
+was raised on (`exc.obj`, with `exc.name == "_concrete_class"`), so `_merge`
+builds exactly that class and parses again, once per class the parse turns
+out to miss. An `AttributeError` about anything else propagates, and so does
+one about a class `_merge` has already built. A first version walked the
+option's records to find what to build; it missed a message-set item and
+mis-sized a group whose end tag was not minimally encoded, both found by a
+cross-model pass, and the error already named the answer.)
 
 **The absent-case predicate**, `src/protokit/_extensions.py:47-62` (anchor `def
 extends`), compares `options.DESCRIPTOR.full_name` with

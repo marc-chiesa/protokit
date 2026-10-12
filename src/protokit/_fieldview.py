@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cache, cached_property
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -553,23 +553,27 @@ def not_utf8_detail(field: _d.FieldDescriptor) -> str:
 
 
 def build_extension_classes(descriptor: _d.Descriptor) -> None:
-    """Build the message class of every repeated extension a ``descriptor`` message can hold.
+    """Build the class of every message an extension can hold, across what ``descriptor`` reaches.
 
     Pure-Python keeps a message class on its descriptor and builds it only
     when asked. It asks for a declared field's type when it builds the message
-    that declares the field, and for a singular message-typed extension's type
-    the first time one is read or parsed. A *repeated* message-typed extension
-    gets neither: parsing one adds an element through a class nothing built,
-    and raises ``AttributeError: 'Descriptor' object has no attribute
-    '_concrete_class'``. So before a payload is parsed, this walks every
-    message type ``descriptor`` can reach, through declared fields and through
-    extensions, and builds the element class of each such extension.
+    that declares the field. For an extension it asks while parsing, and not
+    always: a *repeated* message-typed extension adds its element through a
+    class nothing built and raises ``AttributeError: 'Descriptor' object has
+    no attribute '_concrete_class'``, and a message-set item reaches for a
+    module its decoder never imported and raises ``NameError``. So before a
+    payload is parsed, this walks every message type ``descriptor`` can reach,
+    through declared fields and through extensions, and builds the class of
+    each message-typed extension, which leaves the parser nothing to ask for.
 
-    upb parses one without this; asking for a class it would have built
-    anyway costs it nothing that matters at the one call per resolved type
-    this gets. Like :attr:`FieldView.extensions`, the walk sees an extension
+    A runtime that parses such a payload unaided is left alone: under upb this
+    returns at once, and what it resolves for a type is what it always did. A
+    chain of types too deep to build in the stack that is left stays unbuilt,
+    as it was. Like :attr:`FieldView.extensions`, the walk sees an extension
     declared in another file only once the pool has built that file.
     """
+    if _parses_extensions_unaided():
+        return
     from google.protobuf import message_factory
 
     pool = descriptor.file.pool
@@ -587,6 +591,39 @@ def build_extension_classes(descriptor: _d.Descriptor) -> None:
             element = extension.message_type
             if element is None:
                 continue
-            if extension.label == _FD.LABEL_REPEATED:
+            try:
                 message_factory.GetMessageClass(element)
+            except RecursionError:
+                continue  # too deep to build here, so nothing under it can be parsed either
             stack.append(element)
+
+
+@cache
+def _parses_extensions_unaided() -> bool:
+    """Whether this runtime parses a repeated message-typed extension nothing built a class for.
+
+    Asked once, by parsing one empty element in a pool of its own, so the
+    answer is the runtime's and not its name's: a pure-Python that learns to
+    build the class needs no change here.
+    """
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    package = "protokit_class_probe"
+    probe = descriptor_pb2.FileDescriptorProto(
+        name="protokit/_class_probe.proto", package=package, syntax="proto2",
+    )
+    probe.message_type.add(name="Host").extension_range.add(start=1, end=2)
+    probe.message_type.add(name="Element")
+    probe.extension.add(
+        name="elements", number=1, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+        type_name=f".{package}.Element", extendee=f".{package}.Host",
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(probe.SerializeToString())
+    pool.FindFileByName(probe.name)  # pure-Python learns an extension when it builds the file
+    host = message_factory.GetMessageClass(pool.FindMessageTypeByName(f"{package}.Host"))
+    try:
+        host.FromString(b"\x0a\x00")  # one element, empty
+    except AttributeError:
+        return False
+    return True

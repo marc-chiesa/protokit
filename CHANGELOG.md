@@ -745,15 +745,17 @@ backend-neutral rather than merely fixed (KTD6).
     `forensics match` crashed with that traceback and exit 1 on any payload
     holding such an extension, at the top of the message or anywhere inside
     it, even when comparing a payload with itself. The class protokit
-    resolves for a message type now comes with the class of every such
-    extension the message can reach.
+    resolves for a message type now comes with the class of every
+    message-typed extension the message can reach. That also lets a
+    message-set item parse: its decoder raised `NameError` on an item whose
+    class nothing had built.
   - **Custom options.** `get_option_value` raised the same error for a
     repeated message-typed option (the shape of
     `(google.api.resource_definition)`), and for every other option on an
     element that carried one, and the option-aware lint rules read options
-    through the same code. The read now builds the classes the option's
-    bytes need and parses again. 0.15.1 returned `None` for all of these
-    (see U5), so this error never shipped.
+    through the same code. The read now builds the class the error names
+    and parses again. 0.15.1 returned `None` for all of these (see U5), so
+    this error never shipped.
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
 under the pure-Python runtime with no known-failure list, and the

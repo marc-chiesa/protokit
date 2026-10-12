@@ -10,15 +10,14 @@ message-typed extension, so parsing one raised::
 
 That reached every command that parses a payload (``diff``, ``storage``,
 ``forensics``) and every read of a custom option, where one such option in an
-element's bytes failed the read of every option beside it. upb builds a class
-wherever one is asked for and never had the defect, so under upb these tests
-pin the answers pure-Python has to match.
+element's bytes failed the read of every option beside it. upb never had the
+defect, so under upb these tests pin the answers pure-Python has to match.
 
-The two halves are fixed differently. A payload's class is resolved before
-its bytes exist, so ``get_message_class`` walks the schema and builds every
-such class the message can reach. An option's bytes are at hand when it is
-read, so the reader builds what those bytes hold, and only after pure-Python's
-parse has raised.
+The two halves are fixed differently. A payload is parsed by code that only
+holds its class, so ``get_message_class`` walks the schema first and builds
+the class of every message-typed extension the message can reach. An option
+is parsed by the reader itself, which catches the error, builds the one class
+it names and parses again.
 
 Every test builds a pool of its own: a class, once built, stays on its
 descriptor, and a test that inherited one would pass with the fix removed.
@@ -355,16 +354,33 @@ def _unbuilt(pool: Any, *names: str) -> list[str]:
     ]
 
 
+@pytest.fixture
+def walk_needed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the payload walk whatever this runtime needs, so both backends test it."""
+    monkeypatch.setattr(_fieldview, "_parses_extensions_unaided", lambda: False)
+
+
 class TestThePayloadWalk:
+    def test_the_probe_finds_the_runtime_that_needs_it(self) -> None:
+        # protobuf 5.27.5: pure-Python raises on the probe's payload, upb parses it.
+        _fieldview._parses_extensions_unaided.cache_clear()
+        assert _fieldview._parses_extensions_unaided() is (api_implementation.Type() != "python")
+
     def test_nothing_is_built_before_it(self) -> None:
         # The premise of every test in this file, on both backends.
         pool = build_pool(_payload_set())
         assert _unbuilt(pool, "rx.Elem", "rx.Deep") == ["rx.Elem", "rx.Deep"]
 
-    def test_it_builds_each_element_type_the_message_reaches(self) -> None:
+    def test_it_builds_each_element_type_the_message_reaches(self, walk_needed: None) -> None:
         pool = build_pool(_payload_set())
         _fieldview.build_extension_classes(pool.FindMessageTypeByName("rx.Holder"))
         assert _unbuilt(pool, "rx.Elem", "rx.Deep") == []
+
+    def test_a_runtime_that_needs_none_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_fieldview, "_parses_extensions_unaided", lambda: True)
+        pool = build_pool(_payload_set())
+        _fieldview.build_extension_classes(pool.FindMessageTypeByName("rx.Holder"))
+        assert _unbuilt(pool, "rx.Elem", "rx.Deep") == ["rx.Elem", "rx.Deep"]
 
     def test_a_pool_built_by_hand_is_walked_too(self) -> None:
         pool = descriptor_pool.DescriptorPool()
@@ -374,90 +390,99 @@ class TestThePayloadWalk:
         node = get_message_class(pool, "rx.Node").FromString(_node(_elem(1, 2)))  # type: ignore[attr-defined]
         assert _items(pool, node) == [(1, [2])]
 
+    def test_a_chain_of_types_too_deep_to_build_does_not_stop_the_class_resolving(
+        self, walk_needed: None,
+    ) -> None:
+        # 1,100 messages, each holding the next, behind one repeated extension.
+        # Building the first one's class recurses once per link.
+        f = descriptor_pb2.FileDescriptorProto(name="rx/deep.proto", package="rxd", syntax="proto2")
+        f.message_type.add(name="Root").extension_range.add(start=100, end=101)
+        links = 1100
+        for index in range(links):
+            link = f.message_type.add(name=f"M{index}")
+            if index < links - 1:
+                link.field.add(
+                    name="child", number=1, type=FD.TYPE_MESSAGE, label=_OPTIONAL,
+                    type_name=f".rxd.M{index + 1}",
+                )
+        f.extension.add(
+            name="chain", number=100, type=FD.TYPE_MESSAGE, label=_REPEATED,
+            type_name=".rxd.M0", extendee=".rxd.Root",
+        )
+        pool = build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        root = get_message_class(pool, "rxd.Root")
+        assert root.FromString(b"").ByteSize() == 0  # type: ignore[attr-defined]
 
-class TestTheOptionReaderBuildsWhatTheBytesHold:
-    """``_extensions._build_element_classes``, which only pure-Python's parse failure calls."""
 
-    @staticmethod
-    def _field_options(pool: Any) -> Any:
-        return pool.FindMessageTypeByName("google.protobuf.FieldOptions")
+class TestAMessageSetParses:
+    """Pure-Python's message-set decoder asks for an unbuilt item class through a name it lacks."""
 
-    def test_each_repeated_message_extension_at_any_depth(self) -> None:
-        pool = build_pool(_option_set())
-        second = _record(1, 0, _varint(2)) + _record(100, 2, _record(1, 0, _varint(9)))
-        data = _record(50001, 2, second) + _record(50002, 0, _varint(7))
-        assert _extensions._build_element_classes(self._field_options(pool), data) is True
-        assert _unbuilt(pool, "rxo.Tag", "rxo.Deep") == []
-        # Nothing is left, which is what lets a second failure propagate.
-        assert _extensions._build_element_classes(self._field_options(pool), data) is False
-
-    def test_nothing_the_bytes_do_not_hold(self) -> None:
-        pool = build_pool(_option_set())
-        data = _record(50001, 2, _record(1, 0, _varint(1))) + _record(50002, 0, _varint(7))
-        assert _extensions._build_element_classes(self._field_options(pool), data) is True
-        assert _unbuilt(pool, "rxo.Tag", "rxo.Deep") == ["rxo.Deep"]
-
-    @pytest.mark.parametrize("number", [1, 100, 70000])
-    def test_a_records_body_is_what_lies_inside_it(self, number: int) -> None:
-        inside = _record(1, 0, _varint(9))
-        group = _varint(number << 3 | 3) + inside + _varint(number << 3 | 4)
-        assert _extensions._body(group) == inside
-        assert _extensions._body(_record(number, 2, inside)) == inside
-        assert _extensions._body(_record(number, 0, _varint(9))) is None
-
-    @pytest.mark.parametrize(
-        "data",
-        [
-            b"",
-            _record(50002, 0, _varint(7)),            # a scalar option
-            _record(50001, 0, _varint(7)),            # the message option's number, as a varint
-            _record(60000, 2, b"\x08\x01"),           # a number nothing declares
-            _record(50001, 2, b"\xff"),               # an element that is not a message
-            b"\x0a",                                  # a truncated record
-        ],
-    )
-    def test_bytes_with_nothing_to_build_build_nothing_and_do_not_raise(self, data: bytes) -> None:
-        pool = build_pool(_option_set())
-        built = _extensions._build_element_classes(self._field_options(pool), data)
-        # The message option's own class is the one thing a well-formed prefix can ask for.
-        assert built is (data == _record(50001, 2, b"\xff"))
-        assert "rxo.Deep" in _unbuilt(pool, "rxo.Tag", "rxo.Deep")
+    def test_an_item_holding_a_repeated_message_extension(self) -> None:
+        f = descriptor_pb2.FileDescriptorProto(name="rx/set.proto", package="rxs", syntax="proto2")
+        message_set = f.message_type.add(name="Set")
+        message_set.options.message_set_wire_format = True
+        message_set.extension_range.add(start=100, end=200)
+        f.message_type.add(name="Item").extension_range.add(start=100, end=200)
+        f.message_type.add(name="Deep")
+        f.extension.add(
+            name="item", number=100, type=FD.TYPE_MESSAGE, label=_OPTIONAL,
+            type_name=".rxs.Item", extendee=".rxs.Set",
+        )
+        f.extension.add(
+            name="deep", number=100, type=FD.TYPE_MESSAGE, label=_REPEATED,
+            type_name=".rxs.Deep", extendee=".rxs.Item",
+        )
+        pool = build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        # One item: type_id 100, message = Item holding one empty ``deep``.
+        payload = bytes.fromhex("0b10641a03a206000c")
+        parsed = get_message_class(pool, "rxs.Set").FromString(payload)  # type: ignore[attr-defined]
+        item = parsed.Extensions[pool.FindExtensionByName("rxs.item")]
+        assert len(item.Extensions[pool.FindExtensionByName("rxs.deep")]) == 1
 
 
 class TestAnAttributeErrorThatIsNotThisOne:
-    def test_it_propagates_and_the_parse_is_not_repeated(self) -> None:
-        pool = build_pool(_option_set())
+    """``_extensions._merge`` rebuilds and retries for one error only."""
 
+    @staticmethod
+    def _broken(error: AttributeError) -> Any:
         class Broken:
-            DESCRIPTOR = pool.FindMessageTypeByName("google.protobuf.FieldOptions")
-            parses = 0
-
-            def MergeFromString(self, data: bytes) -> None:  # noqa: N802
-                self.parses += 1
-                raise AttributeError("something else")
-
-        broken = Broken()
-        with pytest.raises(AttributeError, match="something else"):
-            _extensions._merge(broken, _record(50002, 0, _varint(7)))
-        assert broken.parses == 1
-
-    def test_one_that_survives_the_build_propagates_from_the_second_parse(self) -> None:
-        pool = build_pool(_option_set())
-
-        class Broken:
-            DESCRIPTOR = pool.FindMessageTypeByName("google.protobuf.FieldOptions")
             parses = cleared = 0
 
             def MergeFromString(self, data: bytes) -> None:  # noqa: N802
                 self.parses += 1
-                raise AttributeError("still broken")
+                if self.parses > 5:
+                    raise RuntimeError("the parse was repeated without end")
+                raise error
 
             def Clear(self) -> None:  # noqa: N802
                 self.cleared += 1
 
-        broken = Broken()
+        return Broken()
+
+    def test_one_about_another_attribute_propagates_from_the_first_parse(self) -> None:
+        broken = self._broken(AttributeError("something else"))
+        with pytest.raises(AttributeError, match="something else"):
+            _extensions._merge(broken, b"")
+        assert (broken.parses, broken.cleared) == (1, 0)
+
+    def test_one_about_a_class_on_something_that_is_no_descriptor_propagates(self) -> None:
+        broken = self._broken(AttributeError("no class", name="_concrete_class", obj=object()))
+        with pytest.raises(AttributeError, match="no class"):
+            _extensions._merge(broken, b"")
+        assert (broken.parses, broken.cleared) == (1, 0)
+
+    def test_one_about_another_attribute_of_a_descriptor_propagates(self) -> None:
+        tag = build_pool(_option_set()).FindMessageTypeByName("rxo.Tag")
+        broken = self._broken(AttributeError("no such thing", name="nonesuch", obj=tag))
+        with pytest.raises(AttributeError, match="no such thing"):
+            _extensions._merge(broken, b"")
+        assert (broken.parses, broken.cleared) == (1, 0)
+
+    def test_one_that_building_the_class_does_not_cure_propagates_from_the_second(self) -> None:
+        tag = build_pool(_option_set()).FindMessageTypeByName("rxo.Tag")
+        broken = self._broken(AttributeError("still broken", name="_concrete_class", obj=tag))
         with pytest.raises(AttributeError, match="still broken"):
-            _extensions._merge(broken, _record(50001, 2, _record(1, 0, _varint(1))))
+            _extensions._merge(broken, b"")
         assert (broken.parses, broken.cleared) == (2, 1)
 
     def test_the_backend_that_needs_the_second_parse_is_pure_python(self) -> None:
@@ -469,7 +494,9 @@ class TestAnAttributeErrorThatIsNotThisOne:
         )()
         data = _record(50001, 2, _record(1, 0, _varint(1)))
         if api_implementation.Type() == "python":
-            with pytest.raises(AttributeError, match="_concrete_class"):
+            with pytest.raises(AttributeError, match="_concrete_class") as raised:
                 options.MergeFromString(data)
+            assert raised.value.name == "_concrete_class"
+            assert raised.value.obj is pool.FindMessageTypeByName("rxo.Tag")
         else:
             options.MergeFromString(data)
