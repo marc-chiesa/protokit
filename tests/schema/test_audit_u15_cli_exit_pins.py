@@ -295,9 +295,9 @@ def test_u15_1_history_bisect_typoed_proto_file_is_not_clean(
     away. No typo is even required: a proto renamed in-repo while a
     checked-in CI yaml still names the old path fails clean forever.
 
-    Not pinned here: on an *empty* range the same two subcommands
-    also skip ``--type`` and ``--compat-rule-pack`` validation (see
-    the module docstring).
+    Pinned at the end of this file: on an *empty* range the same two
+    subcommands also skip ``--type`` and ``--compat-rule-pack`` validation
+    (the U15-1 residual, R21-C2).
     """
     result = _invoke_in_repo(breaking_repo, [
         subcommand, *extra,
@@ -1299,3 +1299,125 @@ def test_rule_id_exiting_when_formatted_does_not_forge_exit_0(
         f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert "rid" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# U15-1 (residual, R21-C2) — history / bisect validate nothing when no commit
+# in the range touches the proto
+#
+# Recorded by the 0.16.0 re-audit (cycle-1 row R21-C2) and pinned on
+# 2026-10-11, owned by U13 (0.18.0) with U15-5. ``history`` and ``bisect``
+# resolve ``--type`` against a pool and import ``--compat-rule-pack`` inside
+# the per-commit loop. A range in which no commit touches ``--proto-file``
+# never enters the loop: the empty-range branch renders "no commits touch"
+# and exits 0, whatever those two flags say. 0.15.1 closed the ``--ignore``
+# case and 0.16.0 the ``--proto-file`` case, each with a check placed before
+# that branch; these two flags were left. ``check --since`` over the same
+# range rejects both with exit 2.
+# ---------------------------------------------------------------------------
+
+_USER_PROTO = 'syntax = "proto3";\npackage acme;\nmessage User { string name = 1; }\n'
+
+_RANGE_WALKERS = pytest.mark.parametrize(
+    ("subcommand", "range_args"),
+    [
+        ("history", ["--range", "HEAD~1..HEAD"]),
+        ("bisect", ["--old", "HEAD~1", "--new", "HEAD"]),
+    ],
+    ids=["history", "bisect"],
+)
+
+#: ``(flags, the text an error about them must name)``.
+_FLAGS_AN_EMPTY_RANGE_NEVER_READS = pytest.mark.parametrize(
+    ("flags", "named"),
+    [
+        (["--type", "acme.NoSuchType"], "acme.NoSuchType"),
+        (
+            ["--type", "acme.User", "--compat-rule-pack", "u15_1_no_such_rule_pack"],
+            "u15_1_no_such_rule_pack",
+        ),
+    ],
+    ids=["unknown-type", "unimportable-rule-pack"],
+)
+
+
+@pytest.fixture
+def docs_only_range_repo(git_repo: Path) -> Path:
+    """A repo whose ``HEAD~1..HEAD`` touches a README and not ``acme/user.proto``."""
+    _commit(git_repo, "acme/user.proto", _USER_PROTO, msg="add the schema")
+    _commit(git_repo, "README.md", "one\n", msg="docs")
+    _commit(git_repo, "README.md", "two\n", msg="more docs")
+    return git_repo
+
+
+@_RANGE_WALKERS
+def test_u15_1_residual_valid_flags_on_a_docs_only_range_exit_0_control(
+    docs_only_range_repo: Path, subcommand: str, range_args: list[str],
+) -> None:
+    """Control: with a type that exists, a range that touches no proto is a clean walk.
+
+    Exit 0 and "no commits touch" are the right answer here and stay the
+    right answer after the fix. Only the flags differ from the pin below.
+    """
+    result = _invoke_in_repo(docs_only_range_repo, [
+        subcommand, *range_args, "--proto-file", "acme/user.proto", "--type", "acme.User",
+    ])
+
+    assert result.exit_code == 0, result.stderr
+    assert "no commits touch acme/user.proto" in result.stdout
+
+
+@_FLAGS_AN_EMPTY_RANGE_NEVER_READS
+def test_u15_1_residual_check_rejects_the_same_flags_control(
+    docs_only_range_repo: Path, flags: list[str], named: str,
+) -> None:
+    """Control: ``check --since`` over the same range exits 2 and names the flag's value.
+
+    The rejection the pin asks ``history`` and ``bisect`` for already exists
+    one subcommand away, on the same repository and the same flags.
+    """
+    result = _invoke_in_repo(docs_only_range_repo, [
+        "check", "--since", "HEAD~1", "--proto-file", "acme/user.proto", *flags,
+    ])
+
+    assert result.exit_code == 2, result.stdout
+    assert named in result.stderr
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "U15-1 (residual, R21-C2): owned by U13 (0.18.0). history and bisect resolve "
+        "--type and import --compat-rule-pack inside the per-commit loop, so a range in "
+        "which no commit touches --proto-file reads neither: an unknown type or an "
+        "unimportable rule pack prints 'no commits touch' and exits 0, where check "
+        "--since exits 2"
+    ),
+)
+@_RANGE_WALKERS
+@_FLAGS_AN_EMPTY_RANGE_NEVER_READS
+def test_u15_1_residual_empty_range_still_validates_type_and_rule_pack(
+    docs_only_range_repo: Path,
+    subcommand: str,
+    range_args: list[str],
+    flags: list[str],
+    named: str,
+) -> None:
+    """A flag that would be an error on a real walk must not pass on an empty one.
+
+    User-visible consequence: a CI job that runs ``protokit compat history``
+    on every push exits 0 on each push that does not touch the schema, with a
+    mistyped ``--type`` or a rule pack that is not installed. The mistake
+    surfaces only on the push that changes the proto, as exit 2, in the run
+    the gate exists for.
+    """
+    result = _invoke_in_repo(docs_only_range_repo, [
+        subcommand, *range_args, "--proto-file", "acme/user.proto", *flags,
+    ])
+
+    # Today: exit 0 with "# HEAD~1..HEAD: no commits touch acme/user.proto".
+    assert result.exit_code == 2, (
+        f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert named in result.stderr
