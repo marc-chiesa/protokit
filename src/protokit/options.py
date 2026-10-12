@@ -135,10 +135,10 @@ def get_option_value(
         repeated extension is what reads as ``None``.
 
     Raises:
-        google.protobuf.message.DecodeError: The option's stored
-            bytes do not parse as its type or hold a string that is
-            not UTF-8 (on both backends). Another option's bad bytes
-            do not stop this one from being read.
+        google.protobuf.message.DecodeError: The option's stored bytes do
+            not parse as its type or hold a string that is not UTF-8. Under upb
+            a singular proto2 string written twice is checked on its last copy
+            only. Another option's bad bytes do not stop this one from being read.
     """
     options = options_of(desc)
     if pool is None:
@@ -149,7 +149,7 @@ def get_option_value(
     for split_at in range(len(parts), 0, -1):
         ext_name = ".".join(parts[:split_at])
         try:
-            ext_desc = pool.FindExtensionByName(ext_name)
+            ext_desc = _extension_named(pool, ext_name)
         except KeyError:
             continue
         # An extension of another options type (a method option asked
@@ -201,3 +201,19 @@ def get_option_value(
         return None
 
     return None
+
+
+def _extension_named(pool: descriptor_pool.DescriptorPool, name: str) -> Any:
+    """The extension ``pool`` declares as ``name``; ``KeyError`` when it declares none.
+
+    ``FindExtensionByName`` can return an extension of another name. Pure-Python
+    resolves ``pkg.<symbol>.ext`` to the file-scope extension ``pkg.ext`` when
+    ``pkg.<symbol>`` is an extension, an enum, an enum value or a service, and
+    upb reads ``name`` only as far as an embedded NUL. Leading dots are left out
+    of the comparison: pure-Python drops them before it looks a name up, so a
+    dot-led name finds its extension there and none under upb.
+    """
+    found = pool.FindExtensionByName(name)
+    if found.full_name != name.lstrip("."):
+        raise KeyError(name)
+    return found

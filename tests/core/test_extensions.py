@@ -565,3 +565,179 @@ def test_the_record_splitter_rejects_an_out_of_range_field_number(number: int) -
 
     with pytest.raises(DecodeError, match="out of range"):
         _records(_record(68404, 2, b"a") + _varint(number << 3) + b"\x00")
+
+
+# ---------------------------------------------------------------------------
+# A closed enum option holding a number its enum does not declare
+#
+# upb marks a singular closed-enum extension present, with value 0, before it
+# sets the undeclared number aside; pure-Python leaves the option absent.
+# ---------------------------------------------------------------------------
+
+_ENUM_PKG = "pkoptenum"
+# extension name -> (number, file, type, label, type_name)
+_ENUM_EXTS = {
+    "with_zero": (
+        68801, "pkoptenum_p2.proto", FD.TYPE_ENUM, FD.LABEL_OPTIONAL, f".{_ENUM_PKG}.WithZero",
+    ),
+    "no_zero": (
+        68802, "pkoptenum_p2.proto", FD.TYPE_ENUM, FD.LABEL_OPTIONAL, f".{_ENUM_PKG}.NoZero",
+    ),
+    "negative": (
+        68803, "pkoptenum_p2.proto", FD.TYPE_ENUM, FD.LABEL_OPTIONAL, f".{_ENUM_PKG}.Negative",
+    ),
+    "no_zero_list": (
+        68804, "pkoptenum_p2.proto", FD.TYPE_ENUM, FD.LABEL_REPEATED, f".{_ENUM_PKG}.NoZero",
+    ),
+    "open": (68805, "pkoptenum_p3.proto", FD.TYPE_ENUM, FD.LABEL_OPTIONAL, f".{_ENUM_PKG}.Open"),
+    "text3": (68806, "pkoptenum_p3.proto", FD.TYPE_STRING, FD.LABEL_OPTIONAL, None),
+}
+# enum name -> (file, declared numbers)
+_ENUMS = {
+    "WithZero": ("pkoptenum_p2.proto", (0, 1, 2)),
+    "NoZero": ("pkoptenum_p2.proto", (1, 2)),
+    "Negative": ("pkoptenum_p2.proto", (1, -2)),
+    "Open": ("pkoptenum_p3.proto", (0, 1)),
+}
+
+
+def _enum_record(option: str, number: int, *, width: int = 64) -> bytes:
+    """One varint record of ``option`` holding ``number``, in two's complement of ``width`` bits."""
+    return _record(_ENUM_EXTS[option][0], 0, _varint(number % (1 << width)))
+
+
+# field name -> the option it carries and its records
+_ENUM_FIELDS = {
+    "with_zero_9": ("with_zero", _enum_record("with_zero", 9)),
+    "with_zero_0_9": ("with_zero", _enum_record("with_zero", 0) + _enum_record("with_zero", 9)),
+    "with_zero_2_9": ("with_zero", _enum_record("with_zero", 2) + _enum_record("with_zero", 9)),
+    "with_zero_9_2": ("with_zero", _enum_record("with_zero", 9) + _enum_record("with_zero", 2)),
+    "no_zero_9": ("no_zero", _enum_record("no_zero", 9)),
+    "negative_ten_bytes": ("negative", _enum_record("negative", -2)),
+    "negative_five_bytes": ("negative", _enum_record("negative", -2, width=32)),
+    "no_zero_9_beside_bad_text": (
+        "no_zero", _record(68806, 2, _BAD) + _enum_record("no_zero", 9),
+    ),
+    "open_9": ("open", _enum_record("open", 9)),
+    "with_zero_9_then_length_delimited": (
+        "with_zero", _enum_record("with_zero", 9) + _record(68801, 2, b"\x02"),
+    ),
+    "no_zero_list_1_9_2": (
+        "no_zero_list",
+        _enum_record("no_zero_list", 1) + _enum_record("no_zero_list", 9)
+        + _enum_record("no_zero_list", 2),
+    ),
+}
+
+
+def _enum_pool() -> object:
+    files: dict[str, descriptor_pb2.FileDescriptorProto] = {}
+    for file_name, syntax in (("pkoptenum_p2.proto", "proto2"), ("pkoptenum_p3.proto", "proto3")):
+        f = descriptor_pb2.FileDescriptorProto(name=file_name, package=_ENUM_PKG, syntax=syntax)
+        f.dependency.append("google/protobuf/descriptor.proto")
+        files[file_name] = f
+    for enum_name, (file_name, numbers) in _ENUMS.items():
+        enum = files[file_name].enum_type.add(name=enum_name)
+        for number in numbers:
+            value_name = f"{enum_name.upper()}_{number}".replace("-", "MINUS_")
+            enum.value.add(name=value_name, number=number)
+    for name, (number, file_name, kind, label, type_name) in _ENUM_EXTS.items():
+        ext = files[file_name].extension.add()
+        ext.name, ext.number, ext.type, ext.label = name, number, kind, label
+        ext.extendee = ".google.protobuf.FieldOptions"
+        if type_name:
+            ext.type_name = type_name
+    target = descriptor_pb2.FileDescriptorProto(
+        name="pkoptenum_t.proto", package=_ENUM_PKG, syntax="proto3",
+    )
+    target.dependency.extend(files)
+    msg = target.message_type.add(name="M")
+    for number, (field_name, (_option, raw)) in enumerate(_ENUM_FIELDS.items(), start=1):
+        fld = msg.field.add(
+            name=field_name, number=number, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        )
+        fld.options.MergeFromString(raw)
+        # A varint record of another number holding 1, which every closed enum here declares.
+        fld.options.deprecated = True
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.file.extend([_descriptor_proto_file(), *files.values(), target])
+    return build_pool(fds)
+
+
+_ENUM_POOL = _enum_pool()
+
+# (field name, what its option reads as; ``None`` is absent)
+_ENUM_READS = [
+    ("with_zero_9", None),
+    ("with_zero_0_9", 0),
+    ("with_zero_2_9", 2),
+    ("with_zero_9_2", 2),
+    ("no_zero_9", None),
+    ("negative_ten_bytes", -2),
+    ("negative_five_bytes", -2),
+    ("no_zero_9_beside_bad_text", None),
+    ("open_9", 9),
+    ("with_zero_9_then_length_delimited", None),
+]
+
+
+class TestAClosedEnumOptionHoldingAnUndeclaredNumber:
+    """It reads as absent unless a record of it holds a number the enum declares.
+
+    ``with_zero_9`` is the shape a look at the value read cannot settle: upb's 0
+    is a number ``WithZero`` declares, and its message for ``[9]`` is the one it
+    builds for ``[0, 9]``. The open (proto3) enum and the repeated option have
+    no such split, and read as they did.
+    """
+
+    @staticmethod
+    def _field_and_extension(field_name: str) -> tuple[object, object]:
+        field = _ENUM_POOL.FindMessageTypeByName(f"{_ENUM_PKG}.M").fields_by_name[field_name]
+        option = _ENUM_FIELDS[field_name][0]
+        return field, _ENUM_POOL.FindExtensionByName(f"{_ENUM_PKG}.{option}")
+
+    @pytest.mark.parametrize(("field_name", "expected"), _ENUM_READS)
+    def test_get_option_value_reads_it(self, field_name: str, expected: int | None) -> None:
+        from protokit.options import get_option_value
+
+        field, ext = self._field_and_extension(field_name)
+        assert get_option_value(field, ext.full_name) == expected
+
+    @pytest.mark.parametrize(("field_name", "expected"), _ENUM_READS)
+    def test_the_re_read_holds_it(self, field_name: str, expected: int | None) -> None:
+        from protokit._extensions import options_of
+
+        field, ext = self._field_and_extension(field_name)
+        options = rebind_options(options_of(field), ext)
+        assert options.HasExtension(ext) is (expected is not None)
+        if expected is not None:
+            assert options.Extensions[ext] == expected
+
+    def test_a_repeated_option_keeps_its_declared_numbers(self) -> None:
+        from protokit._extensions import options_of
+        from protokit.options import get_option_value
+
+        field, ext = self._field_and_extension("no_zero_list_1_9_2")
+        assert list(get_option_value(field, ext.full_name)) == [1, 2]
+        assert list(rebind_options(options_of(field), ext).Extensions[ext]) == [1, 2]
+
+
+def test_bytes_the_record_splitter_refuses_keep_what_the_runtime_read() -> None:
+    """Pure-Python reads past an end-group marker of another number; _records does not."""
+    from types import SimpleNamespace
+
+    from protokit._extensions import _records
+    from tests._pure_python_inventory import runtime_backend
+
+    ext = _ENUM_POOL.FindExtensionByName(f"{_ENUM_PKG}.no_zero")
+    raw = _enum_record("no_zero", 2) + _varint(7000 << 3 | 3) + _varint(7001 << 3 | 4)
+    with pytest.raises(DecodeError, match="end-group"):
+        _records(raw)
+    options = SimpleNamespace(
+        DESCRIPTOR=descriptor_pb2.FieldOptions.DESCRIPTOR, SerializePartialToString=lambda: raw,
+    )
+    if runtime_backend() != "python":
+        with pytest.raises(DecodeError):
+            rebind_options(options, ext)
+        pytest.skip("upb refuses these bytes itself, so the re-read never holds a value")
+    assert rebind_options(options, ext).Extensions[ext] == 2

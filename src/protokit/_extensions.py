@@ -65,8 +65,8 @@ def extends(options: Any, ext_desc: Any) -> bool:
 def rebind_options(options: Any, ext_desc: Any) -> Any:
     """Return ``options`` readable for ``ext_desc``.
 
-    The result supports ``HasExtension(ext_desc)`` and
-    ``Extensions[ext_desc]`` with protobuf's own presence semantics. When the
+    The result supports ``HasExtension(ext_desc)`` and ``Extensions[ext_desc]`` with
+    protobuf's presence semantics, bar :func:`_without_undeclared_enum`'s case. When the
     class of ``options`` already knows the extension — a generated ``_pb2``,
     or a message this function returned — ``options`` itself is returned.
     Otherwise the result is a fresh message of the pool-bound class holding
@@ -85,10 +85,10 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
             ``options`` (see :func:`extends`). Re-reading field options as
             method options would decode unrelated bytes, so this refuses, the
             way protobuf itself does.
-        google.protobuf.message.DecodeError: the bytes ``options`` holds for
-            ``ext_desc`` do not parse as its type, or hold a string that is
-            not UTF-8 (on both backends). Another option's bad bytes do not
-            raise: the requested option is read on its own instead.
+        google.protobuf.message.DecodeError: the bytes ``options`` holds for ``ext_desc`` do
+            not parse as its type, or hold a string that is not UTF-8. Under upb a singular
+            proto2 string written twice is checked on its last copy only; pure-Python raises
+            for either. Another option's bad bytes do not raise: the option is read on its own.
     """
     target = ext_desc.containing_type
     if options.DESCRIPTOR is target:
@@ -105,7 +105,7 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
         rebound = _only_extension(target, options.SerializePartialToString(), ext_desc)
-    return _checked(rebound, ext_desc)
+    return _checked(_without_undeclared_enum(rebound, options, ext_desc), ext_desc)
 
 
 def _options_class(options_desc: Any) -> Any:
@@ -494,3 +494,39 @@ def _unbuilt_class(exc: AttributeError | NameError) -> Any:
     else:
         missing = None
     return missing if isinstance(missing, descriptor.Descriptor) else None
+
+
+def _without_undeclared_enum(rebound: Any, source: Any, ext_desc: Any) -> Any:
+    """Return ``rebound``, ``ext_desc`` cleared when no record of it holds a declared number.
+
+    For a singular extension of a closed enum only. upb marks one present, with
+    value 0, before it sets aside a number the enum does not declare, where
+    pure-Python leaves it absent. The value read cannot tell the two apart when
+    the enum declares 0, so this reads ``source``, the options ``rebound`` was
+    parsed from: the option is present only if a varint record at its number
+    holds a declared number, taken as an int32 the way both parsers take it.
+
+    ``rebound`` is the fresh message :func:`rebind_options` built, never the
+    caller's. Bytes the runtime parsed and :func:`_records` refuses keep what
+    the runtime read.
+    """
+    enum = ext_desc.enum_type
+    if enum is None or ext_desc.label == _REPEATED or not enum.is_closed:
+        return rebound
+    if not rebound.HasExtension(ext_desc):
+        return rebound
+    try:
+        records = _records(source.SerializePartialToString())
+    except message.DecodeError:
+        return rebound
+    for number, record in records:
+        if number != ext_desc.number:
+            continue
+        key, pos = _varint(record, 0)
+        if key & 7 != _VARINT:
+            continue
+        value, _end = _varint(record, pos)
+        if ((value & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000 in enum.values_by_number:
+            return rebound
+    rebound.ClearExtension(ext_desc)
+    return rebound

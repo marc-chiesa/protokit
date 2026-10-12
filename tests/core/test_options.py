@@ -746,3 +746,160 @@ class TestAnUninterpretedOptionWithRequiredFieldsUnset:
         same = _pool_with_an_unfinished_uninterpreted_option(7)
         report = check_compatibility(old, "upo.M", same, "upo.M", level=CompatibilityLevel.STRICT)
         assert report.findings == ()
+
+
+# ---------------------------------------------------------------------------
+# A path is answered only by the extension it names
+# ---------------------------------------------------------------------------
+
+_NAMED_PKG = "pkoptnamed"
+_NAMED_RULES, _NAMED_MAX = 68701, 68702
+
+
+def _named_fixtures() -> dict[str, object]:
+    """``M``'s fields carry ``(pkoptnamed.rules)`` and the file-scope ``(pkoptnamed.max)``.
+
+    ``Rules`` has a ``max`` field of its own, so ``pkoptnamed.rules.max`` is a
+    sub-field path whose last segment is also the name of a sibling extension.
+    """
+    from tests.storage.proto_fixtures import encode_varint
+
+    def record(number: int, wire_type: int, payload: bytes) -> bytes:
+        body = encode_varint(len(payload)) + payload if wire_type == 2 else payload
+        return encode_varint(number << 3 | wire_type) + body
+
+    extf = descriptor_pb2.FileDescriptorProto(
+        name="pkoptnamed_ext.proto", package=_NAMED_PKG, syntax="proto2",
+        dependency=["google/protobuf/descriptor.proto"],
+    )
+    rules = extf.message_type.add(name="Rules")
+    rules.field.add(name="max", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL)
+    rules.field.add(name="min", number=2, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL)
+    extf.enum_type.add(name="Kind").value.add(name="KIND_ZERO", number=0)
+    extf.extension.add(
+        name="rules", number=_NAMED_RULES, type=FD.TYPE_MESSAGE, label=FD.LABEL_OPTIONAL,
+        type_name=f".{_NAMED_PKG}.Rules", extendee=".google.protobuf.FieldOptions",
+    )
+    extf.extension.add(
+        name="max", number=_NAMED_MAX, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        extendee=".google.protobuf.FieldOptions",
+    )
+    rules_max_5 = record(_NAMED_RULES, 2, record(1, 0, b"\x05"))
+    rules_min_1 = record(_NAMED_RULES, 2, record(2, 0, b"\x01"))
+    max_9 = record(_NAMED_MAX, 0, b"\x09")
+    msgf = descriptor_pb2.FileDescriptorProto(
+        name="pkoptnamed_msg.proto", package=_NAMED_PKG, syntax="proto3",
+        dependency=["pkoptnamed_ext.proto"],
+    )
+    message = msgf.message_type.add(name="M")
+    for number, (name, options_bytes) in enumerate(
+        (
+            ("both", rules_max_5 + max_9),
+            ("only_rules", rules_max_5),
+            ("only_sibling", max_9),
+            ("rules_min_and_sibling", rules_min_1 + max_9),
+        ),
+        start=1,
+    ):
+        message.field.add(
+            name=name, number=number, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+        ).options.MergeFromString(options_bytes)
+    fds = descriptor_pb2.FileDescriptorSet()
+    fds.file.extend([_descriptor_proto_file(), extf, msgf])
+    return dict(build_pool(fds).FindMessageTypeByName(f"{_NAMED_PKG}.M").fields_by_name)
+
+
+_NAMED_FIELDS = _named_fixtures()
+
+
+class TestAPathIsAnsweredOnlyByTheExtensionItNames:
+    """``FindExtensionByName`` can return an extension other than the one asked for.
+
+    Pure-Python resolves ``pkg.<symbol>.max`` to the file-scope extension
+    ``pkg.max`` when ``pkg.<symbol>`` is another extension, an enum or an enum
+    value, which would let ``(pkoptnamed.max)`` answer for the ``max`` sub-field
+    of ``(pkoptnamed.rules)``. upb reads a name only as far as an embedded NUL.
+    """
+
+    @pytest.mark.parametrize(
+        ("field_name", "expected"),
+        [("both", 5), ("only_rules", 5), ("only_sibling", None), ("rules_min_and_sibling", 0)],
+    )
+    def test_a_sub_field_path_reads_the_sub_field(
+        self, field_name: str, expected: int | None,
+    ) -> None:
+        value = get_option_value(_NAMED_FIELDS[field_name], f"{_NAMED_PKG}.rules.max")
+        assert value == expected
+
+    @pytest.mark.parametrize("middle", ["Kind", "KIND_ZERO"], ids=["an-enum", "an-enum-value"])
+    def test_a_path_through_an_enum_names_no_option(self, middle: str) -> None:
+        assert get_option_value(_NAMED_FIELDS["both"], f"{_NAMED_PKG}.{middle}.max") is None
+
+    def test_a_leading_dot_reads_as_each_backend_looks_it_up(self) -> None:
+        """Not made the same: pure-Python drops a leading dot from the name, upb does not."""
+        from google.protobuf.internal import api_implementation
+
+        expected = 9 if api_implementation.Type() == "python" else None
+        assert get_option_value(_NAMED_FIELDS["both"], f".{_NAMED_PKG}.max") == expected
+
+    def test_a_name_with_an_embedded_nul_names_no_option(self) -> None:
+        assert get_option_value(_NAMED_FIELDS["both"], f"{_NAMED_PKG}.max\x00x") is None
+
+
+_GENERATED_CODE = r"""
+import json
+
+from google.protobuf import descriptor_pb2 as d, descriptor_pool
+
+from protokit.options import get_option_value
+
+FD = d.FieldDescriptorProto
+opts = d.FileDescriptorProto(
+    name="pkoptgen/opts.proto", package="pkoptgen", syntax="proto2",
+    dependency=["google/protobuf/descriptor.proto"],
+)
+level = opts.enum_type.add(name="Level")
+level.value.add(name="LOW", number=1)
+level.value.add(name="HIGH", number=2)
+opts.extension.add(
+    name="level", number=68901, type=FD.TYPE_ENUM, label=FD.LABEL_OPTIONAL,
+    type_name=".pkoptgen.Level", extendee=".google.protobuf.FieldOptions",
+)
+target = d.FileDescriptorProto(
+    name="pkoptgen/t.proto", package="pkoptgen", syntax="proto3",
+    dependency=["pkoptgen/opts.proto"],
+)
+message = target.message_type.add(name="M")
+# (pkoptgen.level) = 9, which Level does not declare, and = 2, which it does.
+for number, (name, raw) in enumerate((("undeclared", "a8d22109"), ("declared", "a8d22102")), 1):
+    message.field.add(
+        name=name, number=number, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL,
+    ).options.MergeFromString(bytes.fromhex(raw))
+serialized = [opts.SerializeToString(), target.SerializeToString()]
+# What importing a generated ``_pb2`` module does.
+for file in serialized:
+    descriptor_pool.Default().AddSerializedFile(file)
+fields = descriptor_pool.Default().FindMessageTypeByName("pkoptgen.M").fields_by_name
+print(json.dumps({
+    name: get_option_value(fields[name], "pkoptgen.level") for name in ("undeclared", "declared")
+}))
+"""
+
+
+def test_generated_code_reads_an_undeclared_closed_enum_number_as_absent() -> None:
+    """upb's own parse marks it present, as 0. A fresh interpreter: the default pool keeps files."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import protokit
+
+    result = subprocess.run(
+        [sys.executable, "-c", _GENERATED_CODE],
+        capture_output=True, text=True, check=False, timeout=300,
+        env={**os.environ, "PYTHONPATH": str(Path(protokit.__file__).parents[1])},
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {"undeclared": None, "declared": 2}
