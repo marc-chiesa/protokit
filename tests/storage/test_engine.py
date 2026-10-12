@@ -644,3 +644,66 @@ class TestProto2StringsThatAreNotUtf8:
         assert [r.stream_id for r in result] == ["v3"]
         if on_error == "collect":
             assert [e.stream_id for e in result.errors] == ["v2"]
+
+    @pytest.mark.parametrize(
+        ("half", "bad"),
+        [("value", "0a060a016b1201ff"), ("key", "0a060a01ff12016b")],
+    )
+    def test_a_map_entry_declared_in_a_proto2_file_answers_for_itself(
+        self, half: str, bad: str,
+    ) -> None:
+        """A proto3 message whose map entry type a proto2 file declares.
+
+        protoc nests an entry type in the message that uses it, so only a
+        hand-built set has this shape. upb validates neither half of such a map.
+        """
+        field_proto = descriptor_pb2.FieldDescriptorProto
+        p2 = descriptor_pb2.FileDescriptorProto(name="p2.proto", package="p2", syntax="proto2")
+        holder = p2.message_type.add(name="Holder")
+        entry = holder.nested_type.add(name="TagsEntry")
+        entry.options.map_entry = True
+        for name, number in (("key", 1), ("value", 2)):
+            entry.field.add(
+                name=name, number=number, type=_TYPE_STRING, label=field_proto.LABEL_OPTIONAL,
+            )
+        p3 = descriptor_pb2.FileDescriptorProto(
+            name="p3.proto", package="p3", syntax="proto3", dependency=["p2.proto"],
+        )
+        p3.message_type.add(name="M").field.add(
+            name="tags", number=1, type=field_proto.TYPE_MESSAGE,
+            label=field_proto.LABEL_REPEATED, type_name=".p2.Holder.TagsEntry",
+        )
+        registry = StreamRegistry()
+        registry.register_stream("m", FileDescriptorSetSchema(fds(p2, p3), "p3.M"))
+        # tags { key: "k" value: "v" } is the clean record.
+        src = [("m", bytes.fromhex(bad)), ("m", bytes.fromhex("0a060a016b120176"))]
+        result = scan(iter(src), registry, on_error="collect")
+        assert [dict(r.message.tags) for r in result] == [{"k": "v"}]
+        assert [e.record_index for e in result.errors] == [0]
+        assert f"p2.Holder.TagsEntry.{half}" in result.errors[0].reason
+
+
+def test_a_scan_continues_past_a_field_that_cannot_say_whether_it_was_validated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The walk reads such a field instead of failing the scan."""
+    fdp = file_proto("s.proto", "s", message="S", field_name="s", field_type=_TYPE_STRING)
+    registry, cls = _registry_and_class("s", "s.S", fdp)
+    field_type = type(cls.DESCRIPTOR.fields_by_name["s"])
+    real = getattr(field_type, "_GetFeatures", None)
+
+    class _NoUtf8Answer:
+        def __init__(self, field: object) -> None:
+            self._field = field
+
+        def __getattr__(self, name: str) -> object:
+            # Pure-Python reads other features to answer ``label`` and ``type``.
+            if name == "utf8_validation" or real is None:
+                raise TypeError("no answer for this field")
+            return getattr(real(self._field), name)
+
+    monkeypatch.setattr(
+        field_type, "_GetFeatures", lambda field: _NoUtf8Answer(field), raising=False,
+    )
+    records = list(scan(iter([("s", b"\x0a\x01a"), ("s", b"\x0a\x01b")]), registry))
+    assert [r.message.s for r in records] == ["a", "b"]

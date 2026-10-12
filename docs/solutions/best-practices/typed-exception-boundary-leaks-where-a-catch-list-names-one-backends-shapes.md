@@ -279,7 +279,7 @@ The fix is `require_decodable_strings(fds)` (`src/protokit/_pools.py:255-278`).
 It walks every string field and raises `DescriptorPoolError` on any `bytes`
 value. The walk itself is `first_undecodable_string`
 (`src/protokit/_fieldview.py:247-271`), which runs a `StringWalk`
-(`src/protokit/_fieldview.py:410-547`), in the layer-0 seam so the payload
+(`src/protokit/_fieldview.py:410-536`), in the layer-0 seam so the payload
 decode seams can share it. It runs in `build_pool` (`src/protokit/_pools.py:200`) and at lint's parse
 site (`src/protokit/schema/lint/_cli_utils.py:353`), and after each payload parse in storage
 scans, `forensics match` and binary `diff` input, each of which reports a hit as its own
