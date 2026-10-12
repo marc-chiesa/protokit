@@ -249,9 +249,9 @@ def _proto3_optional_fields(
     """Return the set of field names in ``desc`` declared ``proto3 optional``.
 
     The upb backend doesn't expose ``proto3_optional`` on
-    ``FieldDescriptor`` directly, so we reconstruct the flag via
-    ``CopyToProto``. Cached on a ContextVar during a check() scope;
-    outside that scope the serialization runs on every call (fine
+    ``FieldDescriptor`` directly, so the flag is read from the owning
+    file's proto. Cached on a ContextVar during a check() scope;
+    outside that scope the set is rebuilt on every call (fine
     because those code paths don't iterate).
     """
     cache = _PROTO3_OPTIONAL_CACHE.get()

@@ -147,13 +147,13 @@ def _proto3_optional_fields(
     """Return the set of field names in ``desc`` declared ``proto3 optional``.
 
     The upb backend doesn't expose ``proto3_optional`` on
-    ``FieldDescriptor`` directly, so we reconstruct the flag via
-    ``CopyToProto``. When called inside a ``SchemaChecker.check()``
-    scope the result is cached on the current ContextVar so repeated
-    lookups within a single check don't re-serialize the parent
-    message. Outside a check (e.g. when rule tests call rules
-    directly), the serialization runs on every call — which is fine
-    since those code paths don't iterate.
+    ``FieldDescriptor`` directly, so the flag is read from the owning
+    file's proto (``_descriptors.message_proto``). Inside a
+    ``SchemaChecker.check()`` scope the result is cached on the current
+    ContextVar, so repeated lookups within one check don't rebuild the
+    set. Outside a check (e.g. when rule tests call rules directly) it
+    is rebuilt on every call, from a file proto ``_descriptors`` caches
+    — which is fine since those code paths don't iterate.
 
     Args:
         desc: The message descriptor to inspect.
@@ -180,8 +180,8 @@ def _is_synthetic_oneof(oneof_desc: proto_descriptor.OneofDescriptor) -> bool:
     """Return True if this oneof was synthesized for a proto3 ``optional`` field.
 
     Fast path: synthetic oneofs always have exactly one field. Slow
-    path: reconstruct ``proto3_optional`` via ``CopyToProto`` on the
-    parent message (cached by ``_proto3_optional_fields``).
+    path: read ``proto3_optional`` from the owning file's proto
+    (see ``_proto3_optional_fields``, which caches the answer).
     """
     if len(oneof_desc.fields) != 1:
         return False
@@ -987,11 +987,11 @@ def _reserved(
     ``protokit.forensics._drift`` keeps the same shape for the same
     reason.
 
-    Both halves come back together because reading either one requires
-    a ``CopyToProto`` roundtrip on the upb backend (the live
-    ``Descriptor`` doesn't expose reserved data), and that roundtrip is
-    the expensive part -- doing it once per message pair instead of
-    twice halves the serialization cost of this rule.
+    Both halves come back together because both are read from the
+    message's entry in its file's proto (the live ``Descriptor``
+    doesn't expose reserved data; ``_descriptors.message_proto`` finds
+    the entry), so one lookup per message pair serves the ranges and
+    the names.
     """
     dp = _descriptors.message_proto(desc)
     ranges = _normalize_ranges((rng.start, rng.end) for rng in dp.reserved_range)
@@ -1058,8 +1058,8 @@ def reserved_field_reused(
       not on the wire; reuse is a source-level/API concern but does
       not corrupt decoding.
 
-    Reading ``reserved_range`` and ``reserved_name`` requires a
-    ``CopyToProto`` roundtrip on the upb backend (the live
+    ``reserved_range`` and ``reserved_name`` are read from the message's
+    entry in its file's proto, on both backends (the live
     ``Descriptor`` doesn't expose them). Each violating new field
     produces its own finding under ``path.child(field_name)``. A declared
     extension that takes a reserved number is reported too, as a WIRE
