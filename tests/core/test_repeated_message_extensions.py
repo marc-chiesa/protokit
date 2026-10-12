@@ -468,11 +468,108 @@ class TestAMessageSetParses:
         assert len(item.Extensions[pool.FindExtensionByName("rxs.deep")]) == 1
 
 
+def _message_set_option_pool() -> Any:
+    """``rxm.T.a`` carries ``rxm.box``: a message-set whose one item holds one empty ``deep``."""
+    f = descriptor_pb2.FileDescriptorProto(
+        name="rxm/set.proto", package="rxm", syntax="proto2",
+        dependency=["google/protobuf/descriptor.proto"],
+    )
+    message_set = f.message_type.add(name="Set")
+    message_set.options.message_set_wire_format = True
+    message_set.extension_range.add(start=100, end=200)
+    f.message_type.add(name="Item").extension_range.add(start=100, end=200)
+    f.message_type.add(name="Deep")
+    f.extension.add(
+        name="item", number=100, type=FD.TYPE_MESSAGE, label=_OPTIONAL,
+        type_name=".rxm.Item", extendee=".rxm.Set",
+    )
+    f.extension.add(
+        name="deep", number=100, type=FD.TYPE_MESSAGE, label=_REPEATED,
+        type_name=".rxm.Deep", extendee=".rxm.Item",
+    )
+    f.extension.add(
+        name="box", number=50001, type=FD.TYPE_MESSAGE, label=_OPTIONAL,
+        type_name=".rxm.Set", extendee=".google.protobuf.FieldOptions",
+    )
+    f.message_type.add(name="T").field.add(
+        name="a", number=1, type=FD.TYPE_INT32, label=_OPTIONAL,
+    ).options.MergeFromString(_record(50001, 2, bytes.fromhex("0b10641a03a206000c")))
+    fds = descriptor_pb2.FileDescriptorSet()
+    descriptor_pb2.DESCRIPTOR.CopyToProto(fds.file.add())
+    fds.file.add().CopyFrom(f)
+    return build_pool(fds)
+
+
+class TestAMessageSetValuedOption:
+    """Pure-Python's message-set decoder fails on an unbuilt item class with a ``NameError``."""
+
+    def test_it_reads_through_the_item_to_the_repeated_extension_inside(self) -> None:
+        pool = _message_set_option_pool()
+        box = get_option_value(pool.FindMessageTypeByName("rxm.T").fields[0], "rxm.box")
+        item = box.Extensions[pool.FindExtensionByName("rxm.item")]  # type: ignore[attr-defined]
+        assert len(item.Extensions[pool.FindExtensionByName("rxm.deep")]) == 1
+
+    def test_the_failure_it_recovers_from_is_the_one_protobuf_raises(self) -> None:
+        # protobuf 5.27.5. The reader finds the unbuilt class in the frame that
+        # raised; if this premise moves, so must ``_extensions._unbuilt_class``.
+        pool = _message_set_option_pool()
+        options = message_factory.GetMessageClass(
+            pool.FindMessageTypeByName("google.protobuf.FieldOptions"),
+        )()
+        data = _record(50001, 2, bytes.fromhex("0b10641a03a206000c"))
+        if api_implementation.Type() != "python":
+            options.MergeFromString(data)
+            return
+        with pytest.raises(NameError) as raised:
+            options.MergeFromString(data)
+        assert raised.value.name == "message_factory"
+        assert _extensions._unbuilt_class(raised.value) is pool.FindMessageTypeByName("rxm.Item")
+
+
+class TestANameErrorThatIsNotThisOne:
+    @staticmethod
+    def _raised(name: str, **frame_locals: object) -> NameError:
+        """A ``NameError`` for ``name`` raised in a frame holding ``frame_locals``."""
+        def frame(message_type: object = None, other: object = None) -> None:
+            raise NameError(f"name {name!r} is not defined", name=name)
+
+        try:
+            frame(**frame_locals)
+        except NameError as exc:
+            return exc
+        raise AssertionError("unreachable")
+
+    def test_one_about_another_name_names_no_class(self) -> None:
+        tag = build_pool(_option_set()).FindMessageTypeByName("rxo.Tag")
+        assert _extensions._unbuilt_class(self._raised("something_else", message_type=tag)) is None
+
+    def test_one_whose_frame_holds_no_descriptor_names_no_class(self) -> None:
+        assert _extensions._unbuilt_class(self._raised("message_factory")) is None
+        assert _extensions._unbuilt_class(
+            self._raised("message_factory", message_type="not a descriptor"),
+        ) is None
+
+    def test_one_that_was_never_raised_names_no_class(self) -> None:
+        assert _extensions._unbuilt_class(NameError("x", name="message_factory")) is None
+
+    def test_the_right_one_names_the_class_in_its_frame(self) -> None:
+        tag = build_pool(_option_set()).FindMessageTypeByName("rxo.Tag")
+        assert _extensions._unbuilt_class(self._raised("message_factory", message_type=tag)) is tag
+
+    def test_one_that_names_no_class_propagates_from_the_first_parse(self) -> None:
+        broken = TestAnAttributeErrorThatIsNotThisOne._broken(
+            NameError("name 'nonesuch' is not defined", name="nonesuch"),
+        )
+        with pytest.raises(NameError, match="nonesuch"):
+            _extensions._merge(broken, b"")
+        assert (broken.parses, broken.cleared) == (1, 0)
+
+
 class TestAnAttributeErrorThatIsNotThisOne:
     """``_extensions._merge`` rebuilds and retries for one error only."""
 
     @staticmethod
-    def _broken(error: AttributeError) -> Any:
+    def _broken(error: Exception) -> Any:
         class Broken:
             parses = cleared = 0
 
