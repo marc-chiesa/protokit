@@ -771,8 +771,11 @@ backend-neutral rather than merely fixed (KTD6).
     `(google.api.resource_definition)`), and for every other option on an
     element that carried one, and the option-aware lint rules read options
     through the same code. The read now builds the class the error names
-    and parses again. 0.15.1 returned `None` for all of these (see U5), so
-    this error never shipped.
+    and parses again. An option whose value is a message-set failed the
+    same way with a different error, `NameError: name 'message_factory' is
+    not defined`, from protobuf's own message-set decoder; the read finds
+    the missing class there too. 0.15.1 returned `None` for all of these
+    (see U5), so neither error shipped.
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
 under the pure-Python runtime with no known-failure list, and the

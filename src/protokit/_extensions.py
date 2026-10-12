@@ -447,28 +447,50 @@ def _merge(options: Any, data: bytes) -> None:
     the element type of a *repeated* message-typed extension: parsing one
     raises ``AttributeError: 'Descriptor' object has no attribute
     '_concrete_class'``, and one such option in an element's bytes failed the
-    read of every option beside it. The error carries the descriptor it was
-    raised on, so exactly that class is built and the bytes are parsed again,
-    once for each class the parse turns out to miss.
+    read of every option beside it. A message-set item does ask, through a
+    module its decoder never imported, and raises ``NameError`` instead. Either
+    way the failure says which descriptor has no class (:func:`_unbuilt_class`),
+    so exactly that class is built and the bytes are parsed again, once for
+    each class the parse turns out to miss.
 
-    An ``AttributeError`` about anything else propagates, and so does one
-    about a class already built here. upb never raises it, so the first parse
+    Any other ``AttributeError`` or ``NameError`` propagates, and so does one
+    about a class already built here. upb raises neither, so the first parse
     is the only one there.
     """
     built: set[str] = set()
     while True:
         try:
             options.MergeFromString(data)
-        except AttributeError as exc:
-            missing = getattr(exc, "obj", None)
-            if (
-                getattr(exc, "name", None) != "_concrete_class"
-                or not isinstance(missing, descriptor.Descriptor)
-                or missing.full_name in built
-            ):
+        except (AttributeError, NameError) as exc:
+            missing = _unbuilt_class(exc)
+            if missing is None or missing.full_name in built:
                 raise
             built.add(missing.full_name)
             message_factory.GetMessageClass(missing)
             options.Clear()
         else:
             return
+
+
+def _unbuilt_class(exc: AttributeError | NameError) -> Any:
+    """The descriptor whose class pure-Python wanted and had not built, or ``None``.
+
+    Two failures name one. An ``AttributeError`` for ``_concrete_class`` carries
+    the descriptor it was raised on. The ``NameError`` comes from protobuf's
+    message-set decoder (``decoder.MessageSetItemDecoder``, protobuf 5.27.5),
+    which calls ``message_factory.GetMessageClass(message_type)`` without
+    importing ``message_factory``: the name it lacks is ``message_factory``,
+    and the descriptor is the ``message_type`` local of the frame that raised.
+    Reading another module's frame is as narrow as that sounds, and a protobuf
+    that renames the local or imports the module simply stops matching.
+    """
+    if isinstance(exc, AttributeError):
+        missing = getattr(exc, "obj", None) if exc.name == "_concrete_class" else None
+    elif exc.name == "message_factory" and exc.__traceback__ is not None:
+        raised_in = exc.__traceback__
+        while raised_in.tb_next is not None:
+            raised_in = raised_in.tb_next
+        missing = raised_in.tb_frame.f_locals.get("message_type")
+    else:
+        missing = None
+    return missing if isinstance(missing, descriptor.Descriptor) else None
