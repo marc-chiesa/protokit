@@ -25,9 +25,9 @@ consequence.
 U9-3 is a different mechanism (wire-group classification) recorded here
 because the audit filed it in the same family; see its own pin.
 
-The 0.16.0 re-audit section at the end of the file pins five more rule gaps
-the same way (V21, V22 and its extension analogue, R14-C2b, and the R16-C1
-rename facet). Its comment block gives each one's mechanism.
+The 0.16.0 re-audit sections at the end of the file pin six more rule gaps
+the same way (V21, V22 and its two extension analogues, R14-C2b, and the R16-C1
+rename facet). Each section's comment block gives the mechanism.
 """
 
 from __future__ import annotations
@@ -814,4 +814,154 @@ def test_renamed_message_field_still_reports_its_nested_wire_break() -> None:
 
     assert _silent_levels(by_level) == [], (
         f"the nested zip break is unreported under the renamed field -> {by_level}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# V22 (extension-and-field analogue) — a number that moves between an
+# extension and a declared field
+#
+# Reproduced during the 0.16.0 re-audit and pinned on 2026-10-11. It has no
+# finding ID of its own and is owned by U4 (0.18.0) with V22. An extension is
+# a field number of the message it extends, so a declared field that takes an
+# extension's number (or the reverse) rebinds the number as V22 does. Declared
+# fields pair by name and extensions by their ``(pkg.ext)`` key, and nothing
+# pairs one with the other, so the change is one ``field_removed`` plus one
+# ``field_added`` (both SEMANTIC/BACKWARD) and WIRE and PRODUCER_SAFE report
+# nothing.
+# ---------------------------------------------------------------------------
+
+_ACROSS_KINDS = pytest.mark.parametrize(
+    ("old_kind", "new_kind"),
+    [("extension", "field"), ("field", "extension")],
+    ids=["extension-to-field", "field-to-extension"],
+)
+
+#: The ``_NUMBER_REUSE`` cases in which old bytes are misread. ``same_type`` is
+#: left out on purpose: an extension promoted to a declared field of its own
+#: type at its own number changes no byte and no value.
+_NUMBER_REUSE_MISREAD = [case for case in _NUMBER_REUSE if case[0] != "same_type"]
+_NUMBER_REUSE_MISREAD_IDS = [label for label, _, _ in _NUMBER_REUSE_MISREAD]
+
+
+def _extension_or_field_pool(kind: str, spec: dict) -> descriptor_pool.DescriptorPool:
+    """Build proto2 ``t.M`` carrying ``spec`` as an extension or as a declared field.
+
+    ``kind`` is ``"extension"`` (``extensions 1 to 199;`` and one ``extend t.M``)
+    or ``"field"`` (``extensions 2 to 199;`` and the field declared in ``M``).
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="ext.proto", package="t", syntax="proto2")
+    message = fdp.message_type.add(name="M")
+    if kind == "extension":
+        message.extension_range.add(start=1, end=200)
+        fdp.extension.add(extendee=".t.M", label=T.LABEL_OPTIONAL, **spec)
+    else:
+        message.extension_range.add(start=2, end=200)
+        message.field.add(label=T.LABEL_OPTIONAL, **spec)
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    return pool
+
+
+def _set_number_one(
+    pool: descriptor_pool.DescriptorPool, kind: str, name: str, value: object
+):
+    """A ``t.M`` from ``pool`` with ``name`` (number 1, a field or an extension) set."""
+    message = _message_class(pool)()
+    if kind == "extension":
+        message.Extensions[pool.FindExtensionByName(f"t.{name}")] = value
+    else:
+        setattr(message, name, value)
+    return message
+
+
+def _read_number_one(
+    pool: descriptor_pool.DescriptorPool, kind: str, name: str, wire: bytes
+) -> object:
+    """What ``wire`` holds at number 1 when read with ``pool``'s ``t.M``."""
+    message = _message_class(pool).FromString(wire)
+    if kind == "extension":
+        return message.Extensions[pool.FindExtensionByName(f"t.{name}")]
+    return getattr(message, name)
+
+
+@_ACROSS_KINDS
+def test_old_bytes_decode_as_whatever_took_the_number_across_kinds(
+    old_kind: str, new_kind: str
+) -> None:
+    """The hazard: an old ``sint64 -3`` is a new ``int64 5``, whichever side extends."""
+    old = _extension_or_field_pool(old_kind, _spec("price_cents", T.TYPE_SINT64))
+    new = _extension_or_field_pool(new_kind, _spec("quantity", T.TYPE_INT64))
+
+    wire = _set_number_one(old, old_kind, "price_cents", -3).SerializeToString()
+
+    assert _read_number_one(new, new_kind, "quantity", wire) == 5
+
+
+@_ACROSS_KINDS
+@pytest.mark.parametrize(
+    ("label", "old_spec", "new_spec"), _NUMBER_REUSE_MISREAD, ids=_NUMBER_REUSE_MISREAD_IDS
+)
+def test_number_moved_across_kinds_is_seen_at_consumer_safe_and_strict_control(
+    label: str,
+    old_spec: dict,
+    new_spec: dict,
+    old_kind: str,
+    new_kind: str,
+) -> None:
+    """Control: the checker reads both schemas and reports the change where it can.
+
+    CONSUMER_SAFE and STRICT keep SEMANTIC/BACKWARD findings, and both report
+    something for every case the pin below runs. That stays true after the fix.
+    """
+    by_level = _rule_ids_by_level(
+        _extension_or_field_pool(old_kind, old_spec),
+        _extension_or_field_pool(new_kind, new_spec),
+    )
+
+    assert _silent_levels(by_level, "CONSUMER_SAFE", "STRICT") == [], label
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "V22 (extension-and-field analogue): owned by U4 (0.18.0). A number that moves "
+        "between an extension and a declared field of the same message reports "
+        "COMPATIBLE with zero findings at WIRE and PRODUCER_SAFE; declared fields pair "
+        "by name and extensions by their (pkg.ext) key, so the change is one "
+        "field_removed plus one field_added (both SEMANTIC/BACKWARD)"
+    ),
+)
+@_ACROSS_KINDS
+@pytest.mark.parametrize(
+    ("label", "old_spec", "new_spec"), _NUMBER_REUSE_MISREAD, ids=_NUMBER_REUSE_MISREAD_IDS
+)
+def test_number_moved_across_kinds_is_reported_at_wire_and_producer_safe(
+    label: str,
+    old_spec: dict,
+    new_spec: dict,
+    old_kind: str,
+    new_kind: str,
+) -> None:
+    """A declared field on an extension's number is the same break as V22.
+
+    Data hazard: the wire carries numbers, and it does not record whether a
+    number was declared in the message or added by an ``extend`` block. Bytes
+    an old producer wrote for ``(t.price_cents) = -3`` decode under the new
+    schema as ``quantity = 5``. A CI gate on ``--level wire`` or
+    ``--level producer-safe`` passes the change.
+    """
+    by_level = _rule_ids_by_level(
+        _extension_or_field_pool(old_kind, old_spec),
+        _extension_or_field_pool(new_kind, new_spec),
+    )
+
+    # Control: the unpaired field and extension are visible where
+    # SEMANTIC/BACKWARD is kept.
+    _require_reported_at(by_level, "CONSUMER_SAFE", "STRICT")
+
+    assert _silent_levels(by_level, "WIRE", "PRODUCER_SAFE") == [], (
+        f"number moved {old_kind} -> {new_kind} ({label}) passed with zero findings "
+        f"-> {by_level}"
     )

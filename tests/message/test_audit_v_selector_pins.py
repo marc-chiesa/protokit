@@ -633,3 +633,108 @@ class TestV13BracketSelectorsAcceptedAndWidened:
 
         # Today: [] — has_changes() is False.
         assert _observed(d.compare(left, right)) == [("items[1].name", "MODIFIED")]
+
+
+# ---------------------------------------------------------------------------
+# V13 (treat_as_map) — a bracket selector is accepted and then never applies
+#
+# Reproduced during the 0.16.0 re-audit and pinned on 2026-10-11. It has no
+# finding ID of its own and is owned by U9 (0.17.0) with V13.
+# ``treat_as_map`` checks its selector for conflicts and never for brackets,
+# so ``treat_as_map("items[0]", key="id")`` registers. Where the other
+# policies widen an accepted bracket selector to every element, a one-segment
+# map selector matches nothing: it is stored under its literal text and looked
+# up by bare field name, and ``"items[0]"`` is never ``"items"``. The field
+# keeps positional pairing and the caller is not told.
+# ---------------------------------------------------------------------------
+
+
+def _reordered_items_pair() -> tuple[Message, Message]:
+    """Two ``C { repeated Item items }`` holding the same two items in opposite order."""
+    b = ProtoBuilder()
+    b.message("test.Item", {"id": (T.TYPE_INT32, 1), "name": (T.TYPE_STRING, 2)})
+    b.message_with_repeated(
+        "test.C",
+        {"items": (T.TYPE_MESSAGE, 1, ".test.Item")},
+        repeated_fields={"items"},
+    )
+    item = b.get_message_class("test.Item")
+    left = b.build("test.C", items=[item(id=1, name="a"), item(id=2, name="b")])
+    right = b.build("test.C", items=[item(id=2, name="b"), item(id=1, name="a")])
+    return left, right
+
+
+class TestV13TreatAsMapAcceptsABracketSelector:
+    """V13 (treat_as_map): the one policy whose bracket selector silently does nothing."""
+
+    def test_bracket_free_map_selector_pairs_a_reorder_by_key_control(self) -> None:
+        """Control: ``treat_as_map("items", key="id")`` is what makes a reorder equal.
+
+        Unconfigured, the reordered pair differs at every position. Keyed on
+        ``id`` it has no differences. So the construction is sound and the
+        four positional differences below mean the map policy did not apply.
+        """
+        left, right = _reordered_items_pair()
+
+        assert _observed(MessageDifferencer().compare(left, right)) == [
+            ("items[0].id", "MODIFIED"),
+            ("items[0].name", "MODIFIED"),
+            ("items[1].id", "MODIFIED"),
+            ("items[1].name", "MODIFIED"),
+        ]
+
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+        assert _observed(d.compare(left, right)) == []
+
+    @pytest.mark.parametrize("selector", ["items[0]", "items[1]", "outer.items[0]"])
+    @pytest.mark.xfail(
+        strict=True,
+        raises=pytest.fail.Exception,
+        reason="V13 (treat_as_map): owned by U9 (0.17.0). treat_as_map checks its "
+               "selector against the ignore and treat_as_set configuration and never "
+               "for brackets, so 'items[0]' registers where the string form of "
+               "ignore_fields raises ValueError for the same text",
+    )
+    def test_treat_as_map_must_reject_a_bracket_selector(self, selector: str) -> None:
+        """``treat_as_map`` must refuse a bracket selector as ``ignore_fields`` does.
+
+        User-visible consequence: a selector that cannot mean anything for a
+        keyed field (a map has no element 0) is accepted without a word.
+        """
+        d = MessageDifferencer()
+
+        # Today the registration succeeds.
+        with pytest.raises(ValueError):
+            d.treat_as_map(selector, key="id")
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="V13 (treat_as_map): owned by U9 (0.17.0). An accepted 'items[0]' map "
+               "selector matches no field: a one-segment selector is stored under its "
+               "literal text and looked up by bare field name, so the field keeps "
+               "positional pairing and a pure reorder is reported as four MODIFIED leaves",
+    )
+    def test_bracket_map_selector_must_not_fall_back_to_positional_pairing(self) -> None:
+        """A caller who asked for keyed matching must not get positional matching unannounced.
+
+        User-visible consequence: false differences. The caller configured the
+        field as a map, the two messages hold the same items, and the result
+        says every leaf changed.
+
+        Rejecting the selector at registration flips this pin through the
+        early return. Applying the map policy to ``items`` would flip it too;
+        the pin above stays red in that case, because the selector was still
+        accepted.
+        """
+        left, right = _reordered_items_pair()
+        d = MessageDifferencer()
+        try:
+            d.treat_as_map("items[0]", key="id")
+        except ValueError:
+            # Registration now rejects the bracket selector: nothing is silently dropped.
+            return
+
+        # Today: the four positional MODIFIED leaves of the control above.
+        assert _observed(d.compare(left, right)) == []

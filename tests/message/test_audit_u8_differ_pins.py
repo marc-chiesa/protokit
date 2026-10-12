@@ -46,18 +46,21 @@ module, in the same shape: **V28** (``treat_as_set`` drops ``ignore_fields``),
 **V18** (a difference only in unknown fields is a silent EQUAL) and **V5** (a
 proto2 ``[default = nan]`` never collapses as a default). They are defined in
 ``docs/plans/AUDIT-whole-codebase-2026-08-30.md``; the comment block above
-that section gives each one's mechanism and owner.
+that section gives each one's mechanism and owner. The float half of cycle-1
+row R05-X1, which is V5's mechanism under pure-Python, follows them.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import struct
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+from google.protobuf.internal import api_implementation
 from google.protobuf.message import Message
 
 from protokit.message import (
@@ -1079,4 +1082,108 @@ class TestV5NanDefaultNeverCollapses:
         left, right = (explicit, unset) if set_on_left else (unset, explicit)
 
         # Today: [('x', 'REMOVED')] with the field set on the left, [('x', 'ADDED')] on the right.
+        assert _observed(MessageDifferencer().compare(left, right)) == []
+
+
+# ---------------------------------------------------------------------------
+# R05-X1 (float half) — a proto2 float default that float32 cannot hold
+#
+# Reproduced during the 0.16.0 re-audit (cycle-1 row R05-X1) and pinned on
+# 2026-10-11, owned by U14b (0.17.0) with V5. It is V5's mechanism with a
+# different trigger: ``_is_default_value`` compares the field's value to
+# ``fd.default_value`` with ``==``. The pure-Python runtime hands back the
+# declared default as written (``0.1``), while a float field that was set
+# holds the float32 nearest to it (``0.10000000149011612``), so the two are
+# never equal. upb rounds the declared default too, and collapses the field.
+# ---------------------------------------------------------------------------
+
+_PURE_PYTHON_BACKEND = api_implementation.Type() == "python"
+
+#: What a float field holds after ``x = 0.1``: the nearest float32, as a double.
+_FLOAT32_NEAREST_TO_A_TENTH = struct.unpack("<f", struct.pack("<f", 0.1))[0]
+
+
+def _proto2_float_with_default(default: str) -> type[Message]:
+    """proto2 ``M { optional float x = 1 [default = <default>]; }`` in its own pool."""
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name="m.proto", package="test", syntax="proto2",
+    )
+    file_proto.message_type.add(name="M").field.add(
+        name="x",
+        number=1,
+        type=T.TYPE_FLOAT,
+        label=T.LABEL_OPTIONAL,
+        default_value=default,
+    )
+    return _message_class(file_proto)
+
+
+class TestR05X1FloatDefaultNeverCollapsesUnderPurePython:
+    """R05-X1 (float half): the set-to-default test is ``==`` on an unrounded default."""
+
+    @pytest.mark.parametrize("set_on_left", [True, False], ids=["set-on-left", "set-on-right"])
+    def test_float_default_float32_holds_exactly_collapses_control(
+        self, set_on_left: bool
+    ) -> None:
+        """Control: ``[default = 1.5]`` set explicitly equals unset, on both backends.
+
+        1.5 is a float32, so the declared default and the stored value are the
+        same number whether or not the runtime rounds the default. Same
+        construction as the pin; only the default differs.
+        """
+        cls = _proto2_float_with_default("1.5")
+        explicit, unset = cls(x=1.5), cls()
+        assert explicit.HasField("x")
+        assert not unset.HasField("x")
+
+        left, right = (explicit, unset) if set_on_left else (unset, explicit)
+
+        assert _observed(MessageDifferencer().compare(left, right)) == []
+
+    def test_a_set_float_field_holds_the_nearest_float32_control(self) -> None:
+        """Control: setting ``x = 0.1`` stores the nearest float32, on both backends.
+
+        The stored value is the half of the comparison that does not depend on
+        the backend. A non-default value against unset is still reported, so
+        collapse is not "report nothing".
+        """
+        cls = _proto2_float_with_default("0.1")
+        explicit = cls(x=0.1)
+
+        assert explicit.x == _FLOAT32_NEAREST_TO_A_TENTH != 0.1
+        assert _observed(MessageDifferencer().compare(cls(), cls(x=2.0))) == [("x", "ADDED")]
+
+    @pytest.mark.parametrize("set_on_left", [True, False], ids=["set-on-left", "set-on-right"])
+    @pytest.mark.xfail(
+        condition=_PURE_PYTHON_BACKEND,
+        strict=True,
+        raises=AssertionError,
+        reason="R05-X1 (float half): owned by U14b (0.17.0). Pure-Python only. "
+               "_is_default_value compares the field's value to fd.default_value with ==; "
+               "the pure-Python runtime reports a float field's declared default "
+               "unrounded (0.1) while a set field holds the nearest float32 "
+               "(0.10000000149011612), so a proto2 float set explicitly to its declared "
+               "[default = 0.1] never collapses in EQUIVALENT presence mode and is "
+               "reported as REMOVED/ADDED against unset",
+    )
+    def test_float_default_set_explicitly_must_collapse(self, set_on_left: bool) -> None:
+        """A float field set to its own declared default must equal the unset field.
+
+        User-visible consequence: the same two messages compare equal under upb
+        and different under pure-Python. EQUIVALENT mode promises that
+        set-to-default and unset compare equal, and under pure-Python it breaks
+        that promise for every float default that float32 cannot hold exactly.
+
+        Under upb the marker does not apply and this is an ordinary passing
+        test: it is the upb control for the pure-Python pin.
+        """
+        cls = _proto2_float_with_default("0.1")
+        explicit, unset = cls(x=0.1), cls()
+        assert explicit.HasField("x")
+        assert not unset.HasField("x")
+
+        left, right = (explicit, unset) if set_on_left else (unset, explicit)
+
+        # Pure-Python today: [('x', 'REMOVED')] with the field set on the left,
+        # [('x', 'ADDED')] on the right.
         assert _observed(MessageDifferencer().compare(left, right)) == []
