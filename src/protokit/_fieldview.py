@@ -641,8 +641,10 @@ def _unvalidated(field: _d.FieldDescriptor, proto3_files: dict[_d.FileDescriptor
       deprecated there and warns, and under ``-W error`` the warning is an
       error, so it is hushed for the read. ``proto3_files`` keeps each file's
       answer, so a caller that passes the same mapping swaps the process's
-      warning filters once per file rather than once per field. It is keyed by
-      the file descriptor because two pools may each hold a file of the same name.
+      warning filters once per file rather than once per field, and one thread
+      does so at a time: two inside the swap at once can leave every warning
+      hushed for good. It is keyed by the file descriptor because two pools may
+      each hold a file of the same name.
 
     **Known limit: an editions file on protobuf 4.25 under upb.** That runtime
     does not implement editions: it reports an editions file as proto3 and
@@ -667,7 +669,7 @@ def _unvalidated(field: _d.FieldDescriptor, proto3_files: dict[_d.FileDescriptor
         if proto3 is None:
             import warnings
 
-            with warnings.catch_warnings():
+            with _SYNTAX_READ, warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 proto3 = proto3_files[file] = getattr(file, "syntax", None) == "proto3"
         return not proto3
@@ -683,4 +685,11 @@ def _is_set(message: Message, field: _d.FieldDescriptor) -> bool:
     to read, so whatever it holds was parsed.
     """
     return not field.has_presence or bool(message.HasField(field.name))
+
+
+import threading  # noqa: E402  (published docs cite line numbers in this module)
+
+# Held for the hushed syntax read in _unvalidated, the one place this module
+# swaps the process's warning filters.
+_SYNTAX_READ = threading.Lock()
 

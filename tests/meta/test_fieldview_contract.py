@@ -1371,3 +1371,53 @@ class TestOnlyASetFieldIsReported:
         assert hit is not None
         assert (hit[0].full_name, hit[1]) == ("implicit.M.s", b"\xfe")
 
+
+def test_two_threads_reading_a_file_syntax_leave_the_warning_filters_as_they_were(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protobuf 4.25: the hushed syntax read swaps the process's warning filters.
+
+    Two threads inside that swap at once can leave the filters changed for good:
+    the first to leave restores the list, and the second then restores the copy
+    it saved while the first's change was in place. The second reader here is
+    held inside its read until the first has left, which is that order.
+    """
+    import threading
+    import warnings
+
+    pool = _syntax_pool()
+    desc = pool.FindMessageTypeByName("own2.M")
+    if hasattr(desc.fields_by_name["s"], "_GetFeatures"):
+        pytest.skip("this protobuf answers per field; the file's syntax is never read")
+    file_type = type(desc.file)
+    real = file_type.__dict__["syntax"]
+    first_inside, second_inside = threading.Event(), threading.Event()
+    release_first, release_second = threading.Event(), threading.Event()
+    readers: list[str] = []
+
+    def read(file: d.FileDescriptor) -> object:
+        readers.append(threading.current_thread().name)
+        if len(readers) == 1:
+            first_inside.set()
+            assert release_first.wait(10)
+        else:
+            second_inside.set()
+            assert release_second.wait(10)
+        return real.__get__(file, file_type)
+
+    monkeypatch.setattr(file_type, "syntax", property(read))
+    before = list(warnings.filters)
+    first = threading.Thread(target=lambda: StringWalk()._plan(desc), name="first")
+    second = threading.Thread(target=lambda: StringWalk()._plan(desc), name="second")
+    first.start()
+    assert first_inside.wait(10)
+    second.start()
+    second_inside.wait(0.5)  # it gets inside only if nothing keeps the two reads apart
+    release_first.set()
+    first.join(10)
+    release_second.set()
+    second.join(10)
+    assert not first.is_alive() and not second.is_alive()
+    assert readers == ["first", "second"]
+    assert list(warnings.filters) == before
+
