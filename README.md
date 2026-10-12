@@ -921,7 +921,9 @@ otherwise.
 **protobuf 4.25 or later.** 0.16.0 requires `protobuf>=4.25.0`;
 0.15.1 accepted 4.21.0. An environment that pins `protobuf` below
 4.25 has to move that pin before it can install 0.16.0. The `< 6`
-ceiling is unchanged.
+ceiling is unchanged. An editions schema needs `protobuf` 5.26 or
+later: 4.25 loads one and ignores its features, so on 4.25 protokit
+refuses it and exits 2 instead of answering from the wrong schema.
 
 **Pre-upgrade checklist.** These are the changes most likely to
 turn an existing pipeline red, in rough order of likelihood. The

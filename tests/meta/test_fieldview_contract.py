@@ -45,6 +45,7 @@ from protokit._fieldview import (
     may_hold_unvalidated_string,
     same_message_kind,
 )
+from tests._editions import requires_editions
 from tests._pure_python_inventory import skip_under_pure_python
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -500,6 +501,7 @@ _FS = descriptor_pb2.FeatureSet
 
 
 def _editions_file(name: str, package: str) -> descriptor_pb2.FileDescriptorProto:
+    requires_editions()
     return descriptor_pb2.FileDescriptorProto(
         name=name, package=package, syntax="editions", edition=descriptor_pb2.EDITION_2023,
     )

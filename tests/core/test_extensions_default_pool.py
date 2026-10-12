@@ -37,6 +37,7 @@ from google.protobuf import descriptor_pb2
 from protokit import _extensions
 from protokit._extensions import options_of, rebind_options
 from protokit._pools import build_pool
+from tests._editions import requires_editions
 
 _SRC = Path(_extensions.__file__).parents[1]
 
@@ -49,7 +50,7 @@ from pathlib import Path
 from google.protobuf import descriptor_pb2 as d, descriptor_pool as dp
 from google.protobuf.message import DecodeError
 
-from protokit import _extensions
+from protokit import _extensions, _pools
 from protokit._pools import load_pool_from_bytes
 from protokit.message.model import FieldPath
 from protokit.options import get_option_value
@@ -117,6 +118,13 @@ behavior.extension.add(
 )
 
 
+EDITIONS = _pools._implements_editions()
+
+
+def changed_field(name):
+    return ("mine.E", "g") if "editions" in name or "features" in name else ("mine.M", "f")
+
+
 def schema(count=7, count_under_editions=1, feature=b"hello world", info=b"\x0a\x05ab"):
     target = d.FileDescriptorProto(
         name="mine/t.proto", package="mine", syntax="proto3",
@@ -145,7 +153,9 @@ def schema(count=7, count_under_editions=1, feature=b"hello world", info=b"\x0a\
     )
     fds = d.FileDescriptorSet()
     d.DESCRIPTOR.CopyToProto(fds.file.add())
-    fds.file.extend([mine, behavior, target, editions])
+    # A runtime that does not implement editions is refused the editions file,
+    # and everything below that needs it is left out.
+    fds.file.extend([mine, behavior, target] + ([editions] if EDITIONS else []))
     return fds.SerializeToString()
 
 
@@ -165,7 +175,10 @@ later = {
     "a_changed_count_under_editions": schema(info=WELL_FORMED, count_under_editions=2),
     "changed_features_alone": schema(info=WELL_FORMED, feature=b"goodbye"),
 }
-later = {name: load_pool_from_bytes(data) for name, data in later.items()}
+later = {
+    name: load_pool_from_bytes(data) for name, data in later.items()
+    if EDITIONS or changed_field(name)[0] != "mine.E"
+}
 
 if scenario == "its-own-extensions":
     dp.Default().AddSerializedFile(mine.SerializeToString())
@@ -191,7 +204,7 @@ declared = sorted(
 )
 
 f = result.pool.FindMessageTypeByName("mine.M").fields_by_name["f"]
-g = result.pool.FindMessageTypeByName("mine.E").fields_by_name["g"]
+g = result.pool.FindMessageTypeByName("mine.E").fields_by_name["g"] if EDITIONS else None
 
 
 def read(option, field=f):
@@ -219,10 +232,6 @@ spec = CustomAnnotationRuleSpec(
     element_kinds=(ElementKind.FIELD,), allowed_values=(1,),
 )
 custom = lint(build_synthetic_module([spec], LintEngine()), synthetic_rule_ids([spec]))
-
-
-def changed_field(name):
-    return ("mine.E", "g") if "editions" in name or "features" in name else ("mine.M", "f")
 
 
 def rule(new_pool, message, field_name):
@@ -253,7 +262,7 @@ print(json.dumps({
     },
     "label": read("mine.label"),
     "count": read("mine.count"),
-    "count_under_editions": read("mine.count", g),
+    "count_under_editions": read("mine.count", g) if EDITIONS else "no editions",
     "info": read("mine.info"),
     "deprecated": f.GetOptions().deprecated,
     "custom_warnings": custom["warnings"],
@@ -276,8 +285,15 @@ _SCENARIOS = (
 )
 
 
-@functools.cache
 def _outcome(scenario: str) -> dict[str, Any]:
+    """One scenario's results; skips a scenario that needs editions where there are none."""
+    if scenario == "an-extension-of-features":
+        requires_editions()
+    return _ran(scenario)
+
+
+@functools.cache
+def _ran(scenario: str) -> dict[str, Any]:
     import tempfile
 
     with tempfile.TemporaryDirectory() as scratch:
@@ -312,6 +328,7 @@ class TestTheDefaultPoolCannotChangeWhatAnOptionReads:
         assert (outcome["label"], outcome["count"]) == ("hello world", 7)
 
     def test_an_option_beside_declared_features_reads(self, scenario: str) -> None:
+        requires_editions()
         assert _outcome(scenario)["count_under_editions"] == 1
 
     def test_the_malformed_option_still_raises_naming_itself(self, scenario: str) -> None:
@@ -358,8 +375,14 @@ _COMPAT_COMPLETES = tuple(
 )
 
 
+def _needs_editions(later: str) -> None:
+    if later in ("a_changed_count_under_editions", "changed_features_alone"):
+        requires_editions()
+
+
 def compat_outcome(scenario: str, later: str) -> tuple[Any, list[str]]:
     """``(what check_compatibility returned, what it should)`` for one later version."""
+    _needs_editions(later)
     return _outcome(scenario)["compat"][later], _LATER_VERSIONS[later]
 
 
@@ -371,6 +394,7 @@ class TestTheDefaultPoolCannotChangeWhatCompatCompares:
     def test_the_rule_reports_a_changed_option_and_nothing_else(
         self, scenario: str, later: str
     ) -> None:
+        _needs_editions(later)
         assert _outcome(scenario)["options_changed"][later] == _LATER_VERSIONS[later]
 
     @pytest.mark.parametrize(("scenario", "later"), _COMPAT_COMPLETES)

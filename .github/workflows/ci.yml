@@ -356,7 +356,7 @@ jobs:
           "
 
   # =====================================================================
-  # Storage protobuf-floor job — pin the lower bound and verify storage.
+  # Protobuf-floor job — pin the lower bound and run the whole suite on it.
   # =====================================================================
   #
   # PR2 (`protokit storage --fields` / `--explicit-defaults`) fills
@@ -371,12 +371,21 @@ jobs:
   # would ship untested. This cell pins the floor (protobuf 4.25.x, the
   # newest 4.x line, and the lower bound pyproject.toml declares — a test
   # in tests/meta/test_doc_claims.py holds the two together) and runs the
-  # storage suite — including the
-  # no-presence-fill characterization tests — so the old-kwarg path
-  # stays verified. Scoped to tests/storage: PR2 introduced the only
-  # version-sensitive surface. (Verified locally before landing: 4.25's
+  # whole suite, under upb and then under the pure-Python backend — so
+  # the old-kwarg path stays verified, and so does everything else the
+  # floor is claimed for. (Verified locally before landing: 4.25's
   # old kwarg produces fill output identical to 5.27's new kwarg for
   # every presence class — no-presence filled, presence-bearing omitted.)
+  #
+  # It ran tests/storage alone until 0.16.0, on the premise that PR2 was
+  # the only version-sensitive surface. It was not: protobuf 4.25 loads
+  # an editions file and reads every feature in it as unset, and 50 to
+  # 66 tests elsewhere failed on the floor with nothing running them.
+  # protokit now refuses an editions file there, and a test that builds
+  # one by hand skips itself (tests/_editions.py). The same test in
+  # tests/meta/test_doc_claims.py fails if either run below narrows.
+  #
+  # The job keeps its name: it is a required check.
   storage-protobuf-floor:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -409,8 +418,15 @@ jobs:
           pip install "protobuf==4.25.*"
           python -c "import google.protobuf as g; v = g.__version__; assert v.startswith('4.25.'), v; print('protobuf', v)"
 
-      - name: Run storage suite on the protobuf floor
-        run: pytest tests/storage -v
+      - name: Run the suite on the protobuf floor
+        run: pytest tests/ -q -rfE --tb=short
+
+      - name: Run the suite on the protobuf floor (pure-Python backend)
+        env:
+          PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+        run: |
+          python -c "from google.protobuf.internal import api_implementation as a; assert a.Type() == 'python', a.Type()"
+          pytest tests/ -q -rfE --tb=short
 
   # =====================================================================
   # Storage parquet-extra job — verify the columnar/Parquet sink (PR3).

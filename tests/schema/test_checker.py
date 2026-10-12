@@ -16,6 +16,7 @@ from protokit.schema import (
     check_compatibility,
 )
 from protokit.schema.plugins import FieldRuleContext
+from tests._editions import requires_editions
 from tests._pure_python_inventory import runtime_backend
 from tests.proto_builder import ProtoBuilder, wire_dependencies
 from tests.schema.helpers import T, build_enum, build_message
@@ -1565,6 +1566,7 @@ def _group_file(
     ``editions-field`` / ``editions-file`` (DELIMITED set on the field or file).
     """
     if kind.startswith("editions"):
+        requires_editions()
         fdp = descriptor_pb2.FileDescriptorProto(
             name="g.proto", package="t", syntax="editions", edition=descriptor_pb2.EDITION_2023,
         )
