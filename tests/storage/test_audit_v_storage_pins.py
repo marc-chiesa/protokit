@@ -397,8 +397,8 @@ def _scan(tmp_path: Path, record: Message, *flags: str) -> Result:
         "JSON') on a record whose Any packs a type from the --desc schema, with "
         "--fields (selected or not), plain, and --explicit-defaults alike, while "
         "--format human prints it. The full-record renders are cycle-1 R27-X1: the "
-        "same missing descriptor pool, outside project. Owner: parent plan U11 "
-        "(0.19.0), whose planned fix covers only the unselected --fields case."
+        "same missing descriptor pool, outside project, in the storage CLI's own "
+        "MessageToJson call. Owner: parent plan U11 (0.19.0), for both."
     ),
 )
 @_JSON_RENDERS
