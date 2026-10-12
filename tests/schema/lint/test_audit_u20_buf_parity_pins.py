@@ -659,17 +659,19 @@ class TestU20ImportsUnusedFalsePositives:
 #
 #     *Evidence.* Unlike U20-2 and R11-C2 there is no tool-independent oracle:
 #     what an empty string means here is buf's decision. The expected values
-#     are buf v1.69.0's output, verbatim, from ``version: v2`` module configs
+#     are buf's output, verbatim, from ``version: v2`` module configs
 #     enabling one ``PACKAGE_SAME_*`` rule each. For every one of the six
 #     string options buf is clean on ``""`` plus an omitter and fires on a
 #     non-empty value plus an omitter, so that pin and its control are
 #     parametrized over the six rules; the message-arm rows were run for
-#     ``go_package``. v1.69.0 is the version the pack's recorded snapshots
-#     are locked to (``rules/fixtures/package_same/_buf_smoke/recorded/``).
-#     ``_BUF_PARITY_PIN`` is v1.70.0, which was not available to run, and no
-#     test here runs buf. The fix should record ``empty-string`` and
-#     ``mixed-value-with-omitter`` snapshots at the pinned version; if they
-#     disagree with a value asserted below, the snapshot wins.
+#     ``go_package``. Every row was run on v1.69.0, the version the pack's
+#     recorded snapshots are locked to
+#     (``rules/fixtures/package_same/_buf_smoke/recorded/``), and again on
+#     2026-10-11 on v1.70.0, which is ``_BUF_PARITY_PIN``: the two outputs
+#     are identical. No test here runs buf. The fix should record
+#     ``empty-string`` and ``mixed-value-with-omitter`` snapshots at the
+#     pinned version; if they disagree with a value asserted below, the
+#     snapshot wins.
 
 # ---------------------------------------------------------------------------
 # R11-C2 — imports/unused on an import used only through `import public`
@@ -858,7 +860,7 @@ def _package_same_payloads(
 
 
 class TestR25C3PackageSameControls:
-    """Inputs where protokit and buf v1.69.0 agree, built the way the pins are.
+    """Inputs where protokit and buf (v1.69.0 and v1.70.0) agree, built as the pins are.
 
     They show each rule is live in this harness, that both message arms are
     reachable, and that a zero-finding result is a meaningful signal — so the
@@ -911,8 +913,8 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
             "R25-C3: owned by U15 (0.18.0). _check_package_option counts an "
             'explicit empty string as a declared value, so `option X = "";` '
             "beside a file that omits X is reported as two ERRORs (`both "
-            'values "" and no value`). buf v1.69.0 reads an empty string as '
-            "unset and reports nothing"
+            'values "" and no value`). buf v1.69.0 and v1.70.0 read an empty '
+            "string as unset and report nothing"
         ),
     )
     def test_empty_string_plus_omitter_is_clean(
@@ -934,7 +936,7 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
             "R25-C3: owned by U15 (0.18.0). _check_package_option says "
             "`multiple values` whenever two or more values are declared and "
             "never consults has_omitter. With an omitter present buf v1.69.0 "
-            'says `both values "x/X,x/Y" and no value`'
+            'and v1.70.0 say `both values "x/X,x/Y" and no value`'
         ),
     )
     def test_two_values_plus_omitter_reports_both_values_and_no_value(
@@ -956,8 +958,8 @@ class TestR25C3PackageSameEmptyStringAndOmitter:
         reason=(
             "R25-C3: owned by U15 (0.18.0). An empty string beside a real "
             'value is counted as a second value (`multiple values ",x/X"`). '
-            "buf v1.69.0 reads it as unset, which makes this one value plus "
-            'an omitter: `both values "x/X" and no value`'
+            "buf v1.69.0 and v1.70.0 read it as unset, which makes this one "
+            'value plus an omitter: `both values "x/X" and no value`'
         ),
     )
     def test_empty_string_plus_one_value_reports_that_value_and_no_value(
