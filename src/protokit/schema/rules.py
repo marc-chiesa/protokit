@@ -1215,6 +1215,11 @@ def _option_bytes(fd: proto_descriptor.FieldDescriptor) -> bytes:
     them. ``GetOptions()`` leaves them out on protobuf 5.27 and keeps them on
     4.25, so they are dropped here exactly when it left them out: the verdict
     then does not depend on which of the two was read.
+
+    Serialized without the required-field check. upb loads a schema whose
+    option holds an ``uninterpreted_option`` with required fields unset, and
+    the checking call raises ``EncodeError`` on it; what is compared is the
+    bytes the schema holds, whatever they leave out.
     """
     options = _extensions.options_of(fd)
     if _declares_features(options) and not _declares_features(fd.GetOptions()):
@@ -1222,7 +1227,7 @@ def _option_bytes(fd: proto_descriptor.FieldDescriptor) -> bytes:
         bare.CopyFrom(options)
         bare.ClearField("features")
         options = bare
-    data: bytes = options.SerializeToString()
+    data: bytes = options.SerializePartialToString()
     return data
 
 

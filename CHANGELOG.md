@@ -90,6 +90,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint --proto` given a file the compiler emits under a name lint did not predict (under protoc, a `-I VIRTUAL=DIR` mapping; under either compiler, an absolute file path whose include is written with a doubled leading slash, `-I //abs/dir`) | exits 2 (`error[lint-compile-failed]`, after a `not linted:` line naming the file) instead of skipping it and exiting 0 |
 > | `storage scan\|head\|count` (human or JSON) when reading the data file fails partway (an I/O error from a failing disk or a dropped mount), or when closing it fails after the last record | exits 2 with `Error: cannot read <file>: …` instead of a traceback and 1, under every `--on-error` mode; the records read before the error still reach stdout, `count` still prints its partial count, and `count --quiet` exits 2 instead of 1 ("zero matches") even after a match. `--format parquet` already exited 2 |
 > | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta (`0` when the message held no unknown fields, their size otherwise) |
+> | *(API)* `check_compatibility` under upb, given a pool built with `AddSerializedFile` in which a field's options hold an `uninterpreted_option` with required fields unset (no protokit loader accepts such a file) | returns its report instead of raising `EncodeError` |
 
 ### Security
 
@@ -590,6 +591,17 @@ re-read by hand.
   stored, and read, as `1`). And where they do not decode,
   `check_compatibility` raises `DecodeError` on a schema loaded *before*
   that, as it did in 0.15.1 under upb.
+
+- **Under upb, options that leave a required field unset can be read and
+  compared.** upb builds a pool from a file whose field options hold an
+  `uninterpreted_option` with `name_part` and `is_extension` unset. protoc
+  never writes one, pure-Python refuses the file, and protokit's own loaders
+  refuse it on both backends, so this reaches only a caller who builds the
+  pool with `AddSerializedFile` and hands it to the Python API. There,
+  `check_compatibility` raised `EncodeError` for the message that field is
+  in, as it did in 0.15.1, and `get_option_value` raised it for every option
+  on that field: both serialized the options with protobuf's required-field
+  check. They now serialize the bytes as they are.
 
 *Upgrade impact:* in a process whose default pool declares no extension that
 overlaps the schema's, no built-in command's verdict or findings change — no

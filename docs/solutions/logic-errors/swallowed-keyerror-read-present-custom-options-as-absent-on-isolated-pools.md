@@ -256,11 +256,11 @@ rebind_options`):
         )
     rebound = _options_class(target)()
     try:
-        _merge(rebound, options.SerializeToString())
+        _merge(rebound, options.SerializePartialToString())
     except (message.DecodeError, UnicodeDecodeError, RecursionError):
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
-        rebound = _only_extension(target, options.SerializeToString(), ext_desc)
+        rebound = _only_extension(target, options.SerializePartialToString(), ext_desc)
     return _checked(rebound, ext_desc)
 ```
 
@@ -284,7 +284,11 @@ out to miss. An `AttributeError` about anything else propagates, and so does
 one about a class `_merge` has already built. A first version walked the
 option's records to find what to build; it missed a message-set item and
 mis-sized a group whose end tag was not minimally encoded, both found by a
-cross-model pass, and the error already named the answer.)
+cross-model pass, and the error already named the answer. Both calls also
+serialize `options` with `SerializePartialToString()` since then: upb loads a
+schema whose option holds an `uninterpreted_option` with required fields
+unset, and `SerializeToString()` raised `EncodeError` on it, for every option
+on that element.)
 
 **The absent-case predicate**, `src/protokit/_extensions.py:47-62` (anchor `def
 extends`), compares `options.DESCRIPTOR.full_name` with
