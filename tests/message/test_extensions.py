@@ -1105,7 +1105,15 @@ class TestExtensionSelectorAtAnyDepth:
         assert [str(x.path) for x in differ.compare(left, right)] == ["inner.(e.ival)"]
 
     def test_a_bracketed_selector_form_is_still_accepted(self) -> None:
-        """Only the string grammar rejects brackets; a bracketed FieldSelector keeps working."""
+        """Only the string grammar rejects brackets; a bracketed FieldSelector keeps working.
+
+        Documents CURRENT behaviour that audit finding V13 records as a defect:
+        the selector names element 0 and is applied to every element. Refusing
+        it at construction is pinned strict-xfail in
+        ``tests/message/test_audit_v_selector_pins.py``
+        (``TestV13BracketSelectorsAcceptedAndWidened``), owned by U9 (0.17.0).
+        The fix that flips those pins turns this test red: delete it then.
+        """
         from protokit.message._selector import FieldSelector
 
         left, right = _sel_pair(itags=(["a"], ["b"]))
@@ -1114,7 +1122,15 @@ class TestExtensionSelectorAtAnyDepth:
         assert list(differ.compare(left, right)) == []
 
     def test_a_plain_selector_form_name_stays_top_level(self) -> None:
-        """Only extension names widen; a plain FieldSelector name keeps exact-length matching."""
+        """Only extension names widen; a plain FieldSelector name keeps exact-length matching.
+
+        Documents CURRENT behaviour that audit finding V12 records as a defect:
+        the same plain name given as a string applies at every depth. One
+        meaning for both forms is pinned strict-xfail in
+        ``tests/message/test_audit_v_selector_pins.py``
+        (``TestV12BareNameReachDiffersByPolicy``), owned by U9 (0.17.0). The fix
+        that flips those pins decides what this test should assert.
+        """
         from protokit.message._selector import FieldSelector
 
         left, right = _sel_pair()
@@ -1245,7 +1261,14 @@ class TestExtensionSelectorConflicts:
     @pytest.mark.parametrize("ignore", ["container.(e.items)[0].id", "(e.items)[0]"])
     @pytest.mark.parametrize("map_first", [True, False])
     def test_a_bracketed_selector_form_is_checked_too(self, ignore: str, map_first: bool) -> None:
-        """Path-form matching ignores brackets, so the conflict check must too."""
+        """Path-form matching ignores brackets, so the conflict check must too.
+
+        It can only be asked because a bracketed ``FieldSelector`` is accepted,
+        which audit finding V13 records as a defect (pinned strict-xfail in
+        ``tests/message/test_audit_v_selector_pins.py``,
+        ``TestV13BracketSelectorsAcceptedAndWidened``, owned by U9, 0.17.0).
+        Once construction refuses the selector, this test has no input: delete it.
+        """
         from protokit.message._selector import FieldSelector
 
         calls = [("map", "(e.items)", "id"), ("ignore", FieldSelector.of(ignore))]
