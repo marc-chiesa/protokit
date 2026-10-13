@@ -1309,3 +1309,87 @@ class TestExtensionSelectorConflicts:
         differ = MessageDifferencer()
         differ.treat_as_map("items", key="id")
         differ.treat_as_map("inner.items", key="other")
+
+
+# --- a field named after the method that finds set extensions ------------------
+#
+# Under upb a field's value hides the ``Message`` method of the same name on
+# the instance, so ``msg.ListFields()`` calls a str. Every case here ignores
+# that field: pure-Python reads the method where the field's value is asked
+# for, and reports the field as modified on identical messages.
+
+_LF_NAME_A = b"\x0a\x01a"  # ListFields = "a"
+_LF_X_5 = b"\x10\x05"  # x = 5
+_LF_X_6 = b"\x10\x06"  # x = 6
+_LF_EXT_1 = b"\xa0\x06\x01"  # (e.ext) = 1
+_LF_EXT_2 = b"\xa0\x06\x02"  # (e.ext) = 2
+
+
+def _list_fields_file(*, extension_range: bool = True) -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``e.Msg { optional string ListFields = 1; optional int32 x = 2; }``."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="e.proto", package="e", syntax="proto2")
+    msg = fdp.message_type.add(name="Msg")
+    msg.field.add(name="ListFields", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    msg.field.add(name="x", number=2, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    if extension_range:
+        msg.extension_range.add(start=100, end=200)
+        fdp.extension.add(
+            name="ext", number=100, type=_FD.TYPE_INT32,
+            label=_FD.LABEL_OPTIONAL, extendee=".e.Msg",
+        )
+    return fdp
+
+
+def _list_fields_paths(left: bytes, right: bytes, *, extension_range: bool = True) -> list[str]:
+    """Paths ``compare`` reports for two ``e.Msg`` payloads, ``ListFields`` ignored."""
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(_list_fields_file(extension_range=extension_range))
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("e.Msg"))
+    left_msg, right_msg = cls(), cls()
+    left_msg.ParseFromString(left)
+    right_msg.ParseFromString(right)
+    differ = MessageDifferencer()
+    differ.ignore_fields("ListFields")
+    return [str(diff.path) for diff in differ.compare(left_msg, right_msg)]
+
+
+class TestAFieldNamedListFields:
+    def test_identical_messages_compare_equal(self) -> None:
+        payload = _LF_NAME_A + _LF_X_5 + _LF_EXT_1
+        assert _list_fields_paths(payload, payload) == []
+
+    def test_a_difference_in_another_field_is_reported(self) -> None:
+        assert _list_fields_paths(_LF_NAME_A + _LF_X_5, _LF_NAME_A + _LF_X_6) == ["x"]
+
+    def test_a_difference_in_a_set_extension_is_reported(self) -> None:
+        left, right = _LF_NAME_A + _LF_EXT_1, _LF_NAME_A + _LF_EXT_2
+        assert _list_fields_paths(left, right) == ["(e.ext)"]
+
+    def test_an_extension_set_on_one_side_only_is_reported(self) -> None:
+        """Each side is read through its own lookup."""
+        payload = _LF_NAME_A + _LF_EXT_1
+        assert _list_fields_paths(payload, _LF_NAME_A) == ["(e.ext)"]
+        assert _list_fields_paths(_LF_NAME_A, payload) == ["(e.ext)"]
+
+    def test_a_type_with_no_extension_range_is_unchanged(self) -> None:
+        payload = _LF_NAME_A + _LF_X_5
+        assert _list_fields_paths(payload, payload, extension_range=False) == []
+        different = _list_fields_paths(payload, _LF_NAME_A + _LF_X_6, extension_range=False)
+        assert different == ["x"]
+
+    def test_the_diff_command_exits_0_on_identical_files(self, tmp_path) -> None:
+        from click.testing import CliRunner
+
+        from protokit.message.cli import main
+
+        desc = descriptor_pb2.FileDescriptorSet(file=[_list_fields_file()])
+        (tmp_path / "e.desc").write_bytes(desc.SerializeToString())
+        (tmp_path / "a.bin").write_bytes(_LF_NAME_A + _LF_X_5 + _LF_EXT_1)
+
+        result = CliRunner().invoke(main, [
+            str(tmp_path / "a.bin"), str(tmp_path / "a.bin"),
+            "--desc", str(tmp_path / "e.desc"), "--message-type", "e.Msg",
+            "--ignore", "ListFields",
+        ])
+
+        assert result.exit_code == 0, result.output
