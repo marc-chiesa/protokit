@@ -143,7 +143,11 @@ def fit_candidate(
 
     present_count = _present_declared_field_count(message)
     coverage = present_count / declared_count if declared_count else 1.0
-    delta = unmodeled_byte_delta(message)
+    try:
+        delta = unmodeled_byte_delta(message)
+    except RecursionError as exc:
+        detail = str(exc) or "message is nested too deep to measure"
+        return _decode_error_fit(candidate.label, total, declared_count, detail)
 
     if delta is None:
         # Parsed, but proto2-uninitialized (a required field is absent), so the
