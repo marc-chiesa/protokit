@@ -587,3 +587,49 @@ def test_a_proto2_string_that_is_not_utf8_ranks_that_candidate_as_decode_error(
     fits = {f["label"]: f for f in json.loads(result.stdout)["candidates"]}
     assert fits["u"]["parse_outcome"] == "decode_error"
     assert fits["b"]["parse_outcome"] != "decode_error"
+
+
+def test_a_message_nested_too_deep_to_measure_is_a_decode_failure(
+    runner: CliRunner, tmp_path: Path,
+) -> None:
+    """Nested deeper than the fidelity probe can copy, through a ``repeated`` field.
+
+    upb refuses to parse a message nested this deep. The pure-Python runtime
+    parses it and then runs out of stack measuring it. On both the candidate
+    failed to decode: ranked last with exit 0 while another candidate parses,
+    exit 2 when none does.
+    """
+    from tests.storage.proto_fixtures import encode_varint
+
+    tree = descriptor_pb2.FileDescriptorProto(name="a.proto", package="a", syntax="proto3")
+    msg = tree.message_type.add(name="A")
+    children = msg.field.add(name="children", number=1, type_name=".a.A")
+    children.type, children.label = FieldProto.TYPE_MESSAGE, FieldProto.LABEL_REPEATED
+    msg.field.add(name="x", number=2, type=FieldProto.TYPE_INT32, label=FieldProto.LABEL_OPTIONAL)
+    write_desc(tmp_path / "tree.desc", tree)
+    write_desc(tmp_path / "flat.desc", _bytes_field_schema())
+    # Under pure-Python the copy overflows from about depth 320 and the parse
+    # from about 475 (both move with the caller's stack depth); 400 is between.
+    data = b"\x10\x01"
+    for _ in range(400):
+        data = b"\x0a" + encode_varint(len(data)) + data
+    (tmp_path / "msg.bin").write_bytes(data)
+
+    beside_another = _invoke(
+        runner, str(tmp_path / "msg.bin"),
+        "--schema", f"flat={tmp_path / 'flat.desc'}", "--schema", f"tree={tmp_path / 'tree.desc'}",
+        "--type", "a.A", "--format", "json",
+    )
+    assert beside_another.exit_code == 0, beside_another.stdout + beside_another.stderr
+    ranked = json.loads(beside_another.stdout)["candidates"]
+    assert [(fit["label"], fit["parse_outcome"]) for fit in ranked] == [
+        ("flat", "clean"),
+        ("tree", "decode_error"),
+    ]
+
+    alone = _invoke(
+        runner, str(tmp_path / "msg.bin"),
+        "--schema", f"tree={tmp_path / 'tree.desc'}", "--type", "a.A",
+    )
+    assert alone.exit_code == 2, alone.stdout + alone.stderr
+    assert "does not parse under any candidate schema" in alone.stderr
