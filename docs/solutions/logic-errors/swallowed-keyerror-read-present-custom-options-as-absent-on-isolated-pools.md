@@ -261,7 +261,7 @@ rebind_options`):
         # Any option's bytes can fail the whole read (pure-Python also rejects a bad
         # string, and overflows the stack on deep nesting): read just this one's.
         rebound = _only_extension(target, options.SerializePartialToString(), ext_desc)
-    return _checked(rebound, ext_desc)
+    return _checked(_without_undeclared_enum(rebound, options, ext_desc), ext_desc)
 ```
 
 (Current state since 0.16.0 U7: the original version re-raised a
