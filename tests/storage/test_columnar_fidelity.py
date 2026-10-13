@@ -289,3 +289,35 @@ def test_to_parquet_measures_a_type_with_a_field_named_is_initialized(tmp_path):
     report = to_parquet([("s", record)], registry, tmp_path / "out.parquet", stream_id="s")
 
     assert (report.rows, report.measured, report.unmodeled_records) == (1, True, 0)
+
+
+# --- a nested type named after the method the probe's gate calls ---------------
+#
+# A generated ``_pb2`` class holds each nested message class in its own
+# dictionary, so a nested type named ``IsInitialized`` sits where the method is
+# looked up.
+
+
+def _generated_style(desc):
+    """The class a generated module builds: nested classes in the class dictionary."""
+    from google.protobuf import message, reflection
+
+    members = {name: _generated_style(nested) for name, nested in desc.nested_types_by_name.items()}
+    members.update(DESCRIPTOR=desc, __module__="nested_pb2")
+    return reflection.GeneratedProtocolMessageType(desc.name, (message.Message,), members)
+
+
+def test_a_nested_type_named_is_initialized_does_not_stand_in_for_the_method():
+    """proto2 ``S { required int32 r = 1; message IsInitialized {} }``."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="nested.proto", syntax="proto2", package="ne")
+    msg = fdp.message_type.add(name="S")
+    msg.field.add(name="r", number=1, type=F.TYPE_INT32, label=F.LABEL_REQUIRED)
+    msg.nested_type.add(name="IsInitialized")
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    cls = _generated_style(pool.FindMessageTypeByName("ne.S"))
+
+    assert _unmodeled_byte_delta(cls()) is None  # required r unset
+    whole = cls()
+    whole.ParseFromString(bytes([0x08, 0x05]))  # r = 5
+    assert _unmodeled_byte_delta(whole) == 0
