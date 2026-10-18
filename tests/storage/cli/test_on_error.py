@@ -8,8 +8,8 @@ is recovered past. The tests assert both so the contract is not oversold.
 **U8 changed the exit code, not the output.** ``skip`` / ``warn`` used to exit
 0 whenever the run reached the end, so a scan that silently dropped records was
 indistinguishable from a clean one. They now exit 2 once any record was not
-read; the good records still reach stdout exactly as before, and ``skip`` is
-still silent about the individual faults. What changed is only whether the
+read; the good records still reach stdout exactly as before, and ``skip``
+prints nothing per fault. What changed is only whether the
 process claims the scan succeeded.
 """
 
@@ -18,6 +18,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -259,7 +260,7 @@ def test_the_reason_names_the_count_and_one_example(
     )
     result = _run(runner, [*_base(data, desc), "--on-error", "skip"])
     assert result.exit_code == 2
-    assert "Error: 2 record(s) were not read (first: stream" in result.stderr
+    assert "Error: at least 2 record(s) were not read (first: stream" in result.stderr
     assert result.stderr.count("record(s) were not read") == 1
 
 
@@ -480,3 +481,154 @@ def test_a_close_error_after_the_last_record_exits_2(
     ])
     assert result.exit_code == 2
     assert f"Error: cannot read {data}: [Errno 5] Input/output error" in result.stderr
+
+
+# --- ``head -n 0``: the reader never starts, so ``head`` closes the file itself ---
+
+
+@pytest.mark.parametrize("on_error", ["raise", "skip", "warn"])
+@pytest.mark.parametrize("output_format", ["human", "json"])
+def test_head_n_zero_exits_0_when_closing_the_file_fails(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+    on_error: str,
+    output_format: str,
+) -> None:
+    """``-n 0`` stops before the first record, so no record was in scope.
+
+    The reader swallows a close error when ``-n`` stops it early; ``-n 0``
+    stops it before it starts, and is treated the same way.
+    """
+    desc, cls = desc_and_cls
+    data = data_file_factory([cls(x=7).SerializeToString(), cls(x=9).SerializeToString()])
+    _arm(monkeypatch, lambda path: _FailsOnClose(path.read_bytes()))  # type: ignore[arg-type,return-value]
+    result = _run(runner, [
+        "storage", "head", str(data), "--desc", str(desc), "--type", "a.A",
+        "-n", "0", "--on-error", on_error, "--format", output_format,
+    ])
+    assert result.exit_code == 0, result.stderr
+    assert "# stream=" not in result.output
+    assert "cannot read" not in result.stderr
+
+
+def test_head_n_one_on_a_file_whose_close_fails_is_unchanged(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    desc, cls = desc_and_cls
+    data = data_file_factory([cls(x=7).SerializeToString(), cls(x=9).SerializeToString()])
+    _arm(monkeypatch, lambda path: _FailsOnClose(path.read_bytes()))  # type: ignore[arg-type,return-value]
+    result = _run(runner, [
+        "storage", "head", str(data), "--desc", str(desc), "--type", "a.A", "-n", "1",
+    ])
+    assert result.exit_code == 0
+    assert result.output.count("# stream=") == 1
+
+
+def test_head_n_zero_still_opens_the_file(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    """A file that cannot be opened is still an error, whatever ``-n`` asks for."""
+    desc, cls = desc_and_cls
+    data = data_file_factory([cls(x=7).SerializeToString()])
+
+    def cannot_open(path: object, mode: str = "r") -> io.BufferedReader:
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(storage_cli, "open", cannot_open, raising=False)
+    result = _run(runner, [
+        "storage", "head", str(data), "--desc", str(desc), "--type", "a.A", "-n", "0",
+    ])
+    assert result.exit_code == 2
+    assert f"Error: cannot read {data}: [Errno 13] Permission denied" in result.stderr
+
+
+def test_closing_an_unread_file_twice_raises_nothing(tmp_path: Path) -> None:
+    """``head`` closes the file, then the ``with`` around it closes it again.
+
+    A real file whose close fails (its descriptor already gone) counts as
+    closed afterwards, so the second close is a no-op.
+    """
+    import os
+
+    data = tmp_path / "a.bin"
+    data.write_bytes(b"\x02\x08\x01")
+    with open(data, "rb") as handle:
+        os.close(handle.fileno())
+        storage_cli._close_unread(handle)
+        assert handle.closed
+
+
+# --- the line after a tolerant scan claims only what the scan knows ---------------
+
+
+@pytest.mark.parametrize("on_error", ["skip", "warn"])
+def test_a_framing_fault_leaves_an_unknown_number_unread(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    raw_file_factory: Callable[..., Path],
+    on_error: str,
+) -> None:
+    """After a framing fault the reader has no boundary to resume from, so the
+    records behind it cannot be counted: the line gives a lower bound."""
+    desc, cls = desc_and_cls
+    raw = (
+        delimited(cls(x=7).SerializeToString())
+        + encode_varint(10**9)
+        + delimited(cls(x=9).SerializeToString())
+        + delimited(cls(x=11).SerializeToString())
+    )
+    result = _run(runner, [*_base(raw_file_factory(raw), desc), "--on-error", on_error])
+    assert result.exit_code == 2
+    assert "Error: at least 1 record(s) were not read (first: stream" in result.stderr
+
+
+@pytest.mark.parametrize("on_error", ["skip", "warn"])
+def test_a_fault_the_reader_did_not_raise_prints_offset_unknown(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+    on_error: str,
+) -> None:
+    """A record that frames but does not parse carries no offset."""
+    desc, cls = desc_and_cls
+    data = data_file_factory([_DECODE_BAD, cls(x=9).SerializeToString()])
+    result = _run(runner, [*_base(data, desc), "--on-error", on_error])
+    assert result.exit_code == 2
+    assert "offset None" not in result.stderr
+    lines = [line for line in result.stderr.splitlines() if "record 0" in line]
+    assert lines and all("(offset unknown)" in line for line in lines), result.stderr
+    assert len(lines) == (2 if on_error == "warn" else 1)  # the Warning: and Error: lines
+
+
+def test_a_framing_fault_names_its_offset(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    raw_file_factory: Callable[..., Path],
+) -> None:
+    desc, cls = desc_and_cls
+    raw = delimited(cls(x=7).SerializeToString()) + encode_varint(10**9)
+    result = _run(runner, [*_base(raw_file_factory(raw), desc), "--on-error", "skip"])
+    assert result.exit_code == 2
+    assert re.search(r"\(offset \d+\): declared frame length", result.stderr), result.stderr
+
+
+def test_raise_still_prints_the_fault_itself(
+    runner: CliRunner,
+    desc_and_cls: tuple[Path, type],
+    data_file_factory: Callable[..., Path],
+) -> None:
+    desc, cls = desc_and_cls
+    data = data_file_factory([_DECODE_BAD, cls(x=9).SerializeToString()])
+    result = _run(runner, _base(data, desc))
+    assert result.exit_code == 2
+    assert "Error: frame error in stream" in result.stderr
+    assert "(offset unknown)" in result.stderr
+    assert "were not read" not in result.stderr

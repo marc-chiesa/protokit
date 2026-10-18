@@ -932,7 +932,7 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
 
 1. **`storage scan|head|count` under `--on-error skip` or `warn`.**
    A scan that reaches a record that does not parse now exits 2
-   (`Error: N record(s) were not read`) instead of 0, or instead
+   (`Error: at least N record(s) were not read`) instead of 0, or instead
    of 1 for `count --quiet` with no match. The records that did
    parse still reach stdout, and `--on-error warn` names each
    fault on stderr. `--on-error raise`, the default, is
