@@ -550,12 +550,20 @@ def test_head_n_zero_still_opens_the_file(
     assert f"Error: cannot read {data}: [Errno 13] Permission denied" in result.stderr
 
 
-def test_closing_an_unread_file_twice_raises_nothing() -> None:
-    """``head`` closes the file, then the ``with`` around it closes it again."""
-    handle = _FailsOnClose(b"\x02\x08\x01")
-    storage_cli._close_unread(handle)  # type: ignore[arg-type]
-    assert handle.closed
-    handle.close()
+def test_closing_an_unread_file_twice_raises_nothing(tmp_path: Path) -> None:
+    """``head`` closes the file, then the ``with`` around it closes it again.
+
+    A real file whose close fails (its descriptor already gone) counts as
+    closed afterwards, so the second close is a no-op.
+    """
+    import os
+
+    data = tmp_path / "a.bin"
+    data.write_bytes(b"\x02\x08\x01")
+    with open(data, "rb") as handle:
+        os.close(handle.fileno())
+        storage_cli._close_unread(handle)
+        assert handle.closed
 
 
 # --- the line after a tolerant scan claims only what the scan knows ---------------
