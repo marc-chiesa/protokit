@@ -754,7 +754,7 @@ from google.protobuf import descriptor_pb2 as d
 from google.protobuf.message import DecodeError
 
 from protokit._extensions import options_of, rebind_options
-from protokit._pools import build_pool
+from google.protobuf import descriptor_pool
 from protokit.options import get_option_value
 from protokit.schema.lint.cli import main as lint_main
 
@@ -804,7 +804,10 @@ user.message_type[0].field.add(name="bare", number=3, type=F.TYPE_INT32, label=F
 fds = d.FileDescriptorSet()
 fds.file.add().ParseFromString(d.DESCRIPTOR.serialized_pb)
 fds.file.extend([ext_file, user])
-pool = build_pool(fds)
+# Built through the protobuf API: protokit's own loaders refuse this schema.
+pool = descriptor_pool.DescriptorPool()
+for file in fds.file:
+    pool.Add(file)
 fields = pool.FindMessageTypeByName("ph.M").fields_by_name
 x, y, bare = fields["x"], fields["y"], fields["bare"]
 labels = pool.FindExtensionByName("ph.labels")
@@ -836,7 +839,7 @@ print(json.dumps({
     "one_level_down": outcome(lambda: get_option_value(y, "ph.rules")),
     "beside_one_level_down": outcome(lambda: get_option_value(y, "ph.rules.max")),
     "lint_exit": lint.exit_code,
-    "lint_says": "rule_exception" in lint.output,
+    "lint_says": "lint-bad-input" in lint.output and "ph.labels" in lint.output,
 }))
 """
 
@@ -844,10 +847,11 @@ print(json.dumps({
 def test_an_extension_typed_as_a_map_entry_is_refused_on_both_backends() -> None:
     """Protobuf has no map extensions, but a descriptor set can declare one.
 
-    Both runtimes build the pool. Reading the option is refused by name, and so
-    is an option whose message holds one. The element's other options still
-    read, an element that does not carry the option reads it as absent, and
-    ``lint`` reports the rule could not run instead of dying.
+    protokit's loaders refuse such a schema, so ``lint`` exits 2 naming the
+    extension. A pool the caller builds through the protobuf API still holds
+    one: reading the option is refused by name, and so is an option whose
+    message holds one. The element's other options still read, and an element
+    that does not carry the option reads it as absent.
     """
     import json
     import os
