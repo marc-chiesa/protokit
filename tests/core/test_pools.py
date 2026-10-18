@@ -877,6 +877,28 @@ class TestAnExtensionTypedAsAMapEntry:
         except _pools.DescriptorPoolError:
             pass
 
+    def test_a_message_typed_extension_naming_an_enum_is_not_called_map_typed(self) -> None:
+        """The pure-Python runtime resolves its type to the enum; upb builds an enum
+        field on protobuf 5 and refuses the file on 4.25."""
+        f = descriptor_pb2.FileDescriptorProto(name="e.proto", package="p")
+        f.message_type.add(name="M").extension_range.add(start=1, end=2)
+        f.enum_type.add(name="E").value.add(name="ZERO", number=0)
+        f.extension.add(
+            name="x", number=1, type=_F.TYPE_MESSAGE, label=_F.LABEL_OPTIONAL,
+            type_name=".p.E", extendee=".p.M",
+        )
+        try:
+            plain = descriptor_pool.DescriptorPool()
+            plain.Add(f)
+            plain.FindFileByName(f.name)
+        except Exception:  # the runtime's own refusal: build_pool refuses it too
+            with pytest.raises(_pools.DescriptorPoolError):
+                _pools.build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        else:
+            pool = _pools.build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+            assert pool.FindExtensionByName("p.x")
+        _pools._refuse_map_typed_extensions_in([f])
+
     def test_lint_adds_files_in_its_own_order_and_refuses_the_same(self) -> None:
         """The scratch-pool check lint's loader runs before it adds the files."""
         with pytest.raises(_pools.MapTypedExtensionError, match="pm.labels"):

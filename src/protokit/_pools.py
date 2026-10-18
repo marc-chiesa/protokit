@@ -175,9 +175,9 @@ def add_and_resolve(
     Raises:
         DescriptorPoolError: If the file cannot be resolved into the pool.
     """
-    # Broad on purpose: the try holds only the two protobuf calls, and their
-    # rejection shapes vary by backend and version (see above). BaseException
-    # (KeyboardInterrupt, SystemExit) is not caught and still propagates.
+    # Broad on purpose: the try holds the two protobuf calls, whose rejection
+    # shapes vary by backend and version (see above), and the map-entry check.
+    # BaseException (KeyboardInterrupt, SystemExit) is not caught and propagates.
     try:
         pool.Add(_honoured(fd))
         _refuse_map_typed_extensions(pool.FindFileByName(fd.name))
@@ -431,7 +431,8 @@ def _refuse_map_typed_extensions(file: Any) -> None:
         pending.extend(message.nested_types)
     for ext in extensions:
         target = ext.message_type
-        if target is not None and target.GetOptions().map_entry:
+        # Pure-Python hands back an enum here for a message-typed field naming one.
+        if isinstance(target, Descriptor) and target.GetOptions().map_entry:
             raise MapTypedExtensionError(
                 f"extension {ext.full_name} in {file.name!r} is typed as the map entry "
                 f"{target.full_name}; protobuf has no map extensions"
