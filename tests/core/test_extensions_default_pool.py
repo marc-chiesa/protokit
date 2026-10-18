@@ -356,6 +356,8 @@ _LATER_VERSIONS = {
     "a_changed_count_under_editions": ["options_changed"],
     # On protobuf 5.27 ``GetOptions()`` leaves ``features`` out and the file read
     # holds them; the verdict must not depend on which the default pool selected.
+    # ``[]`` is also C05-C1 (no compat rule reports a per-field ``features`` change;
+    # U4, 0.18.0): its fix must update it. compat_outcome hands it to a strict pin too.
     "changed_features_alone": [],
 }
 
@@ -733,7 +735,11 @@ class TestAnEnumDeclaredTwice:
 
 
 class TestOptionBytesHoldFeaturesOnlyWhereGetOptionsHasThem:
-    """protobuf 5.27 leaves ``features`` out of ``GetOptions()``; 4.25 keeps them there."""
+    """protobuf 5.27 leaves ``features`` out of ``GetOptions()``; 4.25 keeps them there.
+
+    Dropping them on 5.27 is why no compat rule reports a per-field ``features`` change:
+    C05-C1, owned by U4 (0.18.0). A fix for C05-C1 must update these tests.
+    """
 
     @staticmethod
     def _field(live: descriptor_pb2.FieldOptions) -> Any:
