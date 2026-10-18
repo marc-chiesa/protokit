@@ -250,17 +250,17 @@ def first_undecodable_string(message: Message) -> tuple[_d.FieldDescriptor, byte
     The two runtimes disagree about an undecodable string. Pure-Python rejects
     it while parsing (``UnicodeDecodeError``). upb validates UTF-8 only where
     the field requires it (every proto3 string; an editions string unless it
-    sets ``utf8_validation = NONE``; never a proto2 string) and otherwise hands
-    the field back as ``bytes``, at any depth. Nothing downstream complains
-    about those bytes, so a seam that wants pure-Python's verdict on upb walks
-    the parsed message with this and classifies a hit its own way. Only set
-    fields are walked: an unset field reads its schema default, and protokit's
-    pool loaders reject a schema whose default is not UTF-8.
+    sets ``utf8_validation = NONE``; never a proto2 string, nor an editions one
+    on protobuf 4.25) and otherwise hands the field back as ``bytes``, at any
+    depth. Nothing downstream complains about those bytes, so a seam that wants
+    pure-Python's verdict on upb walks the parsed message with this and classifies
+    a hit its own way. Only a set field is reported: an unset one reads its schema
+    default, and a default that is not UTF-8 is the schema's fault, not the record's.
 
     The walk reads only fields that can hold such a string (:class:`StringWalk`
-    has the rule), so a proto3 message costs one lookup per type: upb validates
-    every proto3 string, assuming protobuf's standard feature defaults
-    (:func:`may_hold_unvalidated_string`). This plans each type afresh; a seam
+    has the rule), so a proto3 message costs one lookup per type: each string
+    field says whether upb validates it (:func:`_unvalidated`), and a proto3 one
+    does under protobuf's standard feature defaults. This plans each type afresh; a seam
     that walks many messages of the same types, as a storage scan does, keeps
     one :class:`StringWalk` and calls its ``first`` instead, so each type is
     planned once rather than once per message. A seam reporting a hit can word
@@ -292,19 +292,19 @@ def may_hold_unvalidated_string(descriptor: _d.Descriptor) -> bool:
     """Whether a message of this type can hold a string upb did not validate.
 
     A seam may skip :func:`first_undecodable_string` for a type where this is
-    False. The answer is conservative: any string field declared in a file
-    that is not proto3 counts (an editions string may opt out of validation),
-    and so does any extension range (an extension can carry any string),
-    across every message type ``descriptor`` can reach. It walks the type
-    graph, so compute it once per type rather than once per message. It
-    assumes the pool uses protobuf's standard feature defaults, as every pool
-    protokit builds does: a pool given custom ``FeatureSetDefaults`` can turn
-    proto3 validation off, and this would then answer False wrongly.
+    False. Each string field answers for itself, a map's key and value included
+    (:func:`_unvalidated` has the rule: the field's own ``utf8_validation`` on
+    protobuf 5.26 and later, its file's syntax on 4.25, where one limit is
+    known), and any extension range counts (an extension can carry any string),
+    across every message type ``descriptor`` can reach. It walks the type graph,
+    so compute it once per type rather than once per message. On protobuf 5.26
+    and later the answer follows the pool's feature defaults, custom ones
+    included. A field that cannot say counts as one that can hold such a string.
     """
-    # Function-level: published docs cite line numbers in this module.
-    from google.protobuf import descriptor_pb2
-
-    proto3_files: dict[str, bool] = {}
+    # What protobuf 4.25 says of each file's syntax, asked once per file (a
+    # later protobuf is never asked: see _unvalidated). Keyed by the file
+    # descriptor: two pools may each hold a file of the same name.
+    proto3_files: dict[_d.FileDescriptor, bool] = {}
     seen: set[str] = set()
     stack: list[_d.Descriptor] = [descriptor]
     while stack:
@@ -314,13 +314,13 @@ def may_hold_unvalidated_string(descriptor: _d.Descriptor) -> bool:
         seen.add(current.full_name)
         if current.extension_ranges:
             return True
-        file = current.file
-        if file.name not in proto3_files:
-            # FileDescriptor has no public syntax attribute on protobuf 5.
-            syntax = descriptor_pb2.FileDescriptorProto.FromString(file.serialized_pb).syntax
-            proto3_files[file.name] = syntax == "proto3"
+        # Each string field is asked. A map field is a message field here: its
+        # entry type is walked like any other message type, so a key and a
+        # value answer as fields of the file that declares the entry, which
+        # need not be the file of the message that uses it. A field that is
+        # not a string is never asked.
         for field in current.fields:
-            if field.type == _FD.TYPE_STRING and not proto3_files[file.name]:
+            if field.type == _FD.TYPE_STRING and _unvalidated(field, proto3_files):
                 return True
             if is_message_like(field):
                 stack.append(field.message_type)
@@ -412,21 +412,21 @@ class StringWalk:
 
     The first time the walk meets a message type it records which of the
     type's fields can hold a string upb did not validate: a string field (or a
-    map key or value) declared in a file that is not proto3, and a message,
-    group or map field whose type can reach one
-    (:func:`may_hold_unvalidated_string`). Only those fields are read after
-    that, so a type that cannot hold such a string costs one lookup. A type
-    with an extension range also has its set extensions read, whatever file
-    declares them. A seam that parses many messages of the same types keeps
-    one walk for all of them. A walk holds descriptors, so it should not
-    outlive the pools it was used with.
+    map key or value) that says so for itself (:func:`_unvalidated` has the
+    rule, and its one known limit on protobuf 4.25), and a message, group or
+    map field whose type can reach one (:func:`may_hold_unvalidated_string`).
+    Only those fields are read after that, so a type that cannot hold such a
+    string costs one lookup. A type with an extension range also has its set
+    extensions read, whatever file declares them. A seam that parses many
+    messages of the same types keeps one walk for all of them. A walk holds
+    descriptors, so it should not outlive the pools it was used with.
     """
 
     def __init__(self) -> None:
         self._plans: dict[_d.Descriptor, tuple[tuple[_FieldPlan, ...], bool, bool]] = {}
         self._reaches: dict[_d.Descriptor, bool] = {}
-        # Keyed by the file descriptor, not its name: two pools may each hold
-        # a file of the same name, one proto3 and one not.
+        # What protobuf 4.25 says of each file's syntax (see _unvalidated). Keyed
+        # by the file descriptor: two pools may each hold a file of the same name.
         self._proto3_files: dict[_d.FileDescriptor, bool] = {}
 
     def first(self, message: Message) -> tuple[_d.FieldDescriptor, bytes] | None:
@@ -463,7 +463,7 @@ class StringWalk:
                     continue
                 value = getattr(current, name)
                 if kind == _STRING:
-                    if isinstance(value, bytes):
+                    if isinstance(value, bytes) and _is_set(current, field):
                         return field, value
                 elif kind == _STRINGS:
                     for item in value:
@@ -502,23 +502,23 @@ class StringWalk:
 
     def _plan(self, descriptor: _d.Descriptor) -> tuple[tuple[_FieldPlan, ...], bool, bool]:
         """Record which of ``descriptor``'s own fields the walk has to read."""
-        unvalidated = not self._is_proto3(descriptor.file)
+        files = self._proto3_files
         planned: list[_FieldPlan] = []
         # Field-number order, as ListFields reports, so a message with several bad
         # declared strings names the one it always did (extensions are read last).
         for field in sorted(descriptor.fields, key=lambda f: f.number):
             entry = map_entry(field)
             if entry is not None:
-                check_keys = unvalidated and entry.key.type == _FD.TYPE_STRING
+                check_keys = entry.key.type == _FD.TYPE_STRING and _unvalidated(entry.key, files)
                 value_kind: int | None = None
                 if entry.value.type == _FD.TYPE_STRING:
-                    value_kind = _STRING if unvalidated else None
+                    value_kind = _STRING if _unvalidated(entry.value, files) else None
                 elif is_message_like(entry.value) and self._can_reach(entry.value.message_type):
                     value_kind = _MESSAGE
                 if check_keys or value_kind is not None:
                     planned.append((field.name, _MAP, (entry, check_keys, value_kind), field))
             elif field.type == _FD.TYPE_STRING:
-                if unvalidated:
+                if _unvalidated(field, files):
                     repeated = field.label == _FD.LABEL_REPEATED
                     planned.append((field.name, _STRINGS if repeated else _STRING, None, field))
             elif is_message_like(field) and self._can_reach(field.message_type):
@@ -534,17 +534,6 @@ class StringWalk:
         if reaches is None:
             reaches = self._reaches[descriptor] = may_hold_unvalidated_string(descriptor)
         return reaches
-
-    def _is_proto3(self, file: _d.FileDescriptor) -> bool:
-        proto3 = self._proto3_files.get(file)
-        if proto3 is None:
-            # Function-level: published docs cite line numbers in this module.
-            from google.protobuf import descriptor_pb2
-
-            # FileDescriptor has no public syntax attribute on protobuf 5.
-            syntax = descriptor_pb2.FileDescriptorProto.FromString(file.serialized_pb).syntax
-            proto3 = self._proto3_files[file] = syntax == "proto3"
-        return proto3
 
 
 def not_utf8_detail(field: _d.FieldDescriptor) -> str:
@@ -634,3 +623,73 @@ def _parses_extensions_unaided() -> bool:
     except AttributeError:
         return False
     return True
+
+
+def _unvalidated(field: _d.FieldDescriptor, proto3_files: dict[_d.FileDescriptor, bool]) -> bool:
+    """Whether upb may hand ``field``, a string field, back as bytes it did not validate.
+
+    The runtime is asked, in the form each protobuf line answers in:
+
+    * protobuf 5.26 and later resolve features for every field, and upb
+      validates a string exactly where its ``utf8_validation`` is ``VERIFY``:
+      every proto3 string, an editions string unless it or something above it
+      sets ``NONE``, and no proto2 string, under the pool's own feature
+      defaults. The answer has to be the field's. An editions file can carry
+      the features of a proto3 file and still hold one field set to ``NONE``.
+    * protobuf 4.25 resolves no features and validates by syntax, so the answer
+      is whether the field's file is proto3. Reading a file's syntax is
+      deprecated there and warns, and under ``-W error`` the warning is an
+      error, so it is hushed for the read. ``proto3_files`` keeps each file's
+      answer, so a caller that passes the same mapping swaps the process's
+      warning filters once per file rather than once per field, and one thread
+      does so at a time: two inside the swap at once can leave every warning
+      hushed for good. It is keyed by the file descriptor because two pools may
+      each hold a file of the same name.
+
+    **Known limit: an editions file on protobuf 4.25 under upb.** That runtime
+    does not implement editions: it reports an editions file as proto3 and
+    validates none of its strings, so they are not walked. protokit's loaders
+    refuse an editions file on that runtime; only a pool the caller built can
+    hold one.
+
+    This never raises. A field that cannot answer, or whose answer raises, is
+    reported as unvalidated, and the walk reads it: slower, never wrong.
+    """
+    # Broad on purpose: the try holds reads of protobuf's own objects, and
+    # whatever one raises, the field is walked as if nothing had been asked.
+    try:
+        features = getattr(field, "_GetFeatures", None)
+        if features is not None:
+            # Function-level: published docs cite line numbers in this module.
+            from google.protobuf import descriptor_pb2
+
+            return bool(features().utf8_validation != descriptor_pb2.FeatureSet.VERIFY)
+        file = field.file
+        proto3 = proto3_files.get(file)
+        if proto3 is None:
+            import warnings
+
+            with _SYNTAX_READ, warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                proto3 = proto3_files[file] = getattr(file, "syntax", None) == "proto3"
+        return not proto3
+    except Exception:
+        return True
+
+
+def _is_set(message: Message, field: _d.FieldDescriptor) -> bool:
+    """Whether ``field``, a singular declared field, holds a value ``message`` carries.
+
+    A field with presence that is not set reads its schema default, which is
+    not the record's data. A field without presence has no default of its own
+    to read, so whatever it holds was parsed.
+    """
+    return not field.has_presence or bool(message.HasField(field.name))
+
+
+import threading  # noqa: E402  (published docs cite line numbers in this module)
+
+# Held for the hushed syntax read in _unvalidated, the one place this module
+# swaps the process's warning filters.
+_SYNTAX_READ = threading.Lock()
+

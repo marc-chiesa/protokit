@@ -864,3 +864,213 @@ def _calls(node: ast.AST, name: str) -> bool:
     return (isinstance(func, ast.Name) and func.id == name) or (
         isinstance(func, ast.Attribute) and func.attr == name
     )
+
+
+# ---------------------------------------------------------------------------
+# The payload paths do not read a schema's file back
+#
+# After each payload parse, a storage scan, ``diff`` and ``forensics match``
+# look for a string upb left unvalidated. That walk must not read a file back
+# as bytes (``file.serialized_pb``): parsing them goes through the default
+# pool, and upb dies writing out some files it loaded. Each outcome needs a
+# process of its own to observe.
+# ---------------------------------------------------------------------------
+
+# argv: scratch directory. Prints one JSON object.
+_PAYLOAD_PATHS = r"""
+import json
+import sys
+
+from google.protobuf import descriptor_pb2 as d, descriptor_pool as dp
+
+from protokit.forensics._match import Candidate, match
+from protokit.message import cli as message_cli
+from protokit.storage import FileDescriptorSetSchema, StreamRegistry, scan
+
+FD = d.FieldDescriptorProto
+
+
+def options_file(package, ext_name, kind, type_name=None):
+    f = d.FileDescriptorProto(
+        name=f"{package}/opts.proto", package=package, syntax="proto2",
+        dependency=["google/protobuf/descriptor.proto"],
+    )
+    f.message_type.add(name="Info").field.add(
+        name="s", number=1, type=FD.TYPE_STRING, label=FD.LABEL_OPTIONAL,
+    )
+    f.extension.add(
+        name=ext_name, number=70001, type=kind, label=FD.LABEL_OPTIONAL, type_name=type_name,
+        extendee=".google.protobuf.FieldOptions",
+    )
+    return f
+
+
+target = d.FileDescriptorProto(
+    name="mine/t.proto", package="mine", syntax="proto2", dependency=["mine/opts.proto"],
+)
+# string s = 1 [(mine.label) = "hello world"];
+target.message_type.add(name="M").field.add(
+    name="s", number=1, type=FD.TYPE_STRING, label=FD.LABEL_OPTIONAL,
+).options.MergeFromString(bytes.fromhex("8a97220b68656c6c6f20776f726c64"))
+fds = d.FileDescriptorSet()
+d.DESCRIPTOR.CopyToProto(fds.file.add())
+fds.file.extend([options_file("mine", "label", FD.TYPE_STRING), target])
+source = FileDescriptorSetSchema(fds, "mine.M")
+RECORD = b"\x0a\x02ok"
+
+registry = StreamRegistry()
+registry.register_stream("s", source)
+# The schema is loaded before the default pool learns anything: a loader given
+# the same set afterwards refuses it (tests/core/test_audit_default_pool_reparse_pins.py).
+resolved = registry.get("s")
+
+
+def attempt(call):
+    try:
+        return call()
+    except SystemExit as exc:
+        return f"SystemExit: {exc.code}"
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+def scanned(on_error):
+    result = scan([("s", RECORD)], registry, on_error=on_error)
+    records = [record.message.s for record in result]
+    return records if on_error == "raise" else [records, len(result.errors)]
+
+
+def diffed():
+    # The parse `protokit diff` gives each side, on a class resolved earlier.
+    sides = [
+        message_cli._parse_message(resolved.message_class, RECORD, name)
+        for name in ("left.bin", "right.bin")
+    ]
+    return [side.s for side in sides]
+
+
+def matched():
+    report = match(RECORD, [Candidate("a", source)])
+    return [report.verdict, [[fit.label, fit.parse_outcome] for fit in report.ranked]]
+
+
+def outcomes():
+    return {
+        "scan_raise": attempt(lambda: scanned("raise")),
+        "scan_collect": attempt(lambda: scanned("collect")),
+        "diff": attempt(diffed),
+        "match_one_candidate": attempt(matched),
+    }
+
+
+before = outcomes()
+dp.Default().AddSerializedFile(
+    options_file("theirs", "meta", FD.TYPE_MESSAGE, ".theirs.Info").SerializeToString()
+)
+declared = sorted(e.full_name for e in dp.Default().FindAllExtensions(d.FieldOptions.DESCRIPTOR))
+print(json.dumps({"declared": declared, "before": before, "after": outcomes()}))
+"""
+
+_PAYLOAD_OUTCOMES = {
+    "scan_raise": ["ok"],
+    "scan_collect": [["ok"], 0],
+    "diff": ["ok", "ok"],
+    "match_one_candidate": ["clean_winner", [["a", "clean"]]],
+}
+
+
+@functools.cache
+def _payload_paths() -> dict[str, Any]:
+    result = subprocess.run(
+        [sys.executable, "-c", _PAYLOAD_PATHS],
+        capture_output=True, text=True, check=False, timeout=300,
+        env={**os.environ, "PYTHONPATH": str(_SRC)},
+    )
+    if result.returncode != 0:
+        # Not an assertion: a pin that expects AssertionError must not accept this.
+        raise RuntimeError(f"the payload paths did not run:\n{result.stderr}")
+    outcome: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
+    return outcome
+
+
+class TestTheDefaultPoolCannotAbortAPayloadPath:
+    """A schema loaded first, then an unrelated extension at one of its option numbers.
+
+    A tied ``forensics match`` between several candidates is not measured: its
+    tie-break copies each file back to a proto and still raises ``DecodeError``
+    (see ``tests/core/test_audit_default_pool_reparse_pins.py``).
+    """
+
+    def test_the_registration_happened(self) -> None:
+        assert _payload_paths()["declared"] == ["theirs.meta"]
+
+    @pytest.mark.parametrize("path", _PAYLOAD_OUTCOMES)
+    def test_the_record_is_read_as_it_was_before_the_registration(self, path: str) -> None:
+        outcome = _payload_paths()
+        assert outcome["before"][path] == _PAYLOAD_OUTCOMES[path]
+        assert outcome["after"][path] == _PAYLOAD_OUTCOMES[path]
+
+
+def _repeated_string_with_a_default() -> bytes:
+    """44 bytes: proto2 ``message M { repeated string s = 1; }`` whose field carries a default.
+
+    protoc refuses the source, so only a hand-built or damaged set holds it.
+    Under upb the file loads, and reading its ``serialized_pb`` afterwards ends
+    the process with SIGSEGV.
+    """
+    f = descriptor_pb2.FileDescriptorProto(name="r.proto", package="r", syntax="proto2")
+    f.message_type.add(name="M").field.add(
+        name="s", number=1, type=FD.TYPE_STRING, label=FD.LABEL_REPEATED, default_value="dflt",
+    )
+    return descriptor_pb2.FileDescriptorSet(file=[f]).SerializeToString()
+
+
+# (command line, what released 0.15.1 prints for it, reduced to tokens). {set},
+# {framed} (one length-prefixed record, s: "a"), {bare} (the same record,
+# unframed) and {empty} are files.
+_COMMANDS_ON_THE_SET = {
+    "storage-count": ("storage count {framed} --desc {set} --type r.M", ["1"]),
+    "storage-scan": (
+        "storage scan {framed} --desc {set} --type r.M --format json", ['{"s":', '["a"]}'],
+    ),
+    "storage-head": (
+        "storage head {framed} --desc {set} --type r.M --format json", ['{"s":', '["a"]}'],
+    ),
+    "diff": (
+        "diff {empty} {empty} --desc {set} --message-type r.M", ["Messages", "are", "equal."],
+    ),
+    # One candidate, so the ranking never reaches its tie-break. The last line
+    # of the table: rank, label, outcome, fraction, coverage, residual bytes.
+    "forensics-match": (
+        "forensics match {bare} --schema a={set} --type r.M",
+        ["1", "a", "clean", "1.000", "1.00", "0"],
+    ),
+}
+
+
+class TestAFileUpbCannotWriteBackOut:
+    """Each command runs in a child: the regression is a signal, not an exception."""
+
+    @pytest.mark.parametrize("command", _COMMANDS_ON_THE_SET)
+    def test_a_payload_command_exits_0_with_what_0_15_1_printed(
+        self, command: str, tmp_path: Path,
+    ) -> None:
+        files = {
+            "set": _repeated_string_with_a_default(), "framed": b"\x03\x0a\x01a",
+            "bare": b"\x0a\x01a", "empty": b"",
+        }
+        assert len(files["set"]) == 44
+        # A schema path is read as a descriptor set by its suffix.
+        paths = {name: tmp_path / f"{name}.binpb" for name in files}
+        for name, data in files.items():
+            paths[name].write_bytes(data)
+        line, printed = _COMMANDS_ON_THE_SET[command]
+        argv = [word.format(**paths) for word in line.split()]
+        result = subprocess.run(
+            [sys.executable, "-c", "from protokit.cli import main; main()", *argv],
+            capture_output=True, text=True, check=False, timeout=300,
+            env={**os.environ, "PYTHONPATH": str(_SRC)},
+        )
+        # A child that upb killed reports -11 (SIGSEGV) and prints nothing.
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[-1].split() == printed

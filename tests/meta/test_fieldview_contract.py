@@ -875,9 +875,9 @@ class TestMayHoldUnvalidatedString:
             pytest.param("r2.Str2", True, id="proto2-string"),
             pytest.param("r2.Ranged2", True, id="extension-range"),
             pytest.param("r3.Bridge3", True, id="proto3-reaching-a-proto2-string"),
-            # Conservative: an editions string may set utf8_validation = NONE,
-            # and upb then returns bytes (see the walk's editions case).
-            pytest.param("r4.EdStr", True, id="editions-string"),
+            # An editions string answers for itself: upb validates it unless it
+            # sets utf8_validation = NONE (TestEachStringFieldAnswersForItself).
+            pytest.param("r4.EdStr", False, id="editions-string"),
         ],
     )
     def test_reachability(
@@ -960,7 +960,7 @@ class TestStringWalk:
             pytest.param("r2.Ints2", [], id="proto2-without-strings"),
             pytest.param("r2.Str2", ["s"], id="proto2-string"),
             pytest.param("r3.Bridge3", ["other"], id="proto3-field-reaching-a-proto2-string"),
-            pytest.param("r4.EdStr", ["s"], id="editions-string"),
+            pytest.param("r4.EdStr", [], id="editions-string"),
         ],
     )
     def test_the_plan_reads_only_fields_that_can_hold_one(
@@ -1145,3 +1145,279 @@ def test_a_walk_plans_each_message_type_once(monkeypatch: pytest.MonkeyPatch) ->
     for _ in range(3):
         assert walk.first(cls.FromString(root.SerializeToString())) is None
     assert sorted(planned) == ["w2.Leaf", "w2.Root"]
+
+
+def _syntax_pool() -> descriptor_pool.DescriptorPool:
+    """``own2.M`` (proto2) and ``own3.M`` (proto3): the same strings, and no editions file.
+
+    Nothing here needs editions, so these types are planned on protobuf 4.25 as
+    well, where a string field's answer is its file's syntax.
+    """
+    pool = descriptor_pool.DescriptorPool()
+    for package, syntax in (("own2", "proto2"), ("own3", "proto3")):
+        fdp = descriptor_pb2.FileDescriptorProto(
+            name=f"{package}.proto", package=package, syntax=syntax,
+        )
+        m = fdp.message_type.add(name="M")
+        m.field.add(name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+        m.field.add(name="rs", number=2, type=_FD.TYPE_STRING, label=_FD.LABEL_REPEATED)
+        _map_entry_type(m, "TagsEntry", _FD.TYPE_STRING, _FD.TYPE_STRING)
+        m.field.add(
+            name="tags", number=3, type=_FD.TYPE_MESSAGE, label=_FD.LABEL_REPEATED,
+            type_name=f".{package}.M.TagsEntry",
+        )
+        m.field.add(name="n", number=4, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+        pool.Add(fdp)
+    return pool
+
+
+def _planned(descriptor: d.Descriptor) -> list[str]:
+    fields, *_ = StringWalk()._plan(descriptor)
+    return [name for name, *_ in fields]
+
+
+class TestEachStringFieldAnswersForItself:
+    """The walk asks each string field, and a map's key and value, whether upb validated it.
+
+    The runtime answers: the field's own ``utf8_validation`` on protobuf 5.26 and
+    later, its file's syntax on 4.25. No answer comes from the file's
+    ``serialized_pb``: upb dies writing some files it loaded back out, and those
+    bytes do not parse once the default pool declares an unrelated extension at
+    one of the schema's option numbers.
+    """
+
+    def test_a_proto3_type_plans_no_field(self) -> None:
+        desc = _syntax_pool().FindMessageTypeByName("own3.M")
+        assert _planned(desc) == []
+        assert may_hold_unvalidated_string(desc) is False
+
+    def test_a_proto2_type_plans_each_string_and_both_halves_of_a_map(self) -> None:
+        from protokit import _fieldview
+
+        desc = _syntax_pool().FindMessageTypeByName("own2.M")
+        fields, *_ = StringWalk()._plan(desc)
+        assert [(name, kind) for name, kind, *_ in fields] == [
+            ("s", _fieldview._STRING), ("rs", _fieldview._STRINGS), ("tags", _fieldview._MAP),
+        ]
+        map_plan = fields[2][2]
+        assert map_plan is not None and map_plan[1:] == (True, _fieldview._STRING)
+        assert may_hold_unvalidated_string(desc) is True
+
+    def test_an_editions_string_is_planned_only_where_it_opts_out_of_validation(self) -> None:
+        fdp = _editions_file("own4.proto", "own4")
+        m = fdp.message_type.add(name="M")
+        m.field.add(name="checked", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+        m.field.add(
+            name="raw", number=2, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+        ).options.features.utf8_validation = _FS.NONE
+        fdp.message_type.add(name="Checked").field.add(
+            name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        mixed = pool.FindMessageTypeByName("own4.M")
+        assert _planned(mixed) == ["raw"]
+        assert may_hold_unvalidated_string(mixed) is True
+        checked = pool.FindMessageTypeByName("own4.Checked")
+        assert _planned(checked) == []
+        assert may_hold_unvalidated_string(checked) is False
+
+    @pytest.mark.parametrize("package", ["own2", "own3"])
+    def test_a_type_is_planned_and_walked_without_reading_serialized_pb(
+        self, monkeypatch: pytest.MonkeyPatch, package: str,
+    ) -> None:
+        desc = _syntax_pool().FindMessageTypeByName(f"{package}.M")
+        cls = message_factory.GetMessageClass(desc)
+        message = cls(s="a", rs=["b"])
+        message.tags["k"] = "v"
+        parsed = cls.FromString(message.SerializeToString())
+        reads: list[str] = []
+
+        def read(file: d.FileDescriptor) -> bytes:
+            reads.append(file.name)
+            raise RuntimeError("serialized_pb was read")
+
+        # Patched once the pool and the class exist: pure-Python sets the
+        # attribute when it builds a file.
+        monkeypatch.setattr(type(desc.file), "serialized_pb", property(read), raising=False)
+        with pytest.raises(RuntimeError):
+            _ = desc.file.serialized_pb
+        reads.clear()
+
+        assert _planned(desc) == ([] if package == "own3" else ["s", "rs", "tags"])
+        assert may_hold_unvalidated_string(desc) is (package == "own2")
+        assert StringWalk().first(parsed) is None
+        assert first_undecodable_string(parsed) is None
+        # Checked as well as raised: a read whose error something caught would pass.
+        assert reads == []
+
+    def test_a_field_that_cannot_answer_is_planned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No answer means "read it": slower, never wrong, and never a new way to fail."""
+        desc = _syntax_pool().FindMessageTypeByName("own3.M")
+        field_type = type(desc.fields_by_name["s"])
+        real = getattr(field_type, "_GetFeatures", None)
+
+        class _NoUtf8Answer:
+            """A field's features, except that reading ``utf8_validation`` raises."""
+
+            def __init__(self, field: d.FieldDescriptor) -> None:
+                self._field = field
+
+            def __getattr__(self, name: str) -> object:
+                # Pure-Python reads other features to answer ``label`` and ``type``.
+                if name == "utf8_validation" or real is None:
+                    raise TypeError("no answer for this field")
+                return getattr(real(self._field), name)
+
+        monkeypatch.setattr(
+            field_type, "_GetFeatures", lambda field: _NoUtf8Answer(field), raising=False,
+        )
+        assert _planned(desc) == ["s", "rs", "tags"]
+        assert may_hold_unvalidated_string(desc) is True
+        cls = message_factory.GetMessageClass(desc)
+        assert StringWalk().first(cls.FromString(b"\x0a\x01a")) is None
+
+    def test_strict_warnings_do_not_change_the_answer(self) -> None:
+        """protobuf 4.25 deprecates the syntax read: under ``-W error`` it raises unless hushed."""
+        import warnings
+
+        pool = _syntax_pool()
+        if hasattr(pool.FindMessageTypeByName("own2.M").fields_by_name["s"], "_GetFeatures"):
+            pytest.skip("this protobuf answers per field; the file's syntax is never read")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert _planned(pool.FindMessageTypeByName("own3.M")) == []
+            assert _planned(pool.FindMessageTypeByName("own2.M")) == ["s", "rs", "tags"]
+            assert may_hold_unvalidated_string(pool.FindMessageTypeByName("own3.M")) is False
+
+    def test_a_walk_reads_a_file_syntax_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Where the answer is the file's, one walk asks each file once, not once per field."""
+        pool = _syntax_pool()
+        desc = pool.FindMessageTypeByName("own2.M")
+        if hasattr(desc.fields_by_name["s"], "_GetFeatures"):
+            pytest.skip("this protobuf answers per field; the file's syntax is never read")
+        file_type = type(desc.file)
+        real = file_type.__dict__["syntax"]
+        reads: list[str] = []
+
+        def read(file: d.FileDescriptor) -> object:
+            reads.append(file.name)
+            return real.__get__(file, file_type)
+
+        monkeypatch.setattr(file_type, "syntax", property(read))
+        walk = StringWalk()
+        walk._plan(desc)
+        walk._plan(pool.FindMessageTypeByName("own2.M.TagsEntry"))
+        assert reads == ["own2.proto"]
+
+
+def _bad_default_class() -> type[Message]:
+    """``dflt.M``: ``optional string s = 1 [default = <not UTF-8>]`` and ``optional int32 n = 2``.
+
+    protoc accepts such a default and upb builds the type; an unset ``s`` then
+    reads as ``bytes``. Pure-Python refuses the file, which is why the tests
+    that use this run on upb only.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="dflt.proto", package="dflt", syntax="proto2")
+    message = fdp.message_type.add(name="M")
+    field = descriptor_pb2.FieldDescriptorProto
+    message.field.add(
+        name="s", number=1, type=field.TYPE_STRING, label=field.LABEL_OPTIONAL, default_value="?",
+    )
+    message.field.add(name="n", number=2, type=field.TYPE_INT32, label=field.LABEL_OPTIONAL)
+    placeholder = b"\x3a\x01?"  # default_value is field 7 of FieldDescriptorProto
+    serialized = fdp.SerializeToString()
+    assert serialized.count(placeholder) == 1
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(serialized.replace(placeholder, b"\x3a\x01\xff"))
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("dflt.M"))
+
+
+@skip_under_pure_python(
+    "premise holds only on upb: it builds a type whose string default is not UTF-8, "
+    "while pure-Python refuses the file"
+)
+class TestOnlyASetFieldIsReported:
+    """A schema default is the schema's, not the record's: the walk reports set fields only."""
+
+    def test_an_unset_field_that_reads_a_default_that_is_not_utf8_is_no_hit(self) -> None:
+        cls = _bad_default_class()
+        message = cls.FromString(b"\x10\x05")  # n = 5; s is not set
+        assert isinstance(message.s, bytes)  # the premise: the default reads as bytes
+        assert first_undecodable_string(message) is None
+
+    def test_the_same_field_set_to_bytes_that_are_not_utf8_is_a_hit(self) -> None:
+        cls = _bad_default_class()
+        hit = first_undecodable_string(cls.FromString(b"\x0a\x01\xfe"))
+        assert hit is not None
+        assert (hit[0].full_name, hit[1]) == ("dflt.M.s", b"\xfe")
+
+    def test_a_field_without_presence_is_reported_for_what_it_holds(self) -> None:
+        """Such a field has no default of its own, and asking whether it is set raises."""
+        fdp = _editions_file("implicit.proto", "implicit")
+        field = fdp.message_type.add(name="M").field.add(
+            name="s", number=1, type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+            label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+        )
+        field.options.features.utf8_validation = _FS.NONE
+        field.options.features.field_presence = _FS.IMPLICIT
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        desc = pool.FindMessageTypeByName("implicit.M")
+        assert desc.fields_by_name["s"].has_presence is False
+        cls = message_factory.GetMessageClass(desc)
+        assert first_undecodable_string(cls()) is None
+        hit = first_undecodable_string(cls.FromString(b"\x0a\x01\xfe"))
+        assert hit is not None
+        assert (hit[0].full_name, hit[1]) == ("implicit.M.s", b"\xfe")
+
+
+def test_two_threads_reading_a_file_syntax_leave_the_warning_filters_as_they_were(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protobuf 4.25: the hushed syntax read swaps the process's warning filters.
+
+    Two threads inside that swap at once can leave the filters changed for good:
+    the first to leave restores the list, and the second then restores the copy
+    it saved while the first's change was in place. The second reader here is
+    held inside its read until the first has left, which is that order.
+    """
+    import threading
+    import warnings
+
+    pool = _syntax_pool()
+    desc = pool.FindMessageTypeByName("own2.M")
+    if hasattr(desc.fields_by_name["s"], "_GetFeatures"):
+        pytest.skip("this protobuf answers per field; the file's syntax is never read")
+    file_type = type(desc.file)
+    real = file_type.__dict__["syntax"]
+    first_inside, second_inside = threading.Event(), threading.Event()
+    release_first, release_second = threading.Event(), threading.Event()
+    readers: list[str] = []
+
+    def read(file: d.FileDescriptor) -> object:
+        readers.append(threading.current_thread().name)
+        if len(readers) == 1:
+            first_inside.set()
+            assert release_first.wait(10)
+        else:
+            second_inside.set()
+            assert release_second.wait(10)
+        return real.__get__(file, file_type)
+
+    monkeypatch.setattr(file_type, "syntax", property(read))
+    before = list(warnings.filters)
+    first = threading.Thread(target=lambda: StringWalk()._plan(desc), name="first")
+    second = threading.Thread(target=lambda: StringWalk()._plan(desc), name="second")
+    first.start()
+    assert first_inside.wait(10)
+    second.start()
+    second_inside.wait(0.5)  # it gets inside only if nothing keeps the two reads apart
+    release_first.set()
+    first.join(10)
+    release_second.set()
+    second.join(10)
+    assert not first.is_alive() and not second.is_alive()
+    assert readers == ["first", "second"]
+    assert list(warnings.filters) == before
+
