@@ -60,6 +60,23 @@ last:
 * **C10-C4** — ``protokit diff --treat-as-map FIELD KEY`` with a message-typed
   or repeated KEY: ``_extract_keys`` uses an unhashable value as a dict key,
   and the ``TypeError`` ends the run in a traceback with exit 1.
+
+One pin with no audit ID, from a maintainer ruling and owned by U10 (0.17.0),
+comes after them:
+
+* **Closed-enum extension, undeclared number (upb)** — under upb a proto2
+  message whose singular closed-enum EXTENSION was parsed with a number the
+  enum does not declare lists the extension as set, with the value 0, so the
+  differ reports it (``UNKNOWN_0(0)``) against the same message without it
+  and ``protokit diff`` exits 1. Pure-Python reports the two equal, as both
+  backends do for a declared field holding the same number.
+
+**Pins that hold on one backend only** use a conditional marker, still on the
+test function and still strict: ``condition=_PURE_PYTHON_BACKEND`` for a
+defect only the pure-Python runtime shows (R05-X1's float half), and
+``condition=_UPB_BACKEND`` for one only upb shows (the closed-enum extension).
+On the other backend the marker does not apply and the test runs as an
+ordinary passing test, which makes it that backend's control for the pin.
 """
 
 from __future__ import annotations
@@ -1477,3 +1494,148 @@ class TestC10C4TreatAsMapWithAnUnhashableKey:
 
         assert exit_code == 2
         assert f"'{key}'" in stderr
+
+
+# ---------------------------------------------------------------------------
+# Closed-enum extension holding an undeclared number — upb only
+#
+# Pinned on 2026-10-18 under a maintainer ruling, owned by U10 (0.17.0); no
+# audit row names it. A proto2 enum is closed: a parsed number the enum does
+# not declare is kept in the unknown-field set and the field stays unset. Both
+# backends do that for a declared field. For a singular EXTENSION, upb also
+# lists the extension in ``ListFields`` as set, with the value 0, while the
+# pure-Python runtime leaves it out. The differ finds set extensions through
+# ``ListFields``, so under upb the message with the extension and the same
+# message without it differ at ``(ext_nz.shade)``, reported REMOVED/ADDED
+# with the value ``UNKNOWN_0(0)`` (the enum starts at 1, so 0 is undeclared
+# too), and ``protokit diff`` exits 1. Pure-Python reports them equal, as it
+# does for the declared field. (Released 0.15.1 reports them equal on both
+# backends, but it compared no extension at all: the declared-number control
+# below is equal there too.)
+# ---------------------------------------------------------------------------
+
+#: The marker's condition for a pin that fails under upb only; the twin of
+#: ``_PURE_PYTHON_BACKEND`` above.
+_UPB_BACKEND = api_implementation.Type() == "upb"
+
+_WITH_UNDECLARED_SHADE = bytes.fromhex("0801a00609")  # id = 1, shade = 9 (undeclared)
+_WITH_DECLARED_SHADE = bytes.fromhex("0801a00602")  # id = 1, shade = 2 (GREEN)
+_WITHOUT_SHADE = bytes.fromhex("0801")  # id = 1
+
+
+def _closed_enum_shade_file(*, as_extension: bool) -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``ext_nz``: ``enum Color { RED = 1; GREEN = 2; }``, ``M { optional int32 id = 1; }``.
+
+    ``as_extension``: ``M`` declares ``extensions 100 to 199`` and the file
+    declares ``extend M { optional Color shade = 100; }``. Otherwise ``shade``
+    is ``M``'s own ``optional Color shade = 100``.
+    """
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name="ext_nz.proto", package="ext_nz", syntax="proto2",
+    )
+    color = file_proto.enum_type.add(name="Color")
+    color.value.add(name="RED", number=1)
+    color.value.add(name="GREEN", number=2)
+    message = file_proto.message_type.add(name="M")
+    message.field.add(name="id", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
+    shade = {
+        "name": "shade", "number": 100, "type": T.TYPE_ENUM, "type_name": ".ext_nz.Color",
+        "label": T.LABEL_OPTIONAL,
+    }
+    if as_extension:
+        message.extension_range.add(start=100, end=200)
+        file_proto.extension.add(extendee=".ext_nz.M", **shade)
+    else:
+        message.field.add(**shade)
+    return file_proto
+
+
+def _compare_shade(*, as_extension: bool, with_shade: bytes) -> list[tuple[str, str]]:
+    """``compare(with_shade, without)`` read with the ``ext_nz`` schema."""
+    cls = _message_class(_closed_enum_shade_file(as_extension=as_extension))
+    left, right = cls.FromString(with_shade), cls.FromString(_WITHOUT_SHADE)
+    return _observed(MessageDifferencer().compare(left, right))
+
+
+def _diff_shade_cli(tmp_path: Path, *, as_extension: bool, with_shade: bytes) -> int:
+    """Exit code of ``protokit diff with_shade.bin without.bin`` over the ``ext_nz`` schema."""
+    file_proto = _closed_enum_shade_file(as_extension=as_extension)
+    desc = tmp_path / "ext_nz.desc"
+    desc.write_bytes(descriptor_pb2.FileDescriptorSet(file=[file_proto]).SerializeToString())
+    left, right = tmp_path / "with.bin", tmp_path / "without.bin"
+    left.write_bytes(with_shade)
+    right.write_bytes(_WITHOUT_SHADE)
+
+    result = CliRunner().invoke(
+        diff_main,
+        [str(left), str(right), "--desc", str(desc), "--message-type", "ext_nz.M"],
+        catch_exceptions=False,
+    )
+    return result.exit_code
+
+
+class TestClosedEnumExtensionWithAnUndeclaredNumber:
+    """Under upb a closed-enum extension holding an undeclared number reads as set."""
+
+    def test_extension_holding_a_declared_number_is_reported_control(
+        self, tmp_path: Path
+    ) -> None:
+        """Control: the extension set to ``GREEN`` (2) is a difference, on both backends.
+
+        Same schema and the same pair of payloads, with a number the enum
+        declares: the differ does compare this extension, and ``protokit diff``
+        exits 1.
+        """
+        assert _compare_shade(as_extension=True, with_shade=_WITH_DECLARED_SHADE) == [
+            ("(ext_nz.shade)", "REMOVED"),
+        ]
+        assert _diff_shade_cli(tmp_path, as_extension=True, with_shade=_WITH_DECLARED_SHADE) == 1
+
+    def test_declared_field_holding_an_undeclared_number_compares_equal_control(
+        self, tmp_path: Path
+    ) -> None:
+        """Control: ``shade`` as ``M``'s own field, holding 9, is unset on both backends.
+
+        Same payloads; only the field is declared on ``M`` instead of as an
+        extension. Both backends keep the 9 among the unknown fields and leave
+        the field unset, so the messages compare equal and ``protokit diff``
+        exits 0. This is the answer the pin asks of the extension.
+        """
+        cls = _message_class(_closed_enum_shade_file(as_extension=False))
+        assert not cls.FromString(_WITH_UNDECLARED_SHADE).HasField("shade")
+
+        assert _compare_shade(as_extension=False, with_shade=_WITH_UNDECLARED_SHADE) == []
+        assert _diff_shade_cli(
+            tmp_path, as_extension=False, with_shade=_WITH_UNDECLARED_SHADE,
+        ) == 0
+
+    @pytest.mark.xfail(
+        condition=_UPB_BACKEND,
+        strict=True,
+        raises=AssertionError,
+        reason="Closed-enum extension, undeclared number (upb): owned by U10 (0.17.0). "
+               "upb only. upb lists a singular closed-enum extension parsed with a number "
+               "its enum does not declare in ListFields as set, with the value 0, and the "
+               "differ finds set extensions through ListFields, so a message with "
+               "(ext_nz.shade) = 9 differs from the same message without it: compare "
+               "reports (ext_nz.shade) REMOVED with the value UNKNOWN_0(0) and protokit "
+               "diff exits 1, where pure-Python reports the messages equal",
+    )
+    def test_extension_holding_an_undeclared_number_compares_equal(
+        self, tmp_path: Path
+    ) -> None:
+        """The extension holding 9 must compare like the declared field holding 9: equal.
+
+        User-visible consequence: the same two payloads are equal under
+        pure-Python and different under upb, the default backend. The reported
+        value, ``UNKNOWN_0(0)``, is neither the number on the wire (9) nor any
+        value the enum declares.
+
+        Under pure-Python the marker does not apply and this is an ordinary
+        passing test: it is the pure-Python control for the upb pin.
+        """
+        # upb today: [('(ext_nz.shade)', 'REMOVED')], and exit 1.
+        assert _compare_shade(as_extension=True, with_shade=_WITH_UNDECLARED_SHADE) == []
+        assert _diff_shade_cli(
+            tmp_path, as_extension=True, with_shade=_WITH_UNDECLARED_SHADE,
+        ) == 0
