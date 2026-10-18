@@ -40,8 +40,8 @@ continues. NOTE: with the length-delimited reader a *framing* fault (truncated
 frame) ends the scan even under ``skip`` / ``warn`` — only *decode* and
 *unknown-stream* faults are recovered past. Under ``skip`` / ``warn`` the good
 records still reach stdout exactly as they would without a fault, and ``skip``
-still says nothing about the individual drops -- only the exit code marks the
-run as incomplete (see below).
+prints nothing per drop -- one closing ``Error:`` line names the first, and the
+exit code marks the run as incomplete (see below).
 
 Exit codes: 0 = success, 2 = error -- a bad flag, an unresolved schema, a
 malformed ``--where``, a data fault under ``--on-error raise`` (which aborts on
@@ -466,7 +466,7 @@ def _prepare(
 
 @dataclasses.dataclass
 class _Tally:
-    """Live count of the records a tolerant scan did not read.
+    """Live count of the faults a tolerant scan routed past.
 
     Mutable and written from the error sink mid-iteration, so the exit gate
     can read the total once the loop ends. ``first`` keeps one example for
@@ -492,7 +492,7 @@ class _Tally:
             return None
         text = (
             f"stream {err.stream_id!r} record {err.record_index} "
-            f"(offset {err.offset}): {err.reason}"
+            f"({'offset unknown' if err.offset is None else f'offset {err.offset}'}): {err.reason}"
         )
         if self.first is None:
             self.first = text
@@ -1001,7 +1001,8 @@ def head_cmd(
     with _open_data(data_file) as handle:
         source = _frames(handle, setup.stream_id)
         run = _make_result(setup, source, on_error)
-        # limit == 0 pulls nothing (and shows nothing); the `with` closes the file.
+        if limit == 0:  # pulls nothing, so the reader never starts and never closes
+            _close_unread(handle)
         if limit > 0:
             try:
                 for record in _records(run, data_file):
@@ -1061,3 +1062,16 @@ def count_cmd(
     # count of what was read, and the exit code carries the caveat.
     click.echo(str(matched))
     _exit_after_scan(on_error, matched, run, 0)
+
+
+def _close_unread(handle: BinaryIO) -> None:
+    """Close a data file ``head -n 0`` never read, swallowing a close error.
+
+    The reader closes the file it reads, and counts a failed close only when it
+    reached the end of input: when ``-n`` stops it early the error is dropped,
+    because the records past the stop were never in scope. ``-n 0`` stops it
+    before it starts, so the same rule applies here. The ``with`` around the
+    call closes the handle again, which is a no-op once it is closed.
+    """
+    with contextlib.suppress(OSError):
+        handle.close()

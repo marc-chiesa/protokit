@@ -326,7 +326,7 @@ def _scan_signals(report: Any) -> list[Signal]:
         first = f" (first: {report.first_fault})" if report.first_fault else ""
         out.append(Signal(
             RECORD_NOT_READ,
-            f"{report.faults} record(s) were not read{first}",
+            f"at least {report.faults} record(s) were not read{first}",
         ))
     return out
 
