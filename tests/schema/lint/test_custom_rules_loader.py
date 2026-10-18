@@ -692,3 +692,71 @@ class TestOptionBesideAMalformedOne:
         assert [(f.violation_kind, f.params["actual_value"]) for f in report.findings] == [
             ("custom-annotation-value-mismatch", "42"),
         ]
+
+
+class TestAClosedEnumOptionHoldingAnUndeclaredNumber:
+    """``protokit lint`` reads such an option as absent on both backends.
+
+    upb's own parse marks it present with value 0, the number of ``NONE``, which
+    a rule allowing only ``NONE`` accepts; pure-Python's leaves it absent.
+    """
+
+    def test_lint_reports_the_option_absent(self, tmp_path: Path) -> None:
+        import json
+
+        from click.testing import CliRunner
+        from google.protobuf import descriptor_pb2
+
+        from protokit.schema.lint.cli import main as lint_main
+
+        fd = descriptor_pb2.FieldDescriptorProto
+        fds = descriptor_pb2.FileDescriptorSet()
+        descriptor_pb2.DESCRIPTOR.CopyToProto(fds.file.add())
+        ext_file = fds.file.add(
+            name="example/level.proto", package="example", syntax="proto2",
+            dependency=["google/protobuf/descriptor.proto"],
+        )
+        level = ext_file.enum_type.add(name="Level")
+        for number, name in enumerate(("NONE", "LOW", "HIGH")):
+            level.value.add(name=name, number=number)
+        ext_file.extension.add(
+            name="level", number=50201, type=fd.TYPE_ENUM, label=fd.LABEL_OPTIONAL,
+            type_name=".example.Level", extendee=".google.protobuf.MethodOptions",
+        )
+        svc_file = fds.file.add(
+            name="example/svc.proto", package="example", syntax="proto3",
+            dependency=["example/level.proto"],
+        )
+        svc_file.message_type.add(name="Req")
+        svc = svc_file.service.add(name="Svc")
+        # level = 9, which Level does not declare, and level = 0 (NONE), which it does.
+        for name, raw in (("Undeclared", "c8c11809"), ("Declared", "c8c11800")):
+            svc.method.add(
+                name=name, input_type=".example.Req", output_type=".example.Req",
+            ).options.MergeFromString(bytes.fromhex(raw))
+        path = tmp_path / "set.binpb"
+        path.write_bytes(fds.SerializeToString())
+        config = tmp_path / "pyproject.toml"
+        config.write_text(
+            "[[tool.protokit.lint.custom_annotation_rules]]\n"
+            'rule_suffix = "level"\n'
+            'option = "example.level"\n'
+            'element_kinds = ["method"]\n'
+            'allowed_values = ["NONE"]\n'
+            'severity = "error"\n',
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(
+            lint_main,
+            [str(path), "--no-builtin-rules", "--config", str(config), "--format", "json"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 1
+        findings = [
+            (finding["rule_id"], finding["violation_kind"], finding["location"])
+            for finding in json.loads(result.stdout)["findings"]
+        ]
+        undeclared = "example/svc.proto:example.Svc/Undeclared"
+        assert findings == [("custom/level", "custom-annotation-absent", undeclared)]
