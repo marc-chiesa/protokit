@@ -47,16 +47,42 @@ Pinned here:
   hands ``to_parquet`` a temp sibling and renames), which the controls use as
   the reference behaviour. These tests need the ``protokit[parquet]`` extra and
   skip without it; every path they write is under ``tmp_path``.
+* **C21-X1** (silent form) — V16's missing pool has a quiet twin. When the
+  default pool already holds an OLDER version of the type an ``Any`` packs,
+  ``project`` renders the packed bytes through that older type and returns its
+  field names, with no error. Registering a type in the default pool cannot be
+  undone, so the pin and its control each run in a fresh interpreter, and a
+  child that does not finish raises ``RuntimeError``, which the pin's
+  ``raises=AssertionError`` does not accept. Owner: U11 (0.19.0), V16's owner.
+* **C21-C3** — the same render-before-prune order, with no ``Any`` involved:
+  an unselected well-known-typed field holding a value ``json_format`` refuses
+  to render (a ``FieldMask`` path with an uppercase letter, a ``Duration``
+  whose seconds and nanos disagree in sign, a NaN ``Value``, a ``Timestamp``
+  past year 9999) aborts the projection with ``SerializeToJsonError`` (a raw
+  ``OverflowError`` for the ``Timestamp`` on protobuf 4.25), top level and
+  nested. Owner: U11 (0.19.0).
+* **V17** — the length-delimited source's body read keeps every short read
+  in a list of ``bytes`` and joins them at the end, so a stream that
+  returns one byte per ``read`` peaks near 90 times the frame, where the
+  module promises O(single record) memory. The pin measures peak traced
+  memory with ``tracemalloc`` and allows 8 times the frame: one full read
+  peaks near 1 times, and a ``bytearray`` accumulation near 2 times under the
+  same one-byte reads, so the threshold is a judgement with room on both
+  sides. Owner: U11 (0.19.0).
 """
 
 from __future__ import annotations
 
 import functools
+import io
 import json
 import os
+import subprocess
 import sys
+import tracemalloc
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner, Result
@@ -70,8 +96,10 @@ from google.protobuf import (
     type_pb2,
     wrappers_pb2,
 )
+from google.protobuf.json_format import SerializeToJsonError
 from google.protobuf.message import Message
 
+import protokit
 from protokit.cli import main
 from protokit.storage import (
     FieldSelectionError,
@@ -81,6 +109,7 @@ from protokit.storage import (
     to_parquet,
 )
 from protokit.storage.schema_source import FileDescriptorSetSchema
+from protokit.storage.sources import length_delimited
 from tests.storage.cli.conftest import DECODE_BAD, a_fds, pq_cmd
 from tests.storage.proto_fixtures import delimited, registry_and_class
 
@@ -559,3 +588,304 @@ def test_v32_cli_parquet_scan_onto_a_read_only_destination_is_all_or_nothing_con
     result = _cli_to_parquet(tmp_path, prior_dest, faulting=faulting)
     assert result.exit_code == (2 if faulting else 0), result.stderr
     _assert_all_or_nothing(prior_dest, run_failed=faulting)
+
+
+# ---------------------------------------------------------------------------
+# C21-X1 — an older same-named type in the default pool renders the Any silently wrong
+# ---------------------------------------------------------------------------
+
+_SRC = Path(protokit.__file__).resolve().parents[1]
+
+# argv: which version of auditc21x1.Payload the default pool holds. Prints one
+# JSON object: what `--fields payload` projects from an Envelope built from the
+# record's own (isolated) pool, whose Any packs the CURRENT Payload.
+_C21_X1_CHILD = r"""
+import json
+import sys
+
+from google.protobuf import any_pb2, descriptor_pb2, descriptor_pool
+
+from protokit._pools import get_message_class
+from protokit.storage import compile_fields, project
+from protokit.storage.schema_source import FileDescriptorSetSchema
+
+FD = descriptor_pb2.FieldDescriptorProto
+
+
+def schema(payload_fields):
+    f = descriptor_pb2.FileDescriptorProto(
+        name="auditc21x1.proto", package="auditc21x1", syntax="proto3",
+        dependency=[any_pb2.DESCRIPTOR.name],
+    )
+    payload = f.message_type.add(name="Payload")
+    for number, name in enumerate(payload_fields, start=1):
+        payload.field.add(name=name, number=number, type=FD.TYPE_STRING, label=FD.LABEL_OPTIONAL)
+    envelope = f.message_type.add(name="Envelope")
+    envelope.field.add(name="n", number=1, type=FD.TYPE_INT32, label=FD.LABEL_OPTIONAL)
+    envelope.field.add(
+        name="payload", number=2, type=FD.TYPE_MESSAGE, label=FD.LABEL_OPTIONAL,
+        type_name=".google.protobuf.Any",
+    )
+    return f
+
+
+current = ["new_name", "added"]
+in_default_pool = {"older": ["old_name"], "same": current}[sys.argv[1]]
+
+fds = descriptor_pb2.FileDescriptorSet()
+any_pb2.DESCRIPTOR.CopyToProto(fds.file.add())
+fds.file.add().CopyFrom(schema(current))
+resolved = FileDescriptorSetSchema(fds, "auditc21x1.Envelope").resolve()
+envelope = resolved.message_class(n=7)
+payload_class = get_message_class(resolved.pool, "auditc21x1.Payload")
+envelope.payload.Pack(payload_class(new_name="keep", added="also"))
+
+# Something else in the process registered the type in the default pool.
+descriptor_pool.Default().AddSerializedFile(schema(in_default_pool).SerializeToString())
+print(json.dumps(project(envelope, compile_fields("payload", envelope.DESCRIPTOR))))
+"""
+
+_C21_X1_EXPECTED = {
+    "payload": {
+        "@type": "type.googleapis.com/auditc21x1.Payload",
+        "new_name": "keep",
+        "added": "also",
+    }
+}
+
+
+@functools.cache
+def _c21_x1_projection(in_default_pool: str) -> dict[str, Any]:
+    """Run the child for one default-pool version and return what it projected."""
+    result = subprocess.run(
+        [sys.executable, "-c", _C21_X1_CHILD, in_default_pool],
+        capture_output=True, text=True, check=False, timeout=300,
+        env={**os.environ, "PYTHONPATH": str(_SRC)},
+    )
+    if result.returncode != 0:
+        # Not an assertion: a pin that expects AssertionError must not accept this.
+        raise RuntimeError(f"child {in_default_pool!r} did not run:\n{result.stderr}")
+    outcome: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
+    return outcome
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "C21-X1: owned by U11 (0.19.0). project calls MessageToDict without the "
+        "record's descriptor pool, so the Any is resolved through the default pool; "
+        "when that pool holds an older auditc21x1.Payload the packed bytes render "
+        "through it, so the projection returns {'old_name': 'keep'} and drops "
+        "'added', with no error (the silent form of V16)."
+    ),
+)
+def test_c21_x1_selected_any_renders_from_the_record_pool_not_an_older_default_pool_type() -> None:
+    assert _c21_x1_projection("older") == _C21_X1_EXPECTED
+
+
+def test_c21_x1_selected_any_renders_when_the_default_pool_holds_the_same_type_control() -> None:
+    # The same child, the same record, the same selection: only the version of
+    # the type the default pool holds differs, and with the record's own
+    # version there the projection is right.
+    assert _c21_x1_projection("same") == _C21_X1_EXPECTED
+
+
+# ---------------------------------------------------------------------------
+# C21-C3 — an unselected well-known type json_format refuses kills the projection
+# ---------------------------------------------------------------------------
+
+_NAN = float("nan")
+
+# field of Ev -> (a value json_format refuses to render, a value it renders).
+_REFUSED_AND_RENDERED: dict[str, tuple[Message, Message]] = {
+    "mask": (
+        field_mask_pb2.FieldMask(paths=["userId"]),
+        field_mask_pb2.FieldMask(paths=["user_id"]),
+    ),
+    "dur": (duration_pb2.Duration(seconds=1, nanos=-1), duration_pb2.Duration(seconds=1, nanos=1)),
+    "v": (struct_pb2.Value(number_value=_NAN), struct_pb2.Value(number_value=1.5)),
+    "ts": (timestamp_pb2.Timestamp(seconds=10**12), timestamp_pb2.Timestamp(seconds=5)),
+}
+
+
+def _holding(field: str, *, refused: bool) -> Message:
+    """``Ev(n=7)`` whose well-known-typed ``field`` holds a value json_format refuses, or not.
+
+    The value goes in as wire bytes: the field's type is the schema pool's copy of
+    the well-known type, not the default pool's class the value was built with.
+    """
+    event = _event_class()(n=7)
+    value = _REFUSED_AND_RENDERED[field][0 if refused else 1]
+    getattr(event, field).MergeFromString(value.SerializeToString())
+    return event
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=SerializeToJsonError,
+    reason=(
+        "C21-C3: owned by U11 (0.19.0). project renders the whole record before it "
+        "prunes, so an UNSELECTED well-known-typed field holding a value json_format "
+        "refuses (a FieldMask path 'userId', a Duration whose seconds and nanos "
+        "disagree in sign, a NaN Value) raises SerializeToJsonError out of "
+        "--fields n."
+    ),
+)
+@pytest.mark.parametrize("field", ["mask", "dur", "v"])
+def test_c21_c3_unselected_unrenderable_well_known_type_does_not_kill_projection(
+    field: str,
+) -> None:
+    assert _select(_holding(field, refused=True), "n") == {"n": 7}
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=(SerializeToJsonError, OverflowError),
+    reason=(
+        "C21-C3: owned by U11 (0.19.0). The Timestamp case of the same render: an "
+        "UNSELECTED Timestamp past year 9999 raises SerializeToJsonError out of "
+        "--fields n on protobuf 5.x, and a raw OverflowError ('date value out of "
+        "range') on protobuf 4.25."
+    ),
+)
+def test_c21_c3_unselected_out_of_range_timestamp_does_not_kill_projection() -> None:
+    assert _select(_holding("ts", refused=True), "n") == {"n": 7}
+
+
+@pytest.mark.parametrize("field", ["mask", "dur", "v", "ts"])
+def test_c21_c3_unselected_renderable_well_known_type_beside_the_selection_control(
+    field: str,
+) -> None:
+    # The same record and selection as the pins: only the value differs, and
+    # json_format renders this one.
+    assert _select(_holding(field, refused=False), "n") == {"n": 7}
+
+
+@functools.cache
+def _outer_class() -> type[Message]:
+    """``auditc21c3.Outer``: an ``inner`` holding an int ``x`` beside a ``FieldMask`` ``mask``."""
+    out = descriptor_pb2.FileDescriptorSet()
+    field_mask_pb2.DESCRIPTOR.CopyToProto(out.file.add())
+    file = out.file.add(
+        name="auditc21c3.proto", package="auditc21c3", syntax="proto3",
+        dependency=[field_mask_pb2.DESCRIPTOR.name],
+    )
+    inner = file.message_type.add(name="Inner")
+    inner.field.add(name="x", number=1, type=_F.TYPE_INT32, label=_F.LABEL_OPTIONAL)
+    inner.field.add(
+        name="mask", number=2, type=_F.TYPE_MESSAGE, label=_F.LABEL_OPTIONAL,
+        type_name=f"{_WKT}FieldMask",
+    )
+    file.message_type.add(name="Outer").field.add(
+        name="inner", number=1, type=_F.TYPE_MESSAGE, label=_F.LABEL_OPTIONAL,
+        type_name=".auditc21c3.Inner",
+    )
+    return FileDescriptorSetSchema(out, "auditc21c3.Outer").resolve().message_class
+
+
+def _outer(mask_path: str) -> Message:
+    """``Outer`` whose ``inner`` holds ``x=7`` beside a ``mask`` with one path."""
+    outer = _outer_class()()
+    outer.inner.x = 7
+    outer.inner.mask.paths.append(mask_path)
+    return outer
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=SerializeToJsonError,
+    reason=(
+        "C21-C3: owned by U11 (0.19.0). The unrenderable field need not be top "
+        "level: a FieldMask path 'userId' beside the selected leaf inside a "
+        "selected submessage raises the same SerializeToJsonError out of --fields "
+        "inner.x, and clearing unselected top-level fields does not reach it (the "
+        "nested V16 pin's gap)."
+    ),
+)
+def test_c21_c3_unrenderable_mask_beside_a_selected_nested_leaf_does_not_kill_projection() -> None:
+    assert _select(_outer("userId"), "inner.x") == {"inner": {"x": 7}}
+
+
+def test_c21_c3_renderable_mask_beside_a_selected_nested_leaf_control() -> None:
+    assert _select(_outer("user_id"), "inner.x") == {"inner": {"x": 7}}
+
+
+# ---------------------------------------------------------------------------
+# V17 — the length-delimited reader keeps every short read until the frame ends
+# ---------------------------------------------------------------------------
+
+_FRAME = 256 * 1024
+# Today one-byte reads peak near 90 times the frame and one full read near 1;
+# a bytearray accumulation peaks near 2 under one-byte reads. A judgement.
+_PEAK_ALLOWED = 8 * _FRAME
+
+
+class _ShortReads:
+    """A blocking stream that never returns more than ``step`` bytes from one ``read``."""
+
+    def __init__(self, data: bytes, step: int) -> None:
+        self._data = io.BytesIO(data)
+        self._step = step
+
+    def read(self, n: int = -1) -> bytes:
+        return self._data.read(self._step if n < 0 else min(n, self._step))
+
+    def close(self) -> None:
+        self._data.close()
+
+
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    while n > 0x7F:
+        out.append((n & 0x7F) | 0x80)
+        n >>= 7
+    out.append(n)
+    return bytes(out)
+
+
+def _peak_reading_one_frame(step: int) -> int:
+    """Peak traced memory while ``length_delimited`` reads one ``_FRAME``-byte frame.
+
+    The stream returns at most ``step`` bytes per read. Measured above what was
+    already traced, so a tracer someone else started is left running.
+    """
+    body = bytes(range(256)) * (_FRAME // 256)
+    stream = _ShortReads(_varint(_FRAME) + body, step)
+    started_here = not tracemalloc.is_tracing()
+    if started_here:
+        tracemalloc.start()
+    try:
+        before, _ = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        frames = list(length_delimited(stream, stream_id="s"))  # type: ignore[arg-type]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        if started_here:
+            tracemalloc.stop()
+    # The frame really was read whole: a short or wrong body is not a memory answer.
+    if frames != [("s", body)]:
+        raise RuntimeError(f"length_delimited did not return the one frame: {len(frames)} frame(s)")
+    return peak - before
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "V17: owned by U11 (0.19.0). _read_exact appends each short read to a list "
+        "of bytes and joins at the end, so a stream returning one byte per read "
+        "peaks near 90 times the frame (a list entry per read, and a buffer record "
+        "per entry inside join), not the O(single record) the module promises."
+    ),
+)
+def test_v17_one_byte_reads_peak_within_a_small_multiple_of_the_frame() -> None:
+    peak = _peak_reading_one_frame(step=1)
+    assert peak < _PEAK_ALLOWED, f"peak {peak / _FRAME:.1f} times the frame"
+
+
+def test_v17_one_full_read_peaks_within_a_small_multiple_of_the_frame_control() -> None:
+    # The same frame, the same stream class, the same measurement: only the read
+    # size differs.
+    peak = _peak_reading_one_frame(step=_FRAME)
+    assert peak < _PEAK_ALLOWED, f"peak {peak / _FRAME:.1f} times the frame"

@@ -231,9 +231,9 @@ def _map_pool(key_type: int) -> ProtoBuilder:
 class TestMapKeyDocstring:
     """A map's key type is user-declared, and the checker never compares it.
 
-    The second half is the open gap V20, scheduled for a later release. When
-    that fix lands, ``test_key_type_change_passes_at_every_level`` fails; that
-    is the signal to rewrite the docstring in the same change.
+    The second half is the open gap V20, owned by U4 (0.18.0) and pinned by
+    ``test_v20_map_key_type_change_is_reported_at_wire`` in the U9 compat pins;
+    its fix fails ``test_key_type_change_currently_passes_at_every_level_v20``.
     """
 
     def test_key_type_is_declared_by_the_user(self) -> None:
@@ -245,7 +245,7 @@ class TestMapKeyDocstring:
         assert key_type(_map_pool(T.TYPE_INT32)) == T.TYPE_INT32
         assert key_type(_map_pool(T.TYPE_STRING)) == T.TYPE_STRING
 
-    def test_key_type_change_passes_at_every_level(self) -> None:
+    def test_key_type_change_currently_passes_at_every_level_v20(self) -> None:
         old, new = _map_pool(T.TYPE_INT32).pool, _map_pool(T.TYPE_STRING).pool
         reported = {
             level.name: [
