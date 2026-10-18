@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from google.protobuf.message import EncodeError, Message
 
+from protokit._fieldview import _unshadowed
+
 
 def unmodeled_byte_delta(message: Message) -> int | None:
     """Wire bytes ``message`` carried that its descriptor does not model.
@@ -46,7 +48,7 @@ def unmodeled_byte_delta(message: Message) -> int | None:
     both backends. The ``except EncodeError`` arm is kept below it as a
     belt-and-braces guard for any other encode failure, not as the signal.
     """
-    if not message.IsInitialized():
+    if not _unshadowed(type(message), "IsInitialized")(message):
         return None
     try:
         # Typed locals: protobuf ships no stubs, so ByteSize() is Any; annotate so

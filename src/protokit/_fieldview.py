@@ -390,10 +390,10 @@ def _shadows(name: str) -> bool:
 
 
 def _unshadowed(cls: type, method: str) -> Any:
-    """The message class's own ``method``, even where a field of that name hides it."""
+    """The class's own ``method``, even where a field or nested type of that name hides it."""
     for base in cls.__mro__:
         attr = base.__dict__.get(method)
-        if attr is not None and callable(attr) and not isinstance(attr, property):
+        if attr is not None and callable(attr) and not isinstance(attr, (property, type)):
             return attr
     raise AttributeError(f"{cls.__name__} has no {method} method")
 
