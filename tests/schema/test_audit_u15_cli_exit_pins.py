@@ -1421,3 +1421,181 @@ def test_u15_1_residual_empty_range_still_validates_type_and_rule_pack(
         f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert named in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# A rule pack's exception is formatted inside a guard of its own (C12-C1)
+#
+# ``_load_rule_packs`` catches what a pack raises while it loads, then puts
+# the exception's text in its ``Error:`` line. That text comes from the
+# pack's own ``__str__`` -- third-party code running after the catch -- so a
+# ``__str__`` that calls ``sys.exit(0)`` used to become the exit code of a
+# genuinely breaking run. None of the packs below raises a ``RuntimeError``:
+# ``_git_error_boundary`` turns that into exit 2 on its own.
+# ---------------------------------------------------------------------------
+
+_HOSTILE_EXCEPTIONS = (
+    "import sys\n"
+    "\n"
+    "class ExitsWhenFormatted(Exception):\n"
+    "    def __str__(self):\n"
+    "        sys.exit(0)\n"
+    "\n"
+    "class CannotFormat(Exception):\n"
+    "    def __str__(self):\n"
+    "        raise ValueError('no text')\n"
+    "\n"
+    "class InterruptsWhenFormatted(Exception):\n"
+    "    def __str__(self):\n"
+    "        raise KeyboardInterrupt()\n"
+    "\n"
+    "class EndsAGeneratorWhenFormatted(Exception):\n"
+    "    def __str__(self):\n"
+    "        raise GeneratorExit()\n"
+    "\n"
+    "class _ExitingText(str):\n"
+    "    def __str__(self):\n"
+    "        return self\n"
+    "    def __format__(self, spec):\n"
+    "        sys.exit(0)\n"
+    "    def translate(self, table):\n"
+    "        return _ExitingText(str.translate(self, table))\n"
+    "\n"
+    "class FormatsIntoAnExit(Exception):\n"
+    "    def __str__(self):\n"
+    "        return _ExitingText('text that exits when formatted')\n"
+    "\n"
+    "class ExitCode:\n"
+    "    def __str__(self):\n"
+    "        sys.exit(0)\n"
+    "\n"
+    "class Plain(Exception):\n"
+    "    pass\n"
+)
+
+# How each pack fails: (module body, or None to fail while RULES is read;
+# the exception RULES.__iter__ raises).
+_HOSTILE_PACKS = {
+    "body-exits-when-formatted": "raise ExitsWhenFormatted()\nRULES = []\n",
+    "body-sys-exit-with-an-exiting-code": "sys.exit(ExitCode())\nRULES = []\n",
+    "body-formats-into-an-exit": "raise FormatsIntoAnExit()\nRULES = []\n",
+    "body-cannot-format": "raise CannotFormat()\nRULES = []\n",
+    "body-interrupts-when-formatted": "raise InterruptsWhenFormatted()\nRULES = []\n",
+    "body-ends-a-generator-when-formatted": "raise EndsAGeneratorWhenFormatted()\nRULES = []\n",
+    "rules-exit-when-formatted": (
+        "class _Rules:\n"
+        "    def __iter__(self):\n"
+        "        raise ExitsWhenFormatted()\n"
+        "RULES = _Rules()\n"
+    ),
+    "rules-cannot-format": (
+        "class _Rules:\n"
+        "    def __iter__(self):\n"
+        "        raise CannotFormat()\n"
+        "RULES = _Rules()\n"
+    ),
+}
+
+# The two shapes every subcommand is driven with; the rest run under ``check``.
+_ON_EVERY_SUBCOMMAND = ("body-exits-when-formatted", "rules-exit-when-formatted")
+
+_SUBCOMMANDS = {
+    "check": ["check", "--since", "HEAD~1"],
+    "ci": ["ci", "--base", "HEAD~1"],
+    "history": ["history", "--range", "HEAD~1..HEAD"],
+    "bisect": ["bisect", "--old", "HEAD~1", "--new", "HEAD"],
+}
+_SHAPE_ON_SUBCOMMAND = pytest.mark.parametrize(
+    ("shape", "subcommand"),
+    [
+        *((shape, "check") for shape in sorted(_HOSTILE_PACKS)),
+        *(
+            (shape, subcommand)
+            for shape in _ON_EVERY_SUBCOMMAND
+            for subcommand in ("ci", "history", "bisect")
+        ),
+    ],
+)
+
+
+def _write_pack(pack_dir: Path, pack_name: str, body: str) -> None:
+    pack_dir.mkdir(exist_ok=True)
+    (pack_dir / f"{pack_name}.py").write_text(_HOSTILE_EXCEPTIONS + body)
+
+
+@_SHAPE_ON_SUBCOMMAND
+def test_a_rule_pack_exception_cannot_decide_the_exit_while_it_is_formatted(
+    breaking_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    shape: str, subcommand: str,
+) -> None:
+    pack_name = "c12_" + shape.replace("-", "_")
+    _write_pack(tmp_path / "packs", pack_name, _HOSTILE_PACKS[shape])
+    monkeypatch.syspath_prepend(str(tmp_path / "packs"))
+    try:
+        result = _invoke_in_repo(breaking_repo, [
+            *_SUBCOMMANDS[subcommand], "--proto-file", "acme/user.proto",
+            "--type", "acme.User", "--compat-rule-pack", pack_name,
+        ])
+    finally:
+        sys.modules.pop(pack_name, None)
+
+    assert result.exit_code == 2, (
+        f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    # A ``__str__`` that returns a ``str`` subclass gives its text, copied to a
+    # plain ``str``; every other shape gives no text of its own.
+    text = (
+        "text that exits when formatted" if shape == "body-formats-into-an-exit"
+        else "an exception that could not be formatted"
+    )
+    phase = "import" if shape.startswith("body") else "load"
+    assert f"Error: failed to {phase} rule pack '{pack_name}': {text}" in result.stderr
+
+
+def test_an_ordinary_rule_pack_exception_keeps_its_message(
+    breaking_protos: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old, new = breaking_protos
+    _write_pack(tmp_path / "packs", "c12_plain", "raise Plain('config missing')\nRULES = []\n")
+    monkeypatch.syspath_prepend(str(tmp_path / "packs"))
+    try:
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", "c12_plain",
+        ], catch_exceptions=False)
+    finally:
+        sys.modules.pop("c12_plain", None)
+
+    assert result.exit_code == 2
+    assert "Error: failed to import rule pack 'c12_plain': config missing" in result.stderr
+
+
+
+@pytest.mark.parametrize(
+    ("body", "said"),
+    [
+        pytest.param("    def __iter__(self):\n        sys.exit(0)\n", ": 0", id="sys-exit"),
+        pytest.param(
+            "    def __iter__(self):\n        raise KeyboardInterrupt()\n",
+            ": raised KeyboardInterrupt at pack-load time", id="keyboard-interrupt",
+        ),
+    ],
+)
+def test_reading_rules_cannot_exit_or_interrupt_the_run(
+    breaking_protos: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    body: str, said: str,
+) -> None:
+    """The load phase's own ``SystemExit`` and ``KeyboardInterrupt`` arms."""
+    old, new = breaking_protos
+    _write_pack(tmp_path / "packs", "c12_rules_arm", f"class _Rules:\n{body}RULES = _Rules()\n")
+    monkeypatch.syspath_prepend(str(tmp_path / "packs"))
+    try:
+        result = CliRunner().invoke(compat_main, [
+            "check", "--proto", str(old), str(new), "--type", "acme.Thing",
+            "--compat-rule-pack", "c12_rules_arm",
+        ], catch_exceptions=False)
+    finally:
+        sys.modules.pop("c12_rules_arm", None)
+
+    assert result.exit_code == 2
+    assert f"Error: failed to load rule pack 'c12_rules_arm'{said}" in result.stderr
