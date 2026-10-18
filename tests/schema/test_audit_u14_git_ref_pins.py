@@ -770,3 +770,118 @@ def test_v29_walk_json_must_record_the_commit_an_annotated_tag_names(
     repo, c1 = tagged_repo
     payload = _walk_json(monkeypatch, repo, walk, old="v1-annotated")
     assert payload["old"] == c1
+
+
+# ---------------------------------------------------------------------------
+# C12-L1 — a ref option's value that starts with a dash never reaches git
+#
+# git reads a dash-leading argument as an option, so ``--range
+# --output=LEAK..HEAD`` made ``git log`` write a file. Every ``compat`` option
+# that names a ref now refuses such a value, before any git process runs. The
+# library still hands one to git (C11-C3, owned by U13); these tests drive the
+# CLI only.
+# ---------------------------------------------------------------------------
+
+_REF_OPTIONS = {
+    ("check", "--since"), ("check", "--against-base"), ("ci", "--base"),
+    ("history", "--range"), ("bisect", "--old"), ("bisect", "--new"),
+}
+_REF_METAVARS = {"REF", "BRANCH", "[BRANCH]", "OLD..NEW"}
+_DASH_VALUES = ["--output=LEAK", "-x", "-"]
+
+
+def _ref_argv(subcommand: str, flag: str, value: str) -> list[str]:
+    """``compat <subcommand>`` with ``value`` in ``flag``'s place (or one range endpoint)."""
+    tail = ["--proto-file", "demo/a.proto", "--type", "demo.A"]
+    if subcommand == "history":
+        return ["history", "--range", value, *tail]
+    if subcommand == "bisect":
+        other = "--new" if flag == "--old" else "--old"
+        return ["bisect", flag, value, other, "HEAD", *tail]
+    return [subcommand, f"{flag}={value}", *tail]
+
+
+def _run_compat_in(repo: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]):  # noqa: ANN202
+    monkeypatch.chdir(repo)
+    return CliRunner().invoke(compat_main, argv, catch_exceptions=False)
+
+
+def _refusal_cases() -> list[tuple[str, str, str]]:
+    cases = []
+    for subcommand, flag in sorted(_REF_OPTIONS):
+        if flag == "--against-base":
+            # An optional value: click itself refuses ``--against-base=--x``.
+            cases.append((subcommand, flag, "-"))
+            continue
+        for value in _DASH_VALUES:
+            if flag == "--range":
+                cases += [
+                    (subcommand, flag, f"{value}..HEAD"),
+                    (subcommand, flag, f"HEAD~1..{value}"),
+                    (subcommand, flag, f"{value}...HEAD"),
+                ]
+            else:
+                cases.append((subcommand, flag, value))
+    return cases
+
+
+@pytest.mark.parametrize(("subcommand", "flag", "value"), _refusal_cases())
+def test_c12_l1_a_dash_leading_ref_is_refused_before_git_runs(
+    two_commit_repo: tuple[Path, str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    subcommand: str,
+    flag: str,
+    value: str,
+) -> None:
+    repo, _c1, _c2 = two_commit_repo
+    log = tmp_path / "git-argv.log"
+    monkeypatch.setenv("PROTOKIT_GIT_LOG", str(log))
+    _install_git_shim(tmp_path, monkeypatch, _LOGGING_SHIM)
+
+    result = _run_compat_in(repo, monkeypatch, _ref_argv(subcommand, flag, value))
+
+    assert result.exit_code == 2, (result.stdout, result.stderr)
+    endpoint = next(part for part in re.split(r"\.\.\.?", value) if part.startswith("-"))
+    assert f"{flag} {endpoint!r}" in result.stderr, result.stderr
+    assert not (repo / "LEAK").exists() and not (tmp_path / "LEAK").exists()
+    # git's own options start with '-' too, so a lone '-' is looked for whole.
+    reached = [
+        arg for argv in _read_log(log) for arg in argv
+        if (arg == endpoint if endpoint == "-" else arg.startswith(endpoint))
+    ]
+    assert not reached, reached
+
+
+@pytest.mark.parametrize("value", ["^HEAD", "@{-1}", "HEAD~1", "heads/-foo", " HEAD"])
+def test_c12_l1_a_ref_that_does_not_start_with_a_dash_is_not_refused(
+    two_commit_repo: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    repo, _c1, _c2 = two_commit_repo
+    result = _run_compat_in(repo, monkeypatch, _ref_argv("check", "--since", value))
+    assert "cannot start with '-'" not in result.stderr, result.stderr
+
+
+def test_c12_l1_against_base_without_a_value_still_resolves_the_base(
+    two_commit_repo: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _c1, _c2 = two_commit_repo
+    result = _run_compat_in(
+        repo, monkeypatch,
+        ["check", "--against-base", "--proto-file", "demo/a.proto", "--type", "demo.A"],
+    )
+    assert "cannot start with '-'" not in result.stderr, result.stderr
+
+
+def test_c12_l1_every_ref_option_is_guarded() -> None:
+    """A new option that names a ref has to be added here, and so to the guard."""
+    seen = {
+        (name, param.opts[0])
+        for name in ("check", "ci", "history", "bisect")
+        for param in compat_main.commands[name].params
+        if getattr(param, "metavar", None) in _REF_METAVARS
+    }
+    assert seen == _REF_OPTIONS
