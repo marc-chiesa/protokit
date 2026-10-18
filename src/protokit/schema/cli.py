@@ -2018,12 +2018,14 @@ def _pack_exception_text(exc: BaseException) -> str:
     third-party code running after the catch. It runs here inside a guard of
     its own, so a ``__str__`` that calls ``sys.exit(0)`` cannot become the
     process exit code of a breaking run, and an interrupt it raises is the
-    pack speaking, as at the load guard. The text is copied to an exact
-    ``str`` before it is sanitized: a ``str`` subclass would run its own
-    ``translate`` here and its own ``__format__`` in the caller's f-string,
-    outside any guard.
+    pack speaking, as at the load guard. The guard takes any
+    ``BaseException``: what it catches is dropped and the run exits 2, so
+    there is nothing to let through. The text is copied to an exact ``str``
+    before it is sanitized: a ``str`` subclass whose ``__str__`` returns
+    itself would run its own ``translate`` here and its own ``__format__`` in
+    the caller's f-string, outside any guard.
     """
     try:
         return _safe_for_stderr(str.__str__(str(exc)))
-    except (Exception, SystemExit, KeyboardInterrupt):
+    except BaseException:
         return "an exception that could not be formatted"

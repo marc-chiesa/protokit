@@ -1449,7 +1449,13 @@ _HOSTILE_EXCEPTIONS = (
     "    def __str__(self):\n"
     "        raise KeyboardInterrupt()\n"
     "\n"
+    "class EndsAGeneratorWhenFormatted(Exception):\n"
+    "    def __str__(self):\n"
+    "        raise GeneratorExit()\n"
+    "\n"
     "class _ExitingText(str):\n"
+    "    def __str__(self):\n"
+    "        return self\n"
     "    def __format__(self, spec):\n"
     "        sys.exit(0)\n"
     "    def translate(self, table):\n"
@@ -1475,6 +1481,7 @@ _HOSTILE_PACKS = {
     "body-formats-into-an-exit": "raise FormatsIntoAnExit()\nRULES = []\n",
     "body-cannot-format": "raise CannotFormat()\nRULES = []\n",
     "body-interrupts-when-formatted": "raise InterruptsWhenFormatted()\nRULES = []\n",
+    "body-ends-a-generator-when-formatted": "raise EndsAGeneratorWhenFormatted()\nRULES = []\n",
     "rules-exit-when-formatted": (
         "class _Rules:\n"
         "    def __iter__(self):\n"
@@ -1489,13 +1496,24 @@ _HOSTILE_PACKS = {
     ),
 }
 
-_ALL_FOUR_SUBCOMMANDS = pytest.mark.parametrize(
-    "args",
+# The two shapes every subcommand is driven with; the rest run under ``check``.
+_ON_EVERY_SUBCOMMAND = ("body-exits-when-formatted", "rules-exit-when-formatted")
+
+_SUBCOMMANDS = {
+    "check": ["check", "--since", "HEAD~1"],
+    "ci": ["ci", "--base", "HEAD~1"],
+    "history": ["history", "--range", "HEAD~1..HEAD"],
+    "bisect": ["bisect", "--old", "HEAD~1", "--new", "HEAD"],
+}
+_SHAPE_ON_SUBCOMMAND = pytest.mark.parametrize(
+    ("shape", "subcommand"),
     [
-        pytest.param(["check", "--since", "HEAD~1"], id="check"),
-        pytest.param(["ci", "--base", "HEAD~1"], id="ci"),
-        pytest.param(["history", "--range", "HEAD~1..HEAD"], id="history"),
-        pytest.param(["bisect", "--old", "HEAD~1", "--new", "HEAD"], id="bisect"),
+        *((shape, "check") for shape in sorted(_HOSTILE_PACKS)),
+        *(
+            (shape, subcommand)
+            for shape in _ON_EVERY_SUBCOMMAND
+            for subcommand in ("ci", "history", "bisect")
+        ),
     ],
 )
 
@@ -1505,19 +1523,18 @@ def _write_pack(pack_dir: Path, pack_name: str, body: str) -> None:
     (pack_dir / f"{pack_name}.py").write_text(_HOSTILE_EXCEPTIONS + body)
 
 
-@_ALL_FOUR_SUBCOMMANDS
-@pytest.mark.parametrize("shape", sorted(_HOSTILE_PACKS))
+@_SHAPE_ON_SUBCOMMAND
 def test_a_rule_pack_exception_cannot_decide_the_exit_while_it_is_formatted(
     breaking_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    args: list[str], shape: str,
+    shape: str, subcommand: str,
 ) -> None:
     pack_name = "c12_" + shape.replace("-", "_")
     _write_pack(tmp_path / "packs", pack_name, _HOSTILE_PACKS[shape])
     monkeypatch.syspath_prepend(str(tmp_path / "packs"))
     try:
         result = _invoke_in_repo(breaking_repo, [
-            *args, "--proto-file", "acme/user.proto", "--type", "acme.User",
-            "--compat-rule-pack", pack_name,
+            *_SUBCOMMANDS[subcommand], "--proto-file", "acme/user.proto",
+            "--type", "acme.User", "--compat-rule-pack", pack_name,
         ])
     finally:
         sys.modules.pop(pack_name, None)
@@ -1553,19 +1570,32 @@ def test_an_ordinary_rule_pack_exception_keeps_its_message(
     assert "Error: failed to import rule pack 'c12_plain': config missing" in result.stderr
 
 
-def test_the_formatter_loader_is_not_changed_by_the_rule_pack_guard(
+
+@pytest.mark.parametrize(
+    ("body", "said"),
+    [
+        pytest.param("    def __iter__(self):\n        sys.exit(0)\n", ": 0", id="sys-exit"),
+        pytest.param(
+            "    def __iter__(self):\n        raise KeyboardInterrupt()\n",
+            ": raised KeyboardInterrupt at pack-load time", id="keyboard-interrupt",
+        ),
+    ],
+)
+def test_reading_rules_cannot_exit_or_interrupt_the_run(
     breaking_protos: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    body: str, said: str,
 ) -> None:
-    """The same pack through ``--formatter-module`` still exits 0 (owned elsewhere)."""
+    """The load phase's own ``SystemExit`` and ``KeyboardInterrupt`` arms."""
     old, new = breaking_protos
-    _write_pack(tmp_path / "packs", "c12_fmt", _HOSTILE_PACKS["body-exits-when-formatted"])
+    _write_pack(tmp_path / "packs", "c12_rules_arm", f"class _Rules:\n{body}RULES = _Rules()\n")
     monkeypatch.syspath_prepend(str(tmp_path / "packs"))
     try:
         result = CliRunner().invoke(compat_main, [
             "check", "--proto", str(old), str(new), "--type", "acme.Thing",
-            "--formatter-module", "c12_fmt",
+            "--compat-rule-pack", "c12_rules_arm",
         ], catch_exceptions=False)
     finally:
-        sys.modules.pop("c12_fmt", None)
+        sys.modules.pop("c12_rules_arm", None)
 
-    assert result.exit_code == 0
+    assert result.exit_code == 2
+    assert f"Error: failed to load rule pack 'c12_rules_arm'{said}" in result.stderr
