@@ -22,6 +22,7 @@ from protokit.storage.registry import StreamRegistry
 from protokit.storage.schema_source import FileDescriptorSetSchema
 from protokit.storage.source import FrameError
 from tests._pure_python_inventory import skip_under_pure_python
+from tests.meta.test_fieldview_contract import PRIVATE_NAMES_THAT_HIDE, private_name_class
 from tests.storage.proto_fixtures import (
     fds,
     file_proto,
@@ -756,3 +757,44 @@ def test_a_record_is_not_faulted_for_a_schema_default_it_does_not_set(on_error: 
         if on_error == "collect":
             assert [e.record_index for e in result.errors] == [3]
 
+
+
+class TestAFieldNamedLikeAPrivateAttribute:
+    """Under pure-Python the class attribute wins over the field; the scan still yields."""
+
+    @staticmethod
+    def _registry(name: str, repeated: bool) -> StreamRegistry:
+        cls = private_name_class(name, repeated=repeated)
+        assert cls is not None
+        fds = descriptor_pb2.FileDescriptorSet()
+        cls.DESCRIPTOR.file.CopyToProto(fds.file.add())
+        registry = StreamRegistry()
+        registry.register_stream("p", FileDescriptorSetSchema(fds, "pn.M"))
+        return registry
+
+    @pytest.mark.parametrize(("name", "repeated"), PRIVATE_NAMES_THAT_HIDE)
+    def test_the_record_is_yielded(self, name: str, repeated: bool) -> None:
+        record = bytes.fromhex("0a040a026f6b")  # field 1 = Inner { s: "ok" }
+        records = list(scan(iter([("p", record)]), self._registry(name, repeated)))
+        assert len(records) == 1
+
+
+@pytest.mark.parametrize("name", ["HasField", "ListFields"])
+def test_scan_reads_a_generated_class_with_a_nested_type_named_like_a_method(name: str) -> None:
+    """A caller's schema source can hand the scan a class a ``_pb2`` module built."""
+    from protokit.storage.schema_source import ResolvedSchema
+    from tests.meta.test_fieldview_contract import generated_class_with_nested
+
+    cls = generated_class_with_nested(name)
+
+    class Generated:
+        def resolve(self) -> ResolvedSchema:
+            return ResolvedSchema(cls.DESCRIPTOR.file.pool, cls)
+
+    registry = StreamRegistry()
+    registry.register_stream("p", Generated())
+    records_in = [("p", b"\x0a\x02ok"), ("p", b"\x0a\x01\xff")]
+    result = scan(iter(records_in), registry, on_error="collect")
+    records = list(result)
+    assert [r.record_index for r in records] == [0]
+    assert [e.record_index for e in result.errors] == [1]
