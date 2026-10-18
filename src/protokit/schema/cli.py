@@ -541,9 +541,9 @@ def _load_pools_git(
         # against_base mode. Empty string sentinel = auto-resolve.
         if against_base == "":
             try:
-                base = resolve_default_base(
+                base = _ref_not_an_option(f"{base_flag_hint} upstream", resolve_default_base(
                     cwd=cwd, flag_hint=base_flag_hint,
-                )
+                ))
             except GitRefNotFoundError as exc:
                 error_exit(str(exc))
         else:
@@ -2035,7 +2035,8 @@ def _ref_not_an_option(flag: str, value: str) -> str:
     """``value``, unless it starts with a dash: then a usage error naming ``flag``.
 
     git reads a dash-leading argument as an option wherever it stands, so
-    ``--range --output=LEAK..HEAD`` made ``git log`` write a file. Branch and
+    ``--range --output=LEAK..HEAD`` made ``git log`` write a file, and an
+    upstream ref named ``--fork-point`` made ``merge-base`` answer HEAD. Branch and
     tag names cannot start with a dash, and a ref whose name component does is
     still reachable as ``heads/-foo``. The value is not stripped: a leading
     space is no option to git.

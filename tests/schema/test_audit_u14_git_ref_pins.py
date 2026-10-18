@@ -777,9 +777,10 @@ def test_v29_walk_json_must_record_the_commit_an_annotated_tag_names(
 #
 # git reads a dash-leading argument as an option, so ``--range
 # --output=LEAK..HEAD`` made ``git log`` write a file. Every ``compat`` option
-# that names a ref now refuses such a value, before any git process runs. The
-# library still hands one to git (C11-C3, owned by U13); these tests drive the
-# CLI only.
+# that names a ref now refuses such a value, and so does the upstream ref
+# ``--against-base`` and ``ci`` resolve by themselves; such a value never reaches
+# git. The library still hands one to git (C11-C3, owned by U13); these tests
+# drive the CLI only.
 # ---------------------------------------------------------------------------
 
 _REF_OPTIONS = {
@@ -826,7 +827,7 @@ def _refusal_cases() -> list[tuple[str, str, str]]:
 
 
 @pytest.mark.parametrize(("subcommand", "flag", "value"), _refusal_cases())
-def test_c12_l1_a_dash_leading_ref_is_refused_before_git_runs(
+def test_c12_l1_a_dash_leading_ref_is_refused_and_never_reaches_git(
     two_commit_repo: tuple[Path, str, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -838,13 +839,14 @@ def test_c12_l1_a_dash_leading_ref_is_refused_before_git_runs(
     log = tmp_path / "git-argv.log"
     monkeypatch.setenv("PROTOKIT_GIT_LOG", str(log))
     _install_git_shim(tmp_path, monkeypatch, _LOGGING_SHIM)
+    entries_before = sorted(path.name for path in repo.iterdir())
 
     result = _run_compat_in(repo, monkeypatch, _ref_argv(subcommand, flag, value))
 
     assert result.exit_code == 2, (result.stdout, result.stderr)
     endpoint = next(part for part in re.split(r"\.\.\.?", value) if part.startswith("-"))
     assert f"{flag} {endpoint!r}" in result.stderr, result.stderr
-    assert not (repo / "LEAK").exists() and not (tmp_path / "LEAK").exists()
+    assert sorted(path.name for path in repo.iterdir()) == entries_before
     # git's own options start with '-' too, so a lone '-' is looked for whole.
     reached = [
         arg for argv in _read_log(log) for arg in argv
@@ -853,35 +855,96 @@ def test_c12_l1_a_dash_leading_ref_is_refused_before_git_runs(
     assert not reached, reached
 
 
-@pytest.mark.parametrize("value", ["^HEAD", "@{-1}", "HEAD~1", "heads/-foo", " HEAD"])
-def test_c12_l1_a_ref_that_does_not_start_with_a_dash_is_not_refused(
-    two_commit_repo: tuple[Path, str, str],
-    monkeypatch: pytest.MonkeyPatch,
-    value: str,
-) -> None:
-    repo, _c1, _c2 = two_commit_repo
-    result = _run_compat_in(repo, monkeypatch, _ref_argv("check", "--since", value))
-    assert "cannot start with '-'" not in result.stderr, result.stderr
+@pytest.fixture
+def repo_with_a_parent_and_odd_refs(git_repo: Path) -> Path:
+    """``main`` at c2 with parent c1; ``refs/heads/-foo`` and an upstream ``base`` at c1."""
+    (git_repo / "demo").mkdir()
+    for a_text, b_text, msg in ((_A_C1, _B_C1, "c1"), (_A_C2, _B_C2, "c2")):
+        (git_repo / "demo/a.proto").write_text(a_text)
+        (git_repo / "demo/b.proto").write_text(b_text)
+        _git("add", "demo", cwd=git_repo)
+        _git("commit", "-q", "-m", msg, cwd=git_repo)
+    _git("update-ref", "refs/heads/-foo", "HEAD~1", cwd=git_repo)
+    _git("update-ref", "refs/heads/base", "HEAD~1", cwd=git_repo)
+    _git("config", "branch.main.remote", ".", cwd=git_repo)
+    _git("config", "branch.main.merge", "refs/heads/base", cwd=git_repo)
+    return git_repo
 
 
-def test_c12_l1_against_base_without_a_value_still_resolves_the_base(
-    two_commit_repo: tuple[Path, str, str],
-    monkeypatch: pytest.MonkeyPatch,
+# What each command prints once it has compared two schemas.
+_COMPARED = {"check": "protokit compat", "ci": "protokit compat", "history": "finding(s)"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["check", "--since", "HEAD~1"], id="since-parent"),
+        pytest.param(["check", "--since", "heads/-foo"], id="since-dash-component"),
+        pytest.param(["check", "--against-base"], id="against-base-upstream"),
+        pytest.param(["ci"], id="ci-upstream"),
+        pytest.param(["history", "--range", "heads/-foo..HEAD"], id="range-dash-component"),
+        pytest.param(["history", "--range", "HEAD~1...HEAD"], id="range-three-dots"),
+        pytest.param(
+            ["bisect", "--old", "heads/-foo", "--new", "HEAD"], id="bisect-dash-component",
+        ),
+    ],
+)
+def test_c12_l1_a_ref_that_does_not_start_with_a_dash_still_compares(
+    repo_with_a_parent_and_odd_refs: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str],
 ) -> None:
-    repo, _c1, _c2 = two_commit_repo
     result = _run_compat_in(
-        repo, monkeypatch,
-        ["check", "--against-base", "--proto-file", "demo/a.proto", "--type", "demo.A"],
+        repo_with_a_parent_and_odd_refs, monkeypatch,
+        [*argv, "--proto-file", "demo/a.proto", "--type", "demo.A"],
     )
-    assert "cannot start with '-'" not in result.stderr, result.stderr
+    assert result.exit_code in (0, 1), (result.stdout, result.stderr)
+    if argv[0] in _COMPARED:
+        assert _COMPARED[argv[0]] in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("value", ["^HEAD", "@{-1}", " HEAD"])
+def test_c12_l1_other_non_dash_spellings_are_not_refused(
+    repo_with_a_parent_and_odd_refs: Path, monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    """These reach git as before; what git makes of them is the V29 pins' business."""
+    result = _run_compat_in(
+        repo_with_a_parent_and_odd_refs, monkeypatch, _ref_argv("check", "--since", value),
+    )
+    assert "a ref cannot start with '-'" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("name", ["--fork-point", "--octopus"])
+@pytest.mark.parametrize("command", [["check", "--against-base"], ["ci"]])
+def test_c12_l1_a_dash_leading_upstream_is_refused_not_merged(
+    repo_with_a_parent_and_odd_refs: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    command: list[str],
+) -> None:
+    """``merge-base HEAD --fork-point`` answers HEAD, so the gate compared HEAD with
+    itself and printed COMPATIBLE on a breaking change."""
+    repo = repo_with_a_parent_and_odd_refs
+    _git("update-ref", f"refs/heads/{name}", "HEAD~1", cwd=repo)
+    _git("config", "branch.main.merge", f"refs/heads/{name}", cwd=repo)
+    log = tmp_path / "git-argv.log"
+    monkeypatch.setenv("PROTOKIT_GIT_LOG", str(log))
+    _install_git_shim(tmp_path, monkeypatch, _LOGGING_SHIM)
+
+    result = _run_compat_in(
+        repo, monkeypatch, [*command, "--proto-file", "demo/a.proto", "--type", "demo.A"],
+    )
+
+    assert result.exit_code == 2, (result.stdout, result.stderr)
+    assert f"upstream {name!r}: a ref cannot start with '-'" in result.stderr, result.stderr
+    assert not any(argv[:1] == ["merge-base"] for argv in _read_log(log))
 
 
 def test_c12_l1_every_ref_option_is_guarded() -> None:
     """A new option that names a ref has to be added here, and so to the guard."""
     seen = {
         (name, param.opts[0])
-        for name in ("check", "ci", "history", "bisect")
-        for param in compat_main.commands[name].params
+        for name, command in compat_main.commands.items()
+        for param in command.params
         if getattr(param, "metavar", None) in _REF_METAVARS
     }
     assert seen == _REF_OPTIONS
