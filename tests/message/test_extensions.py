@@ -1393,3 +1393,28 @@ class TestAFieldNamedListFields:
         ])
 
         assert result.exit_code == 0, result.output
+
+
+def test_each_side_is_read_for_extensions_by_its_own_schema() -> None:
+    """Only the side whose type declares an extension range is asked for its extensions.
+
+    Across two pools, ``x.Msg`` declares the range in one and not in the other,
+    so swapping which side's range guards which side's read would report this
+    pair equal.
+    """
+    plain = descriptor_pool.DescriptorPool()
+    fdp = descriptor_pb2.FileDescriptorProto(name="x.proto", package="x", syntax="proto2")
+    fdp.message_type.add(name="Msg").field.add(
+        name="name", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    plain.Add(fdp)
+    plain_cls = message_factory.GetMessageClass(plain.FindMessageTypeByName("x.Msg"))
+    ext_cls, _outer, tag, _rank = _classes()
+    with_tag = ext_cls(name="n")
+    with_tag.Extensions[tag] = "t"
+
+    def paths(left: Message, right: Message) -> list[tuple[str, str]]:
+        return [(str(x.path), x.change_type.name) for x in diff_messages(left, right)]
+
+    assert paths(with_tag, plain_cls(name="n")) == [("(x.tag)", "REMOVED")]
+    assert paths(plain_cls(name="n"), with_tag) == [("(x.tag)", "ADDED")]
