@@ -154,6 +154,12 @@ _PACK_EXCEPTIONS = (
     "    def __str__(self):\n"
     "        sys.exit(0)\n"
     "\n"
+    "class ExitingCode:\n"
+    "    def __str__(self):\n"
+    "        sys.exit(0)\n"
+    "    def __repr__(self):\n"
+    "        sys.exit(0)\n"
+    "\n"
     "class Plain(Exception):\n"
     "    pass\n"
 )
@@ -270,6 +276,10 @@ def test_formatter_twin_an_ordinary_pack_exception_exits_2_control(
     )
 
 
+@pytest.mark.parametrize(
+    "exception", ["ExitsWhenFormatted()", "SystemExit(ExitingCode())"],
+    ids=["str-exits", "exit-code-repr-exits"],
+)
 @pytest.mark.parametrize("phase", ["import", "load"])
 @pytest.mark.parametrize("command", sorted(_COMMANDS))
 @pytest.mark.xfail(
@@ -277,13 +287,14 @@ def test_formatter_twin_an_ordinary_pack_exception_exits_2_control(
     raises=AssertionError,
     reason="C12-C1 (--formatter-module twin): owned by U14a (0.19.0). "
            "load_formatter_packs interpolates the pack's exception into its Error: line "
-           "outside any guard, and the pack's own __str__ runs there, so an exception "
-           "whose __str__ calls sys.exit(0), raised from the module body or from "
+           "outside any guard (its own text, and for SystemExit the repr of its code), "
+           "and the pack's own __str__ / __repr__ runs there, so an exception that exits "
+           "while it is formatted, raised from the module body or from "
            "FORMATTERS.__iter__, ends compat check on a breaking pair and diff on two "
            "different payloads with exit 0 and no output",
 )
 def test_formatter_twin_a_pack_exception_cannot_decide_the_exit_while_it_is_formatted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, phase: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, phase: str, exception: str,
 ) -> None:
     """A pack that fails to load must exit 2 naming the pack, whatever its ``__str__`` does.
 
@@ -293,11 +304,17 @@ def test_formatter_twin_a_pack_exception_cannot_decide_the_exit_while_it_is_form
     differ, because the pack failed in a way that also ends the process.
     """
     pack_name = f"c12_fmt_exits_{phase}"
-    body = _raising_pack("ExitsWhenFormatted()")[phase]
+    body = _raising_pack(exception)[phase]
 
     result = _run_with_pack(tmp_path, monkeypatch, command, pack_name, body)
 
-    # Today: exit 0, stdout and stderr both empty.
+    # Today: exit 0, stdout and stderr both empty. Anything that is neither that
+    # nor the fix (exit 2 naming the pack) is the finding moving: fail red.
+    if result.exit_code not in (0, 2) or (
+        result.exit_code == 0 and (result.stdout or result.stderr)
+    ):
+        pytest.fail(f"the formatter-twin finding moved: exit {result.exit_code}, "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}")
     assert result.exit_code == 2, (
         f"got exit {result.exit_code} with stdout={result.stdout!r} stderr={result.stderr!r}"
     )

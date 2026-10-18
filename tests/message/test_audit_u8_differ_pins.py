@@ -1635,7 +1635,10 @@ class TestClosedEnumExtensionWithAnUndeclaredNumber:
         passing test: it is the pure-Python control for the upb pin.
         """
         # upb today: [('(ext_nz.shade)', 'REMOVED')], and exit 1.
-        assert _compare_shade(as_extension=True, with_shade=_WITH_UNDECLARED_SHADE) == []
+        reported = _compare_shade(as_extension=True, with_shade=_WITH_UNDECLARED_SHADE)
+        if reported not in ([], [("(ext_nz.shade)", "REMOVED")]):
+            pytest.fail(f"the closed-enum extension finding moved: {reported!r}")
+        assert reported == []
         assert _diff_shade_cli(
             tmp_path, as_extension=True, with_shade=_WITH_UNDECLARED_SHADE,
         ) == 0
