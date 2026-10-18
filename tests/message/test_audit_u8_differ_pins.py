@@ -48,6 +48,18 @@ proto2 ``[default = nan]`` never collapses as a default). They are defined in
 ``docs/plans/AUDIT-whole-codebase-2026-08-30.md``; the comment block above
 that section gives each one's mechanism and owner. The float half of cycle-1
 row R05-X1, which is V5's mechanism under pure-Python, follows them.
+
+Two findings of the second 0.16.0 re-audit, both owned by U10 (0.17.0), come
+last:
+
+* **C08-C2**, with **C08-C2b** — V28's presence facet. The same default-config
+  differ that drops ``ignore_fields`` inside ``treat_as_set`` pairing also
+  drops ``MessageFieldComparison.EQUAL``, so an element whose field is unset
+  pairs with one whose field is set to its default. C08-C2b is the same
+  through a repeated proto2 group, new in 0.16.0.
+* **C10-C4** — ``protokit diff --treat-as-map FIELD KEY`` with a message-typed
+  or repeated KEY: ``_extract_keys`` uses an unhashable value as a dict key,
+  and the ``TypeError`` ends the run in a traceback with exit 1.
 """
 
 from __future__ import annotations
@@ -1187,3 +1199,281 @@ class TestR05X1FloatDefaultNeverCollapsesUnderPurePython:
         # Pure-Python today: [('x', 'REMOVED')] with the field set on the left,
         # [('x', 'ADDED')] on the right.
         assert _observed(MessageDifferencer().compare(left, right)) == []
+
+
+# ---------------------------------------------------------------------------
+# C08-C2, with C08-C2b — V28's presence facet: treat_as_set drops strict presence
+#
+# Reproduced by the second 0.16.0 re-audit and pinned on 2026-10-17, owned by
+# U10 (0.17.0) with V28. It is V28's mechanism with a different dropped
+# policy: the fresh default-config ``MessageDifferencer()`` that decides
+# message-element equality inside ``treat_as_set`` pairing compares presence
+# in EQUIVALENT mode, whatever the caller set with
+# ``set_message_field_comparison(MessageFieldComparison.EQUAL)``. An element
+# whose field is unset and one whose field is set to its default therefore
+# pair as equal. C08-C2b is the same through a repeated proto2 group, which
+# 0.16.0 began to compare by content (0.15.1 reported a difference there).
+# Which differences set pairing should report for such elements is not
+# settled (an unpaired REMOVED + ADDED pair, or the field), so the pin asserts
+# only that there is one. Default presence plus ``treat_as_set`` is not
+# pinned: there the documented "strict exact equality" of set membership and
+# a differ that carries the caller's configuration disagree.
+# ---------------------------------------------------------------------------
+
+_PRESENCE_SHAPES = ["optional-scalar", "sub-message", "repeated-group"]
+
+
+def _presence_elements_class(shape: str) -> type[Message]:
+    """``test.M`` holding one repeated element field whose element has presence.
+
+    ``optional-scalar`` and ``sub-message``: proto3 ``M { repeated Item items }``
+    with ``Item { string id; optional int32 flag; Meta meta }``. ``repeated-group``:
+    proto2 ``M { repeated group G g { optional string id; optional int32 flag } }``.
+    """
+    if shape == "repeated-group":
+        file_proto = descriptor_pb2.FileDescriptorProto(
+            name="m.proto", package="test", syntax="proto2",
+        )
+        message = file_proto.message_type.add(name="M")
+        group = message.nested_type.add(name="G")
+        group.field.add(name="id", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+        group.field.add(name="flag", number=2, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
+        message.field.add(
+            name="g", number=1, type=T.TYPE_GROUP, type_name=".test.M.G",
+            label=T.LABEL_REPEATED,
+        )
+        return _message_class(file_proto)
+
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name="m.proto", package="test", syntax="proto3",
+    )
+    message = file_proto.message_type.add(name="M")
+    meta = message.nested_type.add(name="Meta")
+    meta.field.add(name="k", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    item = message.nested_type.add(name="Item")
+    item.field.add(name="id", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    item.field.add(
+        name="flag", number=2, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL,
+        oneof_index=0, proto3_optional=True,
+    )
+    item.field.add(
+        name="meta", number=3, type=T.TYPE_MESSAGE, type_name=".test.M.Meta",
+        label=T.LABEL_OPTIONAL,
+    )
+    item.oneof_decl.add(name="_flag")
+    message.field.add(
+        name="items", number=1, type=T.TYPE_MESSAGE, type_name=".test.M.Item",
+        label=T.LABEL_REPEATED,
+    )
+    return _message_class(file_proto)
+
+
+def _presence_pair(shape: str, *, ids: tuple[str, ...] = ("a",)) -> tuple[Message, Message, str]:
+    """``(expected, actual, repeated field name)``: one element per id on each side.
+
+    In ``expected`` every element sets only ``id``. In ``actual`` the same
+    elements also set the shape's presence-bearing field to its default:
+    ``flag = 0`` (``optional-scalar``, ``repeated-group``) or an empty ``meta``
+    (``sub-message``). The two sides differ in presence alone.
+    """
+    cls = _presence_elements_class(shape)
+    field_name = "g" if shape == "repeated-group" else "items"
+    expected, actual = cls(), cls()
+    for element_id in ids:
+        getattr(expected, field_name).add(id=element_id)
+        element = getattr(actual, field_name).add(id=element_id)
+        if shape == "sub-message":
+            element.meta.SetInParent()
+        else:
+            element.flag = 0
+    return expected, actual, field_name
+
+
+def _strict_presence_differ(*, as_set: str | None = None) -> MessageDifferencer:
+    """A differ in EQUAL presence mode, with ``treat_as_set(as_set)`` if given."""
+    d = MessageDifferencer()
+    d.set_message_field_comparison(MessageFieldComparison.EQUAL)
+    if as_set is not None:
+        d.treat_as_set(as_set)
+    return d
+
+
+class TestC08C2TreatAsSetDropsStrictPresence:
+    """C08-C2 (V28's presence facet): set pairing compares elements in EQUIVALENT mode."""
+
+    @pytest.mark.parametrize("shape", _PRESENCE_SHAPES)
+    def test_strict_presence_reports_the_set_to_default_field_control(self, shape: str) -> None:
+        """Control: under index pairing EQUAL mode reports the presence difference.
+
+        The elements really do differ in presence (protobuf's own ``==``
+        agrees), the default EQUIVALENT mode collapses it, and EQUAL reports it
+        at the element's field. This is the verdict the pin asks set pairing
+        to keep.
+        """
+        expected, actual, field_name = _presence_pair(shape)
+        changed = "meta" if shape == "sub-message" else "flag"
+
+        assert expected != actual
+        assert _observed(MessageDifferencer().compare(expected, actual)) == []
+        assert _observed(_strict_presence_differ().compare(expected, actual)) == [
+            (f"{field_name}[0].{changed}", "ADDED"),
+        ]
+
+    @pytest.mark.parametrize("shape", _PRESENCE_SHAPES)
+    def test_set_pairing_in_strict_presence_pairs_identical_elements_control(
+        self, shape: str
+    ) -> None:
+        """Control: EQUAL mode plus ``treat_as_set`` is a supported configuration.
+
+        Identical elements in a different order pair up and compare equal, so
+        set pairing is in force on this field and the pin's failure is
+        specific to elements that differ in presence.
+        """
+        expected, _, field_name = _presence_pair(shape, ids=("a", "b"))
+        reordered, _, _ = _presence_pair(shape, ids=("b", "a"))
+
+        assert _observed(_strict_presence_differ().compare(expected, reordered)) != []
+        result = _strict_presence_differ(as_set=field_name).compare(expected, reordered)
+        assert _observed(result) == []
+
+    @pytest.mark.parametrize("shape", _PRESENCE_SHAPES)
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="C08-C2 (V28's presence facet), with C08-C2b for the group: owned by U10 "
+               "(0.17.0). _set_elements_equal decides message-element equality with a "
+               "fresh default-config MessageDifferencer(), which compares presence in "
+               "EQUIVALENT mode, so the caller's MessageFieldComparison.EQUAL is dropped "
+               "inside treat_as_set pairing: an element whose field is unset pairs with "
+               "one whose field is set to its default, and the result is EQUAL with no "
+               "differences",
+    )
+    def test_strict_presence_must_survive_set_pairing(self, shape: str) -> None:
+        """EQUAL mode must report a presence-only difference with or without set pairing.
+
+        User-visible consequence: a caller who asked for strict presence gets
+        it until the list is declared order-independent, and then loses it
+        without a word. ``proto_match(actual, expected, presence=EQUAL)``
+        fails on these messages and ``proto_match(..., presence=EQUAL,
+        as_set=...)`` passes, so the assertion that was meant to catch a writer
+        setting a field it should leave unset stops catching it. Through a
+        repeated proto2 group this is new in 0.16.0.
+        """
+        expected, actual, field_name = _presence_pair(shape)
+
+        result = _strict_presence_differ(as_set=field_name).compare(expected, actual)
+
+        # Today: [] — has_changes() is False.
+        assert result.has_changes()
+
+
+# ---------------------------------------------------------------------------
+# C10-C4 — `protokit diff --treat-as-map FIELD KEY` with an unhashable KEY
+#
+# Reproduced by the second 0.16.0 re-audit and pinned on 2026-10-17, owned by
+# U10 (0.17.0) beside U8-3, U8-4 and U8-5. ``_extract_keys`` checks that the
+# key field exists and is present, then uses the element's value of it as a
+# dict key. A message-typed key is a message and a repeated key is a
+# container, and neither is hashable, so ``compare()`` raises ``TypeError``,
+# which the diff CLI does not catch: a traceback and exit 1, on two identical
+# files. A key field that does not exist already gets a clean usage error
+# (exit 2, "key field 'nope' not found ..."); the pin asks the same of a key
+# field that cannot be a key. Supporting such keys instead would turn the pin
+# red too, as an assertion rather than as the expected ``TypeError``.
+# ---------------------------------------------------------------------------
+
+
+def _keyed_rows_file() -> descriptor_pb2.FileDescriptorProto:
+    """``test.M { repeated Row rows }`` with ``Row { string s; Inner k; repeated int32 r }``."""
+    file_proto = descriptor_pb2.FileDescriptorProto(
+        name="m.proto", package="test", syntax="proto3",
+    )
+    inner = file_proto.message_type.add(name="Inner")
+    inner.field.add(name="id", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    row = file_proto.message_type.add(name="Row")
+    row.field.add(name="s", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    row.field.add(
+        name="k", number=2, type=T.TYPE_MESSAGE, type_name=".test.Inner",
+        label=T.LABEL_OPTIONAL,
+    )
+    row.field.add(name="r", number=3, type=T.TYPE_INT32, label=T.LABEL_REPEATED)
+    file_proto.message_type.add(name="M").field.add(
+        name="rows", number=1, type=T.TYPE_MESSAGE, type_name=".test.Row",
+        label=T.LABEL_REPEATED,
+    )
+    return file_proto
+
+
+def _run_treat_as_map_cli(tmp_path: Path, key: str) -> tuple[int, str, str]:
+    """``protokit diff`` of a file against itself with ``--treat-as-map rows <key>``.
+
+    The one row sets every field, so the key is present whichever one is
+    named. Returns ``(exit code, stdout, stderr)``. ``catch_exceptions=False``
+    so a crash surfaces as itself instead of as Click's exit 1.
+    """
+    file_proto = _keyed_rows_file()
+    desc = tmp_path / "schema.desc"
+    desc.write_bytes(descriptor_pb2.FileDescriptorSet(file=[file_proto]).SerializeToString())
+    cls = _message_class(file_proto)
+    payload = cls()
+    row = payload.rows.add(s="x", r=[1])
+    row.k.id = "a"
+    data = tmp_path / "rows.bin"
+    data.write_bytes(payload.SerializeToString())
+
+    result = CliRunner().invoke(
+        diff_main,
+        [
+            str(data), str(data), "--desc", str(desc), "--message-type", "test.M",
+            "--treat-as-map", "rows", key,
+        ],
+        catch_exceptions=False,
+    )
+    return result.exit_code, result.stdout, result.stderr
+
+
+class TestC10C4TreatAsMapWithAnUnhashableKey:
+    """C10-C4: a message-typed or repeated ``--treat-as-map`` KEY escapes as a traceback."""
+
+    def test_scalar_key_compares_identical_files_equal_control(self, tmp_path: Path) -> None:
+        """Control: keyed on the string ``s``, the file equals itself and exits 0."""
+        assert _run_treat_as_map_cli(tmp_path, "s") == (0, "Messages are equal.\n", "")
+
+    def test_missing_key_field_is_a_usage_error_control(self, tmp_path: Path) -> None:
+        """Control: a key field the element does not have exits 2 and names it.
+
+        This is the outcome the pin asks for a key field that exists but
+        cannot be a key.
+        """
+        exit_code, _, stderr = _run_treat_as_map_cli(tmp_path, "nope")
+
+        assert exit_code == 2
+        assert "'nope'" in stderr
+
+    @pytest.mark.parametrize("key", ["k", "r"], ids=["message-typed-key", "repeated-key"])
+    @pytest.mark.xfail(
+        strict=True,
+        raises=TypeError,
+        reason="C10-C4: owned by U10 (0.17.0). _extract_keys checks only that the key "
+               "field exists and is present, then uses the element's value of it as a "
+               "dict key; a message-typed key is a message and a repeated key is a "
+               "container, neither is hashable, so compare() raises TypeError "
+               "('unhashable ...') and protokit diff --treat-as-map rows k (or r) ends "
+               "in a traceback with exit 1 on two identical files",
+    )
+    def test_unhashable_key_field_must_be_a_usage_error(
+        self, tmp_path: Path, key: str
+    ) -> None:
+        """A key field that cannot be a key must exit 2 with an error naming it.
+
+        User-visible consequence: ``protokit diff a.bin a.bin --treat-as-map
+        rows k`` prints a Python traceback and exits 1, the code this command
+        reserves for "messages differ", so a CI gate reads a configuration
+        mistake as a real difference between two identical files. ``--quiet``
+        does not help: the traceback comes from the comparison itself.
+        """
+        # Today: TypeError out of compare(), uncaught by the CLI.
+        exit_code, _, stderr = _run_treat_as_map_cli(tmp_path, key)
+
+        assert exit_code == 2
+        assert f"'{key}'" in stderr

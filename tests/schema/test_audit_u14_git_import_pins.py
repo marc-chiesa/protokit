@@ -31,16 +31,34 @@ V30, R20-C1, R20-C2 and R20-C4 -- four more ways ``compat history`` /
          spellings the import regex cannot see. All owned by the parent
          plan's U13 (0.18.0); the comment above their section at the end of
          this file has each mechanism.
+
+C11-C5 -- the U14-6 skip (git.py:810) with a ``google/protobuf/`` file the
+         repository owns and no compiler bundles. There is no bundled copy to
+         fall back on, so extraction fails: as a dependency the compile
+         cannot find the import (``SystemExit(2)``), as the root it is
+         reported "not found at ref" (``ProtoImportError``). Unlike U14-6, a
+         typed refusal is not a fix here. Owned by U13 (0.18.0).
+V39    -- (= C11-C1) ``_safe_dest_path`` returns a resolved path while
+         ``extract_pool_from_ref`` passes the unresolved temporary directory
+         as the include, so with the temp directory behind a symlink (macOS's
+         ``/var``) the compiler sees the root twice: a root with no directory
+         part exits 2 "shadowed by" itself, and a nested root is registered
+         under its basename. The pins build their own symlinked temp
+         directory, so they fail the same way on every platform. A
+         regression from #48 (0.15.0); owned by U13 (0.18.0).
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner, Result
 
+from protokit._cli_utils import compile_proto
 from protokit.schema.cli import main as compat_main
 from protokit.schema.compile import compile_protos_to_result
 from protokit.schema.git import (
@@ -886,3 +904,215 @@ def test_r20_c4_check_since_must_compile_a_schema_the_compiler_accepts(
         tmp_path, form, header=_ODD_IMPORT_HEADERS[form],
     )
     _assert_check_reports_the_break(_compat(monkeypatch, repo, _check_since_args(base_sha)))
+
+
+# ---------------------------------------------------------------------------
+# C11-C5 -- a repository-owned google/protobuf/ file that no compiler bundles
+# ---------------------------------------------------------------------------
+
+_OWNED_UNBUNDLED = "google/protobuf/my_ext.proto"
+
+
+@pytest.fixture
+def owned_unbundled_repo(tmp_path: Path) -> Path:
+    """A repo that owns ``google/protobuf/my_ext.proto``, which no compiler ships.
+
+    ``demo/e.proto`` imports it. The root is nested so that V39 (below)
+    cannot interfere where the temp directory sits behind a symlink.
+    """
+    repo = _init_repo(tmp_path / "owned_unbundled")
+    _write(
+        repo,
+        _OWNED_UNBUNDLED,
+        'syntax = "proto3";\n'
+        "package google.protobuf;\n"
+        "message MyExt { int32 a = 1; int32 b = 2; }\n",
+    )
+    _write(
+        repo,
+        "demo/e.proto",
+        'syntax = "proto3";\n'
+        "package demo;\n"
+        f'import "{_OWNED_UNBUNDLED}";\n'
+        "message E { google.protobuf.MyExt x = 1; }\n",
+    )
+    _commit_all(repo, "repo-owned google/protobuf/my_ext.proto + demo/e.proto")
+    return repo
+
+
+def _my_ext_fields(pool) -> list[str]:
+    return [f.name for f in pool.FindMessageTypeByName("google.protobuf.MyExt").fields]
+
+
+def test_c11_c5_guard_the_ref_owns_the_file_and_the_working_tree_compiles(
+    owned_unbundled_repo: Path,
+) -> None:
+    """Guard: the ref carries the file, the skip matches it on path alone, and
+    the same tree compiles from the working tree, where nothing is skipped.
+    """
+    blob = _git("show", f"HEAD:{_OWNED_UNBUNDLED}", cwd=owned_unbundled_repo)
+    assert "message MyExt" in blob
+    assert _is_well_known(_OWNED_UNBUNDLED) is True
+
+    pool = compile_proto(
+        owned_unbundled_repo / "demo/e.proto", (str(owned_unbundled_repo),),
+    )
+    x = pool.FindMessageTypeByName("demo.E").fields_by_name["x"]
+    assert x.message_type.full_name == "google.protobuf.MyExt"
+    assert _my_ext_fields(pool) == ["a", "b"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=SystemExit,
+    reason=(
+        "C11-C5: owned by U13 (0.18.0). git.py:810 skips every google/protobuf/ "
+        "import before asking git, on the assumption that the compiler bundles it. "
+        "my_ext.proto is the repository's own and no compiler ships it, so it is "
+        "never extracted and the compile exits 2 'import ... not found'. Unlike "
+        "U14-6 there is no bundled copy to fall back on: a typed refusal is not a "
+        "fix here, only a pool built from the ref is."
+    ),
+)
+def test_c11_c5_a_repo_owned_unbundled_dependency_must_be_extracted(
+    owned_unbundled_repo: Path,
+) -> None:
+    pool = extract_pool_from_ref("HEAD", "demo/e.proto", cwd=owned_unbundled_repo)
+    x = pool.FindMessageTypeByName("demo.E").fields_by_name["x"]
+    assert x.message_type.full_name == "google.protobuf.MyExt"
+    assert _my_ext_fields(pool) == ["a", "b"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=ProtoImportError,
+    reason=(
+        "C11-C5: owned by U13 (0.18.0). The same skip applied to the root itself: "
+        "google/protobuf/my_ext.proto is never asked of git, so extraction raises "
+        "ProtoImportError 'root .proto file(s) not found at ref', which is false: "
+        "git show prints the file at that ref."
+    ),
+)
+def test_c11_c5_a_repo_owned_unbundled_root_must_be_extracted(
+    owned_unbundled_repo: Path,
+) -> None:
+    pool = extract_pool_from_ref("HEAD", _OWNED_UNBUNDLED, cwd=owned_unbundled_repo)
+    assert _my_ext_fields(pool) == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# V39 (= C11-C1) -- a temp directory behind a symlink
+# ---------------------------------------------------------------------------
+
+#: ``(root, proto_roots, message)`` for each root a symlinked temp directory breaks.
+_ROOTS_A_SYMLINKED_TEMPDIR_REFUSES: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "flat-root": ("user.proto", (".",), "flat.User"),
+    "flat-under-a-proto-root": ("puser.proto", ("proto",), "flat.PUser"),
+    "nested-root-importing-a-flat-file": ("api/common.proto", (".",), "api.ApiCommon"),
+}
+_NESTED_ROOT = ("acme/user.proto", (".",), "acme.User")
+
+
+@pytest.fixture
+def tempdir_repo(tmp_path: Path) -> Path:
+    """Every root shape the V39 pins and their control extract."""
+    repo = _init_repo(tmp_path / "tempdir_repo")
+    _write(repo, "user.proto",
+           'syntax = "proto3";\npackage flat;\nmessage User { string name = 1; }\n')
+    _write(repo, "proto/puser.proto",
+           'syntax = "proto3";\npackage flat;\nmessage PUser { string name = 1; }\n')
+    _write(repo, "common.proto",
+           'syntax = "proto3";\npackage c;\nmessage Common { int32 a = 1; }\n')
+    _write(repo, "api/common.proto",
+           'syntax = "proto3";\npackage api;\nimport "common.proto";\n'
+           "message ApiCommon { c.Common c = 1; }\n")
+    _write(repo, "acme/user.proto",
+           'syntax = "proto3";\npackage acme;\nmessage User { string name = 1; }\n')
+    _commit_all(repo, "flat, proto-rooted and nested roots")
+    return repo
+
+
+def _use_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, via_symlink: bool) -> None:
+    """Point ``tempfile`` at a directory of the test's own, reached through a
+    symlink or not.
+
+    ``tmp_path`` is already resolved, so ``real`` has no symlink in it and
+    ``link`` has exactly one. Both exist in either case: only the spelling
+    ``extract_pool_from_ref``'s temporary directory is created under differs.
+    """
+    real = tmp_path / "tmp-real"
+    real.mkdir()
+    link = tmp_path / "tmp-link"
+    link.symlink_to(real, target_is_directory=True)
+    chosen = str(link if via_symlink else real)
+    monkeypatch.setattr(tempfile, "tempdir", chosen)
+    assert tempfile.gettempdir() == chosen
+    assert (os.path.realpath(chosen) != chosen) is via_symlink
+
+
+@pytest.mark.parametrize(
+    ("root", "proto_roots", "message"),
+    [*_ROOTS_A_SYMLINKED_TEMPDIR_REFUSES.values(), _NESTED_ROOT],
+    ids=[*_ROOTS_A_SYMLINKED_TEMPDIR_REFUSES, "nested-root"],
+)
+def test_v39_control_a_symlink_free_tempdir_extracts_every_root(
+    tempdir_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root: str,
+    proto_roots: tuple[str, ...],
+    message: str,
+) -> None:
+    """Control: the same repository and roots, temp directory without the symlink."""
+    _use_tempdir(tmp_path, monkeypatch, via_symlink=False)
+    pool = extract_pool_from_ref("HEAD", root, proto_roots=proto_roots, cwd=tempdir_repo)
+    assert pool.FindMessageTypeByName(message).file.name == root
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=SystemExit,
+    reason=(
+        "V39: owned by U13 (0.18.0). _safe_dest_path returns a resolved path, while "
+        "extract_pool_from_ref passes the unresolved temp directory to the compiler "
+        "as the include. Behind a symlink the compiler reaches the root, or a "
+        "same-named flat import, under both spellings and refuses with "
+        "SystemExit(2) 'is shadowed by'. compat check --since, history and bisect "
+        "exit 2 on such a root. A regression from #48 (0.15.0)."
+    ),
+)
+@pytest.mark.parametrize(
+    ("root", "proto_roots", "message"),
+    list(_ROOTS_A_SYMLINKED_TEMPDIR_REFUSES.values()),
+    ids=list(_ROOTS_A_SYMLINKED_TEMPDIR_REFUSES),
+)
+def test_v39_a_tempdir_behind_a_symlink_must_not_break_extraction(
+    tempdir_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root: str,
+    proto_roots: tuple[str, ...],
+    message: str,
+) -> None:
+    _use_tempdir(tmp_path, monkeypatch, via_symlink=True)
+    pool = extract_pool_from_ref("HEAD", root, proto_roots=proto_roots, cwd=tempdir_repo)
+    assert pool.FindMessageTypeByName(message).file.name == root
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "V39: owned by U13 (0.18.0). The same mismatch with a nested root compiles, "
+        "but the compiler names the file from the resolved parent directory, so "
+        "acme/user.proto is registered as user.proto and "
+        "pool.FindFileByName('acme/user.proto') raises KeyError."
+    ),
+)
+def test_v39_a_tempdir_behind_a_symlink_must_keep_the_import_relative_name(
+    tempdir_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, proto_roots, message = _NESTED_ROOT
+    _use_tempdir(tmp_path, monkeypatch, via_symlink=True)
+    pool = extract_pool_from_ref("HEAD", root, proto_roots=proto_roots, cwd=tempdir_repo)
+    assert pool.FindMessageTypeByName(message).file.name == root

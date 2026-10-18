@@ -16,13 +16,13 @@ for the defect. A passing control sits beside every pin and shares its
 construction: a red control says the harness broke, a red pin says the defect
 moved.
 
-Both findings are the class V33 belonged to before 0.15.1 closed it: a
+V35 and V36 are the class V33 belonged to before 0.15.1 closed it: a
 ``LintRuntimeWarning`` category that means *a selected rule did not run*, on a
 run that still exits by its findings alone. ``protokit lint`` exits 2 with
 ``error[lint-analysis-incomplete]:`` for the three such categories that
 ``protokit._trust.INCOMPLETE_ANALYSIS_CATEGORIES`` lists (``rule_exception``,
 ``unloaded_rule``, ``all_files_excluded``). Two more are left out of that set,
-and those two are the pins.
+and those two are the V35 and V36 pins.
 
 Pinned here:
 
@@ -49,6 +49,14 @@ Pinned here:
   ``test_parenthesized_option_currently_skips_the_rule_without_exit_2_v36`` in
   ``tests/schema/lint/cli/test_d6d_custom_annotation_example.py``, documents
   today's exit code and is the test the fix must update.
+* **C13-C2** — a presence-only custom annotation rule on a ``repeated``
+  option. ``HasExtension`` refuses a repeated extension, so every element is
+  a ``rule_exception`` and the run exits 2 without the finding the rule
+  exists to report. Owner U24 (0.17.0).
+* **Lint rule-pack load** (no finding ID; maintainer ruling of 2026-10-12) — a
+  ``--rule-pack`` whose ``RULES`` calls ``sys.exit(0)`` while it is read ends
+  the run with exit 0, on a schema with an error-level finding. Owner U24
+  (0.17.0).
 
 ``tests/meta/test_doc_claims.py`` measures the same two gaps from the other
 side, as a guard on what the README and CHANGELOG may say while they are open
@@ -56,7 +64,7 @@ side, as a guard on what the README and CHANGELOG may say while they are open
 when either category joins the gate; these pins are the half that names the
 finding that closed.
 
-The V36 runs pass ``--no-builtin-rules`` so the custom rule is the only rule
+The V36 and later runs pass ``--no-builtin-rules`` so the custom rule is the only rule
 selected and the exit code has one cause. Under ``recommended`` the import that
 supplies the option is itself reported by ``imports/unused`` (U20-2, pinned in
 ``test_audit_u20_buf_parity_pins.py``), which would turn every run here into an
@@ -66,7 +74,9 @@ exit 1 that says nothing about the custom rule.
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
+import types
 from pathlib import Path
 from typing import Any
 
@@ -345,3 +355,247 @@ def test_v36_unresolved_error_severity_custom_rule_exits_2(tmp_path: Path, optio
         f"custom rule with option {option!r} cannot have run, and the run did not exit 2: "
         f"{_outcome(result)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C13-C2 — a presence-only custom annotation rule on a ``repeated`` option
+#
+# Pinned 2026-10-17, owned by U24 (0.17.0). The synthetic rule's closure asks
+# ``parsed.HasExtension(ext_desc)``, which protobuf refuses for a repeated
+# extension (upb: "Field is repeated. A singular method is required.";
+# pure-Python: '"acme.v1.tags" is repeated.'). Every method is then a
+# ``rule_exception``, the rule reports nothing, and the run exits 2 with
+# ``error[lint-analysis-incomplete]`` on a schema whose ``Bare`` method plainly
+# lacks the option. How a repeated option should count as present is not
+# designed: the pin accepts the rule running (a non-empty option is present, so
+# ``Bare`` is reported) or the entry being refused at configuration time with
+# an error naming the option.
+# ---------------------------------------------------------------------------
+
+_TAGS_OPTION = "acme.v1.tags"
+_OWNER_OPTION = "acme.v1.owner"
+_TAGS_RULE = "custom/tags-required"
+
+#: A repeated and a singular method option, side by side.
+_TAGS = """\
+syntax = "proto3";
+
+package acme.v1;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MethodOptions {
+  repeated string tags = 50001;
+  string owner = 50002;
+}
+"""
+
+#: ``Annotated`` carries both options and ``Bare`` neither.
+_TAGGED_SERVICE = """\
+syntax = "proto3";
+
+package acme.v1;
+
+import "acme/v1/tags.proto";
+
+message Request {}
+
+service Service {
+  rpc Annotated(Request) returns (Request) {
+    option (acme.v1.tags) = "x";
+    option (acme.v1.owner) = "me";
+  }
+  rpc Bare(Request) returns (Request);
+}
+"""
+
+
+def _lint_tagged_service(root: Path, option: str, *extra: str) -> Result:
+    """Lint ``Service`` with one error-severity, presence-only custom rule on ``option``.
+
+    ``option`` is the only variable between the C13-C2 pin and its control.
+    ``extra`` is appended to the command line (the rule-pack pins below pass
+    ``--rule-pack``). ``--no-builtin-rules`` leaves the custom rule as the only
+    rule selected (see the module docstring).
+    """
+    proto_root = root / "proto"
+    _write_tree(
+        proto_root, {"acme/v1/tags.proto": _TAGS, "acme/v1/service.proto": _TAGGED_SERVICE}
+    )
+    config = root / "pyproject.toml"
+    config.write_text(
+        textwrap.dedent(
+            f"""\
+            [[tool.protokit.lint.custom_annotation_rules]]
+            rule_suffix   = "tags-required"
+            option        = "{option}"
+            element_kinds = ["method"]
+            severity      = "error"
+            """
+        ),
+        encoding="utf-8",
+    )
+    service = str(proto_root / "acme/v1/service.proto")
+    flags = ("--config", str(config), "--no-builtin-rules", *extra)
+    return _lint(*flags, "--proto", service, "-I", str(proto_root))
+
+
+def _reports_bare_and_exits_1(result: Result) -> bool:
+    """Whether the run is the custom rule's report on ``Bare`` and nothing else."""
+    payload = _payload(result)
+    findings = [
+        (f["rule_id"], f["severity"], f["violation_kind"], f["location"])
+        for f in payload["findings"]
+    ]
+    return (
+        result.exit_code == 1
+        and payload["runtime_warnings"] == []
+        and len(findings) == 1
+        and findings[0][:3] == (_TAGS_RULE, "error", "custom-annotation-absent")
+        and findings[0][3].endswith("Service/Bare")
+    )
+
+
+def test_c13_c2_singular_option_reports_the_bare_method_and_exits_1_control(
+    tmp_path: Path,
+) -> None:
+    """The same rule on the singular option runs: ``Bare`` is reported, exit 1."""
+    result = _lint_tagged_service(tmp_path, _OWNER_OPTION)
+
+    assert _reports_bare_and_exits_1(result), _outcome(result)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "C13-C2: owned by U24 (0.17.0). The presence-only custom annotation rule "
+        "calls HasExtension, which protobuf refuses for a repeated extension, so "
+        "every method is a rule_exception, no finding is reported and the run "
+        "exits 2 with error[lint-analysis-incomplete]"
+    ),
+)
+def test_c13_c2_presence_only_rule_on_a_repeated_option_runs_or_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A presence-only rule on a repeated option must run, or be refused up front.
+
+    Either outcome counts as fixed: the rule runs (``Bare`` reported, exit 1,
+    no runtime warning), or the configuration is refused before any report
+    (exit 2, stderr names the option, nothing on stdout). Today's run renders
+    a report holding two ``rule_exception`` warnings and no finding.
+    """
+    result = _lint_tagged_service(tmp_path, _TAGS_OPTION)
+
+    if not result.stdout.strip():
+        # No report: only a refusal that names the option is a fix. Any other
+        # exit without a report (a compile that failed) is not this finding.
+        if result.exit_code == 2 and _TAGS_OPTION in result.stderr:
+            return
+        pytest.fail(f"no report, and not a refusal naming the option: {_outcome(result)}")
+    rule_exceptions = _skips(result, "rule_exception")
+    assert not rule_exceptions and _reports_bare_and_exits_1(result), (
+        f"the presence-only rule on {_TAGS_OPTION} did not run "
+        f"({[w['message'] for w in rule_exceptions]}): {_outcome(result)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lint's ``--rule-pack`` loader — a pack that calls ``sys.exit(0)`` while its
+# ``RULES`` are read
+#
+# Pinned 2026-10-17 by maintainer ruling (2026-10-12), owned by U24 (0.17.0).
+# No finding ID. ``_load_user_rule_pack`` guards the import of the pack for
+# ``SystemExit``, but around ``engine.load_rule_pack(module)``, which iterates
+# ``RULES``, it catches only ``DuplicateRuleError``, ``AttributeError`` and
+# ``TypeError``. A ``RULES`` whose iteration calls ``sys.exit(0)`` therefore
+# becomes the process exit code: the run exits 0 with nothing on stdout, here
+# on a schema with an error-level finding (exit 1 without the pack). The
+# correct outcome is the one the import arm already gives: exit 2 with an
+# ``error[lint-rule-pack-load]`` line naming the pack.
+# ---------------------------------------------------------------------------
+
+_EXITING_PACK = "c_lint_pack_exiting_while_rules_are_read"
+
+
+class _RulesExitingWhenRead:
+    """A ``RULES`` value whose iteration calls ``sys.exit(0)``."""
+
+    def __iter__(self) -> Any:
+        sys.exit(0)
+
+
+class _RulesRaisingTypeErrorWhenRead:
+    """A ``RULES`` value whose iteration raises ``TypeError``."""
+
+    def __iter__(self) -> Any:
+        raise TypeError("RULES could not be built")
+
+
+def _lint_with_pack(root: Path, monkeypatch: pytest.MonkeyPatch, rules: object) -> Result:
+    """Lint the tagged service (one error finding) with a pack whose ``RULES`` is ``rules``.
+
+    ``rules`` is the only variable between the pin and its controls. The pack
+    module is registered in ``sys.modules`` for this test only, so
+    ``--rule-pack``'s import finds it.
+    """
+    module = types.ModuleType(_EXITING_PACK)
+    module.RULES = rules  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, _EXITING_PACK, module)
+    return _lint_tagged_service(root, _OWNER_OPTION, "--rule-pack", _EXITING_PACK)
+
+
+def _names_the_pack_in_an_error_line(result: Result) -> bool:
+    """Whether stderr has an ``error[...]`` line naming the pack.
+
+    The load banner names the pack on every run, so the pack's name alone on
+    stderr says nothing.
+    """
+    return any(
+        line.startswith("error[") and _EXITING_PACK in line
+        for line in result.stderr.splitlines()
+    )
+
+
+def test_rule_pack_with_empty_rules_leaves_the_error_finding_and_exit_1_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pack that loads and adds no rule: the schema's error finding exits 1."""
+    result = _lint_with_pack(tmp_path, monkeypatch, ())
+
+    assert _reports_bare_and_exits_1(result), _outcome(result)
+
+
+def test_rule_pack_raising_while_rules_are_read_exits_2_naming_the_pack_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``RULES`` that raises ``TypeError`` when read: exit 2, the pack named."""
+    result = _lint_with_pack(tmp_path, monkeypatch, _RulesRaisingTypeErrorWhenRead())
+
+    assert result.exit_code == 2, _outcome(result)
+    assert "error[lint-rule-pack-load]" in result.stderr, _outcome(result)
+    assert _names_the_pack_in_an_error_line(result), _outcome(result)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "Lint rule-pack load (ruling 2026-10-12, no finding ID): owned by U24 "
+        "(0.17.0). _load_user_rule_pack guards the pack's import for SystemExit "
+        "but not engine.load_rule_pack, which iterates RULES, so a RULES whose "
+        "iteration calls sys.exit(0) ends the run with exit 0 and no output on a "
+        "schema with an error-level finding"
+    ),
+)
+def test_rule_pack_exiting_while_rules_are_read_exits_2_naming_the_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pack that ends the run while its rules are read is a load error, not a verdict."""
+    result = _lint_with_pack(tmp_path, monkeypatch, _RulesExitingWhenRead())
+
+    assert result.exit_code == 2, (
+        f"a pack calling sys.exit(0) while RULES are read decided the exit code: "
+        f"{_outcome(result)}"
+    )
+    assert _names_the_pack_in_an_error_line(result), _outcome(result)

@@ -46,16 +46,29 @@ Pinned here:
   ``test_field_selector.py`` documents the acceptance as current behaviour
   (``test_bracketed_selector_is_accepted_and_bracket_blind_current_behaviour``);
   that test goes red with these pins' fix and is deleted in the same change.
+* **C19-C1** (cycle-1 row R12-C1), with **C19-C1b**'s reach — ``format_key``
+  escapes only ``\\`` and ``"`` when it writes a string map key into a path
+  bracket, so a newline, a carriage return or an ESC in the key reaches the
+  rendered path raw: one difference prints as several lines in the human
+  report and in the JUnit failure body, and ESC reaches a terminal. C19-C1b
+  is the same key under a message extension and under a proto2 group, which
+  0.16.0 began to walk. Found by the second 0.16.0 re-audit and owned by U9
+  (0.17.0), because how a key is spelled in a path is the path grammar V8 is
+  about.
 """
 
 from __future__ import annotations
 
+import json
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 
+import click
 import pytest
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory, text_format
 from google.protobuf.message import Message
 
+from protokit.formatters import FormatterContext, FormatterKind, get_formatter
 from protokit.message import DiffResult, FloatComparison, MessageDifferencer
 from protokit.message._selector import FieldSelector
 from protokit.message.model import FieldPath
@@ -738,3 +751,222 @@ class TestV13TreatAsMapAcceptsABracketSelector:
 
         # Today: the four positional MODIFIED leaves of the control above.
         assert _observed(d.compare(left, right)) == []
+
+
+# ---------------------------------------------------------------------------
+# C19-C1 (= R12-C1), with C19-C1b — a map key lands raw in the diff path
+#
+# Reproduced again by the second 0.16.0 re-audit and pinned on 2026-10-17,
+# owned by U9 (0.17.0). ``format_key`` puts a string key in the path bracket
+# with only ``\`` and ``"`` escaped. A newline, a carriage return or an ESC in
+# the key therefore reaches the rendered path unchanged, and the human and
+# JUnit reports, which print one line per difference, print this one over
+# several. The JSON report is unaffected (its encoder escapes the string), and
+# the same text as a string VALUE is escaped by ``repr``. C19-C1b is the same
+# key under a message extension and under a proto2 group, which 0.16.0 began
+# to walk. How the key should be escaped is not settled, so the pins assert
+# only what any escape gives: the difference renders with as many lines, and
+# as many ESC bytes, as the same difference under a plain key.
+# ---------------------------------------------------------------------------
+
+_MAP_ENTRY = """nested_type { name: "LabelsEntry"
+    field { name: "key" number: 1 type: TYPE_STRING label: LABEL_OPTIONAL }
+    field { name: "value" number: 2 type: TYPE_STRING label: LABEL_OPTIONAL }
+    options { map_entry: true } }"""
+
+#: ``M`` has a ``map<string, string> labels``, a group ``grp`` holding its own
+#: ``labels`` map, and a message extension ``(test.ext)`` whose ``Ext`` has one.
+_KEY_CARRIERS_FILE = f"""
+name: "c19.proto" package: "test" syntax: "proto2"
+message_type {{ name: "Ext"
+  field {{ name: "labels" number: 1 type: TYPE_MESSAGE
+          type_name: ".test.Ext.LabelsEntry" label: LABEL_REPEATED }}
+  field {{ name: "x" number: 2 type: TYPE_INT32 label: LABEL_OPTIONAL }}
+  {_MAP_ENTRY} }}
+message_type {{ name: "M"
+  field {{ name: "labels" number: 1 type: TYPE_MESSAGE
+          type_name: ".test.M.LabelsEntry" label: LABEL_REPEATED }}
+  field {{ name: "grp" number: 2 type: TYPE_GROUP type_name: ".test.M.Grp"
+          label: LABEL_OPTIONAL }}
+  nested_type {{ name: "Grp"
+    field {{ name: "labels" number: 1 type: TYPE_MESSAGE
+            type_name: ".test.M.Grp.LabelsEntry" label: LABEL_REPEATED }}
+    field {{ name: "a" number: 2 type: TYPE_INT32 label: LABEL_OPTIONAL }}
+    {_MAP_ENTRY} }}
+  {_MAP_ENTRY}
+  extension_range {{ start: 100 end: 200 }} }}
+extension {{ name: "ext" extendee: ".test.M" number: 100 type: TYPE_MESSAGE
+             type_name: ".test.Ext" label: LABEL_OPTIONAL }}
+"""
+
+#: A key holding a newline, a carriage return and an ESC sequence (erase line).
+_CONTROL_CHAR_KEY = "x\nMessages are equal.\ry\x1b[2K"
+
+_LOCATIONS = ["declared-map", "message-extension", "group"]
+
+#: The path of a difference at each location, for the plain key ``k``.
+_PLAIN_KEY_PATHS = {
+    "declared-map": 'labels["k"]',
+    "message-extension": '(test.ext).labels["k"]',
+    "group": 'grp.labels["k"]',
+}
+
+
+def _key_carrier_pair(
+    location: str, *, key: str, left_value: str | None, right_value: str
+) -> tuple[Message, Message]:
+    """Two ``M`` messages whose map at ``location`` differs in the entry ``key``.
+
+    ``left_value=None`` leaves the entry out on the left, so the difference is
+    an added key; a string makes it a changed value. Both sides set the
+    carrier's other field (``(test.ext).x``, ``grp.a``), so the carrier itself
+    is present on both and the map entry is the only difference.
+    """
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(text_format.Parse(_KEY_CARRIERS_FILE, descriptor_pb2.FileDescriptorProto()))
+    cls = message_factory.GetMessageClassesForFiles(["c19.proto"], pool)["test.M"]
+    extension = pool.FindExtensionByName("test.ext")
+
+    left, right = cls(), cls()
+    for message, value in ((left, left_value), (right, right_value)):
+        if location == "declared-map":
+            labels = message.labels
+        elif location == "message-extension":
+            message.Extensions[extension].x = 1
+            labels = message.Extensions[extension].labels
+        else:
+            message.grp.a = 1
+            labels = message.grp.labels
+        if value is not None:
+            labels[key] = value
+    return left, right
+
+
+def _added_key(location: str, key: str) -> DiffResult:
+    """The comparison of an empty map against one holding ``{key: "v"}`` at ``location``."""
+    left, right = _key_carrier_pair(location, key=key, left_value=None, right_value="v")
+    return MessageDifferencer().compare(left, right)
+
+
+def _render(output_format: str, result: DiffResult) -> str:
+    """``result`` rendered by the built-in diff formatter ``output_format``."""
+    formatter = get_formatter(output_format, FormatterKind.DIFF)
+    return formatter(result, FormatterContext(subcommand="diff"))
+
+
+def _rendered_shape(output_format: str, result: DiffResult) -> tuple[int, int]:
+    """``(line count, ESC count)`` of the text that carries the differences.
+
+    Human: the whole report, lines counted with styling removed and ESC
+    counted with it kept, so the report's own styling is the same on both
+    sides of a comparison and only the key's ESC adds to the count. JUnit:
+    the failure body as an XML parser hands it back. JSON: the document.
+    ``splitlines`` counts a carriage return as a line break, as a terminal and
+    an XML parser both treat it.
+    """
+    rendered = _render(output_format, result)
+    if output_format == "human":
+        return len(click.unstyle(rendered).splitlines()), rendered.count("\x1b")
+    if output_format == "junit":
+        failure = ET.fromstring(rendered).find("./testcase/failure")
+        assert failure is not None, rendered
+        body = failure.text or ""
+        return len(body.splitlines()), body.count("\x1b")
+    return len(rendered.splitlines()), rendered.count("\x1b")
+
+
+class TestC19C1MapKeyLandsRawInTheDiffPath:
+    """C19-C1: a string map key's control characters reach the rendered path."""
+
+    @pytest.mark.parametrize("location", _LOCATIONS)
+    def test_a_plain_key_is_one_difference_at_every_location_control(
+        self, location: str
+    ) -> None:
+        """Control: each location carries the key into the diff path.
+
+        Without this, the extension and group cases could pass the pin by
+        never reaching the key (0.15.1 compared neither carrier this way).
+        The same construction with the control-character key is also one
+        difference, so the pin below compares like with like.
+        """
+        result = _added_key(location, "k")
+
+        assert _observed(result) == [(_PLAIN_KEY_PATHS[location], "ADDED")]
+        assert len(_added_key(location, _CONTROL_CHAR_KEY)) == 1
+
+    @pytest.mark.parametrize("location", _LOCATIONS)
+    def test_json_report_keeps_the_difference_on_one_line_control(self, location: str) -> None:
+        """Control: the JSON report already escapes the key.
+
+        The document parses, reports the one difference, and has exactly as
+        many lines and ESC bytes as the same report for the plain key. This
+        stays true whatever escape the fix picks for the path text.
+        """
+        result = _added_key(location, _CONTROL_CHAR_KEY)
+        document = json.loads(_render("json", result))
+
+        assert (document["equal"], len(document["differences"])) == (False, 1)
+        assert _rendered_shape("json", result) == _rendered_shape(
+            "json", _added_key(location, "k")
+        )
+
+    @pytest.mark.parametrize("output_format", ["human", "junit"])
+    @pytest.mark.parametrize("location", _LOCATIONS)
+    def test_the_same_text_as_a_value_is_escaped_control(
+        self, location: str, output_format: str
+    ) -> None:
+        """Control: the same characters in a map VALUE stay on one line.
+
+        ``labels["k"]`` changes from ``"a"`` to the control-character text and
+        renders exactly like a change to ``"b"``: the value is escaped. Only
+        the key is not.
+        """
+        noisy = _key_carrier_pair(
+            location, key="k", left_value="a", right_value=_CONTROL_CHAR_KEY
+        )
+        plain = _key_carrier_pair(location, key="k", left_value="a", right_value="b")
+
+        noisy_result = MessageDifferencer().compare(*noisy)
+        plain_result = MessageDifferencer().compare(*plain)
+
+        assert _observed(noisy_result) == [(_PLAIN_KEY_PATHS[location], "MODIFIED")]
+        assert _rendered_shape(output_format, noisy_result) == _rendered_shape(
+            output_format, plain_result
+        )
+
+    @pytest.mark.parametrize("output_format", ["human", "junit"])
+    @pytest.mark.parametrize("location", _LOCATIONS)
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="C19-C1 (= R12-C1), with C19-C1b: owned by U9 (0.17.0). format_key "
+               "escapes only backslash and double quote when it writes a string map key "
+               "into the path bracket, so a newline, a carriage return or an ESC in the "
+               "key reaches the rendered path raw, in a declared map, under a message "
+               "extension and under a group alike: one difference prints over three lines "
+               "in the human report and the JUnit failure body, and the human report "
+               "carries the key's ESC sequence to the terminal",
+    )
+    def test_a_control_character_key_must_render_as_one_difference_on_one_line(
+        self, location: str, output_format: str
+    ) -> None:
+        """A key's control characters must not change how the report is laid out.
+
+        User-visible consequence: one added key prints as three lines, the
+        middle one starting at column 0 with whatever text the key carries, so
+        data can write ``Messages are equal.`` as a line of its own into a
+        report that found a difference; in the human report an ESC sequence
+        in the key reaches the terminal and can rewrite what is already on it.
+        A CI log or a JUnit viewer shows lines no difference produced.
+
+        The escape form is not settled, so the pin compares against the same
+        difference under the plain key ``k``: equal line counts and equal ESC
+        counts hold for any escape the fix picks.
+        """
+        result = _added_key(location, _CONTROL_CHAR_KEY)
+
+        # Today: two more lines than the plain key (the newline and the
+        # carriage return), and in the human report one more ESC.
+        assert _rendered_shape(output_format, result) == _rendered_shape(
+            output_format, _added_key(location, "k")
+        )

@@ -77,18 +77,33 @@ bypassed by calling ``_compile_with_protoxy`` directly):
   ``root_names=('v1/common.proto', 'v2/common.proto')`` with packages
   ``v1`` and ``v2``.
 
-``TestPreFlightBoundariesThatMustSurvive`` at the bottom is NOT a pin: it
-is a live guard rail for whoever fixes these, locking the cases where each
-refusal is correct so the fix relaxes the guards without deleting them.
+``TestPreFlightBoundariesThatMustSurvive`` is NOT a pin: it is a live guard
+rail for whoever fixes these, locking the cases where each refusal is correct
+so the fix relaxes the guards without deleting them.
+
+**C06-X1** (``_cli_utils._resolve_expected_name``, owned by U13, 0.18.0).
+The same logical-name prediction, after the pre-flight: it matches paths
+with ``Path.relative_to``, and POSIX ``pathlib`` keeps exactly two leading
+slashes as a root of their own. So ``//R/proto/a/good.proto`` with
+``-I R/proto`` (or ``R/proto/a/good.proto`` with ``-I //R/proto``) is
+predicted as ``good.proto``, while both compilers collapse the slashes and
+emit ``a/good.proto``. Alone, the file is refused loudly (exit 2, "not
+linted"). Beside another input that imports a different ``good.proto``,
+``lint`` takes that import for the root and exits 0 having linted the wrong
+file. The pin is at the end of the file; it runs through whichever compiler
+is installed and skips where there is none.
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner, Result
 
 from protokit import _cli_utils
+from protokit.cli import main
 from protokit.schema.compile import (
     _detect_root_transitive_shadow,
     compile_protos_to_result,
@@ -447,3 +462,143 @@ class TestPreFlightBoundariesThatMustSurvive:
         assert findings is not None
         reported = {c for _root, candidates in findings for c in candidates}
         assert dir_b / "shared.proto" in reported
+
+
+# ---------------------------------------------------------------------------
+# C06-X1 — a ``//`` spelling the root-name prediction misses
+# ---------------------------------------------------------------------------
+
+#: ``a.good_msg`` breaks two naming rules, so linting this file exits 1.
+_GOOD_WITH_FINDINGS = (
+    'syntax = "proto3";\npackage a;\nmessage good_msg { string BadName = 1; }\n'
+)
+#: A clean file with the same basename, reachable as ``good.proto``.
+_SAME_NAMED_CLEAN = (
+    'syntax = "proto3";\npackage z;\nmessage Clean { string name = 1; }\n'
+)
+#: A clean input that imports the clean ``good.proto`` from its own directory.
+_IMPORTS_THE_CLEAN_ONE = (
+    'syntax = "proto3";\npackage z;\nimport "good.proto";\n'
+    "message B { z.Clean c = 1; }\n"
+)
+
+
+@pytest.fixture
+def compile_backend() -> None:
+    """Skip where neither compiler is installed: ``lint --proto`` cannot run there."""
+    if not _cli_utils._has_protoxy() and shutil.which("protoc") is None:
+        pytest.skip("needs protoxy or protoc to compile --proto inputs")
+
+
+def _wrong_file_layout(root: Path) -> tuple[Path, Path, Path]:
+    """Write the two-input tree; return ``(proto_dir, linted, importer)``.
+
+    ``proto_dir/a/good.proto`` is the file the user asks to lint, under
+    ``-I proto_dir``. ``z/b.proto`` is a second input whose import
+    ``"good.proto"`` resolves to ``z/good.proto`` through its own directory,
+    so the compile emits a file named ``good.proto`` that is not the root.
+    """
+    proto_dir = root / "proto"
+    (proto_dir / "a").mkdir(parents=True)
+    (root / "z").mkdir()
+    linted = proto_dir / "a" / "good.proto"
+    linted.write_text(_GOOD_WITH_FINDINGS)
+    (root / "z" / "good.proto").write_text(_SAME_NAMED_CLEAN)
+    importer = root / "z" / "b.proto"
+    importer.write_text(_IMPORTS_THE_CLEAN_ONE)
+    return proto_dir, linted, importer
+
+
+def _double_slash(path: Path) -> str:
+    """``path`` (absolute) spelled with exactly two leading slashes."""
+    return "/" + str(path)
+
+
+def _lint(inputs: list[str], include: str) -> Result:
+    argv = ["lint", "--no-config", "--proto", *inputs, "-I", include]
+    return CliRunner().invoke(main, argv, catch_exceptions=False)
+
+
+@pytest.mark.usefixtures("compile_backend")
+def test_c06_x1_single_slashes_lint_the_named_file_control(tmp_path: Path) -> None:
+    """Control: the pin's two inputs and ``-I``, spelled with one leading slash.
+
+    The named file is linted (exit 1, findings under ``a/good.proto``); the
+    importer and its clean ``good.proto`` are not the reason for the exit.
+    """
+    proto_dir, linted, importer = _wrong_file_layout(tmp_path)
+
+    result = _lint([str(importer), str(linted)], str(proto_dir))
+
+    assert result.exit_code == 1, (result.stdout, result.stderr)
+    assert "a/good.proto:a.good_msg" in result.stdout
+
+
+@pytest.mark.usefixtures("compile_backend")
+def test_c06_x1_double_slash_file_alone_is_not_passed_control(tmp_path: Path) -> None:
+    """Control: the pin's ``//`` input without the importer is never a clean exit.
+
+    Today it exits 2 ("not linted" naming it): nothing else in the compile is
+    named ``good.proto``, so the root count sees the miss. After a fix it may
+    exit 1 with the file's findings. Either way the second input is what
+    turns the pin's run into exit 0.
+    """
+    proto_dir, linted, _importer = _wrong_file_layout(tmp_path)
+    spelled = _double_slash(linted)
+
+    result = _lint([spelled], str(proto_dir))
+
+    refused = (
+        result.exit_code == 2 and "not linted" in result.stderr and spelled in result.stderr
+    )
+    linted_it = result.exit_code == 1 and "a/good.proto:a.good_msg" in result.stdout
+    assert refused or linted_it, (result.exit_code, result.stdout, result.stderr)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "C06-X1: owned by U13 (0.18.0). _resolve_expected_name matches with "
+        "Path.relative_to, and POSIX pathlib keeps two leading slashes as a root "
+        "of their own, so with '//' on the input or on the -I the file is predicted "
+        "as good.proto while both compilers emit a/good.proto. The other input's "
+        "import 'good.proto' is emitted under that name and counted as the root, so "
+        "lint exits 0 having linted the wrong file. Either outcome counts as fixed: "
+        "the named file is linted (exit 1), or the run refuses it (exit 2, 'not "
+        "linted' naming it)."
+    ),
+)
+@pytest.mark.usefixtures("compile_backend")
+@pytest.mark.parametrize("where", ["on-the-file", "on-the-include"])
+def test_c06_x1_double_slash_must_not_lint_a_different_file(
+    tmp_path: Path, where: str,
+) -> None:
+    """``lint`` must lint the file it was given, or refuse it; never pass on another.
+
+    User-visible consequence: a ``//`` in a generated path or a build
+    variable turns a file with errors into a clean exit 0, with
+    ``--max-warnings 0`` and ``--format json`` agreeing.
+    """
+    proto_dir, linted, importer = _wrong_file_layout(tmp_path)
+    if where == "on-the-file":
+        spelled, include = _double_slash(linted), str(proto_dir)
+    else:
+        spelled, include = str(linted), _double_slash(proto_dir)
+
+    result = _lint([str(importer), spelled], include)
+
+    # Today: exit 0, and the only file walked under the predicted name is
+    # z/good.proto, which is clean.
+    assert result.exit_code != 0, (
+        f"exit 0 with nothing reported for {spelled!r}; the files walked: "
+        f"{result.stderr.strip().splitlines()[1:]!r}"
+    )
+    if result.exit_code == 1 and "a/good.proto:a.good_msg" in result.stdout:
+        return
+    if result.exit_code == 2 and "not linted" in result.stderr and spelled in result.stderr:
+        return
+    pytest.fail(
+        f"neither fixed outcome (exit {result.exit_code}): "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )

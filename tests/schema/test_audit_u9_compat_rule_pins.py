@@ -27,7 +27,8 @@ because the audit filed it in the same family; see its own pin.
 
 The 0.16.0 re-audit sections at the end of the file pin six more rule gaps
 the same way (V21, V22 and its two extension analogues, R14-C2b, and the R16-C1
-rename facet). Each section's comment block gives the mechanism.
+rename facet), and the last section pins V20 (a map key type change, with
+V27). Each section's comment block gives the mechanism.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from protokit.message.model import FieldPath
 from protokit.schema import CompatibilityLevel, check_compatibility
 from protokit.schema.rules import options_changed
 from tests._editions import requires_editions
+from tests.proto_builder import ProtoBuilder
 from tests.schema.helpers import T, build_message
 
 ROOT = FieldPath(segments=())
@@ -964,4 +966,76 @@ def test_number_moved_across_kinds_is_reported_at_wire_and_producer_safe(
     assert _silent_levels(by_level, "WIRE", "PRODUCER_SAFE") == [], (
         f"number moved {old_kind} -> {new_kind} ({label}) passed with zero findings "
         f"-> {by_level}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# V20 (with V27) — a map key type change passes at every level
+#
+# Pinned 2026-10-17, owned by U4 (0.18.0). ``SchemaChecker._compare_map_value``
+# dispatches the field rules on the synthetic entry's ``value`` field only, so
+# ``key`` is never compared: ``map<int32, string>`` -> ``map<string, string>``
+# reports no finding at any level. Its docstring states the gap, and
+# ``TestMapKeyDocstring::test_key_type_change_currently_passes_at_every_level_v20``
+# in ``tests/meta/test_doc_claims.py`` asserts it as today's behaviour; that
+# test goes red with this pin's XPASS and the fix must update both.
+# ---------------------------------------------------------------------------
+
+
+def _map_pool(key_type: int, value_type: int = T.TYPE_STRING) -> descriptor_pool.DescriptorPool:
+    """Build proto3 ``t.M { map<key_type, value_type> items = 1; }``."""
+    builder = ProtoBuilder()
+    builder.map_message("t.M", {}, {"items": (key_type, value_type, 1)})
+    return builder.pool
+
+
+def test_old_map_entries_are_not_found_under_their_key_after_a_key_type_change() -> None:
+    """The V20 hazard: an old ``items[7] = "seven"`` is not ``items["7"]`` in the new schema.
+
+    The key's number and wire type change together, so the backends lose the
+    entry differently: upb drops it, pure-Python keeps the value under the
+    empty-string key. Neither reader finds anything under the old key.
+    """
+    old_msg = _message_class(_map_pool(T.TYPE_INT32))()
+    old_msg.items[7] = "seven"
+
+    new_msg = _message_class(_map_pool(T.TYPE_STRING)).FromString(old_msg.SerializeToString())
+
+    assert "7" not in new_msg.items
+    assert dict(new_msg.items) in ({}, {"": "seven"})
+
+
+def test_map_value_type_change_is_reported_at_every_level_control() -> None:
+    """Control for V20: the same map with its value type changed is WIRE everywhere."""
+    by_level = _rule_ids_by_level(
+        _map_pool(T.TYPE_INT32, T.TYPE_STRING), _map_pool(T.TYPE_INT32, T.TYPE_INT32)
+    )
+
+    assert by_level == {
+        level.name: ("field_type_wire_incompatible",) for level in CompatibilityLevel
+    }
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "V20: owned by U4 (0.18.0). map<int32, string> -> map<string, string> reports "
+        "COMPATIBLE with zero findings at every level, WIRE included; "
+        "SchemaChecker._compare_map_value dispatches the field rules on the map "
+        "entry's value field only, so the key is never compared"
+    ),
+)
+def test_v20_map_key_type_change_is_reported_at_wire() -> None:
+    """A map key type change is INCOMPATIBLE at WIRE (U4's scenario line).
+
+    Data hazard: a map entry is a message whose key is field 1, and int32 and
+    string have different wire types. Old bytes lose every entry's key under
+    the new schema (see the hazard test above). A CI gate on ``--level wire``
+    passes the change with exit 0.
+    """
+    by_level = _rule_ids_by_level(_map_pool(T.TYPE_INT32), _map_pool(T.TYPE_STRING))
+
+    assert by_level["WIRE"] != (), (
+        f"a map key type change int32 -> string passed the WIRE profile -> {by_level}"
     )

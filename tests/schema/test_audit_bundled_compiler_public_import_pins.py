@@ -24,10 +24,21 @@ on the command:
   compiler is absent. Installing ``protoc`` does not help.
 
 The first pin takes ``protoc`` out of reach and asserts the tree compiles, so
-only the bundled compiler can satisfy it. The pin at the end of the file runs
+only the bundled compiler can satisfy it. The last two-hop pin runs
 ``compat check`` and ``diff`` with ``protoc`` on ``PATH`` and asserts they
 accept the schema, so it flips whether the bundled compiler learns the second
 hop or ``compile_proto`` learns to fall back.
+
+**C06-C2: the same missing fallback, triggered by editions.** If the bundled
+compiler learns the second hop, the two-hop pin flips while ``compile_proto``
+still never tries ``protoc``. The pin at the end of the file holds that
+mechanism with a second trigger: an ``edition = "2023"`` file, which the
+bundled compiler cannot parse. No CI cell has a ``protoc`` new enough to
+compile editions, so the pin puts the stand-in ``protoc`` the U14-3 pins use
+(``tests/schema/test_audit_u14_git_ref_pins.py``) first on ``PATH``; it
+answers with the descriptor set a real ``protoc`` 27 or later emits. It
+needs a runtime that implements editions (protobuf 5.26 and later). Owned by
+U13 (0.18.0).
 
 **The parser's own message is lost.** When the bundled compiler rejects a
 schema and there is no ``protoc`` to fall back to, ``compile_protos_to_result``
@@ -59,6 +70,7 @@ import protokit._cli_utils as cli_utils
 import protokit.schema.compile as compile_module
 from protokit.cli import main
 from tests.schema.lint.rules.conftest import _compile
+from tests.schema.test_audit_u14_git_ref_pins import _EDITIONS_PROTO, _install_fake_protoc
 
 protoxy = pytest.importorskip("protoxy")
 
@@ -415,4 +427,98 @@ def test_two_hop_schema_is_accepted_when_protoc_is_installed(
     result = _run_on_consumer(command, _write_tree(tmp_path, _TWO_HOPS))
 
     # Today: exit 2, "Error: protoxy compile failed: name 'acme.d.D' is not defined".
+    assert result.exit_code == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# C06-C2 -- the editions trigger: compat and diff never try protoc
+# ---------------------------------------------------------------------------
+
+
+def _run_on_editions_file(command: str, root: Path) -> Result:
+    """``compat check`` of ``demo/ed.proto`` against itself, or ``diff`` of two empty payloads.
+
+    As with ``_run_on_consumer``, the right answer is exit 0 and only the
+    compile of ``demo/ed.proto`` stands in the way.
+    """
+    source = str(root / "demo/ed.proto")
+    if command == "compat-check":
+        argv = ["compat", "check", "--proto", source, source, "-I", str(root),
+                "--type", "probe.M"]
+    else:
+        empty = root / "empty.bin"
+        empty.write_bytes(b"")
+        argv = ["diff", str(empty), str(empty), "--proto", source,
+                "--proto-path", str(root), "--message-type", "probe.M"]
+    return CliRunner().invoke(main, argv, catch_exceptions=False)
+
+
+@pytest.fixture
+def editions_tree_with_protoc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """An editions schema, and a stand-in ``protoc`` first on ``PATH`` that compiles it.
+
+    Returns ``(root, marker)``; ``marker`` exists once the stand-in has run.
+    Skips on a runtime that does not implement editions.
+    """
+    root = _write_tree(tmp_path, {"demo/ed.proto": _EDITIONS_PROTO})
+    marker = _install_fake_protoc(tmp_path, monkeypatch, succeeds=True)
+    return root, marker
+
+
+@_COMMANDS_WITHOUT_A_FALLBACK
+def test_editions_schema_is_accepted_through_protoc_control(
+    editions_tree_with_protoc: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """Control: the same command and ``PATH``, with the bundled compiler out of the way.
+
+    Forces the ``protoc`` arm. The stand-in runs and the command accepts the
+    schema, so the bundled compiler is the only variable between this and the
+    pin below.
+    """
+    root, marker = editions_tree_with_protoc
+    monkeypatch.setattr(cli_utils, "_has_protoxy", lambda: False)
+    monkeypatch.setattr(compile_module, "_has_protoxy", lambda: False)
+
+    result = _run_on_editions_file(command, root)
+
+    assert result.exit_code == 0, result.stderr
+    assert marker.exists()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "C06-C2: owned by U13 (0.18.0). compile_proto picks protoxy whenever it is "
+        "importable and has no fallback to protoc, so compat check --proto and diff "
+        "--proto exit 2 'protoxy compile failed: ... found 'edition'' on an editions "
+        "schema that the protoc on PATH compiles. lint, through "
+        "compile_protos_to_result, falls back and compiles it. Both backends."
+    ),
+)
+@_COMMANDS_WITHOUT_A_FALLBACK
+def test_editions_schema_is_accepted_when_protoc_can_compile_it(
+    editions_tree_with_protoc: tuple[Path, Path], command: str,
+) -> None:
+    """A schema ``protoc`` compiles must not be refused because ``protoxy`` is installed.
+
+    User-visible consequence: with ``protokit[compiler]`` installed,
+    ``compat check --proto`` and ``diff --proto`` refuse every editions
+    schema, whatever ``protoc`` is on ``PATH``.
+
+    Exit 2 for any reason other than the bundled compiler's refusal is not
+    this defect and fails the pin red.
+    """
+    root, _marker = editions_tree_with_protoc
+
+    result = _run_on_editions_file(command, root)
+
+    if result.exit_code != 0 and "protoxy compile failed" not in result.stderr:
+        pytest.fail(
+            f"exit {result.exit_code} for another reason than the bundled compiler: "
+            f"{result.stderr.strip()!r}"
+        )
+    # Today: exit 2, "Error: protoxy compile failed: ... but found 'edition'".
     assert result.exit_code == 0, result.stderr
