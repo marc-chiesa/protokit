@@ -84,7 +84,7 @@ step):
   one side only raises ``TypeError`` on the one-sided route
   (``_has_populated_fields`` and ``_emit_all_fields`` both call it).
 
-Five members with no finding ID, found while the family was pinned, same owner:
+Five members with no finding ID, found during this release's fixes, same owner:
 
 * pure-Python: ``compare`` on a type with an extension range and a field named
   ``Extensions`` reads the extension mapping instead of the field and raises
