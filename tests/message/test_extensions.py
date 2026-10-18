@@ -1418,3 +1418,130 @@ def test_each_side_is_read_for_extensions_by_its_own_schema() -> None:
 
     assert paths(with_tag, plain_cls(name="n")) == [("(x.tag)", "REMOVED")]
     assert paths(plain_cls(name="n"), with_tag) == [("(x.tag)", "ADDED")]
+
+
+# --- fields named after the members that read an extension ---------------------
+#
+# Under upb a field named ``Extensions`` or ``HasExtension`` hides that member on
+# the instance, so reading a set extension called an int. Every case ignores the
+# field: under pure-Python the member hides the field instead.
+
+_EXT_MEMBER_X = b"\x10\x05"  # x = 5
+_EXT_MEMBER_EXT_1 = b"\xa0\x06\x01"  # (m.ext) = 1
+_EXT_MEMBER_EXT_2 = b"\xa0\x06\x02"  # (m.ext) = 2
+
+
+def _ext_member_file(name: str) -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``m.Msg { optional int32 <name> = 1; optional int32 x = 2; }`` + ``(m.ext)``."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="m.proto", package="m", syntax="proto2")
+    msg = fdp.message_type.add(name="Msg")
+    msg.field.add(name=name, number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    msg.field.add(name="x", number=2, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+    msg.extension_range.add(start=100, end=200)
+    fdp.extension.add(
+        name="ext", number=100, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL, extendee=".m.Msg",
+    )
+    return fdp
+
+
+def _ext_member_paths(name: str, left: bytes, right: bytes) -> list[tuple[str, str]]:
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(_ext_member_file(name))
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("m.Msg"))
+    differ = MessageDifferencer()
+    differ.ignore_fields(name)
+    return [
+        (str(diff.path), diff.change_type.name)
+        for diff in differ.compare(cls.FromString(left), cls.FromString(right))
+    ]
+
+
+@pytest.mark.parametrize("name", ["Extensions", "HasExtension"])
+class TestAFieldNamedAfterAnExtensionMember:
+    def test_identical_messages_with_a_set_extension_compare_equal(self, name: str) -> None:
+        payload = _EXT_MEMBER_X + _EXT_MEMBER_EXT_1
+        assert _ext_member_paths(name, payload, payload) == []
+
+    def test_a_difference_in_the_extension_is_reported(self, name: str) -> None:
+        left, right = _EXT_MEMBER_X + _EXT_MEMBER_EXT_1, _EXT_MEMBER_X + _EXT_MEMBER_EXT_2
+        assert _ext_member_paths(name, left, right) == [("(m.ext)", "MODIFIED")]
+
+    def test_an_extension_set_on_one_side_is_reported(self, name: str) -> None:
+        payload = _EXT_MEMBER_X + _EXT_MEMBER_EXT_1
+        assert _ext_member_paths(name, payload, _EXT_MEMBER_X) == [("(m.ext)", "REMOVED")]
+        assert _ext_member_paths(name, _EXT_MEMBER_X, payload) == [("(m.ext)", "ADDED")]
+
+    def test_the_diff_command_exits_0_on_identical_files(self, name: str, tmp_path) -> None:
+        from click.testing import CliRunner
+
+        from protokit.message.cli import main
+
+        desc = descriptor_pb2.FileDescriptorSet(file=[_ext_member_file(name)])
+        (tmp_path / "m.desc").write_bytes(desc.SerializeToString())
+        (tmp_path / "a.bin").write_bytes(_EXT_MEMBER_X + _EXT_MEMBER_EXT_1)
+
+        result = CliRunner().invoke(main, [
+            str(tmp_path / "a.bin"), str(tmp_path / "a.bin"),
+            "--desc", str(tmp_path / "m.desc"), "--message-type", "m.Msg", "--ignore", name,
+        ])
+
+        assert result.exit_code == 0, result.output
+
+
+# --- a generated class whose nested message is named like an extension member --
+#
+# A generated ``_pb2`` class keeps each nested message class in its own
+# dictionary, so a nested type named ``ListFields``, ``Extensions`` or
+# ``HasExtension`` sits where ``compare`` looks up the member it reads
+# extensions through.
+
+
+def _generated_style(desc: d.Descriptor) -> type[Message]:
+    """The class a generated module builds: nested classes in the class dictionary."""
+    from google.protobuf import message, reflection
+
+    members: dict[str, object] = {
+        name: _generated_style(nested) for name, nested in desc.nested_types_by_name.items()
+    }
+    members.update(DESCRIPTOR=desc, __module__="nested_pb2")
+    cls: type[Message] = reflection.GeneratedProtocolMessageType(
+        desc.name, (message.Message,), members,
+    )
+    return cls
+
+
+@pytest.mark.parametrize("nested", ["ListFields", "Extensions", "HasExtension"])
+class TestAGeneratedClassWithANestedTypeNamedLikeAnExtensionMember:
+    @staticmethod
+    def _cls(nested: str) -> tuple[type[Message], d.FieldDescriptor]:
+        fdp = descriptor_pb2.FileDescriptorProto(name="q.proto", package="q", syntax="proto2")
+        query = fdp.message_type.add(name="Query")
+        query.nested_type.add(name=nested).field.add(
+            name="page", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+        )
+        query.field.add(name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+        query.extension_range.add(start=100, end=200)
+        fdp.extension.add(
+            name="ext", number=100, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+            extendee=".q.Query",
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        cls = _generated_style(pool.FindMessageTypeByName("q.Query"))
+        return cls, pool.FindExtensionByName("q.ext")
+
+    # Set by parsing: under upb a nested type named ``Extensions`` hides the
+    # mapping from the caller too.
+    def test_identical_messages_with_a_set_extension_compare_equal(self, nested: str) -> None:
+        cls, _ext = self._cls(nested)
+        payload = b"\x08\x05\xa0\x06\x01"  # x = 5, (q.ext) = 1
+        left, right = cls.FromString(payload), cls.FromString(payload)
+        assert list(MessageDifferencer().compare(left, right)) == []
+
+    def test_a_difference_in_a_field_and_in_an_extension_is_reported(self, nested: str) -> None:
+        cls, _ext = self._cls(nested)
+        left = cls.FromString(b"\x08\x05\xa0\x06\x01")  # x = 5, (q.ext) = 1
+        right = cls.FromString(b"\x08\x06\xa0\x06\x02")  # x = 6, (q.ext) = 2
+        assert sorted(str(x.path) for x in MessageDifferencer().compare(left, right)) == [
+            "(q.ext)", "x",
+        ]

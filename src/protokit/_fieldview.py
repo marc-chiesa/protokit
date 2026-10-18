@@ -68,7 +68,7 @@ def field_value(msg: Message, fd: _d.FieldDescriptor) -> object:
     parallel implementation beside them.
     """
     if fd.is_extension:
-        return msg.Extensions[fd]
+        return _extensions_of(msg)[fd]
     return getattr(msg, fd.name)
 
 
@@ -80,7 +80,7 @@ def field_present(msg: Message, fd: _d.FieldDescriptor) -> bool:
     owns the precondition that ``fd`` is presence-bearing.
     """
     if fd.is_extension:
-        return bool(msg.HasExtension(fd))
+        return bool(_unshadowed(type(msg), "HasExtension")(msg, fd))
     return bool(msg.HasField(fd.name))
 
 
@@ -352,7 +352,7 @@ def data_extensions(descriptor: _d.Descriptor) -> tuple[_d.FieldDescriptor, ...]
 
 
 def _message_api() -> frozenset[str]:
-    """Public attributes of a generated message class that a field name can collide with.
+    """Attributes of a generated message class, private ones too, a field name can hit.
 
     Read from a real generated class as well as the abstract ``Message``, so the
     runtime's own additions count (pure-Python adds ``Extensions`` and
@@ -372,14 +372,14 @@ def _message_api() -> frozenset[str]:
     names = set(dir(_Message)) | set(dir(sample))
     return frozenset(
         name for name in names
-        if not name.startswith("_") and name not in own and not name.endswith("_FIELD_NUMBER")
+        if name not in own and not name.endswith("_FIELD_NUMBER")
     )
 
 
-# Field names that collide with a generated class's attributes. Such a field
-# hides the attribute on upb (field access wins) and is hidden by it on
-# pure-Python (the attribute wins), so the walk reads a type holding one
-# through ListFields.
+# Field names that collide with a generated class's attributes, ``_Modified``
+# and ``__str__`` among them. Such a field hides the attribute on upb and is
+# hidden by it on pure-Python (the attribute wins), so the walk reads a type
+# holding one through ListFields.
 _SHADOWING = _message_api()
 
 
@@ -693,3 +693,19 @@ import threading  # noqa: E402  (published docs cite line numbers in this module
 # swaps the process's warning filters.
 _SYNTAX_READ = threading.Lock()
 
+
+
+def _extensions_of(msg: Message) -> Any:
+    """The message's ``Extensions`` mapping, even where a field of that name hides it.
+
+    ``Extensions`` is a descriptor on the class, not a method, so
+    :func:`_unshadowed` cannot return it: this binds the class's own one to the
+    message instead.
+    """
+    cls = type(msg)
+    for base in cls.__mro__:
+        attr = base.__dict__.get("Extensions")
+        # A nested message class of the same name is no descriptor: it has no __get__.
+        if attr is not None and hasattr(attr, "__get__"):
+            return attr.__get__(msg, cls)
+    raise AttributeError(f"{cls.__name__} has no Extensions")

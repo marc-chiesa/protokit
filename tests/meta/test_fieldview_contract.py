@@ -1421,3 +1421,69 @@ def test_two_threads_reading_a_file_syntax_leave_the_warning_filters_as_they_wer
     assert readers == ["first", "second"]
     assert list(warnings.filters) == before
 
+
+
+# --- fields named like the message class's private attributes ------------------
+#
+# Under pure-Python a class attribute wins over a field of the same name, so a
+# message field named ``_Modified`` reads as the bound method and the walk
+# descended into it. The names come from the runtime itself; a name its class
+# cannot be built or parsed with is left out (that fails before any walk, as on
+# 0.15.1).
+
+_PRIVATE_NAME_RECORD = bytes.fromhex("0a040a026f6b")  # field 1 = Inner { s: "ok" }
+
+
+def private_name_class(name: str, *, repeated: bool) -> type[Message] | None:
+    """proto2 ``pn.M`` with a message field ``name`` holding ``pn.Inner.s``.
+
+    ``None`` when the runtime cannot build the class or parse a record with it.
+    """
+    fdp = descriptor_pb2.FileDescriptorProto(name="pn.proto", package="pn", syntax="proto2")
+    fdp.message_type.add(name="Inner").field.add(
+        name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL,
+    )
+    fdp.message_type.add(name="M").field.add(
+        name=name, number=1, type=_FD.TYPE_MESSAGE, type_name=".pn.Inner",
+        label=_FD.LABEL_REPEATED if repeated else _FD.LABEL_OPTIONAL,
+    )
+    try:
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fdp)
+        cls: type[Message] = message_factory.GetMessageClass(pool.FindMessageTypeByName("pn.M"))
+        cls.FromString(_PRIVATE_NAME_RECORD)
+    except Exception:  # any refusal means the walk is never reached
+        return None
+    return cls
+
+
+def private_names_that_build() -> list[tuple[str, bool]]:
+    """Every underscore name of the runtime's message classes a record can be parsed with."""
+    names = set(dir(Message)) | set(dir(descriptor_pb2.FileOptions))
+    return [
+        (name, repeated)
+        for name in sorted(n for n in names if n.startswith("_"))
+        for repeated in (False, True)
+        if private_name_class(name, repeated=repeated) is not None
+    ]
+
+
+_PRIVATE_NAMES = private_names_that_build()
+
+
+@pytest.mark.parametrize(("name", "repeated"), _PRIVATE_NAMES)
+def test_a_field_named_like_a_private_attribute_walks_without_error(
+    name: str, repeated: bool,
+) -> None:
+    cls = private_name_class(name, repeated=repeated)
+    assert cls is not None
+    assert StringWalk().first(cls.FromString(_PRIVATE_NAME_RECORD)) is None
+
+
+@skip_under_pure_python(_UPB_ONLY_PREMISE)
+@pytest.mark.parametrize(("name", "repeated"), _PRIVATE_NAMES)
+def test_a_bad_string_beneath_a_private_named_field_is_found(name: str, repeated: bool) -> None:
+    cls = private_name_class(name, repeated=repeated)
+    assert cls is not None
+    hit = StringWalk().first(cls.FromString(bytes.fromhex("0a030a01ff")))
+    assert hit is not None and hit[0].full_name == "pn.Inner.s"
