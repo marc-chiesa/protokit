@@ -198,7 +198,7 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
         except (Exception, SystemExit) as exc:
             error_exit(
                 f"failed to import rule pack '{_safe_for_stderr(name)}': "
-                f"{_safe_for_stderr(exc)}"
+                f"{_pack_exception_text(exc)}"
             )
         try:
             checker.load_rule_pack(module)
@@ -210,7 +210,7 @@ def _load_rule_packs(checker: SchemaChecker, module_names: tuple[str, ...]) -> N
         except (Exception, SystemExit) as exc:
             error_exit(
                 f"failed to load rule pack '{_safe_for_stderr(name)}': "
-                f"{_safe_for_stderr(exc)}"
+                f"{_pack_exception_text(exc)}"
             )
 
 
@@ -2007,3 +2007,23 @@ def ci(
         old_ref=old_ref,
         new_ref=new_ref,
     )
+
+
+def _pack_exception_text(exc: BaseException) -> str:
+    """The text of what a rule pack raised while it loaded, or a constant.
+
+    The third enforcement point of ``_load_rule_packs``. Its two guards catch
+    what the pack raises; the text of that exception then comes from the
+    pack's own ``__str__`` (for ``SystemExit(obj)``, from ``obj.__str__``),
+    third-party code running after the catch. It runs here inside a guard of
+    its own, so a ``__str__`` that calls ``sys.exit(0)`` cannot become the
+    process exit code of a breaking run, and an interrupt it raises is the
+    pack speaking, as at the load guard. The text is copied to an exact
+    ``str`` before it is sanitized: a ``str`` subclass would run its own
+    ``translate`` here and its own ``__format__`` in the caller's f-string,
+    outside any guard.
+    """
+    try:
+        return _safe_for_stderr(str.__str__(str(exc)))
+    except (Exception, SystemExit, KeyboardInterrupt):
+        return "an exception that could not be formatted"
