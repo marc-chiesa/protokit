@@ -494,6 +494,10 @@ def test_c13_c2_presence_only_rule_on_a_repeated_option_runs_or_is_refused(
             return
         pytest.fail(f"no report, and not a refusal naming the option: {_outcome(result)}")
     rule_exceptions = _skips(result, "rule_exception")
+    if not rule_exceptions and not _reports_bare_and_exits_1(result):
+        # Not today's shape and not the fix (say, the rule now skipped with a
+        # warning and the run exited 0): the finding moved, so fail red.
+        pytest.fail(f"C13-C2 moved: no rule_exception, not the fixed report: {_outcome(result)}")
     assert not rule_exceptions and _reports_bare_and_exits_1(result), (
         f"the presence-only rule on {_TAGS_OPTION} did not run "
         f"({[w['message'] for w in rule_exceptions]}): {_outcome(result)}"
@@ -594,6 +598,12 @@ def test_rule_pack_exiting_while_rules_are_read_exits_2_naming_the_pack(
     """A pack that ends the run while its rules are read is a load error, not a verdict."""
     result = _lint_with_pack(tmp_path, monkeypatch, _RulesExitingWhenRead())
 
+    if result.exit_code != 0 and not (
+        result.exit_code == 2 and _names_the_pack_in_an_error_line(result)
+    ):
+        # Neither today's exit 0 nor the fix (say, the pack dropped without a
+        # word and the run exited 1 on the schema's finding): fail red.
+        pytest.fail(f"the rule-pack load finding moved: {_outcome(result)}")
     assert result.exit_code == 2, (
         f"a pack calling sys.exit(0) while RULES are read decided the exit code: "
         f"{_outcome(result)}"

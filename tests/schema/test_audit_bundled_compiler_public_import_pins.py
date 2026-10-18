@@ -511,7 +511,7 @@ def test_editions_schema_is_accepted_when_protoc_can_compile_it(
     Exit 2 for any reason other than the bundled compiler's refusal is not
     this defect and fails the pin red.
     """
-    root, _marker = editions_tree_with_protoc
+    root, marker = editions_tree_with_protoc
 
     result = _run_on_editions_file(command, root)
 
@@ -522,3 +522,8 @@ def test_editions_schema_is_accepted_when_protoc_can_compile_it(
         )
     # Today: exit 2, "Error: protoxy compile failed: ... but found 'edition'".
     assert result.exit_code == 0, result.stderr
+    if not marker.exists():
+        pytest.fail(
+            "the bundled compiler compiled the editions file itself; this pin no "
+            "longer reaches compile_proto's missing fallback: pick a new trigger"
+        )
