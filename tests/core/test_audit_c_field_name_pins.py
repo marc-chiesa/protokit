@@ -39,7 +39,10 @@ one only upb shows. On the other backend the marker does not apply and the
 test runs as an ordinary passing test, which makes it that backend's control
 for the pin. A pin whose other backend fails for a different, separately
 pinned reason is skipped there instead (C14-C3 under pure-Python, which cannot
-build the class at all: C02-C3 below).
+build the class at all: C02-C3 below). Two ``--json`` pins also hold only
+where ``json_format.Parse`` lets the raw exception out (protobuf before 5.28,
+probed at import): from 5.28 it wraps every exception in ``ParseError``, which
+``protokit diff`` reports as a refusal, the outcome those pins accept as fixed.
 
 Pinned here (every pin is owned by U17a, 0.19.0, its final guard-widening
 step):
@@ -113,7 +116,14 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner, Result
-from google.protobuf import descriptor_pb2, descriptor_pool, message, message_factory, reflection
+from google.protobuf import (
+    descriptor_pb2,
+    descriptor_pool,
+    json_format,
+    message,
+    message_factory,
+    reflection,
+)
 from google.protobuf.internal import api_implementation
 from google.protobuf.message import Message
 
@@ -132,6 +142,25 @@ _PURE_PYTHON_BACKEND = api_implementation.Type() == "python"
 #: The marker's condition for a pin that fails under upb only; the twin of
 #: ``_PURE_PYTHON_BACKEND``.
 _UPB_BACKEND = api_implementation.Type() == "upb"
+
+
+def _json_parse_lets_a_raw_exception_out() -> bool:
+    """Whether ``json_format.Parse`` lets a non-``ParseError`` exception escape.
+
+    protobuf 5.28 wraps every exception in ``ParseError``, which ``protokit diff``
+    reports as a refusal (exit 2); 4.25 to 5.27 let the raw exception out. The
+    ``--json`` pins below hold only where it escapes.
+    """
+    try:
+        json_format.Parse("{}", object())  # type: ignore[arg-type]
+    except json_format.ParseError:
+        return False
+    except AttributeError:
+        return True
+    raise RuntimeError("json_format.Parse accepted a non-message")
+
+
+_JSON_PARSE_RAW = _json_parse_lets_a_raw_exception_out()
 
 
 def _paths(left: Message, right: Message, *, ignore: str | None = None) -> list[tuple[str, str]]:
@@ -415,11 +444,12 @@ def _diff_one_field(
 
 
 @pytest.mark.xfail(
-    condition=_PURE_PYTHON_BACKEND,
+    condition=_PURE_PYTHON_BACKEND and _JSON_PARSE_RAW,
     strict=True,
     raises=AttributeError,
     reason=(
-        "C10-C1b: owned by U17a (0.19.0). Pure-Python only. _parse_message hands --json "
+        "C10-C1b: owned by U17a (0.19.0). Pure-Python only, and protobuf before 5.28 "
+        "(later versions wrap the exception in ParseError, a refusal). _parse_message hands --json "
         "input to json_format.Parse, which sets each field by attribute, and under "
         "pure-Python a field named Clear is the read-only method, so protokit diff "
         "ends in a raw AttributeError ('M' object attribute 'Clear' is read-only). "
@@ -427,7 +457,7 @@ def _diff_one_field(
     ),
 )
 def test_c10_c1b_diff_json_on_a_field_named_clear_runs_or_is_refused(tmp_path: Path) -> None:
-    """Under upb this is the upb control for the pure-Python pin (see the module docstring)."""
+    """Under upb, or protobuf 5.28 and later, an ordinary passing test (module docstring)."""
     result = _diff_one_field(tmp_path, "Clear", b'{"Clear": "a"}', "--json")
     _assert_clean_or_refused(result, "Clear", f"{_PKG}.M", _DIFF_INPUT)
 
@@ -808,23 +838,41 @@ _SET_EXTENSION = {
 }
 
 
-@pytest.mark.parametrize("form", ["--text-format", "--json"])
 @pytest.mark.xfail(
     condition=_UPB_BACKEND,
     strict=True,
     raises=AttributeError,
     reason=_NO_ID + (
-        "upb only. text_format.Parse and json_format.Parse resolve a set extension "
-        "through message.Extensions, which under upb is the value of a field named "
-        "Extensions, so protokit diff of input that sets an extension ends in a raw "
+        "upb only. text_format.Parse resolves a set extension through "
+        "message.Extensions, which under upb is the value of a field named Extensions, "
+        "so protokit diff --text-format of input that sets an extension ends in a raw "
         "AttributeError ('str' object has no attribute '_FindExtensionByName'). Either "
         "outcome counts as fixed: exit 0, or exit 2 refusing the type"
     ),
 )
-def test_diff_text_or_json_setting_an_extension_beside_a_field_named_extensions(
-    tmp_path: Path, form: str,
-) -> None:
+def test_diff_text_setting_an_extension_beside_a_field_named_extensions(tmp_path: Path) -> None:
     """Under pure-Python this is the pure-Python control for the upb pin (module docstring)."""
+    form = "--text-format"
+    result = _diff_extension_input(tmp_path, "Extensions", _SET_EXTENSION[form], form)
+    _assert_clean_or_refused(result, "Extensions", f"{_PKG}.M", _DIFF_INPUT)
+
+
+@pytest.mark.xfail(
+    condition=_UPB_BACKEND and _JSON_PARSE_RAW,
+    strict=True,
+    raises=AttributeError,
+    reason=_NO_ID + (
+        "upb only, and protobuf before 5.28 (later versions wrap the exception in "
+        "ParseError, a refusal). json_format.Parse resolves a set extension through "
+        "message.Extensions, which under upb is the value of a field named Extensions, "
+        "so protokit diff --json of input that sets an extension ends in a raw "
+        "AttributeError ('str' object has no attribute '_FindExtensionByName'). Either "
+        "outcome counts as fixed: exit 0, or exit 2 refusing the type"
+    ),
+)
+def test_diff_json_setting_an_extension_beside_a_field_named_extensions(tmp_path: Path) -> None:
+    """Under pure-Python, or protobuf 5.28 and later, an ordinary passing test (see above)."""
+    form = "--json"
     result = _diff_extension_input(tmp_path, "Extensions", _SET_EXTENSION[form], form)
     _assert_clean_or_refused(result, "Extensions", f"{_PKG}.M", _DIFF_INPUT)
 
