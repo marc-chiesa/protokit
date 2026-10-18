@@ -359,7 +359,7 @@ def _load_descriptor_sets_to_result(
                 f"{input_path}: {_safe_for_stderr(_scrub_exc_message(exc))}",
             )
         loaded.append((input_path, fds))
-    for input_path, fd in _in_dependency_order(loaded):
+    for input_path, fd in _in_dependency_order(_map_entries_checked_across(loaded)):
         if fd.name in seen_names:
             duplicates.append(
                 LintCompileDiagnostic(
@@ -722,3 +722,28 @@ def _first_occurrences(
             else:
                 first[fd.name] = (input_path, fd)
     return first, repeats
+
+
+
+def _map_entries_checked_across(
+    loaded: list[tuple[Path, descriptor_pb2.FileDescriptorSet]],
+) -> list[tuple[Path, descriptor_pb2.FileDescriptorSet]]:
+    """``loaded``, once its files declare no extension typed as a map entry.
+
+    This loader adds files itself rather than through ``add_and_resolve``,
+    which refuses one everywhere else. The check runs on the files together,
+    in the order the loop below adds them, so an extension in one input set
+    whose type another set declares is seen too.
+    """
+    first: dict[str, descriptor_pb2.FileDescriptorProto] = {}
+    for _path, fd in _in_dependency_order(loaded):
+        first.setdefault(fd.name, fd)
+    try:
+        _refuse_map_typed_extensions_in(first.values())
+    except DescriptorPoolError as exc:
+        error_exit_with_code("bad-input", _safe_for_stderr(_scrub_exc_message(exc)))
+    return loaded
+
+
+# Imported here, not at the top: published docs cite line numbers in this file.
+from protokit._pools import _refuse_map_typed_extensions_in  # noqa: E402

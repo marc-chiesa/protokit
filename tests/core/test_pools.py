@@ -737,7 +737,6 @@ class TestAnEditionsFileOnARuntimeWithEditions:
 # the process, so every loader refuses the schema.
 
 # Imported here, not at the top: lines above are cited by number.
-import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -787,21 +786,37 @@ def _map_ext_set(**kwargs: object) -> descriptor_pb2.FileDescriptorSet:
     return descriptor_pb2.FileDescriptorSet(file=[_map_ext_file(**kwargs)])  # type: ignore[arg-type]
 
 
-class TestAnExtensionTypedAsAMapEntry:
-    @pytest.mark.parametrize(
-        "kwargs",
-        [
-            pytest.param({}, id="file-scope"),
-            pytest.param({"nested": True}, id="message-scope"),
-            pytest.param({"type_name": "M.LabelsEntry"}, id="relative-type-name"),
-        ],
-    )
-    def test_build_pool_refuses_it_naming_the_extension(self, kwargs: dict) -> None:
-        name = "pm.M.labels" if kwargs.get("nested") else "pm.labels"
-        refused = rf"{name}.*map entry pm\.M\.LabelsEntry"
-        with pytest.raises(_pools.DescriptorPoolError, match=refused):
-            _pools.build_pool(_map_ext_set(**kwargs))
+def _shadowed_set(*, map_entry_seen: bool) -> descriptor_pb2.FileDescriptorSet:
+    """``a.b.ext`` names ``H.Entry``; ``a.H.Entry`` and ``a.b.H.Entry`` both exist.
 
+    ``a.proto`` imports only ``y.proto``, so the runtime resolves the name to
+    ``y.proto``'s ``a.H.Entry`` and never to ``x.proto``'s ``a.b.H.Entry``.
+    ``map_entry_seen`` says which of the two is the map entry.
+    """
+    def h_entry(f: descriptor_pb2.FileDescriptorProto, *, map_entry: bool) -> None:
+        entry = f.message_type.add(name="H").nested_type.add(name="Entry")
+        entry.options.map_entry = map_entry
+        entry.field.add(name="key", number=1, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+        entry.field.add(name="value", number=2, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+
+    y = descriptor_pb2.FileDescriptorProto(name="y.proto", package="a", syntax="proto2")
+    y.message_type.add(name="T").extension_range.add(start=100, end=200)
+    h_entry(y, map_entry=map_entry_seen)
+    a = descriptor_pb2.FileDescriptorProto(
+        name="a.proto", package="a.b", syntax="proto2", dependency=["y.proto"],
+    )
+    a.extension.add(
+        name="ext", number=100, type=_F.TYPE_MESSAGE, label=_F.LABEL_REPEATED,
+        type_name="H.Entry", extendee=".a.T",
+    )
+    x = descriptor_pb2.FileDescriptorProto(
+        name="x.proto", package="a.b", syntax="proto2", dependency=["a.proto"],
+    )
+    h_entry(x, map_entry=not map_entry_seen)
+    return descriptor_pb2.FileDescriptorSet(file=[y, a, x])
+
+
+class TestAnExtensionTypedAsAMapEntry:
     @pytest.mark.parametrize(
         ("kwargs", "name"),
         [
@@ -814,25 +829,21 @@ class TestAnExtensionTypedAsAMapEntry:
             ),
         ],
     )
-    def test_the_set_is_refused_before_any_pool_exists(self, kwargs: dict, name: str) -> None:
-        """Lint's descriptor-set loader adds files itself, so it relies on this check."""
-        with pytest.raises(_pools.DescriptorPoolError, match=rf"extension {name} in 'pm.proto'"):
-            _pools.require_decodable_strings(_map_ext_set(**kwargs))
+    def test_build_pool_refuses_it_naming_the_extension(self, kwargs: dict, name: str) -> None:
+        refused = rf"extension {name} in 'pm.proto' is typed as the map entry pm\.M\.LabelsEntry"
+        with pytest.raises(_pools.MapTypedExtensionError, match=refused):
+            _pools.build_pool(_map_ext_set(**kwargs))
 
     def test_load_pool_from_bytes_refuses_it(self) -> None:
         with pytest.raises(_pools.DescriptorPoolError, match="pm.labels"):
             _pools.load_pool_from_bytes(_map_ext_set().SerializeToString())
 
-    @pytest.mark.parametrize("nested", [False, True], ids=["file-scope", "message-scope"])
-    def test_a_file_added_on_its_own_is_refused(self, nested: bool) -> None:
-        """The path both ``.proto`` compile backends take, one file at a time."""
-        name = r"pm\.M\.labels" if nested else r"pm\.labels"
-        with pytest.raises(_pools.DescriptorPoolError, match=rf"{name} is typed as the map entry"):
-            _pools.add_and_resolve(descriptor_pool.DescriptorPool(), _map_ext_file(nested=nested))
-
-    def test_the_same_type_without_map_entry_loads(self) -> None:
-        pool = _pools.build_pool(_map_ext_set(map_entry=False))
-        assert pool.FindExtensionByName("pm.labels").message_type.full_name == "pm.M.LabelsEntry"
+    def test_a_relative_name_means_what_it_means_to_the_runtime(self) -> None:
+        """Refused when the type the runtime picks is a map entry, whatever else shares its name."""
+        with pytest.raises(_pools.MapTypedExtensionError, match=r"a\.b\.ext .* a\.H\.Entry"):
+            _pools.build_pool(_shadowed_set(map_entry_seen=True))
+        pool = _pools.build_pool(_shadowed_set(map_entry_seen=False))
+        assert pool.FindExtensionByName("a.b.ext").message_type.full_name == "a.H.Entry"
 
     def test_an_ordinary_map_field_and_repeated_message_extension_load(self) -> None:
         f = _map_ext_file(map_entry=False)
@@ -846,8 +857,40 @@ class TestAnExtensionTypedAsAMapEntry:
             type_name=".pm.M.ItemsEntry",
         )
         pool = _pools.build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        assert pool.FindExtensionByName("pm.labels").message_type.full_name == "pm.M.LabelsEntry"
         items_field = pool.FindMessageTypeByName("pm.M").fields_by_name["items"]
         assert items_field.message_type.GetOptions().map_entry
+
+    def test_a_scalar_extension_carrying_a_stray_type_name_is_not_called_map_typed(self) -> None:
+        """Its declared type is not a message, so its type name names nothing it holds.
+
+        The pure-Python runtime builds it as an ``int32``; upb refuses the file
+        for its own reason.
+        """
+        f = _map_ext_file()
+        f.extension[0].type = _F.TYPE_INT32
+        f.extension[0].label = _F.LABEL_OPTIONAL
+        try:
+            _pools.build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        except _pools.MapTypedExtensionError:
+            pytest.fail("a scalar extension was refused as map-typed")
+        except _pools.DescriptorPoolError:
+            pass
+
+    def test_lint_adds_files_in_its_own_order_and_refuses_the_same(self) -> None:
+        """The scratch-pool check lint's loader runs before it adds the files."""
+        with pytest.raises(_pools.MapTypedExtensionError, match="pm.labels"):
+            _pools._refuse_map_typed_extensions_in(_map_ext_set().file)
+        with pytest.raises(_pools.MapTypedExtensionError, match=r"a\.b\.ext"):
+            _pools._refuse_map_typed_extensions_in(_shadowed_set(map_entry_seen=True).file)
+        _pools._refuse_map_typed_extensions_in(_shadowed_set(map_entry_seen=False).file)
+
+    @pytest.mark.parametrize("nested", [False, True], ids=["file-scope", "message-scope"])
+    def test_a_file_added_on_its_own_is_refused(self, nested: bool) -> None:
+        """The path both ``.proto`` compile backends take, one file at a time."""
+        name = r"pm\.M\.labels" if nested else r"pm\.labels"
+        with pytest.raises(_pools.MapTypedExtensionError, match=rf"{name} in 'pm.proto' is typed"):
+            _pools.add_and_resolve(descriptor_pool.DescriptorPool(), _map_ext_file(nested=nested))
 
 
 def _protokit(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -890,15 +933,64 @@ def test_every_command_refuses_the_descriptor_set(map_ext_files: Path, args: lis
     assert "Traceback" not in result.stderr
 
 
-@pytest.mark.skipif(
-    not (_has_protoxy() or shutil.which("protoc")), reason="no .proto compiler available"
+_WITHOUT_PROTOC = (
+    "import protokit.schema.compile as c\n"
+    "def _no_protoc(*args, **kwargs):\n"
+    "    raise FileNotFoundError('protoc')\n"
+    "c._compile_with_protoc = _no_protoc\n"
+    "from protokit.cli import main\n"
+    "main()\n"
 )
-def test_a_proto_source_declaring_one_is_refused(map_ext_files: Path) -> None:
-    """protoxy and protoc 3.21 compile the explicit ``map_entry`` form; newer protoc refuses it."""
-    result = _protokit(
-        "diff", "--proto", "pm.proto", "--message-type", "pm.M", "a.bin", "a.bin",
-        cwd=map_ext_files,
+
+
+@pytest.mark.skipif(not _has_protoxy(), reason="optional [compiler] extra not installed")
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["diff", "--proto", "pm.proto", "--message-type", "pm.M", "a.bin", "a.bin"],
+                     id="diff"),
+        pytest.param(["storage", "count", "a.frames", "--proto", "pm.proto", "--type", "pm.M"],
+                     id="storage-count"),
+        pytest.param(["lint", "--no-config", "--proto", "pm.proto"], id="lint"),
+    ],
+)
+def test_a_proto_source_declaring_one_is_refused_for_its_reason(
+    map_ext_files: Path, args: list[str],
+) -> None:
+    """protoxy compiles the explicit ``map_entry`` form, and the refusal is not
+    taken for protoxy failing: protoc is not tried, and the reason is printed."""
+    result = subprocess.run(
+        [sys.executable, "-c", _WITHOUT_PROTOC, *args],
+        cwd=map_ext_files, capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
-    assert "pm.labels" in result.stderr or "map_entry" in result.stderr
+    assert "pm.labels" in result.stderr
+    assert "backend missing" not in result.stderr
+    assert "unexpected backend exception" not in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_lint_refuses_it_when_the_entry_and_the_extension_are_in_separate_sets(
+    tmp_path: Path,
+) -> None:
+    """Each input set is checked as it is read; the pair is only visible across them."""
+    base = _map_ext_file()
+    del base.extension[:]
+    ext = descriptor_pb2.FileDescriptorProto(
+        name="pm_ext.proto", package="pm", syntax="proto2", dependency=["pm.proto"],
+    )
+    ext.extension.add(
+        name="labels", number=100, type=_F.TYPE_MESSAGE, label=_F.LABEL_REPEATED,
+        type_name=".pm.M.LabelsEntry", extendee=".pm.M",
+    )
+    (tmp_path / "base.desc").write_bytes(
+        descriptor_pb2.FileDescriptorSet(file=[base]).SerializeToString()
+    )
+    (tmp_path / "ext.desc").write_bytes(
+        descriptor_pb2.FileDescriptorSet(file=[ext]).SerializeToString()
+    )
+    result = _protokit("lint", "--no-config", "base.desc", "ext.desc", cwd=tmp_path)
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "error[lint-bad-input]" in result.stderr
+    assert "pm.labels" in result.stderr
+

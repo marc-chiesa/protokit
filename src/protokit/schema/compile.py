@@ -663,6 +663,8 @@ def compile_protos_to_result(
             except (
                 protoxy.ProtoxyError, ValueError, TypeError, DescriptorPoolError,
             ) as exc:
+                if isinstance(exc, MapTypedExtensionError):
+                    raise  # the schema's own fault: protoc would build the same file
                 # ProtoxyError/ValueError: parse-time failures from
                 # protoxy.compile itself.
                 # DescriptorPoolError: the pool rejecting a FileDescriptorProto
@@ -718,6 +720,9 @@ def compile_protos_to_result(
     except OSError as exc:
         # PermissionError, BrokenPipeError, etc.
         diagnostics.append(_diagnostic_infrastructure(exc))
+    except MapTypedExtensionError as exc:
+        # Not a backend failure: the reason is the schema's, so it is the message.
+        diagnostics.append(_diagnostic_refused(exc))
     except Exception as exc:
         # Catch-all for any other Exception subclass. Crucially this is
         # NOT `except BaseException` — KeyboardInterrupt, SystemExit, and
@@ -763,3 +768,21 @@ def compile_protos_to_result(
             diagnostics=tuple(diagnostics),
             source_info_descriptors=None,
         )
+
+
+def _diagnostic_refused(exc: Exception) -> LintCompileDiagnostic:
+    """An error diagnostic for a schema the loaders refuse, worded by its reason.
+
+    Filed under ``unexpected`` because the category set is closed; the message
+    is the refusal itself, not "unexpected backend exception".
+    """
+    return LintCompileDiagnostic(
+        level="error",
+        category="unexpected",
+        message=str(exc),
+        exception_type=type(exc).__name__,
+    )
+
+
+# Imported here, not at the top: published docs cite line numbers in this file.
+from protokit._pools import MapTypedExtensionError  # noqa: E402
