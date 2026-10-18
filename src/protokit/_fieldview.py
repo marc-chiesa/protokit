@@ -524,7 +524,7 @@ class StringWalk:
             elif is_message_like(field) and self._can_reach(field.message_type):
                 repeated = field.label == _FD.LABEL_REPEATED
                 planned.append((field.name, _MESSAGES if repeated else _MESSAGE, None, field))
-        shadowed = any(_shadows(field.name) for field in descriptor.fields)
+        shadowed = any(_shadows(n.name) for n in (*descriptor.fields, *descriptor.nested_types))
         plan = (tuple(planned), bool(descriptor.extension_ranges), shadowed)
         self._plans[descriptor] = plan
         return plan
@@ -705,7 +705,7 @@ def _extensions_of(msg: Message) -> Any:
     cls = type(msg)
     for base in cls.__mro__:
         attr = base.__dict__.get("Extensions")
-        # A nested message class of the same name is no descriptor: it has no __get__.
-        if attr is not None and hasattr(attr, "__get__"):
+        # A nested message class of the same name is no descriptor, whatever it nests.
+        if attr is not None and hasattr(attr, "__get__") and not isinstance(attr, type):
             return attr.__get__(msg, cls)
     raise AttributeError(f"{cls.__name__} has no Extensions")

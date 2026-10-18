@@ -1516,9 +1516,10 @@ class TestAGeneratedClassWithANestedTypeNamedLikeAnExtensionMember:
     def _cls(nested: str) -> tuple[type[Message], d.FieldDescriptor]:
         fdp = descriptor_pb2.FileDescriptorProto(name="q.proto", package="q", syntax="proto2")
         query = fdp.message_type.add(name="Query")
-        query.nested_type.add(name=nested).field.add(
-            name="page", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
-        )
+        inner = query.nested_type.add(name=nested)
+        inner.field.add(name="page", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
+        # A type nested inside it named ``__get__`` makes the class look like a descriptor.
+        inner.nested_type.add(name="__get__")
         query.field.add(name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL)
         query.extension_range.add(start=100, end=200)
         fdp.extension.add(

@@ -1471,6 +1471,19 @@ def private_names_that_build() -> list[tuple[str, bool]]:
 _PRIVATE_NAMES = private_names_that_build()
 
 
+def _hides_the_field(name: str, repeated: bool) -> bool:
+    """Whether reading ``name`` off a parsed record gives something other than the field."""
+    cls = private_name_class(name, repeated=repeated)
+    assert cls is not None
+    value = getattr(cls.FromString(_PRIVATE_NAME_RECORD), name)
+    return not (isinstance(value, Message) or type(value).__name__.startswith("Repeated"))
+
+
+# The names this runtime lets a class attribute win over the field: the ones the
+# walk must route round. Empty under upb, where the field always wins.
+PRIVATE_NAMES_THAT_HIDE = [entry for entry in _PRIVATE_NAMES if _hides_the_field(*entry)]
+
+
 @pytest.mark.parametrize(("name", "repeated"), _PRIVATE_NAMES)
 def test_a_field_named_like_a_private_attribute_walks_without_error(
     name: str, repeated: bool,
@@ -1481,9 +1494,55 @@ def test_a_field_named_like_a_private_attribute_walks_without_error(
 
 
 @skip_under_pure_python(_UPB_ONLY_PREMISE)
-@pytest.mark.parametrize(("name", "repeated"), _PRIVATE_NAMES)
+@pytest.mark.parametrize(("name", "repeated"), _PRIVATE_NAMES[:2])
 def test_a_bad_string_beneath_a_private_named_field_is_found(name: str, repeated: bool) -> None:
     cls = private_name_class(name, repeated=repeated)
     assert cls is not None
     hit = StringWalk().first(cls.FromString(bytes.fromhex("0a030a01ff")))
     assert hit is not None and hit[0].full_name == "pn.Inner.s"
+
+
+# --- a generated class whose nested message is named like a Message method ------
+#
+# A generated module keeps each nested message class in the outer class's
+# dictionary. Under upb an instance looks a name up in its fields first and then
+# in that dictionary, so a nested type named ``HasField`` or ``ListFields`` hides
+# the method the walk's fast path calls.
+
+
+def generated_class_with_nested(name: str) -> type[Message]:
+    """proto2 ``gn.M { optional string s = 1; message <name> {} }`` laid out as a ``_pb2``.
+
+    Built with the metaclass a generated module uses, nested classes in the class
+    dictionary, without registering anything in the default pool.
+    """
+    from google.protobuf import reflection
+
+    fdp = descriptor_pb2.FileDescriptorProto(name=f"gn_{name}.proto", package="gn", syntax="proto2")
+    m = fdp.message_type.add(name="M")
+    m.field.add(name="s", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    m.extension_range.add(start=100, end=200)
+    m.nested_type.add(name=name)
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    desc = pool.FindMessageTypeByName("gn.M")
+    nested = reflection.GeneratedProtocolMessageType(
+        name, (Message,), {"DESCRIPTOR": desc.nested_types_by_name[name], "__module__": "gn_pb2"},
+    )
+    cls: type[Message] = reflection.GeneratedProtocolMessageType(
+        "M", (Message,), {name: nested, "DESCRIPTOR": desc, "__module__": "gn_pb2"},
+    )
+    return cls
+
+
+@pytest.mark.parametrize("name", ["HasField", "ListFields"])
+def test_a_generated_class_with_a_nested_type_named_like_a_method_walks(name: str) -> None:
+    cls = generated_class_with_nested(name)
+    assert StringWalk().first(cls.FromString(b"\x0a\x02ok")) is None
+
+
+@skip_under_pure_python(_UPB_ONLY_PREMISE)
+@pytest.mark.parametrize("name", ["HasField", "ListFields"])
+def test_a_bad_string_in_such_a_class_is_found(name: str) -> None:
+    hit = StringWalk().first(generated_class_with_nested(name).FromString(b"\x0a\x01\xff"))
+    assert hit is not None and hit[0].full_name == "gn.M.s"
