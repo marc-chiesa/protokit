@@ -726,3 +726,179 @@ class TestAnEditionsFileOnARuntimeWithEditions:
         requires_editions()
         pool = _pools.build_pool(_editions_set())
         assert pool.FindMessageTypeByName("ed.M").full_name == "ed.M"
+
+
+# --- an extension typed as a map entry -----------------------------------------
+#
+# Protobuf has no map extensions, and no compiler writes one from ``map<K, V>``;
+# a hand-written set can still declare an extension whose type is a message with
+# ``map_entry`` set, and protoxy and protoc 3.21 compile one written out with an
+# explicit ``option map_entry = true``. Under upb a payload that sets it kills
+# the process, so every loader refuses the schema.
+
+# Imported here, not at the top: lines above are cited by number.
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from protokit._cli_utils import _has_protoxy  # noqa: E402
+
+_F = descriptor_pb2.FieldDescriptorProto
+_MAP_EXT_PAYLOAD = bytes.fromhex("0801a206060a016b120176")  # id = 1, (pm.labels) {"k": "v"}
+
+_MAP_EXT_PROTO = (
+    'syntax = "proto2";\n'
+    "package pm;\n"
+    "message M {\n"
+    "  optional int32 id = 1;\n"
+    "  extensions 100 to 199;\n"
+    "  message LabelsEntry {\n"
+    "    option map_entry = true;\n"
+    "    optional string key = 1;\n"
+    "    optional string value = 2;\n"
+    "  }\n"
+    "}\n"
+    "extend M { repeated M.LabelsEntry labels = 100; }\n"
+)
+
+
+def _map_ext_file(
+    *, nested: bool = False, type_name: str = ".pm.M.LabelsEntry", map_entry: bool = True,
+) -> descriptor_pb2.FileDescriptorProto:
+    """proto2 ``pm.M`` and an extension ``labels`` typed as ``M.LabelsEntry``."""
+    f = descriptor_pb2.FileDescriptorProto(name="pm.proto", package="pm", syntax="proto2")
+    m = f.message_type.add(name="M")
+    m.field.add(name="id", number=1, type=_F.TYPE_INT32, label=_F.LABEL_OPTIONAL)
+    m.extension_range.add(start=100, end=200)
+    entry = m.nested_type.add(name="LabelsEntry")
+    entry.options.map_entry = map_entry
+    entry.field.add(name="key", number=1, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+    entry.field.add(name="value", number=2, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+    scope = m if nested else f
+    scope.extension.add(
+        name="labels", number=100, type=_F.TYPE_MESSAGE, label=_F.LABEL_REPEATED,
+        type_name=type_name, extendee=".pm.M",
+    )
+    return f
+
+
+def _map_ext_set(**kwargs: object) -> descriptor_pb2.FileDescriptorSet:
+    return descriptor_pb2.FileDescriptorSet(file=[_map_ext_file(**kwargs)])  # type: ignore[arg-type]
+
+
+class TestAnExtensionTypedAsAMapEntry:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({}, id="file-scope"),
+            pytest.param({"nested": True}, id="message-scope"),
+            pytest.param({"type_name": "M.LabelsEntry"}, id="relative-type-name"),
+        ],
+    )
+    def test_build_pool_refuses_it_naming_the_extension(self, kwargs: dict) -> None:
+        name = "pm.M.labels" if kwargs.get("nested") else "pm.labels"
+        refused = rf"{name}.*map entry pm\.M\.LabelsEntry"
+        with pytest.raises(_pools.DescriptorPoolError, match=refused):
+            _pools.build_pool(_map_ext_set(**kwargs))
+
+    @pytest.mark.parametrize(
+        ("kwargs", "name"),
+        [
+            pytest.param({}, "pm.labels", id="file-scope"),
+            pytest.param({"nested": True}, "pm.M.labels", id="message-scope"),
+            pytest.param({"type_name": "M.LabelsEntry"}, "pm.labels", id="relative-type-name"),
+            pytest.param(
+                {"nested": True, "type_name": "LabelsEntry"}, "pm.M.labels",
+                id="relative-in-message-scope",
+            ),
+        ],
+    )
+    def test_the_set_is_refused_before_any_pool_exists(self, kwargs: dict, name: str) -> None:
+        """Lint's descriptor-set loader adds files itself, so it relies on this check."""
+        with pytest.raises(_pools.DescriptorPoolError, match=rf"extension {name} in 'pm.proto'"):
+            _pools.require_decodable_strings(_map_ext_set(**kwargs))
+
+    def test_load_pool_from_bytes_refuses_it(self) -> None:
+        with pytest.raises(_pools.DescriptorPoolError, match="pm.labels"):
+            _pools.load_pool_from_bytes(_map_ext_set().SerializeToString())
+
+    @pytest.mark.parametrize("nested", [False, True], ids=["file-scope", "message-scope"])
+    def test_a_file_added_on_its_own_is_refused(self, nested: bool) -> None:
+        """The path both ``.proto`` compile backends take, one file at a time."""
+        name = r"pm\.M\.labels" if nested else r"pm\.labels"
+        with pytest.raises(_pools.DescriptorPoolError, match=rf"{name} is typed as the map entry"):
+            _pools.add_and_resolve(descriptor_pool.DescriptorPool(), _map_ext_file(nested=nested))
+
+    def test_the_same_type_without_map_entry_loads(self) -> None:
+        pool = _pools.build_pool(_map_ext_set(map_entry=False))
+        assert pool.FindExtensionByName("pm.labels").message_type.full_name == "pm.M.LabelsEntry"
+
+    def test_an_ordinary_map_field_and_repeated_message_extension_load(self) -> None:
+        f = _map_ext_file(map_entry=False)
+        m = f.message_type[0]
+        items = m.nested_type.add(name="ItemsEntry")
+        items.options.map_entry = True
+        items.field.add(name="key", number=1, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+        items.field.add(name="value", number=2, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+        m.field.add(
+            name="items", number=2, type=_F.TYPE_MESSAGE, label=_F.LABEL_REPEATED,
+            type_name=".pm.M.ItemsEntry",
+        )
+        pool = _pools.build_pool(descriptor_pb2.FileDescriptorSet(file=[f]))
+        items_field = pool.FindMessageTypeByName("pm.M").fields_by_name["items"]
+        assert items_field.message_type.GetOptions().map_entry
+
+
+def _protokit(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Run the CLI in a child process: under upb the failure being refused is a segfault."""
+    return subprocess.run(
+        [sys.executable, "-c", "from protokit.cli import main; main()", *args],
+        cwd=cwd, capture_output=True, text=True, timeout=120,
+    )
+
+
+@pytest.fixture
+def map_ext_files(tmp_path: Path) -> Path:
+    (tmp_path / "pm.desc").write_bytes(_map_ext_set().SerializeToString())
+    (tmp_path / "a.bin").write_bytes(_MAP_EXT_PAYLOAD)
+    (tmp_path / "a.frames").write_bytes(bytes([len(_MAP_EXT_PAYLOAD)]) + _MAP_EXT_PAYLOAD)
+    (tmp_path / "pm.proto").write_text(_MAP_EXT_PROTO)
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["diff", "--desc", "pm.desc", "--message-type", "pm.M", "a.bin", "a.bin"],
+                     id="diff"),
+        pytest.param(["storage", "count", "a.frames", "--desc", "pm.desc", "--type", "pm.M"],
+                     id="storage-count"),
+        pytest.param(["storage", "scan", "a.frames", "--desc", "pm.desc", "--type", "pm.M"],
+                     id="storage-scan"),
+        pytest.param(["forensics", "match", "a.bin", "--schema", "s=pm.desc", "--type", "pm.M"],
+                     id="forensics-match"),
+        pytest.param(["compat", "check", "pm.desc", "pm.desc", "--type", "pm.M"],
+                     id="compat-check"),
+        pytest.param(["lint", "--no-config", "pm.desc"], id="lint"),
+    ],
+)
+def test_every_command_refuses_the_descriptor_set(map_ext_files: Path, args: list[str]) -> None:
+    result = _protokit(*args, cwd=map_ext_files)
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "pm.labels" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.skipif(
+    not (_has_protoxy() or shutil.which("protoc")), reason="no .proto compiler available"
+)
+def test_a_proto_source_declaring_one_is_refused(map_ext_files: Path) -> None:
+    """protoxy and protoc 3.21 compile the explicit ``map_entry`` form; newer protoc refuses it."""
+    result = _protokit(
+        "diff", "--proto", "pm.proto", "--message-type", "pm.M", "a.bin", "a.bin",
+        cwd=map_ext_files,
+    )
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "pm.labels" in result.stderr or "map_entry" in result.stderr
+    assert "Traceback" not in result.stderr

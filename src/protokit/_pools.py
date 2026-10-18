@@ -180,7 +180,7 @@ def add_and_resolve(
     # (KeyboardInterrupt, SystemExit) is not caught and still propagates.
     try:
         pool.Add(_honoured(fd))
-        pool.FindFileByName(fd.name)
+        _refuse_map_typed_extensions(pool.FindFileByName(fd.name))
     except Exception as exc:
         raise DescriptorPoolError(
             f"could not build file {fd.name!r} into the descriptor pool: {exc}"
@@ -266,7 +266,7 @@ def require_decodable_strings(
     fail at the same boundary pure-Python does.
 
     Raises:
-        DescriptorPoolError: A string is not UTF-8, or a file needs editions (:func:`_honoured`).
+        DescriptorPoolError: A string is not UTF-8, a file needs editions, or a map-typed extension.
     """
     from protokit._fieldview import first_undecodable_string
 
@@ -275,7 +275,7 @@ def require_decodable_strings(
     if hit is not None:
         field, value = hit
         raise DescriptorPoolError(f"{field.full_name} is not valid UTF-8: {value[:64]!r}")
-    return _all_honoured(fds)
+    return _all_honoured(_without_map_typed_extensions(fds))
 
 
 def _ready_to_parse(message_class: type) -> type:
@@ -399,3 +399,92 @@ def _editions_probe() -> bool:
         return False
     implemented: bool = built.type == field_type.TYPE_GROUP
     return implemented
+
+
+# An extension typed as a map entry. Protobuf has no map extensions and no
+# compiler writes one from ``map<K, V>``, but a hand-written set can declare
+# one, and protoxy and protoc 3.21 compile one written out with an explicit
+# ``option map_entry = true``. Under upb a payload that sets it reaches a map
+# container the runtime cannot build and kills the process, so every loader
+# refuses the schema: a set through :func:`require_decodable_strings`, a file
+# added to a pool through :func:`add_and_resolve`.
+
+_NO_MAP_EXTENSIONS = "protobuf has no map extensions"
+
+
+def _without_map_typed_extensions(
+    fds: descriptor_pb2.FileDescriptorSet,
+) -> descriptor_pb2.FileDescriptorSet:
+    """Return ``fds`` unchanged, or raise if it declares a map-typed extension.
+
+    Works on the set as written, before any pool exists, so it resolves each
+    extension's type name itself: a fully-qualified name directly, a relative
+    one from the extension's scope outwards, as protobuf does.
+    """
+    known: set[str] = set()
+    entries: set[str] = set()
+
+    def collect(scope: str, messages: Any, enums: Any) -> None:
+        known.update(f"{scope}.{enum.name}" for enum in enums)
+        for message in messages:
+            name = f"{scope}.{message.name}"
+            known.add(name)
+            if message.options.map_entry:
+                entries.add(name)
+            collect(name, message.nested_type, message.enum_type)
+
+    for fd in fds.file:
+        collect(f".{fd.package}" if fd.package else "", fd.message_type, fd.enum_type)
+
+    def resolve(type_name: str, scope: str) -> str:
+        if type_name.startswith("."):
+            return type_name
+        parts = scope.split(".")
+        for end in range(len(parts), 0, -1):
+            candidate = ".".join([*parts[:end], type_name])
+            if candidate in known:
+                return candidate
+        return type_name
+
+    def check(scope: str, extensions: Any, file_name: str) -> None:
+        for ext in extensions:
+            target = resolve(ext.type_name, scope)
+            if target in entries:
+                name = f"{scope}.{ext.name}".lstrip(".")
+                raise DescriptorPoolError(
+                    f"extension {name} in {file_name!r} is typed as the map entry "
+                    f"{target.lstrip('.')}; {_NO_MAP_EXTENSIONS}"
+                )
+
+    def check_messages(scope: str, messages: Any, file_name: str) -> None:
+        for message in messages:
+            name = f"{scope}.{message.name}"
+            check(name, message.extension, file_name)
+            check_messages(name, message.nested_type, file_name)
+
+    for fd in fds.file:
+        scope = f".{fd.package}" if fd.package else ""
+        check(scope, fd.extension, fd.name)
+        check_messages(scope, fd.message_type, fd.name)
+    return fds
+
+
+def _refuse_map_typed_extensions(file: Any) -> None:
+    """Raise if the resolved file declares an extension typed as a map entry."""
+    pending = list(file.message_types_by_name.values())
+    extensions = list(file.extensions_by_name.values())
+    while pending:
+        message = pending.pop()
+        extensions.extend(message.extensions)
+        pending.extend(message.nested_types)
+    for ext in extensions:
+        target = ext.message_type
+        if target is not None and target.GetOptions().map_entry:
+            raise DescriptorPoolError(
+                f"extension {ext.full_name} is typed as the map entry {target.full_name}; "
+                f"{_NO_MAP_EXTENSIONS}"
+            )
+
+
+# Imported here, not at the top: published docs cite line numbers in this file.
+from typing import Any  # noqa: E402
