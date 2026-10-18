@@ -1085,11 +1085,11 @@ class MessageDifferencer:
                 # cannot carry one, so skip the walk entirely for it — which is
                 # every proto3 message and most proto2 ones.
                 if left_view.has_extension_ranges:
-                    for efd, _ in item.left_msg.ListFields():
+                    for efd, _ in _unshadowed(type(item.left_msg), "ListFields")(item.left_msg):
                         if efd.is_extension:
                             left_fields[_extension_key(efd)] = efd
                 if right_view.has_extension_ranges:
-                    for efd, _ in item.right_msg.ListFields():
+                    for efd, _ in _unshadowed(type(item.right_msg), "ListFields")(item.right_msg):
                         if efd.is_extension:
                             right_fields[_extension_key(efd)] = efd
                 # Only SET extensions can be discovered, so one set on a
@@ -3012,3 +3012,7 @@ def _conflicting_map_key(maps: dict[str, str], selector: str, key: str) -> str |
         if other_key != key and _selectors_overlap(selector, other):
             return other_key
     return None
+
+
+# Imported here, not at the top: published docs cite line numbers in this file.
+from protokit._fieldview import _unshadowed  # noqa: E402
