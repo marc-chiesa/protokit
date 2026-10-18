@@ -175,14 +175,14 @@ def add_and_resolve(
     Raises:
         DescriptorPoolError: If the file cannot be resolved into the pool.
     """
-    # Broad on purpose: the try holds only the two protobuf calls, and their
-    # rejection shapes vary by backend and version (see above). BaseException
-    # (KeyboardInterrupt, SystemExit) is not caught and still propagates.
+    # Broad on purpose: the try holds the two protobuf calls, whose rejection
+    # shapes vary by backend and version (see above), and the map-entry check.
+    # BaseException (KeyboardInterrupt, SystemExit) is not caught and propagates.
     try:
         pool.Add(_honoured(fd))
-        pool.FindFileByName(fd.name)
+        _refuse_map_typed_extensions(pool.FindFileByName(fd.name))
     except Exception as exc:
-        raise DescriptorPoolError(
+        raise _refusal_kind(exc)(
             f"could not build file {fd.name!r} into the descriptor pool: {exc}"
         ) from exc
 
@@ -399,3 +399,71 @@ def _editions_probe() -> bool:
         return False
     implemented: bool = built.type == field_type.TYPE_GROUP
     return implemented
+
+
+
+# An extension typed as a map entry. Protobuf has no map extensions and no
+# compiler writes one from ``map<K, V>``, but a hand-written set can declare
+# one, and protoxy and protoc 3.21 compile one written out with an explicit
+# ``option map_entry = true``. Under upb a payload that sets it reaches a map
+# container the runtime cannot build and kills the process, so every loader
+# refuses the schema. The check reads the descriptors the runtime resolved,
+# so a type name means what it means to the runtime: every file added through
+# :func:`add_and_resolve`, and lint's descriptor-set loader, which adds files
+# itself, through :func:`_refuse_map_typed_extensions_in`.
+
+
+class MapTypedExtensionError(DescriptorPoolError):
+    """A schema declares an extension whose type is a map entry.
+
+    A property of the schema, not of how it was compiled or loaded: another
+    compiler or loader would build the same extension.
+    """
+
+
+def _refuse_map_typed_extensions(file: Any) -> None:
+    """Raise if the resolved file declares an extension typed as a map entry."""
+    pending = list(file.message_types_by_name.values())
+    extensions = list(file.extensions_by_name.values())
+    while pending:
+        message = pending.pop()
+        extensions.extend(message.extensions)
+        pending.extend(message.nested_types)
+    for ext in extensions:
+        target = ext.message_type
+        # Pure-Python hands back an enum here for a message-typed field naming one.
+        if isinstance(target, Descriptor) and target.GetOptions().map_entry:
+            raise MapTypedExtensionError(
+                f"extension {ext.full_name} in {file.name!r} is typed as the map entry "
+                f"{target.full_name}; protobuf has no map extensions"
+            )
+
+
+def _refuse_map_typed_extensions_in(files: Iterable[descriptor_pb2.FileDescriptorProto]) -> None:
+    """Add ``files`` to a scratch pool in order and refuse a map-typed extension.
+
+    For a loader that adds files itself. The files go in the order that loader
+    adds them, because upb resolves a relative type name against what the pool
+    holds at the time. A set that does not build stops the check: the loader
+    reports why when it adds the same files.
+    """
+    pool = descriptor_pool.DescriptorPool()
+    for fd in files:
+        try:
+            pool.Add(fd)
+            built = pool.FindFileByName(fd.name)
+        except Exception:  # whatever the runtime refuses, the loader will too
+            return
+        _refuse_map_typed_extensions(built)
+
+
+def _refusal_kind(exc: Exception) -> type[DescriptorPoolError]:
+    """The error :func:`add_and_resolve` raises for ``exc``: a map-typed
+    extension keeps its own type, so a compile path can tell it from a file
+    one compiler could not build."""
+    return type(exc) if isinstance(exc, MapTypedExtensionError) else DescriptorPoolError
+
+
+# Imported here, not at the top: published docs cite line numbers in this file.
+from collections.abc import Iterable  # noqa: E402
+from typing import Any  # noqa: E402
