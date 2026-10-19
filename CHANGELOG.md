@@ -420,7 +420,8 @@ entry.
   10,000 small messages with one string field each, and about 55 times for
   10,000 messages of a type declaring ten string fields, one of them set;
   under pure-Python, whose parse is slower, at most about 1.6 times in the
-  same shapes.
+  same shapes. A walk that reads only the string fields a message sets is
+  scheduled for 0.17.0.
   Payloads whose non-UTF-8 string the parse does not keep still differ.
   Among them: a singular string written twice on the wire, the first copy
   not UTF-8 and the last one valid; a nested message or group written twice
