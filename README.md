@@ -899,9 +899,12 @@ something. This covers the reasons a run records, such as a rule
 that raised, a depth limit that cut a comparison short or a
 record that did not parse. It is not a check that every input was
 analysed: where protokit skips something without recording it,
-the exit code is unchanged. Two cases known in 0.16.0 are `diff`,
-which does not compare unknown fields, and `lint`, which does not
-count the `extension_unresolved` warning as an incomplete run.
+the exit code is unchanged. Three cases known in 0.16.0 are `diff`,
+which does not compare unknown fields; `lint`, which does not
+count the `extension_unresolved` warning as an incomplete run; and
+`lint --proto`, which can lint another file in place of one it was
+given (the 0.16.0 entry in `CHANGELOG.md` lists it under Known
+issues).
 Every command's exit gate, and every built-in
 `--format` renderer of `diff`, `compat` and `lint` that states a
 success verdict, now ask the same predicate whether the run
@@ -958,9 +961,13 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    (`error[lint-rule-pack-load]`, exit 2); pass a tuple such as
    `profiles=("name",)`. A compat rule pack that calls
    `sys.exit()` now exits 2 instead of passing its own code
-   through, and one whose `RULES` raises while being read, or
-   that raises `KeyboardInterrupt` at import, exits 2 instead of
-   1.
+   through, and so does one whose exception calls `sys.exit()`
+   while protokit formats it into the error line. One whose
+   `RULES` raises while being read, that raises
+   `KeyboardInterrupt` at import, or whose exception cannot be
+   formatted, exits 2 instead of 1. That covers
+   `--compat-rule-pack`: a lint `--rule-pack` whose `RULES` calls
+   `sys.exit(0)` while it is read still exits 0, as in 0.15.1.
 6. **`diff` over proto2 messages with extensions.** Differences in
    declared extensions are now reported, so such a run can exit 1
    where it exited 0. Suppress one extension with
@@ -970,12 +977,20 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    message: no `git` on `PATH` for `compat check --since`,
    `ci --base` and `bisect`; a `diff` selector the path grammar
    rejects; a descriptor set with a non-UTF-8 file name under upb;
-   and, under the pure-Python protobuf runtime, a descriptor set it
-   cannot build or parse, or a message nested too deep (or, for
-   `storage`, one carrying a non-UTF-8 string). Under that runtime
-   `compat` and `forensics` no longer crash on any schema loaded
-   from a descriptor set or `.proto`, so their exit code is now the
-   check's own. A gate that
+   and, under the pure-Python protobuf runtime, a message nested
+   too deep (or, for `storage`, one carrying a non-UTF-8 string),
+   and a descriptor set the runtime refuses while loading it or
+   cannot parse (for `lint`, `forensics` and `storage --desc`: an
+   unreadable field default, an out-of-range `public_dependency`,
+   a `oneof_index` past the last oneof, a non-UTF-8 string, very
+   deep nesting). Under that runtime `compat` and `forensics` no
+   longer crash with `Descriptor does not contain serialization`
+   on a schema loaded from a descriptor set or `.proto`. Not every
+   pure-Python crash is gone: a set whose edition is later than the
+   runtime implements (edition 2024 on protobuf 5.27), a field named
+   `DESCRIPTOR` and a very long chain of
+   nested message types still end in a traceback and exit 1, as in
+   0.15.1 (the CHANGELOG lists them under Known issues). A gate that
    read these exits as findings was misreading a crash.
 8. **`forensics match`.** A candidate it cannot measure (a proto2
    message missing a `required` field) now exits 2 after rendering
@@ -993,9 +1008,11 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    the set as parsed, so a string written twice on the wire, with
    an invalid first copy and a valid last one, is still accepted
    there and refused under pure-Python. Under the
-   pure-Python runtime, a set with a missing import or a type
-   reference that resolves nowhere, even in a file the command
-   does not use, is now refused as upb always did. The runtimes
+   pure-Python runtime, a set with a type reference that resolves
+   nowhere, even in a file the command does not use, is now
+   refused as upb always did. A set with a missing import was
+   already refused there by every command but `lint`, which now
+   refuses it too. The runtimes
    still differ on other malformed sets: pure-Python accepts some
    that upb refuses, such as a duplicate field number, and
    protokit adds no validation of its own for those.
@@ -1588,7 +1605,10 @@ Within that trust model, three things protokit enforces:
    output. A buggy formatter can corrupt the rendered document
    but cannot flip CI gating. A formatter that calls `sys.exit()`
    is caught and routed through the contract-violation error
-   path.
+   path. One case at load time is not yet covered: a pack whose
+   import fails with an exception that calls `sys.exit()` while
+   protokit formats it into the error line decides the exit code
+   (0 for `sys.exit(0)`), as in 0.15.1.
 2. **Built-in names are reserved.** Third-party packs cannot
    register under `(kind, "human")`, `(kind, "json")`,
    `(COMPAT, "junit")`, `(COMPAT, "sarif")`, etc. Attempts to

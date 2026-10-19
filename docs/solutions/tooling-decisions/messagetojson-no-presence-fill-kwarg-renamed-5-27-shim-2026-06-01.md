@@ -1,5 +1,5 @@
 ---
-title: "protobuf renamed the MessageToJson fill-defaults kwarg at 5.27: detect-and-prefer the new name"
+title: "protobuf renamed the MessageToJson fill-defaults kwarg at 5.26.0: detect-and-prefer the new name"
 date: 2026-06-01
 category: tooling-decisions
 module: protokit.storage
@@ -8,12 +8,12 @@ component: tooling
 severity: medium
 applies_when:
   - Calling MessageToJson or MessageToDict with the fill-unset-fields kwarg
-  - Supporting protobuf across the 4.x / 5.x boundary (the kwarg was renamed at 5.27)
+  - Supporting protobuf across the 4.x / 5.x boundary (the kwarg was renamed at 5.26.0)
   - Emitting dense JSON where no-presence fields must be filled at their default
 tags: [protobuf, message-to-json, json-format, version-compat, deprecationwarning, kwarg-shim, cross-version]
 ---
 
-# protobuf renamed the MessageToJson fill-defaults kwarg at 5.27: detect-and-prefer the new name
+# protobuf renamed the MessageToJson fill-defaults kwarg at 5.26.0: detect-and-prefer the new name
 
 ## Context
 
@@ -27,11 +27,11 @@ single hard-coded kwarg name breaks on part of the range. (provenance — verifi
 
 The cross-version facts (verified empirically):
 
-- `including_default_value_fields=True` — the **old** name, protobuf 4.21–5.26.
-- `always_print_fields_with_no_presence=True` — the **new** name, protobuf 5.27+. (provenance — verified against protobuf 4.21–5.26 (old) / 5.27+ (new); the live spelling is re-asserted by `tests/storage/test_project.py::TestNoPresenceFillShim` against whatever protobuf is installed, with the old-name path pinned by the `storage-protobuf-floor` CI cell)
-- On 5.27+, passing the **old** name raises `TypeError` (it was removed from the
+- `including_default_value_fields=True` — the **old** name, protobuf 4.25 (the supported floor).
+- `always_print_fields_with_no_presence=True` — the **new** name, protobuf 5.26.0+. (provenance — verified against protobuf 4.25.9 (old) / 5.26.0, 5.26.1, 5.27.5 and 5.29.6 (new), both backends; the 5.27 this learning first gave was one minor late; the live spelling is re-asserted by `tests/storage/test_project.py::TestNoPresenceFillShim` against whatever protobuf is installed, with the old-name path pinned by the `storage-protobuf-floor` CI cell)
+- On 5.26+, passing the **old** name raises `TypeError` (it was removed from the
   signature, not merely deprecated-but-accepted). The **new** name does not exist
-  before 5.27. So neither name works across the whole pinned range. (provenance — verified against protobuf 5.27.5; current behavior re-asserted by the `storage-protobuf-floor` CI cell (old-name path) and the default matrix (new-name path))
+  on 4.25. So neither name works across the whole pinned range. (provenance — verified against protobuf 4.25.9, 5.26.0 and 5.27.5; current behavior re-asserted by the `storage-protobuf-floor` CI cell (old-name path) and the default matrix (new-name path))
 
 Detect the supported kwarg **once at import** by inspecting the signature, and
 **prefer the new name**:
@@ -60,28 +60,37 @@ NO_PRESENCE_FILL_KWARG = _detect_no_presence_kwarg()  # resolved once at import
 
 Two non-obvious points:
 
-- **Prefer the new name, don't reach for the deprecated one.** On 5.27+ the old
+- **Prefer the new name, don't reach for the deprecated one.** On 5.26+ the old
   name is gone (TypeError), but more generally: using a deprecated identifier
   when a successor exists emits a `DeprecationWarning`, which a strict-warnings CI
   policy promotes to an error. Detect-and-prefer-new is the same
   "use the successor, don't suppress the warning" discipline documented for other
   protobuf-churn cases here.
-- **The rename was a clarification, not a behavior change.** Verified on protobuf
-  4.25.9 (old kwarg) vs 5.27.5 (new kwarg): both produce identical fill output
-  for every presence class — no-presence fields filled at default,
-  presence-bearing fields (proto3 `optional`, `oneof`, singular submessage)
-  omitted when unset. (provenance — verified against protobuf 4.25.9 / 5.27.5; the fill semantics are re-asserted by `TestNoPresenceFillShim.test_fill_behavior_*` on the default matrix (new name) and the `storage-protobuf-floor` CI cell (old name)) So the shim is a safe name-swap, not a papered-over
-  semantic difference. (A reviewer initially hypothesized the old flag printed
-  *all* fields; that did not reproduce.)
+- **For proto3 the rename was a clarification, not a behavior change; for
+  proto2 it was not.** Verified on protobuf 4.25.9 (old kwarg) vs 5.27.5 (new
+  kwarg): for a proto3 message both produce identical fill output for every
+  presence class — no-presence fields filled at default, presence-bearing
+  fields (proto3 `optional`, `oneof`, singular submessage) omitted when unset.
+  (provenance — verified against protobuf 4.25.9 / 5.27.5; the proto3 fill semantics are re-asserted by `TestNoPresenceFillShim.test_fill_behavior_*` on the default matrix (new name) and the `storage-protobuf-floor` CI cell (old name)) For a proto2 message
+  the two differ. On an empty record the old kwarg on 4.25 fills the unset
+  optional `int32` and `string` fields at their defaults, a declared
+  `[default = ...]` included (`{'x': 0, 'y': 7, 's': 'hi', 'tags': []}`;
+  other scalar types were not measured), where the new kwarg on 5.26+
+  fills only the repeated field (`{'tags': []}`); both omit the singular
+  submessage. protokit's `--fields` projection gives the same two answers,
+  so a proto2 record projects differently on the floor than on 5.26+.
+  (provenance — measured on protobuf 4.25.9, 5.26.0, 5.26.1, 5.27.5 and 5.29.6, both backends; no test re-asserts it, because the `test_fill_behavior_*` tests build a proto3 message only) So the shim is a safe name-swap for
+  proto3 only. (A reviewer initially hypothesized the old flag printed *all*
+  fields; for proto3 that did not reproduce.)
 
 ## Why This Matters
 
-A naive `MessageToJson(msg, including_default_value_fields=True)` ships green on
-the CI cell that resolves the latest in-range protobuf (5.x) and then raises
-`TypeError` for any user on 4.21–5.26 — a runtime break invisible to the default
+A naive `MessageToJson(msg, always_print_fields_with_no_presence=True)` ships
+green on the CI cell that resolves the latest in-range protobuf (5.x) and then
+raises `TypeError` for any user on 4.25 — a runtime break invisible to the default
 test matrix, which always installs the newest in-range release. The shim makes
 the supported range actually supported, and "prefer the new name" keeps the
-5.27+ path clean under strict-warnings CI.
+5.26+ path clean under strict-warnings CI.
 
 Because the floor is the untested edge, add a **lower-bound-protobuf CI cell**
 that pins `protobuf==4.25.*` and runs the affected suite, so the old-kwarg path
@@ -89,13 +98,13 @@ stays verified rather than assumed. (`protokit`'s existing `has_protoxy:
 {true,false}` matrix axis is the precedent for an edge-pinning cell.)
 
 Note on the pin: protokit pins `protobuf>=4.25.0,<6`, and the new name lands at
-5.27 — i.e. entirely *inside* the pinned window (5.27 ≤ x < 6). The shim's two
+5.26.0 — i.e. entirely *inside* the pinned window (5.26 ≤ x < 6). The shim's two
 branches both live within the supported range; this does not assume protobuf 6+.
 
 ## When to Apply
 
 - Any code calling `MessageToJson`/`MessageToDict` with the fill-unset-fields
-  kwarg while supporting protobuf across 4.x and 5.27+.
+  kwarg while supporting protobuf across 4.x and 5.26+.
 - More broadly: any time a library renames a keyword argument across a version
   range you support — detect the supported spelling at import and prefer the
   current one, rather than hard-coding one name or catching `TypeError`.

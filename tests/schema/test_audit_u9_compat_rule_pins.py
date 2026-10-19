@@ -10,10 +10,10 @@ Shared root cause for U9-1 and U9-2
 -----------------------------------
 ``rules.options_changed`` (in ``schema/rules.py``) is the only built-in rule
 that could plausibly notice either change — every other field rule keys off
-type, number, cardinality, presence or oneof membership — and its entire
-mechanism is::
+type, number, cardinality, presence or oneof membership — and it compares
+only each side's ``FieldOptions`` bytes (``rules._option_bytes``)::
 
-    old_fd.GetOptions().SerializeToString() != new_fd.GetOptions().SerializeToString()
+    _option_bytes(old_fd) != _option_bytes(new_fd)
 
 But ``default_value``, ``json_name`` and ``label`` are members of
 ``FieldDescriptorProto``, not of ``FieldOptions``. They can never appear in
@@ -346,7 +346,7 @@ def test_bytes_to_string_is_reported_at_the_wire_profile() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 0.16.0 re-audit — five more rule gaps, all owned by U4 (0.18.0)
+# 0.16.0 re-audit — six more rule gaps, all owned by U4 (0.18.0)
 #
 # Every pin below is strict, names ``raises=AssertionError``, leads its reason
 # with the finding ID and flips to a loud XPASS the day its gap is closed.

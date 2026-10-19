@@ -107,6 +107,22 @@ and stopped there. It named `SystemExit` at the import
 > broadly and translate to exit 2 -- "the tool could not run"
 > — `src/protokit/schema/cli.py:148-149`
 
+(Current state: "accurately" held for what the two guards catch, not for what
+ran after them. Each handler put the exception's text in its `Error:` line, and
+that text came from the pack's own `__str__`, run after the catch with nothing
+guarding it. A pack whose module body raised an exception whose `__str__` called
+`sys.exit(0)` still made a breaking `compat check` exit 0 with no output, and
+one whose `__str__` raised gave a traceback and exit 1, the INCOMPATIBLE code
+(audit finding C12-C1; the same on released 0.15.1). A third load-side point now
+closes it: `_pack_exception_text`, at the end of `src/protokit/schema/cli.py`,
+formats the exception inside a guard of its own and falls back to a constant,
+and `test_a_rule_pack_exception_cannot_decide_the_exit_while_it_is_formatted`
+in `tests/schema/test_audit_u15_cli_exit_pins.py` holds it on `check`, `ci`,
+`history` and `bisect`. It is this learning's lesson a second time, on the load
+side: the points were counted from the guards, not from every place the pack's
+code runs. The formatter loader's twin, `--formatter-module`, is still open and
+pinned in `tests/formatters/test_audit_v_formatter_pins.py`.)
+
 Three things made that read as complete.
 
 **The finding's wording scoped the search.** "A rule pack calling
@@ -360,7 +376,8 @@ wrapped in no `try` at all, so any exception from such a rule leaves `check()`:
 This is **not** reachable through `--compat-rule-pack`: `load_rule_pack`
 registers pack entries as emit-style field *plugins* only
 (`src/protokit/schema/checker.py:287-288`), so the shipped claim that a rule
-pack can no longer decide the exit code holds as written. It is reachable
+pack can no longer decide the exit code holds as written for dispatch. (At load
+it held only once the third load-side point under What Didn't Work was added.) It is reachable
 through documented public API — `register_raw_field_rule` and its enum/message
 siblings (`src/protokit/schema/checker.py:294`, `:314`, `:325`), described in
 the module docstring as "advanced users can register here too"

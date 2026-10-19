@@ -157,10 +157,10 @@ def compat_json(report: CompatibilityReport, ctx: FormatterContext) -> str:
 def _reasons_not_shown(report: object, **kwargs: bool) -> tuple[str, ...]:
     """The seam's reasons this format does not already render structurally.
 
-    The JUnit and SARIF renderers turn each error diagnostic into a case of
-    its own, carrying the path and commit a flat sentence would lose — so
-    they tell the seam that much (``ERROR_DIAGNOSTIC``) and render whatever
-    else it knows. Today that is nothing; the point is the day it is not.
+    The JUnit renderers turn each error diagnostic into a case of its own, with its
+    path (and commit), and the SARIF ones into a notification without the path (C20-C1).
+    Either way they tell the seam that much (``ERROR_DIAGNOSTIC``) and render
+    whatever else it knows. Today that is nothing; the point is the day it is not.
 
     Asking by kind rather than "did I render anything?" is what makes it
     exact: a report that already carries an error diagnostic AND a reason of

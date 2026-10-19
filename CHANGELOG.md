@@ -25,6 +25,9 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > go the other way: an input protokit refused, or reported as different, for
 > a reason of its own is now accepted, so exit 2 or 1 can become 0 or 1.
 > They are listed because a pipeline that expected the failure sees it change.
+> Rows marked *known gap* are a third kind: the new behaviour is itself a
+> defect, which the row names with the release scheduled to fix it, and
+> which is also listed under Known issues below.
 >
 > Unlike the 0.15.0 table, this one also lists exit 1 → exit 2 moves. `lint`
 > and `diff` document exit 1 as "the tool ran and found something", and
@@ -47,29 +50,34 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > |---|---|
 > | `storage scan\|head\|count --on-error skip\|warn` when a record the scan reaches does not parse | exits 2 instead of 0 (for `count --quiet` with no match, instead of 1); the records that did parse still reach stdout |
 > | `compat history\|bisect --proto-file` naming a file absent at the range's NEW endpoint | exits 2 before the walk instead of 0 with `no commits touch …` |
-> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, from a rule, or from an object a rule returns or raises | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`) |
+> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, from a rule, or from an object a rule returns or raises; or whose exception at import, or `sys.exit()` code, calls `sys.exit()` while protokit formats it into the error | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`, and 0 with no output in the formatting case) |
 > | `diff --max-depth` where the limit cuts the comparison short and nothing above the cut differs, identical messages nested deeper than the limit included | exits 2 (`INCOMPLETE`) instead of 0 with `Messages are equal.` |
 > | `lint --exclude` matching every input | exits 2 (`error[lint-analysis-incomplete]`) instead of 0 having linted nothing |
 > | `lint --rule-pack` whose rules declare `profiles` as a single string or a mapping | exits 2 (`error[lint-rule-pack-load]`) instead of loading the pack (a string used to match profile names as substrings); pass a tuple such as `profiles=("name",)` |
 > | `forensics match` with a candidate it cannot measure (a proto2 `required` field absent) | exits 2 after rendering the ranking, instead of 0. A candidate the message merely fails to decode under is still ranked last, and exits 0 as long as another candidate parses |
-> | *(pure-Python)* a descriptor set upb refuses to build: a missing import, or a type reference that resolves nowhere, even in a file the command does not use | exits 2, as upb already did: `lint` (`error[lint-missing-imports]`), `diff`, `storage` and `forensics` instead of 0, `compat` instead of a traceback and 1 |
+> | *(pure-Python)* a descriptor set upb refuses to build: a missing import, or a type reference that resolves nowhere, even in a file the command does not use | exits 2, as upb already did. A type reference: `lint` (`error[lint-missing-imports]`), `diff`, `storage` and `forensics` instead of 0, `compat` instead of a traceback and 1. A missing import: only `lint` moves (`error[lint-missing-imports]` instead of 0); the other commands already refused it with exit 2 |
 > | `diff` over proto2 messages whose declared extensions differ | exits 1 instead of 0: the differences were always there and are now reported |
+> | `diff` under upb over two proto2 messages, one holding a singular closed-enum extension set to a number its enum does not declare and the other without it | *known gap:* exits 1, reporting the extension with the value `UNKNOWN_0(0)`, where pure-Python exits 0. 0.15.1 exited 0 on both backends because it compared no extension at all. Scheduled for 0.17.0 |
 > | `diff` over messages holding a proto2 group or an editions DELIMITED field | the group is compared field by field: identical groups from two descriptor sets compare equal (exit 0 instead of 1), a change is reported at the inner field instead of the whole group, and `--ignore`, float tolerance and presence mode apply inside it. `--filter` on a path inside a group now matches (exit 1 instead of 0 with `Messages are equal.`), `--treat-as-map` keys a repeated group (exit 0 instead of 1 for reordered elements), and `--max-depth` counts a group as a level, so a limit that cuts inside one exits 2 instead of 0 or 1 |
 > | *(API)* `MessageDifferencer`, `diff_messages`, `proto_match` / `expect_proto`, the hamcrest `equals_proto` matcher and the pytest `proto_matcher` fixture over the same messages | the same verdicts as `diff`, so a matcher that raised `AssertionError` on identical groups from two descriptor pools now passes; field hooks (`register_validate_hook`, `register_compare_hook`, `register_report_hook`) run on each field inside the group instead of once at the group, and `register_message_validate_hook` hooks also run for the group |
+> | *(API)* `proto_match(actual, expected, presence=MessageFieldComparison.EQUAL, as_set="g")`, or `MessageDifferencer` with `MessageFieldComparison.EQUAL` and `treat_as_set("g")`, where `g` is a repeated proto2 group (or editions DELIMITED field) whose elements differ only in presence: a field unset in one, set to its default in the other | *known gap:* passes, where it failed (`- g[0]` and `+ g[0]`). Set pairing compares elements without the caller's presence mode, as it already did for message elements, and groups now reach it. Scheduled for 0.17.0 |
 > | *(API)* an extension path, `(pkg.ext)` or `parent.(pkg.ext)`, given to `ignore_fields`, `treat_as_map`, `treat_as_set`, a float overlay (`set_float_comparison(selector=…)`, `.approximately(selector=…)`) or `proto_match(as_set=…)` | is accepted instead of raising `ValueError` (`Expected field name …`); a lone `(pkg.ext)` applies to that extension at any depth. Registrations that conflict through an extension path (a `treat_as_set` and a `treat_as_map` on one extension, two `treat_as_map` keys for it, an ignore of its key) still raise `ValueError`, now naming the conflict |
 > | `diff --ignore`, `--treat-as-map` or `--filter` given an extension path such as `'(pkg.ext)'` | is accepted, and the comparison decides the exit code (0 or 1), instead of a traceback and 1. `--treat-as-map '(pkg.ext)' KEY` with an `--ignore` path that names the key (`'(pkg.ext).KEY'`, `'parent.(pkg.ext).KEY'`) exits 2 (usage error) instead of that traceback. |
 > | `compat` where a declared proto2 extension changes (type, number, removal or addition), or a field inside a proto2 group or an editions DELIMITED field changes | exits 1 (INCOMPATIBLE) instead of 0 at each level that reports the same change to a declared field; a group retargeted to another message type is reported at STRICT. `--ignore '(pkg.ext)'` is accepted, where it exited 2 as an invalid path |
 > | `compat` with a rule pack whose field plugin reports on, or raises on, a declared extension or a field inside a group | the plugin is now called for those fields, so with the schema unchanged a run can exit 1 (the plugin's finding) or 2 (its error) instead of 0 |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
-> | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), or that raises `KeyboardInterrupt` at import | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
+> | `compat history --range` with an endpoint that starts with `-`, such as `--output=X..HEAD` | exits 2 naming the flag and the value, which never reaches git, instead of 0 with `no commits touch …` |
+> | `compat check --against-base` or `compat ci` with no base given, where the branch's upstream has a name that starts with `-`, such as `--fork-point` | exits 2 naming the upstream, instead of letting `git merge-base` read the name as an option and answer HEAD, which compared a breaking change as COMPATIBLE and exited 0 |
+> | `compat` with a rule pack whose `RULES` raises while it is read (anything but `AttributeError` / `TypeError`), that raises `KeyboardInterrupt` at import, or whose exception's text cannot be formatted (its `__str__` raises) | exits 2 instead of 1 (INCOMPATIBLE): a traceback when `RULES` raised or the text could not be formatted, `Aborted!` for `KeyboardInterrupt`. Any other exception at import already exited 2 |
 > | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
 > | `diff --ignore`, `--treat-as-map` or `--filter` with a value the path grammar rejects | exits 2 with an `Error:` line instead of a traceback and 1 |
-> | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime cannot build or parse (an unreadable field default, an out-of-range `public_dependency` or `oneof_index`, a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1 |
+> | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime refuses while loading it (an unreadable field default, an out-of-range `public_dependency`, a `oneof_index` past the last oneof) or cannot parse (a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1. A set the runtime loads and then fails on at first use still ends in a traceback and 1, as in 0.15.1 (Known issues) |
+> | a descriptor set declaring an extension whose type is a map entry (protobuf has no map extensions: only a hand-written set, or a `.proto` that sets `map_entry` by hand and is compiled by `protoc` 3.21 or protoxy, has one) | every command that loads it exits 2 naming the extension (`lint`: `error[lint-bad-input]`), instead of answering: under upb `diff`, `storage count`, `forensics match`, `compat check` and `lint` exited 0; under pure-Python `lint` exited 0 and the others crashed with a traceback and 1 |
 > | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set. One shape is still accepted under upb: a string written twice on the wire, with an invalid first copy and a valid last one |
-> | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; the exit code is now the check's own |
-> | *(pure-Python)* a message payload nested past Python's recursion limit (a few hundred levels at the default limit), or carrying a string that is not UTF-8 (proto2 or proto3) | `diff` exits 2 on the deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1. Nesting between upb's limit of 100 levels and Python's recursion limit still differs by runtime, as it did in 0.15.1: upb refuses the payload (exit 2) and pure-Python reads it |
-> | *(pure-Python)* `diff`, `storage scan`, `storage count` or `forensics match` over a payload that holds a repeated message-typed extension | parses the payload and answers as under upb (identical payloads: `diff` exits 0, `storage count` prints the count, `forensics match` ranks the candidate), instead of an `AttributeError` traceback and exit 1 |
-> | any command given an editions schema while the installed `protobuf` is 4.25 | exits 2 naming the file and the installed protobuf (`lint`: `error[lint-bad-input]`), instead of answering from a schema with every feature read as unset: for example `diff` exiting 0 with `Messages are equal.` over payloads that differ inside a `DELIMITED` field. protobuf 5.26 and later are unaffected |
+> | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; that crash no longer decides the exit code. Other pure-Python crashes are not covered by this row (Known issues) |
+> | *(pure-Python)* a message payload nested past Python's recursion limit (a few hundred levels at the default limit), or carrying a string that is not UTF-8 (proto2 or proto3) | `diff` exits 2 on the deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1. A message pure-Python parses but is nested too deep to print still ends `storage scan` (human or JSON) with `failed to render record` and exit 2 under every `--on-error` mode, as in 0.15.1. Nesting between upb's limit of 100 levels and Python's recursion limit still differs by runtime, as it did in 0.15.1: upb refuses the payload (exit 2) and pure-Python reads it |
+> | *(pure-Python)* `diff`, `storage scan`, `storage count` or `forensics match` over a payload that holds a repeated message-typed extension whose element type the message reaches through no declared field | parses the payload and answers as under upb (identical payloads: `diff` exits 0, `storage count` prints the count, `forensics match` ranks the candidate), instead of an `AttributeError` traceback and exit 1 |
+> | any command given an editions schema while the installed `protobuf` is 4.25 | exits 2 naming the file and the installed protobuf (`lint`: `error[lint-bad-input]` for a descriptor set; for `--proto`, `error[lint-compile-failed]`, after a `diagnostic[unexpected]` line naming the refusal or, where the compiler rejects `edition` itself as `protoc` 3.21 does, after the compiler's error), instead of answering from a schema with every feature read as unset: for example `diff` exiting 0 with `Messages are equal.` over payloads that differ inside a `DELIMITED` field. protobuf 5.26 and later are unaffected |
 > | a message payload carrying a proto2 string that is not UTF-8 (or an editions string with UTF-8 validation off), at any depth, under upb | `diff` exits 2 on binary input instead of comparing the raw bytes (exit 0 or 1); `storage` counts the record as a fault under `--on-error` (`count` exits 2 instead of 0 with the record counted), and `to_parquet` raises `IncompleteScanError` instead of a raw `ValueError` from the Arrow converter; `forensics match` ranks the candidate `decode_error` instead of `clean`, and exits 2 when no candidate parses. Under pure-Python, `diff` already exited 2 for such a payload; `storage` and `forensics match` crashed with exit 1 (the row above), and `to_parquet` raised a raw `UnicodeDecodeError` |
 > | `diff --format json` | `schema_version` `"0.1"` → `"0.2"`; `equal` is `false` for a truncated comparison or one carrying an error diagnostic; new keys `complete`, `truncated_paths` and per-difference `annotations` |
 > | `compat check\|ci\|history --format json` over a check that raised an error diagnostic but found nothing | `compatible` is `false` instead of `true`; every compat payload gains `complete`. The exit code was already 2 |
@@ -84,14 +92,115 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(API)* appending to a collection field after construction (`report.findings.append(…)`) | raises `AttributeError`: the field is a tuple, not the caller's list |
 > | *(API)* `get_option_value` on a schema loaded from a descriptor set | returns the option's value where it returned `None`, also when a different option on the element is malformed; an option whose own bytes do not parse, or that holds a string that is not UTF-8, raises `DecodeError` naming it |
 > | *(API)* `get_option_value` on a proto2 string option (or a message option holding one) that is not UTF-8, under upb, read from descriptors in the default pool | raises `DecodeError` naming the option instead of returning `bytes` |
+> | *(API)* `get_option_value` on a closed-enum custom option holding a number its enum does not declare, under upb, read from descriptors in the default pool (generated code) | returns `None`, as pure-Python already did, instead of `0` |
+> | *(API)* `get_option_value` with an option path holding a NUL character (`"pkg.opt\x00x"`), under upb, read from descriptors in the default pool | returns `None`, as pure-Python already did, instead of the value of the option named before the NUL |
+> | *(API)* `get_option_value` on a custom option whose extension is typed as a map entry, in a pool you built yourself (protokit's loaders now refuse such a schema, as a row above says) | raises `DecodeError` naming the option instead of returning `None`; an element that does not carry the option still reads `None` |
 > | `lint` custom annotation rules and option-reading rules (`field_behavior`) on an element where another option's bytes do not parse, or hold a string the runtime rejects as not UTF-8 (a proto3 one, or any one under pure-Python) | the rule runs, and the run exits 0 or 1 by its findings, instead of failing with `rule_exception` and exit 2 |
+> | *(pure-Python)* `lint` custom annotation rules and `options/field-behavior-consistent` on an element that carries a repeated message-typed option (the shape of `(google.api.resource_definition)`), every byte well formed | the rule runs, and the run exits 0 or 1 by its findings, instead of failing with `rule_exception` and exit 2; `options/field-behavior-consistent` on an element carrying a message-set valued option exits by its findings instead of a `NameError` traceback and 1 |
 > | `lint` custom annotation rules on a proto2 string option (or a message option holding one) that is not UTF-8, under upb | the rule fails with `rule_exception` and the run is `INCOMPLETE` (exit 2), instead of passing or comparing the bytes; pure-Python already did this |
+> | `lint` custom annotation rules on a closed-enum option holding a number its enum does not declare, under upb | the option reads as absent (`custom-annotation-absent`, exit 1 at error severity), as under pure-Python, instead of reading as the value `0`: no finding when `allowed_values` names that value, `custom-annotation-value-mismatch` otherwise |
+> | `lint` with a custom annotation rule whose `option` names an extension of an ordinary message, not of an options type, over a descriptor set that does not include `google/protobuf/descriptor.proto` | exits 2 (a `rule_exception` warning naming the extension and the type it extends, then `error[lint-analysis-incomplete]`) instead of 0 with no finding and no warning. With `descriptor.proto` in the set it already exited 2 |
 > | `lint` over a descriptor set that lists a file before one it imports, or over several sets passed with the importing one first | under upb, lints the files (exit 0 or 1) instead of exiting 2 with `error[lint-missing-imports]`; pure-Python already linted them. An import cycle, a file that imports itself included, exits 2 with `error[lint-pool-conflict]` naming the cycle, instead of `error[lint-missing-imports]` under upb and a `RecursionError` traceback and 1 under pure-Python |
 > | `lint --proto` given a file through a path that steps back out of an include with `..` (`proto/a/../b/bad.proto` with `-I proto`) | lints that file (exit 0 or 1) instead of skipping it and exiting 0 on the other files alone |
-> | `lint --proto` given a file the compiler emits under a name lint did not predict (under protoc, a `-I VIRTUAL=DIR` mapping; under either compiler, an absolute file path whose include is written with a doubled leading slash, `-I //abs/dir`) | exits 2 (`error[lint-compile-failed]`, after a `not linted:` line naming the file) instead of skipping it and exiting 0 |
+> | `lint --proto` given a file the compiler emits under a name lint did not predict (under protoc, a `-I VIRTUAL=DIR` mapping; under either compiler, an absolute file path whose include is written with a doubled leading slash, `-I //abs/dir`) | exits 2 (`error[lint-compile-failed]`, after a `not linted:` line naming the file) instead of skipping it and exiting 0. This holds when nothing else in the compile takes the name lint predicted; when another input's compile emits a file under that name, the run still lints that file in place of the named one and exits by the other files' findings, as in 0.15.1 (Known issues) |
 > | `storage scan\|head\|count` (human or JSON) when reading the data file fails partway (an I/O error from a failing disk or a dropped mount), or when closing it fails after the last record | exits 2 with `Error: cannot read <file>: …` instead of a traceback and 1, under every `--on-error` mode; the records read before the error still reach stdout, `count` still prints its partial count, and `count --quiet` exits 2 instead of 1 ("zero matches") even after a match. `--format parquet` already exited 2 |
+> | `storage head -n 0`, which reads no record, when closing the data file fails | exits 0 with nothing on stderr, instead of a traceback and 1 |
 > | *(API, pure-Python)* the storage fidelity probe on a proto2 message missing a required field | reports `None` ("cannot measure") instead of a byte delta (`0` when the message held no unknown fields, their size otherwise) |
 > | *(API)* `check_compatibility` under upb, given a pool built with `AddSerializedFile` in which a field's options hold an `uninterpreted_option` with required fields unset (no protokit loader accepts such a file) | returns its report instead of raising `EncodeError` |
+
+### Known issues
+
+Open defects this release ships with, each with the release scheduled to fix
+it. The unknown-field and `extension_unresolved` cases U8 names below, and
+the *Still open* paragraph under Security, are not repeated here. Where an
+entry names a test, that test is a strict expected failure: it passes while
+the defect is there and fails once it is fixed, so the fix has to revisit the
+entry.
+
+- **`lint --proto` can lint another file in place of one it was given**
+  (audit finding C06-X1). Given an absolute file path, or an include,
+  written with two leading slashes (`//abs/dir`), lint predicts the file's
+  name wrongly. When another input's compile emits a file under the
+  predicted name, lint lints that file instead and exits by the other files'
+  findings, 0 in the measured case, with `--max-warnings 0` and every
+  `--format` agreeing. Under `protoc`, an include mapping (`-I VIRTUAL=DIR`)
+  does the same. A named file shadowed by a same-named file earlier on the
+  include path is not detected either. The `//` case behaved the same way in
+  0.15.1. Scheduled for 0.18.0. Test:
+  `tests/schema/test_audit_u14_compile_pins.py::test_c06_x1_double_slash_must_not_lint_a_different_file`.
+- **A `features`-only change passes `compat`** (C05-C1). Changing an edition
+  2023 field's `features`, such as `utf8_validation` from `NONE` to `VERIFY`,
+  is reported by no rule at any level: `compat check --level strict` prints
+  `COMPATIBLE` and exits 0, although under upb the new schema refuses bytes
+  the old one reads. `repeated_field_encoding`, `json_format` and a file-level
+  `features` change pass the same way. `options_changed` leaves `features` out
+  of the option bytes it compares on purpose, and no rule replaces it yet.
+  0.15.1 behaved the same way under upb. Scheduled for 0.18.0. No strict
+  test: what the fix should report is not designed yet;
+  `tests/core/test_extensions_default_pool.py` asserts today's answer and
+  names C05-C1.
+- **Three schema shapes still crash the pure-Python runtime** (C02-C1,
+  C02-C3). Each ends in a traceback and exit 1, not a typed error and exit 2,
+  as in 0.15.1: an edition later than the runtime implements (edition 2024
+  on protobuf 5.27: the set loads, and its first use raises `TypeError`); a
+  field named `DESCRIPTOR`, in `forensics match`, `forensics drift` and
+  `storage count`; and a valid chain of several hundred nested message types,
+  on both runtimes, the first time a command builds its class. The field
+  name is scheduled for 0.19.0, the other two after it. Tests:
+  `tests/core/test_audit_c_pools_pins.py::test_c02_c1_an_edition_later_than_the_runtime_implements_is_refused_at_load`
+  and `::test_c02_c3_get_message_class_on_a_valid_deep_chain_builds_or_refuses_typed`.
+- **Two descriptor sets still end the process under upb.** A set holding a
+  repeated `string` field with a default: a `get_option_value` call on it
+  ends the interpreter (exit 139) once protobuf's default pool declares an
+  extension of `FieldOptions`, where 0.15.1 returned `None`; a
+  `forensics match` ranking that reaches its tie-break, `forensics drift`,
+  `lint` and `compat check` end it as they did in 0.15.1. A set with a
+  negative `oneof_index` ends it inside protobuf's own `pool.Add` (`diff` and
+  `lint` measured), as in 0.15.1 (C02-C4b); pure-Python loads that set. The
+  `get_option_value` crash and the negative `oneof_index` are scheduled after
+  0.19.0. No test: a test cannot assert on a process that dies.
+- **Two pack loaders still let a pack decide the exit code.** A `lint
+  --rule-pack` whose `RULES` calls `sys.exit(0)` while lint reads it ends
+  the run with exit 0 and no output, findings or not; scheduled for 0.17.0.
+  A `--formatter-module` pack whose exception at import exits while protokit
+  formats it ends `compat` or `diff` with exit 0 and no output, the case the
+  compat rule-pack loader now closes (C12-C1); scheduled for 0.19.0. Both
+  behaved the same way in 0.15.1. Tests:
+  `tests/schema/lint/test_audit_v_lint_pins.py::test_rule_pack_exiting_while_rules_are_read_exits_2_naming_the_pack`
+  and
+  `tests/formatters/test_audit_v_formatter_pins.py::test_formatter_twin_a_pack_exception_cannot_decide_the_exit_while_it_is_formatted`.
+- **Under upb, a closed-enum extension holding a number its enum does not
+  declare reads as set, with the value 0.** `diff` reports it as
+  `UNKNOWN_0(0)` and exits 1 where pure-Python exits 0 (a *known gap* row in
+  the table; scheduled for 0.17.0), and `storage scan --format json` fails to
+  render the record or prints the enum's name for 0 where it declares one, as
+  in 0.15.1 (scheduled for 0.19.0). Test:
+  `tests/message/test_audit_u8_differ_pins.py::TestClosedEnumExtensionWithAnUndeclaredNumber::test_extension_holding_an_undeclared_number_compares_equal`.
+- **`treat_as_set` drops the caller's presence mode** (C08-C2, and C08-C2b
+  through a proto2 group, which is new in this release). Under
+  `MessageFieldComparison.EQUAL`, set pairing compares elements in the
+  default mode, so an element whose field is unset pairs with one whose field
+  is set to its default (a *known gap* row in the table). Scheduled for
+  0.17.0. Test:
+  `tests/message/test_audit_u8_differ_pins.py::TestC08C2TreatAsSetDropsStrictPresence::test_strict_presence_must_survive_set_pairing`.
+- **A string default that is not UTF-8 splits the runtimes.**
+  `optional string s = 1 [default = "\377"]` compiles with `protoc`; upb
+  builds the schema and reads its records, and pure-Python refuses it at
+  compile with exit 2, as in 0.15.1. Scheduled after 0.19.0. No test: whether
+  the fix should refuse such a schema on both runtimes or read it on both is
+  not decided.
+- **On protobuf 4.25 under upb, an editions file in a pool you build
+  yourself is not checked for strings that are not UTF-8.** That runtime does
+  not implement editions and reports such a file as proto3, so the string
+  check reads none of its strings. protokit's own loaders refuse an editions
+  file on 4.25, so only a pool passed to the Python API can hold one.
+  Scheduled for 0.18.0. No test: only protobuf 4.25 with a hand-built
+  editions pool reaches it, and no CI cell builds one yet.
+- **A pool you build yourself is not checked for an extension typed as a map
+  entry.** protokit's loaders refuse such a schema (see the upgrade table);
+  a pool built by hand and passed to the Python API is used as it is.
+  Scheduled after 0.19.0. No test: whether the API should refuse such a pool
+  or read it is not decided.
 
 ### Security
 
@@ -167,9 +276,12 @@ All notable changes to `protokit` are documented here. Format loosely follows
   under `treat_as_map` / `treat_as_set`, and `--max-depth` truncation. The
   change reaches every caller of `MessageDifferencer`, including
   `proto_match` / `expect_proto` and the pytest `proto_matcher` fixture, and
-  differ hooks now see a group's inner fields as they do a message's. A
-  failing pytest `==` on such messages now lists the inner fields that
-  differ; whether it fails is still decided by protobuf equality. A field
+  differ hooks now see a group's inner fields as they do a message's. With
+  `pytest_addoption` imported beside `pytest_assertrepr_compare` in
+  `conftest.py`, a failing pytest `==` on such messages now lists the inner
+  fields that differ (the README's one-name import still gives pytest's own
+  output and a warning, as in 0.15.1); whether it fails is still decided by
+  protobuf equality. A field
   that is a group on one side and a message on the other is still reported
   as one `TYPE_CHANGED`.
 
@@ -234,6 +346,57 @@ All notable changes to `protokit` are documented here. Format loosely follows
   upb and is accepted, where pure-Python refuses it, because the walk reads
   the parsed message. The descriptor-set check has the same limit.
 
+- **That string check asks each field, and reports only what a record sets**
+  (audit findings C02-C4a, C01-C1, C01-C3). As first written, it learned a
+  file's syntax by re-reading the file's serialized form through protobuf's
+  default pool, and it reported a planned field whether or not the record
+  set it. Three inputs 0.15.1 read went wrong with it. Under upb, a
+  descriptor set holding a repeated `string` field with a default made
+  `storage count`, `scan` and `head`, `diff` and a one-candidate
+  `forensics match` end the interpreter (exit 139). On both backends, an
+  extension registered in the default pool at one of the schema's option
+  numbers, with another type, made a scan, `diff` and a one-candidate
+  `forensics match` raise `DecodeError` on a valid record. And under upb, a
+  schema whose string default is not UTF-8 made every record that left the
+  field unset a fault. All three read as in 0.15.1 again. A string field now
+  answers for itself: on protobuf 5.26 and later through its own
+  `utf8_validation` feature, on 4.25 through its file's syntax, read once per
+  file with that runtime's deprecation warning hushed, one thread at a time.
+  So a map's key and value answer as fields of the file that declares the map
+  entry: under upb, a proto3 message whose map entry type a proto2 file
+  declares now faults on a key or value that is not UTF-8, as it already did
+  under pure-Python (only a hand-built set has that shape). Not changed: the
+  default-pool case holds for a schema loaded before the other registration
+  (loaded after it, the loaders refuse the set, as in 0.15.1); the check
+  still asks whether a field is a map through options read with the default
+  pool; and on the repeated-string set, some other commands still end the
+  process (Known issues).
+
+- **A field named after a method or private attribute of the message class no
+  longer breaks the reads this release added** (audit findings C01-C4,
+  C04-X5, C04-2, C17-C6b). The string check above, the extension comparison in
+  `compare` and `diff`, and the fidelity measurement in `forensics match` call
+  methods on a message, and a field of the same name hides the method on the
+  instance. Under pure-Python, a storage scan or `forensics match` of a type
+  with a message field named after one of the class's own underscore
+  attributes (`_Modified` and `__str__` among them) raised from the string
+  check. Under upb, on a type with an extension range, `compare` and `diff`
+  raised `TypeError` for a field named `ListFields`, and, once an extension
+  was set, for a field named `Extensions` or `HasExtension` even when it was
+  ignored; in a generated class, a nested type of one of those names did the
+  same, and one named `HasField` or `ListFields` made a storage scan raise on
+  every record. A two-candidate `forensics match` with a field named
+  `IsInitialized` ended in a traceback. Each reads the method from the class
+  now, and each case measured answers as 0.15.1 did, with the extension
+  differences 0.15.1 did not compare now reported. This is not support for
+  such names, which still fail elsewhere as they did in 0.15.1: under
+  pure-Python a field named
+  `ListFields` is misread unless it is ignored, `diff` fails on an
+  underscore-named field, and a field named `Extensions` reads as the
+  extension mapping; a field named `ByteSize`, `CopyFrom` or `DESCRIPTOR`
+  still ends `forensics match` in a traceback on one backend or both. Those
+  are scheduled for 0.19.0.
+
 - **`lint` accepts a complete descriptor set in any file order** (audit
   finding R23-C2). The loader added files to the pool in the order the
   inputs listed them. A set that listed a file before one it imports, or
@@ -251,8 +414,9 @@ All notable changes to `protokit` are documented here. Format loosely follows
   read (`error[lint-bad-input]`) is reported before a missing import in an
   earlier one. Both exit 2.
 
-- **`lint --proto` lints every file it is given, or fails** (audit finding
-  R15-X1). Lint predicted the name the compiler would give each file from
+- **`lint --proto` lints a file it reaches through `..`, and fails on most
+  files it cannot match** (audit finding R15-X1). Lint predicted the name the
+  compiler would give each file from
   the include paths, and linted only the files whose predicted name came
   back. A path that steps back out of an include through `..`, such as
   `proto/a/../b/bad.proto` with `-I proto`, was predicted as
@@ -262,10 +426,15 @@ All notable changes to `protokit` are documented here. Format loosely follows
   (checked against protoc 3.21.12 and protoxy 0.7). A named file that still
   does not come back, such as one protoc renames through a
   `-I VIRTUAL=DIR` mapping, now fails the run: a `not linted:` line names
-  each such file, then `error[lint-compile-failed]` and exit 2. A named
-  file shadowed by a same-named file earlier on the include path is still
-  not detected. `compat`, `diff` and `storage` use only the compiled schema
-  and are unchanged.
+  each such file, then `error[lint-compile-failed]` and exit 2. That check
+  counts names, so it holds only while nothing else in the compile takes the
+  name lint predicted: when another input's compile emits a file under it,
+  for a path or include written with two leading slashes, or under `protoc`
+  for an include mapping, lint lints that file in place of the named one
+  and exits by the other files' findings, as 0.15.1 did (Known issues). A
+  named file shadowed by a same-named file earlier on the include path is
+  still not detected. `compat`, `diff` and `storage` use only the compiled
+  schema and are unchanged.
 
 - **A `.proto` file name can no longer print its own `error[lint-…]` line.**
   In `--proto` mode, lint printed each compile diagnostic's message to stderr
@@ -286,6 +455,9 @@ All notable changes to `protokit` are documented here. Format loosely follows
   exits 2 with `Error: cannot read <file>: …`, under every `--on-error` mode.
   A closed stdout (`scan … | head -1`) is a write error, not a read error,
   and still exits 1 quietly, as before. `--format parquet` already exited 2.
+  `head -n 0` reads no record, so an error closing the file there is not a
+  read that failed: it exits 0 with nothing on stderr, where 0.15.1 printed a
+  traceback and exited 1 (audit finding C16-X1).
 
 - **`compat` now compares declared proto2 extensions and the fields inside
   groups.** The checker compared only a message's declared fields and
@@ -391,13 +563,17 @@ success verdict, human or machine, asks it first.
   rule ran. A consumer pinned to `"0.6"` sees a run flip from success to failure
   with an unchanged findings list, which is what the field now means. The JSON
   payload's shape is unchanged.
-- **A rule pack's own text can no longer forge a line.** A finding's message,
+- **A rule pack's finding text can no longer forge a line.** A finding's message,
   its rule id and its path are written by whichever rule pack produced it, and
   every human renderer interpolated them raw: a message containing a newline
   printed an `error[...]:` line at column 0 in `compat`, `history`, `bisect`
   and `lint` output, next to the stable prefixes CI greps for. They are
   flattened now, like the other plugin-authored channels. Machine formats are
-  unaffected: XML and JSON encode a newline without forging anything.
+  unaffected: XML and JSON encode a newline without forging anything. One
+  channel a pack writes is still printed raw, as in 0.15.1: a profile name the
+  pack declares, on the stderr `info[lint-pack-profiles]:` line that lint
+  prints for an unknown `--profile`, where a newline in it starts a line of
+  its own.
 - The `protokit diff` human output with differences replaces its separate
   `Errors:` block and truncation footer with one `Not trustworthy` block, and
   an untrusted result with no differences lists its warnings before that block
@@ -428,30 +604,46 @@ Every command's exit gate consults `protokit._trust` — the same predicate the
 renderers adopted in U7 — so a command's exit code and its own output can no
 longer disagree about whether the run finished. Exit 1 keeps its meaning: the
 tool ran and found a problem. The predicate reads what a run recorded; an input
-skipped without a record still exits 0. Two cases known in this release: `diff`
-does not compare unknown fields, and `lint` does not count the
-`extension_unresolved` warnings (see *Still open* under Security above).
+skipped without a record still exits 0. Three cases known in this release:
+`diff` does not compare unknown fields, `lint` does not count the
+`extension_unresolved` warnings (see *Still open* under Security above), and
+`lint --proto` can lint another file in place of one it was given (see Known
+issues above).
 
 - **`protokit storage scan` / `head` / `count` exit 2 when records were
   dropped.** `--on-error skip` and `--on-error warn` recover past a corrupt
   record and continue; both then exited 0, so a scan that silently skipped
   records was indistinguishable from one that read the whole file. The good
-  records still reach stdout exactly as before, and `skip` is still silent
-  about the individual faults — what changed is only whether the process
-  claims the scan succeeded. `--on-error raise` (the default) is unchanged.
+  records still reach stdout exactly as before, and `skip` still prints no
+  line per fault. What changed is whether the process claims the scan
+  succeeded: under both modes the run ends with one `Error:` line,
+  `at least N record(s) were not read`, naming the first fault. The count is
+  a lower bound, because after a damaged frame the scan cannot tell how many
+  records the bytes held (audit finding C16-C2). Where a fault has no known
+  offset, that line and `warn`'s per-fault `Warning:` line say
+  `offset unknown`, where 0.15.1's `Warning:` line said `offset None`
+  (C16-C3). `--on-error raise` (the default) is unchanged.
 - **`protokit compat history` / `bisect` reject an unresolvable
   `--proto-file`** (audit finding U15-1). A path that does not exist at the
   range's NEW endpoint enumerated zero commits and exited 0 with
   `no commits touch …`, hiding any break in the range. No typo is needed: a
   proto renamed in-repo let a checked-in CI invocation pass forever. Both now
   pre-flight the path and exit 2, as `check --since` already did.
-- **A rule pack can no longer decide the process exit code** (audit finding
-  U15-2). A pack whose module body called `sys.exit(0)` terminated the run with
-  its own code — exit 0, empty output, on a genuinely breaking schema — because
-  `SystemExit` does not derive from `Exception`. A pack raising anything other
-  than `AttributeError`/`TypeError` while its `RULES` were read escaped as a
-  traceback and exited 1, the code reserved for INCOMPATIBLE. Both are exit 2
-  now — and so are the two the same class hid one level further in:
+- **A compat rule pack can no longer decide the exit code while it is
+  imported, while its `RULES` are read, or while protokit formats its error**
+  (audit findings U15-2, C12-C1). A pack whose module body called
+  `sys.exit(0)` terminated the run with its own code — exit 0, empty output,
+  on a genuinely breaking schema — because `SystemExit` does not derive from
+  `Exception`. A pack raising anything other than `AttributeError`/`TypeError`
+  while its `RULES` were read escaped as a traceback and exited 1, the code
+  reserved for INCOMPATIBLE. And the loader's error line quoted the pack's
+  exception, so the pack's own `__str__` ran after the catch: one that called
+  `sys.exit(0)` made the run exit 0 with no output, and one that raised made
+  it a traceback and exit 1. All of these are exit 2 now, the last with a
+  fixed text when the pack's own cannot be had. This covers
+  `--compat-rule-pack` only: lint's `--rule-pack` and `--formatter-module`
+  each still have a case where a pack decides the exit (Known issues). The
+  same class hid two more cases one level further in, also exit 2 now:
   - **A rule *function* calling `sys.exit()` while the check runs.** The loader
     was not the only boundary: the per-rule dispatch inside the checker caught
     `Exception`, so an exiting rule unwound past it and still became the process
@@ -471,6 +663,21 @@ does not compare unknown fields, and `lint` does not count the
 - **A missing `git` binary is a tooling error, not a schema break** (audit
   finding U15-4). `check --since`, `ci --base` and `bisect` exited 1 on a
   machine without git; only `history` reported it correctly. All four exit 2.
+- **A ref that starts with a dash is refused before git can read it as an
+  option** (audit finding C12-L1). `check --since` and `--against-base`,
+  `ci --base`, both endpoints of `history --range` and `bisect --old` /
+  `--new` handed their value to git, which reads a dash-leading argument as
+  an option wherever it stands. `history --range --output=X..HEAD` exited 0
+  with `no commits touch …`, and an upstream branch named `--fork-point`,
+  picked up by `check --against-base` or `ci` with no base given, made
+  `git merge-base` answer HEAD, so a breaking change compared COMPATIBLE and
+  exited 0. Each such value now exits 2 with `<flag> '<value>': a ref cannot
+  start with '-', which git would read as an option`, and never reaches git.
+  The other forms already exited 2 once git had run, with `unknown git ref`
+  or `bad revision`; only the message changes. A branch whose name starts
+  with a dash is still reachable as `heads/-name`. The guard is narrow:
+  `protokit.schema.git` called from Python still hands git what it is given,
+  and a ref that names no commit is not refused here (scheduled for 0.18.0).
 - **A rule pack's `print()` no longer corrupts machine output or defeats
   `--quiet`** (audit finding U15-3). Rule functions run in-process while the
   report is built and nothing separated their stdout from the CLI's, so one
@@ -583,7 +790,9 @@ re-read by hand.
   `options_changed` now read the option's bytes from the file the descriptor
   was built from; `options_changed` compared the `7` above with an `8`, both
   read as `1`, and reported nothing. Pure-Python read all of these correctly.
-  One thing nearby is unchanged, on both backends, and
+  (`options_changed` leaves a field's `features` out of the bytes it
+  compares, so a change to `features` alone is still reported by no rule;
+  see Known issues.) One thing nearby is unchanged, on both backends, and
   `tests/core/test_audit_default_pool_reparse_pins.py` pins it: protokit
   itself still parses a schema's files through that registry. A descriptor
   set loaded *after* an unrelated extension took one of its numbers is
@@ -604,13 +813,58 @@ re-read by hand.
   on that field: both serialized the options with protobuf's required-field
   check. They now serialize the bytes as they are.
 
-*Upgrade impact:* in a process whose default pool declares no extension that
-overlaps the schema's, no built-in command's verdict or findings change — no
-built-in check calls the helper, and the lint rules already re-read options
-through the schema's pool. One
-message does: a `custom/<suffix>` rule configured for an element kind its option
-cannot annotate still reports a `rule_exception` warning, but its text is now the
-same on both protobuf backends instead of each backend's own wording. Where the
+- **A custom-option read answers for the option its path names** (audit
+  findings C02-C2, C01-C2). Under pure-Python, a sub-field path such as
+  `pkg.rules.max` was answered from a sibling extension with the same last
+  name, `(pkg.max)`, and so was a path whose middle segment named an enum, an
+  enum value, a service or the extension itself; it now reads the sub-field,
+  or `None`. Under upb, a closed-enum option holding a number its enum does
+  not declare read as `0`, where pure-Python read it as absent; it now reads
+  as absent on both backends, through `get_option_value` and the custom
+  annotation rules. For a schema loaded from a descriptor set that is
+  0.15.1's answer; for descriptors from generated code, and for `lint`, it is
+  a change under upb, and the upgrade table has both rows. Under upb, a path
+  holding a NUL character was read up to the NUL; it now reads `None`, as
+  under pure-Python. Not changed: lint's custom annotation rules still
+  resolve a sub-field path to the sibling extension under pure-Python
+  (scheduled for 0.17.0), and a path with a leading dot still reads
+  differently on the two backends.
+
+- **An option typed as a map entry is refused by name.** protobuf has no map
+  extensions, but a hand-written descriptor set can declare an extension of
+  an options message whose type is a map entry. Under upb, reading such an
+  option ended the interpreter, in `get_option_value` and in `protokit lint`
+  with a custom rule naming it, where 0.15.1 returned `None` and exited 2.
+  The read now raises `DecodeError` naming the option, on both backends, also
+  for such an extension inside the option's own message; an element that
+  does not carry the option still reads `None`. protokit's loaders now refuse
+  such a set outright (next entry), so this is what a pool you build yourself
+  gets.
+
+- **Every loader refuses an extension typed as a map entry.** A hand-written
+  descriptor set can declare one, and so can a `.proto` that sets
+  `option map_entry = true` by hand, which `protoc` 3.21 and protoxy compile
+  (`protoc` 36 refuses it). Under upb, a payload setting such an extension
+  ended the interpreter in `diff`, `storage` and `forensics match`, in the
+  string check this release added, where 0.15.1 exited 0 for `diff`,
+  `storage count` and `forensics match`. Every command that loads a
+  descriptor set or compiles a `.proto` now refuses the schema with exit 2 on
+  both backends, naming the extension and its map entry type (`lint`:
+  `error[lint-bad-input]` for a descriptor set). A pool you build yourself
+  and pass to the Python API is not checked (Known issues).
+
+*Upgrade impact:* of the first four entries, in a process whose default pool
+declares no extension that overlaps the schema's, one built-in verdict
+changes, for one input: a `custom/<suffix>` rule configured for an element
+kind its option cannot annotate, where the option extends an ordinary message
+and the descriptor set does not include `google/protobuf/descriptor.proto`,
+now reports a
+`rule_exception` warning and exits 2, where 0.15.1 reported nothing and exited
+0 (a row in the upgrade table). With `descriptor.proto` in the set, such a rule
+already reported the warning, and only its text changes: it is now the same on
+both protobuf backends instead of each backend's own wording. No other built-in
+command's verdict or findings change: no built-in check calls the helper, and
+the lint rules already re-read options through the schema's pool. Where the
 default pool does overlap, under upb, a `custom/<suffix>` or
 `options/field-behavior-consistent` rule now reports on options it read as
 absent in 0.15.1, and `compat` reports `options_changed` for an option change
@@ -619,7 +873,10 @@ or a checker plugin that gates on `get_option_value(...) is not None` over such 
 schema starts firing on annotations it silently skipped until now. Those
 annotations were always there; the helper could not see them. An option whose
 stored bytes do not parse as its declared type — a corrupt descriptor set — now
-raises `DecodeError` instead of reading as `None`.
+raises `DecodeError` instead of reading as `None`. The last three entries
+change what `get_option_value`, `lint` and every loader answer for the inputs
+they name, under upb or on both backends; each change has a row in the
+upgrade table.
 
 ### Fixed — BREAKING (U6: frozen result types stay frozen)
 
@@ -699,8 +956,9 @@ mapping is copied.
 
 ### Fixed — pure-Python protobuf runtime
 
-The three defects listed as known issues in the previous Unreleased entry are
-closed. Each was the same shape: protokit inferred a fact about the runtime
+The three defects an earlier version of this Unreleased entry listed as known
+issues (V34, V10 and V1) are closed; the *Known issues* section above is a new
+list. Each was the same shape: protokit inferred a fact about the runtime
 from an exception only the upb backend raises, so under
 `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` it silently took the wrong
 branch. All three now assert the fact explicitly, which also makes them
@@ -725,7 +983,8 @@ backend-neutral rather than merely fixed (KTD6).
   otherwise. It no longer depends on the `EncodeError` only upb raises (V1).
 - **A descriptor set the pure-Python runtime rejects now fails cleanly.** A set
   that parses but that the runtime refuses to build (an unreadable field
-  default, an out-of-range `public_dependency` or `oneof_index`) raised a raw
+  default, an out-of-range `public_dependency`, a `oneof_index` past the last
+  oneof) raised a raw
   `ValueError`, `IndexError` or `AttributeError` under the pure-Python runtime,
   where upb raises a typed error. So did a set the runtime cannot parse at all:
   a string that is not UTF-8 raised `UnicodeDecodeError`, and very deep nesting
@@ -736,6 +995,10 @@ backend-neutral rather than merely fixed (KTD6).
   failures, so each command exits 2 with an error message on both runtimes. The
   pure-Python runtime still accepts some sets that upb rejects, such as
   duplicate field numbers; protokit does not add its own validation for those.
+  One such set still ends the process under upb, as in 0.15.1: a negative
+  `oneof_index`, which upb's own `pool.Add` cannot survive and pure-Python
+  loads (Known issues). A set the pure-Python runtime loads and then fails on
+  at first use is not covered either (Known issues).
 - **A descriptor set with a file name that is not UTF-8 no longer crashes
   `protokit lint` under upb.** upb parses such a string and returns it as
   bytes, so the file loaded and a lint rule later failed reading its name,
@@ -750,7 +1013,14 @@ backend-neutral rather than merely fixed (KTD6).
   non-UTF-8 string already reached its parse error and exited 2),
   `protokit forensics match` crashed instead of ranking the candidate as
   `decode_error`, and `protokit storage` let the exception escape past
-  `--on-error`. All three now treat it exactly as a `DecodeError`.
+  `--on-error`. All three now treat it exactly as a `DecodeError`. That
+  includes the fidelity measurement `forensics match` takes of a candidate
+  the message parses under: a message nested a few hundred levels deep
+  through a `repeated` field can parse and then exhaust the stack while it is
+  measured, which ended the ranking in a traceback and exit 1 in 0.15.1, and
+  now ranks the candidate `decode_error` (audit finding C17-C4). A message
+  that parses but is nested too deep to print still ends `storage scan` with
+  `failed to render record` and exit 2, as in 0.15.1.
 
 - **A repeated message-typed extension no longer crashes the pure-Python
   runtime.** That runtime builds a message class only when asked, and nothing
@@ -759,9 +1029,10 @@ backend-neutral rather than merely fixed (KTD6).
   '_concrete_class'`. Singular message extensions, scalar ones and repeated
   scalar ones were unaffected, and so was upb. Two things changed:
   - **Payloads.** `protokit diff`, `storage scan`, `storage count` and
-    `forensics match` crashed with that traceback and exit 1 on any payload
+    `forensics match` crashed with that traceback and exit 1 on a payload
     holding such an extension, at the top of the message or anywhere inside
-    it, even when comparing a payload with itself. The class protokit
+    it, even when comparing a payload with itself, unless a field the message
+    declares has the extension's element type, which built the class first. The class protokit
     resolves for a message type now comes with the class of every
     message-typed extension the message can reach. That also lets a
     message-set item parse: its decoder raised `NameError` on an item whose
@@ -774,8 +1045,14 @@ backend-neutral rather than merely fixed (KTD6).
     and parses again. An option whose value is a message-set failed the
     same way with a different error, `NameError: name 'message_factory' is
     not defined`, from protobuf's own message-set decoder; the read finds
-    the missing class there too. 0.15.1 returned `None` for all of these
-    (see U5), so neither error shipped.
+    the missing class there too. 0.15.1's `get_option_value` returned `None`
+    for all of these (see U5), so it never raised either error. 0.15.1's lint
+    rules read options by hand and did, under pure-Python: a custom
+    annotation rule or `options/field-behavior-consistent` on an element
+    carrying a repeated message-typed option failed with `rule_exception` and
+    exit 2, and `options/field-behavior-consistent` on an element carrying a
+    message-set valued option ended in the `NameError` traceback and exit 1.
+    Both now run, and the upgrade table has the row.
 
 `tests/pure_python_expected_failures.txt` is now empty: the full suite passes
 under the pure-Python runtime with no known-failure list, and the
@@ -803,7 +1080,10 @@ under the pure-Python runtime with no known-failure list, and the
   now refuses an editions file on a runtime that does not apply its
   features, with a message naming the file and the installed protobuf:
   `diff`, `compat`, `storage` and `forensics` exit 2, and `lint` exits 2
-  with `error[lint-bad-input]`. The check asks the runtime, not its version
+  with `error[lint-bad-input]` for a descriptor set and
+  `error[lint-compile-failed]` for `--proto` (after a `diagnostic[unexpected]`
+  line naming the refusal; `protoc` 3.21 rejects `edition` itself before
+  protokit's check is reached). The check asks the runtime, not its version
   number. Measured: 4.25.9 ignores features; 5.26.1, 5.27.0, 5.27.5 and
   5.29.5 apply them. A pool you build yourself and hand to the Python API
   is not checked.

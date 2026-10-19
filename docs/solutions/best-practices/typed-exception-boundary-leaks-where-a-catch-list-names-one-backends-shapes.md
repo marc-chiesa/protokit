@@ -88,10 +88,12 @@ option nested past the interpreter's stack made the first parse raise it, which
 skipped the fall-back, so that option and every valid option on the same
 element raised `RecursionError`. Both sites now reach `MergeFromString`
 through `_merge`, at the end of the same file, so that is where the grep
-finds the call; the two lines cited above are its callers. The grep now also finds
-`FileDescriptorProto.FromString(file.serialized_pb)` twice in
+finds the call; the two lines cited above are its callers. For a while the grep
+also found `FileDescriptorProto.FromString(file.serialized_pb)` twice in
 `src/protokit/_fieldview.py` (in `may_hold_unvalidated_string` and
-`StringWalk._is_proto3`). Both re-read a file the pool has already built.
+`StringWalk._is_proto3`), each re-reading a file the pool had already built. It
+finds neither now (fixed for audit findings C02-C4a and C01-C1): the string walk
+asks each field whether upb validated it (`_unvalidated`) and re-reads no file.
 
 The build sites are `add_and_resolve`
 (`src/protokit/_pools.py:182-183`) and lint's inline copy
@@ -103,8 +105,8 @@ goes through `add_and_resolve` or `build_pool`.
 (provenance — observed on protobuf 5.27.5 under both backends; the exception
 types can change between releases, and what stays re-asserted on both backends
 is the outcome, a typed error or a clean load, by the regression tests named below.
-No test re-asserts the two payload rows marked "open": there the backends reach
-different outcomes, and section 4 says why they are left that way.)
+No test re-asserts the payload row marked "open": there the backends reach
+different outcomes, and section 4 says why it is left that way.)
 
 | Site kind | Input | upb | pure-Python |
 |---|---|---|---|
@@ -121,7 +123,7 @@ different outcomes, and section 4 says why they are left that way.)
 | Payload parse | nesting past both parsers' limits (2000 messages deep) | `DecodeError` | `RecursionError` |
 | Option re-read | a custom option nested past both parsers' limits | `DecodeError` | `RecursionError` |
 | Payload parse (open) | nesting between the two limits (101 to a few hundred messages deep) | `DecodeError` | parses |
-| Payload parse (open) | a set extension of a `message_set_wire_format` message, when the extension's message class has not been built yet | parses | `NameError` from protobuf's own decoder |
+| Payload parse | a set extension of a `message_set_wire_format` message, when the extension's message class has not been built yet | parses | `NameError` from protobuf's own decoder (protokit's commands now build that class first; section 4) |
 | Lazy (after `Add`) | non-UTF-8 file name | `UnicodeDecodeError` wherever `.name` is read | (already rejected at parse) |
 
 The two parsers stop at different depths (provenance — protobuf 5.27.5 on
@@ -140,15 +142,15 @@ can only promise that a file which "does not parse or build" raises.
 ### 3. Build sites: `except Exception` around only the protobuf calls
 
 ```python
-# src/protokit/_pools.py:178-188
-# Broad on purpose: the try holds only the two protobuf calls, and their
-# rejection shapes vary by backend and version (see above). BaseException
-# (KeyboardInterrupt, SystemExit) is not caught and still propagates.
+# src/protokit/_pools.py:178-187
+# Broad on purpose: the try holds the two protobuf calls, whose rejection
+# shapes vary by backend and version (see above), and the map-entry check.
+# BaseException (KeyboardInterrupt, SystemExit) is not caught and propagates.
 try:
-    pool.Add(fd)
-    pool.FindFileByName(fd.name)
+    pool.Add(_honoured(fd))
+    _refuse_map_typed_extensions(pool.FindFileByName(fd.name))
 except Exception as exc:
-    raise DescriptorPoolError(
+    raise _refusal_kind(exc)(
         f"could not build file {fd.name!r} into the descriptor pool: {exc}"
     ) from exc
 ```
@@ -158,9 +160,15 @@ and lint's copy caught `(TypeError, ValueError, KeyError)`. Pure-Python's
 descriptor constructor raises whatever its internal code happens to trip over.
 `AttributeError: 'NoneType' object has no attribute 'values'` for a typeless
 field is one example. A list of those shapes can't be complete and could change
-in any protobuf release. The try contains nothing except the two protobuf calls,
-so a broad catch can't hide a protokit bug. The original exception stays on
-`__cause__`. Lint's copy uses the same form
+in any protobuf release. When this was written the try contained nothing except
+the two protobuf calls, so a broad catch could not hide a protokit bug. It now
+holds two protokit checks as well: `_honoured` refuses an editions file the
+installed protobuf cannot honour, and `_refuse_map_typed_extensions` refuses an
+extension typed as a map entry, which `_refusal_kind` keeps as
+`MapTypedExtensionError`, a `DescriptorPoolError`. A bug in either check would
+surface as a load refusal, not a traceback; the comment above the try says the
+map-entry check is inside it. The original exception stays on `__cause__`.
+Lint's copy uses the same form
 (`src/protokit/schema/lint/_cli_utils.py:413-422`), and its routing is
 unchanged. A `KeyError` or a missing-import marker goes to
 `error[lint-missing-imports]`, and everything else goes to
@@ -195,7 +203,15 @@ catch for two reasons:
   typed catch so a programming error does not become a data fault.
 
 Every parse site gives all three shapes the same handling it gives
-`DecodeError`. That makes a parse *failure* typed on both backends. An earlier
+`DecodeError`. That makes a parse *failure* typed on both backends.
+`fit_candidate` also gives that handling to a `RecursionError` from the
+fidelity probe it runs after a clean parse
+(`src/protokit/forensics/_match.py:146-150`). Under pure-Python a message
+nested a few hundred deep through a `repeated` field parsed, then overflowed
+the stack in the probe, and `forensics match` ended with a traceback and exit 1
+(audit finding C17-C4); it now ranks that candidate `decode_error`
+(provenance — protobuf 5.27.5, pure-Python; the depth that fails moves with
+the stack, so no number is given). An earlier
 version of this section went further and said the result doesn't depend on the
 backend. A re-audit disproved that: a catch tuple can only convert an exception,
 and for three kinds of payload one backend raises nothing, or raises a shape the
@@ -235,11 +251,17 @@ text on pure-Python. The outcome is re-asserted on both backends by
 Two limits of the walk, each measured on upb:
 
 - It reads only fields that can hold an unvalidated string, and skips a type
-  that has none, such as one built only from proto3 files. That rule
-  (`may_hold_unvalidated_string`) assumes protobuf's standard feature defaults.
-  A caller-built pool given custom `FeatureSetDefaults` that turn proto3
-  validation off gets `bytes` back from upb, and the walk skips the type.
-  protokit's own loaders never set custom defaults.
+  that has none, such as one built only from proto3 files. Each string field
+  answers for itself (`_unvalidated`). On protobuf 5.26 and later the answer is
+  the field's own resolved `utf8_validation`, so a caller-built pool given
+  custom `FeatureSetDefaults` that turn proto3 validation off is walked, and
+  the `bytes` upb hands back are found; the rule used to assume the standard
+  defaults and skip that type (provenance — measured on protobuf 5.27.5 and
+  5.29.6 under upb; pure-Python rejects the string while parsing). Protobuf
+  4.25 resolves no features, so there the answer is the file's syntax, and upb
+  on 4.25 reports an editions file as proto3: an editions file's strings in a
+  caller-built pool are not walked. protokit's own loaders refuse an editions
+  file on 4.25.
 - It reads the parsed message, not the wire. A singular proto2 string written
   twice, with a first copy that is not UTF-8 and a valid last copy, parses on
   upb to the last value, and the walk finds nothing. Pure-Python faults on the
@@ -257,8 +279,15 @@ A set extension of a message with `message_set_wire_format = true` parses on
 upb. Pure-Python's decoder raises
 `NameError: name 'message_factory' is not defined` from inside protobuf when
 the extension's own message class has not been built yet, and parses once it
-has. The commands never build that class first, so all three exit 1 with a
-traceback. `NameError` is the shape of a
+has. When this was written the commands never built that class first, so all
+three exited 1 with a traceback. They do now: the class protokit resolves for a
+message type comes with the class of every message-typed extension the message
+can reach, so `storage count`, `forensics match` and binary `diff` read such a
+payload and exit 0 on both backends, where released 0.15.1 under pure-Python
+exited 1 from all three (provenance — measured on protobuf 5.27.5, both
+backends; the class resolution is re-asserted by `TestAMessageSetParses` in
+`tests/core/test_repeated_message_extensions.py`). The fix builds the class; it
+does not widen the tuple. `NameError` is the shape of a
 programming error, and a tuple wide enough to catch it would also turn
 protokit's own bugs into data faults, which the narrow tuple exists to prevent.
 So the narrow tuple does not make every payload failure typed.

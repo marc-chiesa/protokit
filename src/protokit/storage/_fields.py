@@ -186,13 +186,13 @@ def _walk_path(
 # no-presence fields at their default was renamed across the pinned
 # ``protobuf>=4.25.0,<6`` range:
 #
-#   - ``including_default_value_fields`` — protobuf 4.21 .. 5.26 (old name).
-#   - ``always_print_fields_with_no_presence`` — protobuf 5.27+ (new name).
+#   - ``including_default_value_fields`` — protobuf 4.25 (old name).
+#   - ``always_print_fields_with_no_presence`` — protobuf 5.26.0+ (new name).
 #
-# On 5.27+ the old name raises ``TypeError`` (verified on 5.27.5), and using the
-# old, deprecated name on 5.27+ would emit a ``DeprecationWarning`` that
-# strict-warning CI promotes to an error (see the
-# ``deprecationwarning-poisons-except-exception`` learning). We therefore detect
+# On 5.26+ the old name raises ``TypeError`` (5.26.0, 5.27.5), and on 4.25 the
+# new name does; neither runtime warns first, so a call that names the wrong
+# kwarg fails outright rather than through strict-warning CI (measured on
+# 4.25.9, 5.26.0, 5.27.5 and 5.29.6). We therefore detect
 # the supported kwarg *once* by inspecting the signature and **prefer the new
 # name**. This single source of truth is reused by U4's ``--explicit-defaults``
 # render so it never re-implements the detection.
@@ -205,9 +205,9 @@ def _detect_no_presence_kwarg() -> str:
     """Return the no-presence-fill kwarg the installed protobuf accepts.
 
     Inspects ``json_format.MessageToDict``'s signature once and prefers the new
-    name (:data:`_NEW_NO_PRESENCE_KWARG`) so a 5.27+ runtime never sees the
-    deprecated old name (which would emit a ``DeprecationWarning`` that
-    strict-warning CI promotes to an error).
+    name (:data:`_NEW_NO_PRESENCE_KWARG`), the only one a 5.26+ runtime
+    accepts; there the old name raises ``TypeError`` rather than a
+    ``DeprecationWarning``.
 
     Raises:
         RuntimeError: the installed protobuf exposes neither kwarg (outside the

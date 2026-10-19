@@ -32,15 +32,30 @@ The other two D6 claims are guarded elsewhere, both closed in 0.16.0 U17a:
 A release adds the claims of the modules it touched; it does not wait for the
 others.
 
-The last three classes are claims 0.16.0 itself wrote and its re-audit found
+The next three classes are claims 0.16.0 itself wrote and its re-audit found
 too wide: that every descriptor set loads the same way on both runtimes, that
 a default-valued extension always equals an unset one, and that ``complete``
 and SARIF's ``executionSuccessful`` say the analysis covered its input. Their
 prose lives in ``README.md`` and ``CHANGELOG.md`` as well as in the source.
 
-The final class is a claim nobody rewrote. The README's Requirements section
-had fallen to two of the five runtime dependencies and had lost ``protobuf``'s
-upper bound; it is compared with ``pyproject.toml``, the list pip acts on.
+The Requirements class after them is a claim nobody rewrote. The README's
+Requirements section had fallen to two of the five runtime dependencies and
+had lost ``protobuf``'s upper bound; it is compared with ``pyproject.toml``,
+the list pip acts on.
+
+The classes at the end of the file are claims the second re-audit found too
+wide, in the release text and one docstring: that pure-Python ``compat`` and
+``forensics`` no longer crash on any schema, that ``FindFileByName`` forces
+every check, that ``lint --proto`` lints every file it is given, that a rule
+pack can no longer decide the exit code, three before-states wider than
+0.15.1 measured, and that a rule pack's text can no longer forge a line. Each
+narrowed claim names what is left open, and a behavioural half that measures
+an open defect is named ``..._currently_...``: it fails when the defect is
+fixed, which is the signal to drop that part of the prose. The last class
+checks that the release has its own ``### Known issues`` section, between the
+upgrade table and Security, naming the entries the release committed to.
+CHANGELOG checks there are scoped to the release section; README checks to
+the upgrade note they concern.
 
 KTD3 proof: a doc-shaped fix has no guarded branch to mutate. Each prose
 check was proven instead by using ``scripts/mutation_check.py`` to rewrite the
@@ -1100,3 +1115,513 @@ class TestProtobufFloor:
             f"{_CI_WORKFLOW_PATH.name} should install exactly that line, with "
             f'pip install "protobuf=={declared}.*". Move the two together.'
         )
+
+
+# ---------------------------------------------------------------------------
+# Second re-audit: release text it found too wide
+# ---------------------------------------------------------------------------
+
+_WHERE_NOTE_7 = "README upgrade note 7"
+_WHERE_RELEASE = "The CHANGELOG's 0.16.0 section"
+_WHERE_ADD_AND_RESOLVE = "add_and_resolve's docstring"
+
+
+_FileBuilder = typing.Callable[[descriptor_pb2.FileDescriptorProto], None]
+
+
+def _set_file(tmp_path: Path, build: _FileBuilder) -> Path:
+    """``build`` one proto3 file ``a.proto`` (package ``a``) and write it as a set."""
+    path = tmp_path / "schema.desc"
+    path.write_bytes(_one_file_set(build))
+    return path
+
+
+def _descriptor_named_field(fdp: descriptor_pb2.FileDescriptorProto) -> None:
+    fdp.message_type.add(name="M").field.add(
+        name="DESCRIPTOR", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL
+    )
+
+
+class TestPurePythonCrashNote:
+    """Note 7 names the crash that is gone and the ones that are not.
+
+    It used to say that under pure-Python ``compat`` and ``forensics`` "no
+    longer crash on any schema loaded from a descriptor set or ``.proto``".
+    The crash 0.16.0 removed is ``Descriptor does not contain serialization``
+    (V34). A set whose edition the runtime does not implement, a field named
+    ``DESCRIPTOR`` and a very long chain of nested message types still end in
+    a traceback, as in 0.15.1; the note and the CHANGELOG's Known issues say
+    so. When the ``DESCRIPTOR`` case is fixed,
+    ``test_a_field_named_descriptor_currently_ends_forensics_match_in_a_traceback``
+    fails: drop that example from the prose in the same change.
+    """
+
+    def test_a_field_named_descriptor_currently_ends_forensics_match_in_a_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        from click.testing import CliRunner
+
+        from protokit.cli import main
+
+        schema = _set_file(tmp_path, _descriptor_named_field)
+        message = tmp_path / "m.bin"
+        message.write_bytes(bytes([0x08, 0x01]))
+        result = CliRunner().invoke(
+            main, ["forensics", "match", "--schema", f"v={schema}", "--type", "a.M", str(message)]
+        )
+        if not _PURE_PYTHON:
+            assert result.exit_code == 0, (result.exit_code, result.output)
+            return
+        assert (result.exit_code, type(result.exception)) == (1, AttributeError), (
+            f"forensics match on a field named DESCRIPTOR now exits {result.exit_code} "
+            f"({result.exception!r}) under pure-Python; README note 7 and the CHANGELOG's "
+            "Known issues still name it as a crash, so rewrite them in the same change"
+        )
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "no longer crash with `Descriptor does not contain serialization`",
+            "Not every pure-Python crash is gone",
+            "a field named `DESCRIPTOR`",
+        ],
+    )
+    def test_note_names_the_crash_that_is_gone_and_the_ones_left(self, phrase: str) -> None:
+        assert phrase in _readme_upgrade_note(7), _missing(phrase, _WHERE_NOTE_7)
+
+    def test_changelog_row_scopes_the_exit_code_to_that_crash(self) -> None:
+        phrase = "that crash no longer decides the exit code"
+        assert phrase in _changelog_release(), _missing(phrase, _WHERE_RELEASE)
+
+    @pytest.mark.parametrize(
+        ("prose", "phrase"),
+        [
+            pytest.param(
+                lambda: _file_prose(_README_PATH), "no longer crash on any schema",
+                id="README-any-schema",
+            ),
+            pytest.param(
+                lambda: _file_prose(_README_PATH), "their exit code is now the check's own",
+                id="README-exit-code",
+            ),
+            pytest.param(_changelog_release, "no longer crash on any schema",
+                         id="CHANGELOG-any-schema"),
+            pytest.param(_changelog_release, "the exit code is now the check's own",
+                         id="CHANGELOG-exit-code"),
+        ],
+    )
+    def test_prose_does_not_claim_every_schema(
+        self, prose: typing.Callable[[], str], phrase: str
+    ) -> None:
+        assert phrase not in prose(), _returned(
+            phrase, "README.md or the CHANGELOG's 0.16.0 section",
+            "a field named DESCRIPTOR still ends forensics in a traceback under pure-Python",
+        )
+
+
+class TestAddAndResolveDocstring:
+    """``FindFileByName`` forces resolution, not every check the runtime makes later.
+
+    The docstring said ``FindFileByName`` "forces it here on both", read as a
+    promise that a set which loads is a set the runtime accepts. Under
+    pure-Python an edition-2024 file loads and raises ``TypeError`` at first
+    use (C02-C1, pinned in ``tests/core/test_audit_c_pools_pins.py``). When
+    that is fixed,
+    ``test_an_unimplemented_edition_currently_loads_and_fails_at_first_use``
+    fails: rewrite the docstring in the same change.
+    """
+
+    def test_an_unimplemented_edition_currently_loads_and_fails_at_first_use(self) -> None:
+        from tests.core.test_audit_c_pools_pins import _edition_set
+
+        data = _edition_set("EDITION_2024")  # skips where the runtime implements no editions
+        if not _PURE_PYTHON:
+            with pytest.raises(DescriptorPoolError):
+                pools.load_pool_from_bytes(data)
+            return
+        pool = pools.load_pool_from_bytes(data)
+        with pytest.raises(TypeError, match="EDITION_2024"):
+            pools.get_message_class(pool, "auditcpools.M")
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "``FindFileByName`` forces dependency and symbol resolution here on both, "
+            "not every later check",
+            "raises ``TypeError`` at first use",
+        ],
+    )
+    def test_docstring_states_what_the_lookup_forces(self, phrase: str) -> None:
+        doc = _prose(pools.add_and_resolve.__doc__)
+        assert phrase in doc, _missing(phrase, _WHERE_ADD_AND_RESOLVE)
+
+    def test_docstring_does_not_claim_the_lookup_forces_everything(self) -> None:
+        phrase = "``FindFileByName`` forces it here on both"
+        assert phrase not in _prose(pools.add_and_resolve.__doc__), _returned(
+            phrase, _WHERE_ADD_AND_RESOLVE,
+            "an edition the runtime does not implement loads under pure-Python",
+        )
+
+
+class TestLintProtoNamedFileNote:
+    """``lint --proto`` fails on a named file it cannot match, unless the name is taken.
+
+    0.16.0's entry was headed "``lint --proto`` lints every file it is given,
+    or fails". When another input's compile emits a file under the name lint
+    predicted for a ``//``-spelled path, lint lints that file instead and exits
+    0 (C06-X1, pinned in ``tests/schema/test_audit_u14_compile_pins.py``).
+    When that is fixed,
+    ``test_a_double_slash_path_currently_lints_another_file`` fails: drop the
+    Known-issues entry and the qualification in the same change.
+    """
+
+    def test_a_double_slash_path_currently_lints_another_file(self, tmp_path: Path) -> None:
+        import shutil
+
+        from tests.schema.test_audit_u14_compile_pins import (
+            _double_slash,
+            _lint,
+            _wrong_file_layout,
+        )
+
+        if not _compile_backend_available(shutil.which):
+            pytest.skip("needs protoxy or protoc to compile --proto inputs")
+        proto_dir, linted, importer = _wrong_file_layout(tmp_path)
+        result = _lint([str(importer), _double_slash(linted)], str(proto_dir))
+        assert result.exit_code == 0, (
+            f"lint now exits {result.exit_code} on the two-input '//' form; the CHANGELOG "
+            "still says it lints another file in place of the named one, so rewrite it"
+        )
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "lints that file in place of the named one",
+            "`lint --proto` can lint another file in place of one it was given",
+        ],
+    )
+    def test_changelog_states_the_gap(self, phrase: str) -> None:
+        assert phrase in _changelog_release(), _missing(phrase, _WHERE_RELEASE)
+
+    def test_changelog_does_not_promise_every_file(self) -> None:
+        phrase = "lints every file it is given, or fails"
+        assert phrase not in _changelog_release(), _returned(
+            phrase, _WHERE_RELEASE, "a '//' path can lint another file in place of the named one"
+        )
+
+
+def _compile_backend_available(which: typing.Callable[[str], str | None]) -> bool:
+    """Whether ``lint --proto`` can compile here: protoxy is importable or protoc is on PATH."""
+    from protokit import _cli_utils
+
+    return bool(_cli_utils._has_protoxy() or which("protoc"))
+
+
+def _breaking_sets(tmp_path: Path) -> tuple[Path, Path]:
+    """Two sets of ``acme.Thing``: the new one removes field ``b``, which breaks."""
+    def thing(fields: tuple[str, ...]) -> _FileBuilder:
+        def build(fdp: descriptor_pb2.FileDescriptorProto) -> None:
+            fdp.package = "acme"
+            message = fdp.message_type.add(name="Thing")
+            for number, name in enumerate(fields, start=1):
+                message.field.add(
+                    name=name, number=number, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL
+                )
+        return build
+
+    old, new = tmp_path / "old.desc", tmp_path / "new.desc"
+    old.write_bytes(_one_file_set(thing(("a", "b"))))
+    new.write_bytes(_one_file_set(thing(("a",))))
+    return old, new
+
+
+_EXITS_WHEN_FORMATTED_PACK = (
+    "import sys\n"
+    "\n"
+    "class ExitsWhenFormatted(Exception):\n"
+    "    def __str__(self):\n"
+    "        sys.exit(0)\n"
+    "\n"
+    "raise ExitsWhenFormatted()\n"
+)
+
+
+class TestCompatRulePackExitNote:
+    """A compat rule pack cannot decide the exit at its three load-time points.
+
+    0.16.0's entry was headed "A rule pack can no longer decide the process
+    exit code". The compat loader quoted a pack's exception in its error line,
+    so a ``__str__`` that called ``sys.exit(0)`` decided the exit after all
+    (C12-C1, closed). lint's ``--rule-pack`` loader still exits 0 when a pack's
+    ``RULES`` calls ``sys.exit(0)``, and ``--formatter-module`` has the same
+    formatting case, both pinned. The prose names the compat loader and the
+    three points, and the two loaders it does not cover.
+    """
+
+    def test_an_exception_that_exits_when_formatted_exits_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from click.testing import CliRunner
+
+        from protokit.cli import main
+
+        old, new = _breaking_sets(tmp_path)
+        pack = "doc_claims_exits_when_formatted"
+        (tmp_path / f"{pack}.py").write_text(_EXITS_WHEN_FORMATTED_PACK, encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        try:
+            result = CliRunner().invoke(main, [
+                "compat", "check", str(old), str(new), "--type", "acme.Thing",
+                "--compat-rule-pack", pack,
+            ], catch_exceptions=False)
+        finally:
+            sys.modules.pop(pack, None)
+        assert result.exit_code == 2, (result.exit_code, result.output)
+        assert f"failed to import rule pack '{pack}'" in result.stderr
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "A compat rule pack can no longer decide the exit code while it is imported, "
+            "while its `RULES` are read, or while protokit formats its error",
+            "This covers `--compat-rule-pack` only",
+        ],
+    )
+    def test_changelog_names_the_loader_and_the_three_points(self, phrase: str) -> None:
+        assert phrase in _changelog_release(), _missing(phrase, _WHERE_RELEASE)
+
+    def test_readme_names_the_lint_loader_left_open(self) -> None:
+        phrase = (
+            "a lint `--rule-pack` whose `RULES` calls `sys.exit(0)` while it is read still exits 0"
+        )
+        assert phrase in _readme_upgrade_note(5), _missing(phrase, "README upgrade note 5")
+
+    def test_changelog_does_not_cover_every_pack(self) -> None:
+        phrase = "A rule pack can no longer decide the process exit code"
+        assert phrase not in _changelog_release(), _returned(
+            phrase, _WHERE_RELEASE, "lint's --rule-pack and --formatter-module each keep a case"
+        )
+
+
+def _repeated_message_option_field() -> typing.Any:
+    """Field ``o.A.y`` carrying ``(o.tag) = 3`` and two ``(o.res)``, a repeated message option."""
+    def varint(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            low, value = value & 0x7F, value >> 7
+            out.append(low | (0x80 if value else 0))
+            if not value:
+                return bytes(out)
+
+    def record(number: int, wire_type: int, payload: bytes) -> bytes:
+        return varint(number << 3 | wire_type) + payload
+
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(descriptor_pb2.DESCRIPTOR.serialized_pb)
+    fdp = descriptor_pb2.FileDescriptorProto(
+        name="o.proto", package="o", syntax="proto2",
+        dependency=["google/protobuf/descriptor.proto"],
+    )
+    fdp.message_type.add(name="Res").field.add(
+        name="pattern", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL
+    )
+    options = ".google.protobuf.FieldOptions"
+    fdp.extension.add(
+        name="tag", number=50001, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL, extendee=options
+    )
+    fdp.extension.add(
+        name="res", number=50003, type=T.TYPE_MESSAGE, label=T.LABEL_REPEATED,
+        type_name=".o.Res", extendee=options,
+    )
+    field = fdp.message_type.add(name="A").field.add(
+        name="y", number=2, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL
+    )
+    res = [record(1, 2, varint(len(p)) + p) for p in (b"p1", b"p2")]
+    field.options.MergeFromString(
+        b"".join(record(50003, 2, varint(len(r)) + r) for r in res)
+        + record(50001, 0, varint(3))
+    )
+    pool.Add(fdp)
+    return pool.FindMessageTypeByName("o.A").fields_by_name["y"]
+
+
+class TestReleaseBeforeStates:
+    """Three before-states 0.16.0 stated wider than 0.15.1 measured (doc-truth N1, N2, N3).
+
+    * N1: 0.15.1's ``get_option_value`` returned ``None`` for a repeated
+      message-typed option, so it never raised; its lint rules did, under
+      pure-Python, so the error did ship, through ``lint``.
+    * N2: a repeated message-typed extension crashed pure-Python only where
+      no declared field built its element type's class first.
+    * N3: on 0.15.1 under pure-Python a missing import was already refused by
+      every command but ``lint``; only a type reference that resolves nowhere
+      moved for all of them.
+
+    The before-states live in a released wheel, so the behavioural halves
+    measure the after-state the prose states: the option reads on both
+    backends, and ``lint`` refuses a missing import on both.
+    """
+
+    def test_a_repeated_message_typed_option_reads_beside_another(self) -> None:
+        from protokit.options import get_option_value
+
+        field = _repeated_message_option_field()
+        assert get_option_value(field, "o.tag") == 3
+        res: typing.Any = get_option_value(field, "o.res")
+        assert [r.pattern for r in res] == ["p1", "p2"]
+
+    def test_lint_refuses_a_missing_import(self, tmp_path: Path) -> None:
+        from click.testing import CliRunner
+
+        from protokit.schema.lint.cli import main as lint_main
+
+        path = tmp_path / "schema.desc"
+        path.write_bytes(_unbuildable_set())
+        result = CliRunner().invoke(lint_main, ["--no-config", str(path)])
+        assert result.exit_code == 2, (result.exit_code, result.output)
+        assert "error[lint-missing-imports]" in result.stderr
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "so it never raised either error",
+            "A missing import: only `lint` moves",
+            "whose element type the message reaches through no declared field",
+        ],
+    )
+    def test_changelog_states_the_measured_before_states(self, phrase: str) -> None:
+        assert phrase in _changelog_release(), _missing(phrase, _WHERE_RELEASE)
+
+    def test_readme_splits_the_two_kinds_of_set(self) -> None:
+        phrase = "A set with a missing import was already refused there by every command but `lint`"
+        assert phrase in _readme_upgrade_note(9), _missing(phrase, _WHERE_NOTE_9)
+
+    @pytest.mark.parametrize(
+        ("prose", "phrase"),
+        [
+            pytest.param(_changelog_release, "neither error shipped", id="N1"),
+            pytest.param(_changelog_release, "on any payload holding such an extension", id="N2"),
+            pytest.param(
+                lambda: _readme_upgrade_note(9),
+                "a set with a missing import or a type reference that resolves nowhere",
+                id="N3",
+            ),
+        ],
+    )
+    def test_prose_does_not_widen_the_before_state(
+        self, prose: typing.Callable[[], str], phrase: str
+    ) -> None:
+        assert phrase not in prose(), _returned(
+            phrase, "README.md or the CHANGELOG's 0.16.0 section",
+            "the measured 0.15.1 before-state is narrower",
+        )
+
+
+def _forging_profile_pack() -> typing.Any:
+    """A rule pack whose one rule declares a profile name holding a newline."""
+    import types
+
+    from protokit.schema.lint.decorator import lint_rule
+    from protokit.schema.lint.model import ElementKind, LintSeverity
+
+    @lint_rule(
+        rule_id="doc-claims/forge", severity=LintSeverity.WARNING,
+        profiles=("strict\nerror[lint-compile-failed]: forged by a profile name",),
+        element=ElementKind.MESSAGE, message_template="x",
+    )
+    def forge(ctx: object) -> None:
+        return None
+
+    module = types.ModuleType("doc_claims_forging_profile")
+    module.RULES = (forge,)  # type: ignore[attr-defined]
+    return module
+
+
+class TestFindingTextForgeNote:
+    """A pack's finding text is flattened; a pack's profile name is not.
+
+    0.16.0's entry was headed "A rule pack's own text can no longer forge a
+    line". Its body covers a finding's message, rule id and path. A profile
+    name a pack declares still prints raw on the stderr
+    ``info[lint-pack-profiles]:`` line, so a newline in it starts an
+    ``error[...]`` line of its own (C18-C8). When that is fixed,
+    ``test_a_profile_name_currently_starts_a_line_of_its_own`` fails: drop the
+    sentence that names the channel in the same change.
+    """
+
+    def test_a_profile_name_currently_starts_a_line_of_its_own(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from click.testing import CliRunner
+
+        from protokit.schema.lint.cli import main as lint_main
+
+        module = _forging_profile_pack()
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        schema = _set_file(tmp_path, lambda fdp: fdp.message_type.add(name="M"))
+        result = CliRunner().invoke(lint_main, [
+            "--no-config", "--no-builtin-rules", "--rule-pack", module.__name__,
+            "--profile", "nope", str(schema),
+        ])
+        assert result.exit_code == 2, (result.exit_code, result.output)
+        forged = "error[lint-compile-failed]: forged by a profile name"
+        assert any(line.startswith(forged) for line in result.stderr.splitlines()), (
+            "a pack's profile name no longer starts a line of its own; the CHANGELOG still "
+            "names that channel as open, so drop the sentence in the same change"
+        )
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "A rule pack's finding text can no longer forge a line",
+            "a profile name the pack declares",
+        ],
+    )
+    def test_changelog_scopes_the_headline(self, phrase: str) -> None:
+        assert phrase in _changelog_release(), _missing(phrase, _WHERE_RELEASE)
+
+    def test_changelog_does_not_claim_all_pack_text(self) -> None:
+        phrase = "A rule pack's own text can no longer forge a line"
+        assert phrase not in _changelog_release(), _returned(
+            phrase, _WHERE_RELEASE, "a pack's profile name still prints raw on stderr"
+        )
+
+
+class TestKnownIssuesSection:
+    """0.16.0's section has its own ``### Known issues``, between the table and Security.
+
+    0.15.1 has a ``### Known residual`` heading, which a search over the whole
+    file would accept; this looks only in the release's own section. The six
+    entries the release committed to are each named in it.
+    """
+
+    @staticmethod
+    def _known_issues() -> str:
+        section = _changelog_release_section()
+        match = re.search(r"^### Known issues$", section, flags=re.MULTILINE)
+        assert match, "the CHANGELOG's 0.16.0 section has no `### Known issues` heading"
+        rest = section[match.end():]
+        end = re.search(r"^### ", rest, flags=re.MULTILINE)
+        return _as_prose(rest[: end.start()] if end else rest)
+
+    def test_the_heading_sits_between_the_upgrade_table_and_security(self) -> None:
+        section = _changelog_release_section()
+        heading = re.search(r"^### Known issues$", section, flags=re.MULTILINE)
+        security = re.search(r"^### Security$", section, flags=re.MULTILINE)
+        table = section.find("> | Change | What starts happening |")
+        assert heading and security and table >= 0
+        assert table < heading.start() < security.start()
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "C06-X1",
+            "C05-C1",
+            "a `get_option_value` call on it ends the interpreter",
+            "On protobuf 4.25 under upb, an editions file",
+            "A `lint --rule-pack` whose `RULES` calls `sys.exit(0)`",
+            "a closed-enum extension holding a number its enum does not declare",
+        ],
+    )
+    def test_each_committed_entry_is_listed(self, entry: str) -> None:
+        assert entry in self._known_issues(), _missing(entry, "The 0.16.0 Known issues section")
