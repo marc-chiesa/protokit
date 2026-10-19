@@ -87,7 +87,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint --format junit` for a run where a rule raised or was never loaded | one `analysis-incomplete` `<error>` testcase per rule instead of a passing `clean` testcase |
 > | `compat history --format junit` for a walk error no commit entry carries | a trailing `…-walk` suite with an `<error>` testcase, instead of dropping the error. The exit code was already 2 |
 > | `diff --format junit` for a truncated comparison | an `<error>` testcase, and no `messages-equal` testcase, instead of a passing suite |
-> | human output of `compat`, `history`, `bisect`, `diff` and `lint` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`; `lint`, which printed nothing, prints an `INCOMPLETE:` block. The exit codes were already 2, except for the `diff --max-depth` cases in the rows above. Two runs that found something print no `INCOMPLETE`: `compat check` still prints `INCOMPATIBLE`, with the reasons listed above it, and `diff` lists the differences it found, then the reasons under `Not trustworthy — there may be more differences:` |
+> | human output of `compat`, `history`, `bisect`, `diff` and `lint` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`; `lint`, which printed nothing, prints an `INCOMPLETE:` block. The exit codes were already 2, except for the `diff --max-depth` cases in the rows above. Two runs that found something print no `INCOMPLETE`: `compat check` still prints `INCOMPATIBLE`, with the reasons listed above it, and `diff` lists the differences it found, then the reasons under `Not trustworthy — there may be more differences:`. A diff result with no differences but an error diagnostic (the differ adds one only for a hook registered through the Python API; the `diff` command registers none) prints no `INCOMPLETE` either: it prints `No differences found, but the comparison is not trustworthy:`, as in 0.15.1. `diff` prints `INCOMPLETE` only when nothing above a `--max-depth` cut differs and there is no error diagnostic |
 > | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record, or a value that is not a collection at all (`None`, a number) | raises `TypeError` naming the field, instead of being split into characters or keys, or, in most records, stored as given |
 > | *(API)* a list of key/value pairs for `LintFinding.params`, `LintProfile.rule_severity_overrides`, or the multi-kind `LintRuleSpec.severity` / `message_template` | raises `TypeError`; pass a dict |
 > | *(API)* `Diagnostic`, `CommitDiagnostic` or `LintCompileDiagnostic` with a `level` other than `"info"`, `"warning"` or `"error"`; a `BisectReport` with only one of `breaking_commit` / `breaking_findings` | raises `ValueError` |
@@ -413,8 +413,14 @@ entry.
   messages, groups, repeated fields, map keys and values, extensions), and
   reports it as its own decode fault. The walk reads only fields that can
   hold one, so proto3 schemas and types without strings cost next to
-  nothing; for a proto2 type with strings, a upb storage scan spends
-  noticeably more time per record, because the walk runs in Python.
+  nothing. For a proto2 type with string fields the walk runs in Python and
+  reads each of them in every message a record holds, set or not. Measured
+  with `storage count` under upb, a record took about 1.6 times as long as
+  in 0.15.1 for a flat message with four string fields, about 12 times for
+  10,000 small messages with one string field each, and about 55 times for
+  10,000 messages of a type declaring ten string fields, one of them set;
+  under pure-Python, whose parse is slower, at most about 1.6 times in the
+  same shapes.
   Payloads whose non-UTF-8 string the parse does not keep still differ.
   Among them: a singular string written twice on the wire, the first copy
   not UTF-8 and the last one valid; a nested message or group written twice
@@ -740,7 +746,16 @@ a config `profile` list is dropped without a word, and a configured
     handles it: a coroutine that calls `sys.exit()` when closed, an awaitable
     whose attribute lookup exits, an exception that exits when formatted into
     the diagnostic, or a rule id (a `str` subclass from the pack's `RULES`)
-    that exits when formatted (audit finding R16-X3).
+    that exits when formatted (audit finding R16-X3). An ordinary exception
+    there no longer escapes either: a returned awaitable whose `close` or
+    `cancel` lookup raises (a `ValueError`, say), or a returned value whose
+    type cannot be inspected, becomes the same error diagnostic, where 0.15.1
+    let the exception out of `SchemaChecker.check` (`compat check` under upb
+    printed it as its `Error:` line and exited 2, as it now does with the
+    diagnostic). That diagnostic now reads `plugin returned an awaitable or an
+    uninspectable value; async plugins are not supported` for every returned
+    awaitable, where 0.15.1's said `plugin returned an awaitable; async
+    plugins are not supported`.
   - **A pack raising `KeyboardInterrupt` from its module body.** That reported a
     broken pack to CI as exit 1 — a schema break — where the two sibling pack
     loaders already reported it as a tooling error. The compat loader now matches
@@ -900,6 +915,16 @@ re-read by hand.
   on that field: both serialized the options with protobuf's required-field
   check. They now serialize the bytes as they are.
 
+- **A value `get_option_value` returns is the caller's to change.** In
+  0.15.1, on both backends, a repeated or message-typed option read from a
+  descriptor in the default pool (generated code, or a file added there) was
+  the container the descriptor itself holds, so changing it
+  (`value.append(2)`, setting a field of the message, also one reached by a
+  sub-field path) changed what every later read of that option returned;
+  each read now returns its own copy, except under pure-Python for one of
+  two messages, or two enums, that a file declares under one name, and the
+  fields of such a message (upb refuses that file).
+
 - **A custom-option read answers for the option its path names** (audit
   findings C02-C2, C01-C2). Under pure-Python, a sub-field path such as
   `pkg.rules.max` was answered from a sibling extension with the same last
@@ -964,7 +989,9 @@ or a checker plugin that gates on `get_option_value(...) is not None` over such 
 schema starts firing on annotations it silently skipped until now. Those
 annotations were always there; the helper could not see them. An option whose
 stored bytes do not parse as its declared type — a corrupt descriptor set — now
-raises `DecodeError` instead of reading as `None`. The last three entries
+raises `DecodeError` instead of reading as `None`. The fifth entry changes
+no built-in command's answer: it reaches only code that changes a value the
+helper returned and then reads the option again. The last three entries
 change what `get_option_value`, `lint` and every loader answer for the inputs
 they name, under upb or on both backends; each change has a row in the
 upgrade table.

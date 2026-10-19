@@ -1048,7 +1048,13 @@ the exit code see the same correction:
   no `INCOMPLETE`, and exit 2: `compat check` prints
   `INCOMPATIBLE`, with the reasons listed above it, and `diff` lists
   the differences it found, then the reasons under
-  `Not trustworthy — there may be more differences:`.
+  `Not trustworthy — there may be more differences:`. A diff result
+  with no differences but an error diagnostic (the differ adds one
+  only for a hook registered through the Python API; the `diff`
+  command registers none) prints no `INCOMPLETE` either: it prints
+  `No differences found, but the comparison is not trustworthy:`,
+  as in 0.15.1. `diff` prints `INCOMPLETE` only when nothing above
+  a `--max-depth` cut differs and there is no error diagnostic.
 
 **Python API.** A public frozen record now owns its collections:
 a `str`, `bytes` or mapping where a collection belongs raises
