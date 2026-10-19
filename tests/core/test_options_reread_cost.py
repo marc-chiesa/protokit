@@ -189,3 +189,82 @@ class TestAMessageInsideOneDeclaredTwice:
         shade = only.enum_types_by_name["Shade"]
         for desc in (only, only.fields[0], shade, shade.values[0]):
             assert options_of(desc) is desc.GetOptions()
+
+
+def _chain(depth: int, name: str) -> list[Any]:
+    """Messages ``M0`` .. ``M<depth-1>``, each nested in the one before, with an option set."""
+    fdp = descriptor_pb2.FileDescriptorProto(name=f"{name}.proto", package=name, syntax="proto2")
+    scope = fdp.message_type
+    for i in range(depth):
+        message = scope.add(name=f"M{i}")
+        message.options.deprecated = True
+        scope = message.nested_type
+    pool = build_pool(descriptor_pb2.FileDescriptorSet(file=[fdp]))
+    chain = [pool.FindMessageTypeByName(f"{name}.M0")]
+    while chain[-1].nested_types:
+        chain.append(chain[-1].nested_types[0])
+    return chain
+
+
+class TestDeepNesting:
+    """A deep chain reads in time and stack that do not grow with each enclosing message."""
+
+    def test_reading_a_chain_is_linear_in_its_depth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: True)
+        visits = {"n": 0}
+        named = _extensions._named
+
+        def counted(declared: Any, name: str) -> Any:
+            visits["n"] += 1
+            return named(declared, name)
+
+        monkeypatch.setattr(_extensions, "_named", counted)
+        per_depth = []
+        for depth in (20, 80):
+            visits["n"] = 0
+            for message in _chain(depth, f"lin{depth}"):
+                assert options_of(message).deprecated
+            per_depth.append(visits["n"])
+
+        # One lookup per message, whatever its depth; a re-check of every enclosing
+        # message per read would make the 80-deep chain cost 16 times the 20-deep one.
+        assert per_depth == [20, 80]
+
+    def test_the_lookup_does_not_recurse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A read of a cached file from a deep stack needs no stack per enclosing message."""
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: True)
+        chain = _chain(60, "rec")
+        assert options_of(chain[-1]).deprecated  # parse and index the file first
+
+        import sys
+
+        def depth_left() -> int:
+            frame, depth = sys._getframe(), 0
+            while frame is not None:
+                frame, depth = frame.f_back, depth + 1
+            return sys.getrecursionlimit() - depth
+
+        def at_depth(n: int) -> bool:
+            if n > 0:
+                return at_depth(n - 1)
+            return bool(options_of(chain[-1]).deprecated)
+
+        # Leave about 30 frames: fewer than the chain's 60 enclosing messages.
+        assert at_depth(depth_left() - 30)
+
+
+class TestAMissingDeclaration:
+    def test_a_declaration_the_file_lacks_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A message its file does not declare where its descriptor says raises ``LookupError``."""
+        chain = _chain(3, "miss")
+        cached = _extensions._file_proto(chain[0].file)
+        lacking = type(cached)()  # the parse's own class, from a pool of its own
+        lacking.CopyFrom(cached)
+        del lacking.message_type[0].nested_type[0].nested_type[:]
+        monkeypatch.setattr(_extensions, "_file_proto", lambda file_desc: lacking)
+        _extensions._declarations.cache_clear()
+        try:
+            with pytest.raises(LookupError, match="is not declared where its descriptor says"):
+                _extensions._message_proto(lacking, chain[2])
+        finally:
+            _extensions._declarations.cache_clear()

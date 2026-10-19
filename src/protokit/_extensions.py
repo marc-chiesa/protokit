@@ -573,16 +573,22 @@ def _repeated_value(options: Any, ext_desc: Any) -> Any:
 def _declared_in(file_proto: Any, desc: Any, kind: str) -> Any:
     """The ``kind`` declarations of the scope declaring ``desc``, a message or an enum, by name.
 
-    The enclosing message is found first, as :func:`_message_proto` finds any message, so
-    one not declared where its descriptor says, or declared twice, raises before anything
-    inside it is looked up. The declarations come from :func:`_declarations`, which indexes
-    the parse of ``desc``'s file that :func:`_file_proto` caches: ``file_proto``, when it
-    is that parse, as it is for :func:`options_of`.
+    A scope is reached through its enclosing messages, so one of them not declared where
+    its descriptor says, or declared twice, raises as :func:`_message_proto` raises for
+    it, outermost first, before anything inside it is looked up. The declarations come
+    from :func:`_declarations`, which indexes the parse of ``desc``'s file that
+    :func:`_file_proto` caches: ``file_proto``, when it is that parse, as it is for
+    :func:`options_of`. No lookup recurses or scans: a scope every enclosing message
+    reaches by a unique name is known when the file is indexed.
     """
-    parent = desc.containing_type
-    if parent is not None:
-        _message_proto(file_proto, parent)
-    return _declarations(desc.file).get((kind, _path(parent)), {})
+    declared, reachable = _declarations(desc.file)
+    path = _path(desc.containing_type)
+    if path not in reachable:
+        scope: tuple[str, ...] = ()
+        for name in path:  # raises at the first enclosing message that is not unique
+            _named(declared.get(("messages", scope), {}), name)
+            scope = (*scope, name)
+    return declared.get((kind, path), {})
 
 
 def _path(message: Any) -> tuple[str, ...]:
@@ -594,15 +600,19 @@ def _path(message: Any) -> tuple[str, ...]:
     return tuple(reversed(names))
 
 
-# One pass per file, so each lookup is a dict access. Sized like _file_proto's cache,
-# whose parse each entry holds parts of; each entry keeps its file alive the same way.
+# One pass per file, so each lookup is a dict access. Sized like _file_proto's cache;
+# the two are touched by different reads (file, service and method options never come
+# here), so between them up to 64 files, and two parses of one file, can stay alive.
 @functools.lru_cache(maxsize=32)
-def _declarations(file_desc: Any) -> dict[tuple[str, tuple[str, ...]], dict[str, list[Any]]]:
+def _declarations(
+    file_desc: Any,
+) -> tuple[dict[tuple[str, tuple[str, ...]], dict[str, list[Any]]], frozenset[tuple[str, ...]]]:
     """Every message and enum ``file_desc`` declares, by kind, enclosing path and name.
 
     A path is the names of the enclosing messages, ``()`` for the file's own scope. A
     name declared twice in one scope keeps both declarations, for :func:`_named` to
     refuse; the two messages' own declarations then share a path no lookup reaches.
+    Returned with the paths every enclosing message reaches by a name declared once.
     """
     file_proto = _file_proto(file_desc)
     declared: dict[tuple[str, tuple[str, ...]], dict[str, list[Any]]] = {}
@@ -616,4 +626,13 @@ def _declarations(file_desc: Any) -> dict[tuple[str, tuple[str, ...]], dict[str,
             pending.append(((*path, proto.name), proto.nested_type, proto.enum_type))
         for proto in enums:
             declared.setdefault(("enums", path), {}).setdefault(proto.name, []).append(proto)
-    return declared
+    reachable: set[tuple[str, ...]] = {()}
+    frontier: list[tuple[str, ...]] = [()]
+    while frontier:
+        path = frontier.pop()
+        for name, protos in declared.get(("messages", path), {}).items():
+            if len(protos) == 1:
+                child = (*path, name)
+                reachable.add(child)
+                frontier.append(child)
+    return declared, frozenset(reachable)
