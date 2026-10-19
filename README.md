@@ -899,12 +899,16 @@ something. This covers the reasons a run records, such as a rule
 that raised, a depth limit that cut a comparison short or a
 record that did not parse. It is not a check that every input was
 analysed: where protokit skips something without recording it,
-the exit code is unchanged. Three cases known in 0.16.0 are `diff`,
+the exit code is unchanged. Cases known in 0.16.0 are `diff`,
 which does not compare unknown fields; `lint`, which does not
-count the `extension_unresolved` warning as an incomplete run; and
+count the `extension_unresolved` warning as an incomplete run;
 `lint --proto`, which can lint another file in place of one it was
 given (the 0.16.0 entry in `CHANGELOG.md` lists it under Known
-issues).
+issues); and three `lint` cases scheduled for 0.17.0: a
+descriptor set holding no file lints clean, a misspelled name in a
+config `profile` list is dropped without a word, and a configured
+`custom_annotation_rules` entry turns off the unknown-profile
+error.
 Every command's exit gate, and every built-in
 `--format` renderer of `diff`, `compat` and `lint` that states a
 success verdict, now ask the same predicate whether the run

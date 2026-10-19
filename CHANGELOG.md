@@ -50,7 +50,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > |---|---|
 > | `storage scan\|head\|count --on-error skip\|warn` when a record the scan reaches does not parse | exits 2 instead of 0 (for `count --quiet` with no match, instead of 1); the records that did parse still reach stdout |
 > | `compat history\|bisect --proto-file` naming a file absent at the range's NEW endpoint | exits 2 before the walk instead of 0 with `no commits touch …` |
-> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, from a rule, or from an object a rule returns or raises; or whose exception at import, or `sys.exit()` code, calls `sys.exit()` while protokit formats it into the error | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`); in the formatting case 0.15.1 exited 0 with no output for an exception, and 1 with a blank stderr line for a `sys.exit()` code |
+> | `compat` with a rule pack that calls `sys.exit()`, at import, while its `RULES` are read, from a rule, or from an object a rule returns or raises; or whose exception at import, or `sys.exit()` code, calls `sys.exit()` while protokit formats it into the error | exits 2 naming the pack or rule, instead of exiting with the pack's own code (0 for `sys.exit(0)`); in the formatting case 0.15.1 exited with the code the exception's own `sys.exit()` passed (0 for `sys.exit(0)`) and no output, and 1 with a blank stderr line for a `sys.exit()` code |
 > | `diff --max-depth` where the limit cuts the comparison short and nothing above the cut differs, identical messages nested deeper than the limit included | exits 2 (`INCOMPLETE`) instead of 0 with `Messages are equal.` |
 > | `lint --exclude` matching every input | exits 2 (`error[lint-analysis-incomplete]`) instead of 0 having linted nothing |
 > | `lint --rule-pack` whose rules declare `profiles` as a single string or a mapping | exits 2 (`error[lint-rule-pack-load]`) instead of loading the pack (a string used to match profile names as substrings); pass a tuple such as `profiles=("name",)` |
@@ -72,7 +72,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `diff --max-depth` where the cut leaves some differences visible | exits 2 instead of 1: the differences shown are a lower bound |
 > | `diff --ignore`, `--treat-as-map` or `--filter` with a value the path grammar rejects | exits 2 with an `Error:` line instead of a traceback and 1 |
 > | *(pure-Python)* `lint`, `forensics`, `storage --desc` over a descriptor set the runtime refuses while loading it (an unreadable field default, an out-of-range `public_dependency`, a `oneof_index` past the last oneof, or a negative one that, counted from the end, names no declared oneof) or cannot parse (a non-UTF-8 string, very deep nesting) | exits 2 with an error (`lint`: `error[lint-pool-conflict]` or `error[lint-bad-input]`) instead of a traceback and 1. A set the runtime loads and then fails on at first use still ends in a traceback and 1, as in 0.15.1 (Known issues) |
-> | a descriptor set declaring an extension whose type is a map entry (protobuf has no map extensions: only a hand-written set, or a `.proto` that sets `map_entry` by hand and is compiled by `protoc` 3.21 or protoxy, has one) | every command that loads it exits 2 naming the extension (`lint`: `error[lint-bad-input]`), instead of answering: under upb `diff`, `storage count`, `forensics match`, `compat check` and `lint` exited 0; under pure-Python `lint` exited 0, `compat` crashed with a traceback and 1, and `diff`, `storage count` and `forensics match` crashed the same way over a payload that sets the extension and answered (exit 0) over one that does not |
+> | a descriptor set declaring an extension whose type is a map entry (protobuf has no map extensions: only a hand-written set, or a `.proto` that sets `map_entry` by hand and is compiled by `protoc` 3.21 or protoxy, has one) | every command that loads it exits 2 naming the extension (`lint`: `error[lint-bad-input]`), instead of answering: under upb `diff`, `storage count`, `forensics match`, `compat check` and `lint` exited 0; under pure-Python `lint` exited 0, `compat` crashed with a traceback and 1, and `diff`, `storage count` and `forensics match` crashed the same way: for a repeated extension, over a payload that sets it (they answered, exit 0, over one that does not), and for a singular one over every payload (`map_entry set on non-repeated field`) |
 > | a descriptor set containing a string that is not UTF-8 (a file name, a comment, any string field), under upb | every command that loads it (`lint`, `compat`, `diff`, `storage`, `forensics`) exits 2 (`lint`: `error[lint-bad-input]`) instead of accepting the set with 0; for a non-UTF-8 file name `lint` crashed with a traceback and 1 instead. The pure-Python runtime already refused such a set. One shape is still accepted under upb: a string written twice on the wire, with an invalid first copy and a valid last one |
 > | *(pure-Python)* `compat` over a schema loaded from a descriptor set or `.proto`, and `forensics match` / `drift` where they read a schema's reserved ranges or names (for example, some rankings of several candidates) | runs, instead of crashing with `Descriptor does not contain serialization` and 1; that crash no longer decides the exit code. Other pure-Python crashes are not covered by this row (Known issues) |
 > | *(pure-Python)* a message payload nested past Python's recursion limit (a few hundred levels at the default limit), or carrying a string that is not UTF-8 (proto2 or proto3) | `diff` exits 2 on the deep nesting instead of a traceback and 1 (a non-UTF-8 string already exited 2); `forensics match` ranks the candidate `decode_error` instead of crashing; `storage` counts the record as a fault under `--on-error` instead of crashing with 1. A message pure-Python parses but is nested too deep to print still ends `storage scan` (human or JSON) with `failed to render record` and exit 2 under every `--on-error` mode, as in 0.15.1. Nesting between upb's limit of 100 levels and Python's recursion limit still differs by runtime, as it did in 0.15.1: upb refuses the payload (exit 2) and pure-Python reads it |
@@ -165,8 +165,10 @@ entry.
   measured), as in 0.15.1 (C02-C4b); pure-Python loads that set when the
   index, counted from the end, names a declared oneof, and refuses it with
   exit 2 otherwise. A set with a map field whose entry numbers its `value`
-  other than 2 ends it in `diff` (also with `--json` input or `--format
-  json`), as in 0.15.1 (C02-C4b); pure-Python compares such messages. Every
+  other than 2 ends it in `diff` with `--json` input, as in 0.15.1
+  (C02-C4b); over binary input upb misreads such a map instead, and can
+  report payloads that differ as equal and exit 0, as in 0.15.1, where
+  pure-Python compares them. Every
   crash in this entry is scheduled after 0.19.0. No test: a strict expected
   failure runs inside the test process, which these crashes end, and no pin
   runs them in a child process yet.
@@ -722,8 +724,8 @@ a config `profile` list is dropped without a word, and a configured
   exited 0. Each such value now exits 2 with `<flag> '<value>': a ref cannot
   start with '-', which git would read as an option`, and never reaches git.
   The other forms already exited 2 once git had run, with `unknown git ref`,
-  `bad revision` or, for a `--range` that starts with a dash,
-  `unrecognized argument`; only the message changes. A branch whose name
+  `bad revision` or, for a `--range` that starts with a dash, git's own
+  error; only the message changes. A branch whose name
   starts with a dash is still reachable as `heads/-name`. The guard is narrow:
   `protokit.schema.git` called from Python still hands git what it is given,
   and a ref that names no commit is not refused here (scheduled for 0.18.0).
