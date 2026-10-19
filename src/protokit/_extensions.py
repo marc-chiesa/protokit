@@ -131,7 +131,7 @@ def _checked(options: Any, ext_desc: Any) -> Any:
     it while parsing. This gives the read pure-Python's answer on both.
     """
     if ext_desc.label == _REPEATED:
-        value = options.Extensions[ext_desc]
+        value = _repeated_value(options, ext_desc)
         if len(value) == 0:
             return options
     elif not options.HasExtension(ext_desc):
@@ -553,3 +553,18 @@ def _is_map(field: Any, entry: Any) -> bool:
         )
     return True
 
+
+def _repeated_value(options: Any, ext_desc: Any) -> Any:
+    """``options``' value for the repeated ``ext_desc``, read without giving ``options`` one.
+
+    :func:`rebind_options` may hand back the caller's own message, and under upb
+    ``options.Extensions[ext_desc]`` on a repeated extension it does not hold
+    creates an empty one there. Iterating ``options.Extensions`` creates
+    nothing (``ext_desc in options.Extensions`` crashes upb for such an
+    extension), so an extension found there is read and any other reads as
+    empty, as :func:`protokit._fieldview.field_value` does for the differ.
+    """
+    extensions = options.Extensions
+    if len(extensions) and any(held.number == ext_desc.number for held in extensions):
+        return extensions[ext_desc]
+    return ()

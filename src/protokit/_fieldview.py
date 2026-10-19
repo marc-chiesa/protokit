@@ -68,7 +68,7 @@ def field_value(msg: Message, fd: _d.FieldDescriptor) -> object:
     parallel implementation beside them.
     """
     if fd.is_extension:
-        return _extensions_of(msg)[fd]
+        return _extensions_of(msg)[fd] if (empty := _unheld(msg, fd)) is None else empty
     return getattr(msg, fd.name)
 
 
@@ -709,3 +709,73 @@ def _extensions_of(msg: Message) -> Any:
         if attr is not None and hasattr(attr, "__get__") and not isinstance(attr, type):
             return attr.__get__(msg, cls)
     raise AttributeError(f"{cls.__name__} has no Extensions")
+
+
+# What field_value reads for a repeated extension the message holds nothing of.
+_NO_ELEMENTS: tuple[()] = ()
+_NO_ENTRIES: Mapping[object, object] = MappingProxyType({})
+
+
+def _unheld(msg: Message, fd: _d.FieldDescriptor) -> object | None:
+    """An empty value for a repeated extension of ``msg``'s type that ``msg`` holds nothing of.
+
+    ``None`` for any other field. :func:`field_value` reads the empty value,
+    read-only (a tuple, or a mapping for a map-typed extension), instead of
+    reading ``msg.Extensions[fd]``: under upb that read creates an empty
+    container, so ``ListFields()`` lists ``(fd, [])`` from then on and the
+    message no longer equals an untouched copy, though its bytes are
+    unchanged. The differ reads an extension set on one side from both, so the
+    read changed the caller's message. A runtime whose read creates nothing
+    (pure-Python) is read as before and pays for no check.
+
+    Asked by iterating ``msg.Extensions``, which creates nothing and, after an
+    O(1) ``len`` under upb, walks the message without building field values.
+    ``fd in msg.Extensions`` is no substitute: upb dereferences a null array for
+    an unset repeated extension and crashes the process (4.25, 5.27, 5.29).
+    ``HasExtension`` raises for a repeated extension. An extension of another
+    type is left to the read, which refuses it as before.
+    """
+    if (
+        fd.label != _FD.LABEL_REPEATED
+        or fd.containing_type is not type(msg).DESCRIPTOR
+        or not _read_creates_extension()
+    ):
+        return None
+    extensions = _extensions_of(msg)
+    if len(extensions):
+        number = fd.number
+        for held in extensions:
+            if held.number == number:
+                return None
+    return _NO_ENTRIES if is_map_field(fd) else _NO_ELEMENTS
+
+
+@cache
+def _read_creates_extension() -> bool:
+    """Whether reading a repeated extension a message does not hold gives the message one.
+
+    upb does; pure-Python does not. Asked once, of a message in a pool of its
+    own, so the answer is the runtime's and not its name's. A probe that raises
+    answers yes, so :func:`_unheld` checks: slower, never wrong.
+    """
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+    package = "protokit_read_probe"
+    probe = descriptor_pb2.FileDescriptorProto(
+        name="protokit/_read_probe.proto", package=package, syntax="proto2",
+    )
+    probe.message_type.add(name="Host").extension_range.add(start=1, end=2)
+    probe.extension.add(
+        name="values", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_REPEATED,
+        extendee=f".{package}.Host",
+    )
+    # Broad on purpose: whatever the probe raises, the answer is the safe one.
+    try:
+        pool = descriptor_pool.DescriptorPool()
+        pool.AddSerializedFile(probe.SerializeToString())
+        host_type = pool.FindMessageTypeByName(f"{package}.Host")
+        host = message_factory.GetMessageClass(host_type)()
+        host.Extensions[pool.FindExtensionByName(f"{package}.values")]
+        return bool(host.ListFields())
+    except Exception:
+        return True
