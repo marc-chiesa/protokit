@@ -1610,7 +1610,9 @@ class TestKnownIssuesSection:
         security = re.search(r"^### Security$", section, flags=re.MULTILINE)
         table = section.find("> | Change | What starts happening |")
         assert heading and security and table >= 0
-        assert table < heading.start() < security.start()
+        # After the table's LAST row: a heading between two rows would cut the table.
+        rows = list(re.finditer(r"^> \|.*$", section, flags=re.MULTILINE))
+        assert table < rows[-1].end() < heading.start() < security.start()
 
     @pytest.mark.parametrize(
         "entry",
