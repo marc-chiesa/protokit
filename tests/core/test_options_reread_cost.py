@@ -268,3 +268,45 @@ class TestAMissingDeclaration:
                 _extensions._message_proto(lacking, chain[2])
         finally:
             _extensions._declarations.cache_clear()
+
+
+class TestASchemaOfManyFiles:
+    def test_a_compat_check_parses_each_file_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two pools of a 21-file schema, read in interleaved order, parse each file once.
+
+        A compat check holds the schema twice, and its walk visits the files in turn, so a
+        cache that holds fewer files than both pools carry re-parses one on every read.
+        """
+        from protokit.schema import check_compatibility
+
+        monkeypatch.setattr(_extensions, "_default_pool_extends", lambda options_type: True)
+        parts = []
+        for k in range(20):
+            part = descriptor_pb2.FileDescriptorProto(
+                name=f"part{k}.proto", package="many", syntax="proto3",
+            )
+            for i in range(5):
+                message = part.message_type.add(name=f"M{k}_{i}")
+                message.field.add(name="v", number=1, type=9, label=1)
+            parts.append(part)
+        root = descriptor_pb2.FileDescriptorProto(
+            name="root.proto", package="many", syntax="proto3",
+            dependency=[part.name for part in parts],
+        )
+        holder = root.message_type.add(name="Root")
+        for i in range(5):
+            for k in range(20):  # interleaved: every file in turn, five times over
+                holder.field.add(
+                    name=f"r{i}_{k}", number=i * 20 + k + 1, type=11, label=1,
+                    type_name=f".many.M{k}_{i}",
+                )
+        files = descriptor_pb2.FileDescriptorSet(file=[*parts, root])
+        old, new = build_pool(files), build_pool(files)
+        _extensions._file_proto.cache_clear()
+        _extensions._declarations.cache_clear()
+
+        report = check_compatibility(old, "many.Root", new, "many.Root")
+
+        assert report.is_compatible
+        assert _extensions._file_proto.cache_info().misses <= 2 * len(files.file)
+        assert _extensions._declarations.cache_info().misses <= 2 * len(files.file)
