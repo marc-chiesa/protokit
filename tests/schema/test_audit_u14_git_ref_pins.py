@@ -20,7 +20,10 @@ Findings pinned here:
   ``git rev-parse <ref>``: a git option is executed, a path or a range is
   answered as if it were a ref, and an annotated tag yields the tag object
   rather than its commit. Owned by the parent plan's U13 (0.18.0); the comment
-  above the V29 section at the end of this file has the detail.
+  above the V29 section has the detail.
+* **C11-C3** — ``extract_pool_from_ref()`` hands a ref such as
+  ``--output=LEAK`` to ``git show`` as an option, so git writes a file into
+  the repository. Owned by U13 (0.18.0); the CLI refuses such a ref first.
 """
 
 from __future__ import annotations
@@ -779,8 +782,8 @@ def test_v29_walk_json_must_record_the_commit_an_annotated_tag_names(
 # --output=LEAK..HEAD`` made ``git log`` write a file. Every ``compat`` option
 # that names a ref now refuses such a value, and so does the upstream ref
 # ``--against-base`` and ``ci`` resolve by themselves; such a value never reaches
-# git. The library still hands one to git (C11-C3, owned by U13); these tests
-# drive the CLI only.
+# git. The library still hands one to git (C11-C3, owned by U13, pinned at the
+# end of this file); these tests drive the CLI only.
 # ---------------------------------------------------------------------------
 
 _REF_OPTIONS = {
@@ -948,3 +951,62 @@ def test_c12_l1_every_ref_option_is_guarded() -> None:
         if getattr(param, "metavar", None) in _REF_METAVARS
     }
     assert seen == _REF_OPTIONS
+
+
+# ---------------------------------------------------------------------------
+# C11-C3 — the library hands a dash-leading ref to git as an option
+# ---------------------------------------------------------------------------
+#
+# The CLI refuses such a ref (the C12-L1 tests above); ``extract_pool_from_ref``
+# still builds ``git show <ref>:<path>``, so ``--output=LEAK`` makes git write
+# the file ``LEAK:user.proto`` into its working directory. On Linux the call
+# then returns a pool without the schema's messages; behind a symlinked temp
+# directory (macOS's default) the compile exits 2 afterwards (V39), and the
+# file is written all the same. So the pin asserts on the side effect first.
+# The root is flat: a nested root fails earlier, before git writes anything.
+
+_C11_C3_ROOT = 'syntax = "proto3";\nmessage User { string name = 1; }\n'
+
+
+def _extract_from_flat_root(ref: str, repo: Path) -> BaseException | None:
+    """Run the extraction; return what it raised (``None`` for a pool)."""
+    try:
+        extract_pool_from_ref(ref, "user.proto", cwd=repo)
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        return exc
+    except SystemExit as exc:  # V39: the compile after git ran, temp-directory dependent
+        return exc
+    return None
+
+
+def test_c11_c3_control_a_commit_ref_writes_nothing(git_repo: Path) -> None:
+    """The same repository and call with ``HEAD``: git writes no file.
+
+    Under V39 the call still exits 2 on a symlinked temp directory, so only
+    the side effect is asserted, as in the pin.
+    """
+    _commit(git_repo, "user.proto", _C11_C3_ROOT, msg="c1")
+    before = sorted(os.listdir(git_repo))
+    outcome = _extract_from_flat_root("HEAD", git_repo)
+    assert sorted(os.listdir(git_repo)) == before
+    assert outcome is None or isinstance(outcome, SystemExit), outcome
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "C11-C3: owned by the parent plan's U13 (0.18.0). extract_pool_from_ref() "
+        "runs `git show <ref>:<path>` with no option guard, so a ref of "
+        "'--output=LEAK' is git's --output option: git writes LEAK:user.proto "
+        "into the repository and the ref is not refused."
+    ),
+)
+def test_c11_c3_a_ref_git_reads_as_an_option_writes_nothing_and_is_refused(
+    git_repo: Path,
+) -> None:
+    _commit(git_repo, "user.proto", _C11_C3_ROOT, msg="c1")
+    before = sorted(os.listdir(git_repo))
+    outcome = _extract_from_flat_root("--output=LEAK", git_repo)
+    assert sorted(os.listdir(git_repo)) == before
+    assert isinstance(outcome, (ValueError, subprocess.CalledProcessError)), outcome
