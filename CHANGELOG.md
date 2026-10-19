@@ -13,7 +13,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## Unreleased
+## 0.16.0 — 2026-10-19
 
 > **Upgrade note (0.15.x → 0.16.0).** This release stops a run that recorded
 > it could not finish from exiting green. The table lists every change that
@@ -237,6 +237,37 @@ entry.
   set on non-repeated field`), and those commands end in a traceback and
   exit 1. 0.15.1 behaved the same way. Scheduled after 0.19.0. Test:
   `tests/core/test_audit_c_pools_pins.py::test_e03_c1_a_singular_field_typed_as_a_map_entry_is_refused_or_read`.
+- **`compat history` and `bisect` do not check `--type` or
+  `--compat-rule-pack` on a range that never touches the schema** (the rest
+  of U15-1; cycle-1 R21-C2). When no commit in the range touches
+  `--proto-file`, both print `no commits touch …` and exit 0 without
+  resolving `--type` or importing `--compat-rule-pack`, so a type that does
+  not exist or a rule pack that is not installed passes every push that
+  leaves the schema alone and exits 2 only on the push that changes it.
+  `check --since` over the same range exits 2 naming the value. The same on
+  both runtimes, and in 0.15.1. Scheduled for 0.18.0. Test:
+  `tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_1_residual_empty_range_still_validates_type_and_rule_pack`.
+- **Other open defects, each pinned by a strict expected failure.** Each ID
+  below has one in `tests/` named after it (the ones with no ID, after what
+  they test), so the fix that closes one must also update this note.
+  - Scheduled for 0.17.0: V5, V8, V12, V13, V18, V28, V35, V36, U8-2, U8-3,
+    U8-4, U8-5, C10-C4, C13-C2, C19-C1 (R12-C1), C19-C1b, R05-X1.
+  - Scheduled for 0.18.0: V20, V21, V22, V29 (R21-C4), V30 (R20-C3), V39,
+    U9-1, U9-2, U9-3, U14-1, U14-2, U14-3, U14-4, U14-5, U14-6, U14-7,
+    U14-8, U15-5, U20-1, U20-2, C06-C2, C07-C1, C07-C3, C11-C3, C11-C5,
+    C15-T1, C15-T2, R11-C2, R14-C2b, R16-C1, R20-C1, R20-C2, R20-C4, R25-C3.
+    With no ID: a schema's files are parsed through protobuf's default pool,
+    so what protokit reads from them depends on the extensions the process
+    registered there first; and the bundled compiler cannot resolve a
+    two-hop `import public` chain that `protoc` compiles, and its parse
+    error's message is lost when there is no `protoc` to fall back to.
+  - Scheduled for 0.19.0: V2, V15 (R08-X2), V16 (R08-C1, R27-X1), V17, V32
+    (R24-C1), C01-C5, C02-C7, C02-X1, C04-X5, C10-C1b, C10-C5, C14-C1,
+    C14-C3, C17-C6, C21-C3, C21-X1. With no ID: the rest of the field-name
+    family, a field or nested type named `Extensions`, `HasExtension` or
+    `HasField`, or whose name starts with an underscore.
+
+  The pinned defects scheduled after 0.19.0 have entries of their own above.
 
 ### Security
 
