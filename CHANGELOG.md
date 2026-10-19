@@ -186,7 +186,7 @@ entry.
 - **A string default that is not UTF-8 splits the runtimes.**
   `optional string s = 1 [default = "\377"]` compiles with `protoc`; upb
   builds the schema and reads its records, and pure-Python refuses it at
-  compile with exit 2, as in 0.15.1. Scheduled after 0.19.0. No test: whether
+  compile with exit 2, as in 0.15.1. Scheduled for 0.18.0. No test: whether
   the fix should refuse such a schema on both runtimes or read it on both is
   not decided.
 - **On protobuf 4.25 under upb, an editions file in a pool you build
@@ -194,7 +194,7 @@ entry.
   not implement editions and reports such a file as proto3, so the string
   check reads none of its strings. protokit's own loaders refuse an editions
   file on 4.25, so only a pool passed to the Python API can hold one.
-  Scheduled for 0.18.0. No test: only protobuf 4.25 with a hand-built
+  Scheduled after 0.19.0. No test: only protobuf 4.25 with a hand-built
   editions pool reaches it, and no CI cell builds one yet.
 - **A pool you build yourself is not checked for an extension typed as a map
   entry.** protokit's loaders refuse such a schema (see the upgrade table);
