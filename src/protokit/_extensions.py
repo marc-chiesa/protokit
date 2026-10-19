@@ -348,9 +348,9 @@ def _default_pool_extends(options_type: str) -> bool:
     return False
 
 
-# Parsing a file is the cost of one read; the files a caller is working through
-# stay parsed. Each entry keeps its file, and so that file's pool, alive.
-@functools.lru_cache(maxsize=32)
+# Parsed once per file, with room for a schema of a few hundred files in each of the
+# two pools a compat check reads. Each entry keeps its file, and so its pool, alive.
+@functools.lru_cache(maxsize=512)
 def _file_proto(file_desc: Any) -> Any:
     """``file_desc`` as a ``FileDescriptorProto`` whose options hold every extension unread."""
     proto = _bare_file_class()()
@@ -602,8 +602,8 @@ def _path(message: Any) -> tuple[str, ...]:
 
 # One pass per file, so each lookup is a dict access. Sized like _file_proto's cache;
 # the two are touched by different reads (file, service and method options never come
-# here), so between them up to 64 files, and two parses of one file, can stay alive.
-@functools.lru_cache(maxsize=32)
+# here), so between them up to 1024 files, and two parses of one file, can stay alive.
+@functools.lru_cache(maxsize=512)
 def _declarations(
     file_desc: Any,
 ) -> tuple[dict[tuple[str, tuple[str, ...]], dict[str, list[Any]]], frozenset[tuple[str, ...]]]:
