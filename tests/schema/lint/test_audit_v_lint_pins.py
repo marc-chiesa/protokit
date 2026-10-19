@@ -57,6 +57,12 @@ Pinned here:
   ``--rule-pack`` whose ``RULES`` calls ``sys.exit(0)`` while it is read ends
   the run with exit 0, on a schema with an error-level finding. Owner U24
   (0.17.0).
+* **C02-C2 lint twin** — a custom annotation rule whose ``option`` is a
+  sub-field path (``acme.v1.rules.max``). Pure-Python resolves that name to
+  the sibling file-scope extension ``acme.v1.max``, and the rule reports from
+  it. Pure-Python only, because upb does not resolve the name.
+  ``protokit.options._extension_named`` guards ``get_option_value`` against
+  this, and the lint closure has no such guard. Owner U24 (0.17.0).
 
 ``tests/meta/test_doc_claims.py`` measures the same two gaps from the other
 side, as a guard on what the README and CHANGELOG may say while they are open
@@ -82,6 +88,7 @@ from typing import Any
 
 import pytest
 from click.testing import CliRunner, Result
+from google.protobuf.internal import api_implementation
 
 from protokit.schema.lint.cli import main as lint_main
 from tests.schema.lint.cli._helpers import runtime_warnings_from_json
@@ -609,3 +616,180 @@ def test_rule_pack_exiting_while_rules_are_read_exits_2_naming_the_pack(
         f"{_outcome(result)}"
     )
     assert _names_the_pack_in_an_error_line(result), _outcome(result)
+
+
+# ---------------------------------------------------------------------------
+# C02-C2 lint twin — a custom annotation rule whose option is a sub-field path
+#
+# Pinned 2026-10-18, owned by U24 (0.17.0). The synthetic rule's closure looks
+# its option up with a bare ``pool.FindExtensionByName(option)``. Pure-Python
+# resolves ``acme.v1.rules.max`` to the file-scope extension ``acme.v1.max``
+# when ``acme.v1.rules`` is itself an extension, and the rule then answers from
+# that sibling: it reports ``RulesOnly``, which sets the named path, and passes
+# ``MaxOnly``, which does not. upb raises ``KeyError`` for the name, so the
+# rule is skipped with ``custom_annotation_extension_unresolved``. That skip,
+# and the exit 0 it leaves, is V36 above and is not what this pin is about.
+# ``protokit.options._extension_named`` has the guard the closure lacks:
+# ``KeyError`` unless the found extension's ``full_name`` is the name asked for.
+# ---------------------------------------------------------------------------
+
+_PURE_PYTHON_BACKEND = api_implementation.Type() == "python"
+_SIBLING_OPTION = "acme.v1.max"
+_SUB_FIELD_OPTION = "acme.v1.rules.max"
+_MAX_RULE = "custom/max-required"
+
+#: A message-typed method option with a field ``max``, and a sibling
+#: file-scope option also named ``max``.
+_RULES = """\
+syntax = "proto3";
+
+package acme.v1;
+
+import "google/protobuf/descriptor.proto";
+
+message Rules {
+  int32 max = 1;
+}
+
+extend google.protobuf.MethodOptions {
+  Rules rules = 50001;
+  int32 max = 50002;
+}
+"""
+
+#: ``RulesOnly`` sets only ``(acme.v1.rules).max``; ``MaxOnly`` sets only
+#: ``(acme.v1.max)``. A rule that reads one of the two options reports the
+#: other method, so the report shows which option the rule read.
+_RULED_SERVICE = """\
+syntax = "proto3";
+
+package acme.v1;
+
+import "acme/v1/rules.proto";
+
+message Request {}
+
+service Service {
+  rpc RulesOnly(Request) returns (Request) {
+    option (acme.v1.rules).max = 5;
+  }
+  rpc MaxOnly(Request) returns (Request) {
+    option (acme.v1.max) = 5;
+  }
+}
+"""
+
+
+def _lint_ruled_service(root: Path, option: str) -> Result:
+    """Lint ``Service`` with one error-severity, presence-only custom rule on ``option``.
+
+    ``option`` is the only variable between the C02-C2 pin and its control.
+    ``--no-builtin-rules`` leaves the custom rule as the only rule selected
+    (see the module docstring).
+    """
+    proto_root = root / "proto"
+    _write_tree(
+        proto_root, {"acme/v1/rules.proto": _RULES, "acme/v1/service.proto": _RULED_SERVICE}
+    )
+    config = root / "pyproject.toml"
+    config.write_text(
+        textwrap.dedent(
+            f"""\
+            [[tool.protokit.lint.custom_annotation_rules]]
+            rule_suffix   = "max-required"
+            option        = "{option}"
+            element_kinds = ["method"]
+            severity      = "error"
+            """
+        ),
+        encoding="utf-8",
+    )
+    service = str(proto_root / "acme/v1/service.proto")
+    flags = ("--config", str(config), "--no-builtin-rules")
+    return _lint(*flags, "--proto", service, "-I", str(proto_root))
+
+
+def _reported_methods(result: Result) -> list[str]:
+    """The methods the max rule reports as lacking its option, by name.
+
+    Fails red (``Failed``, not ``AssertionError``) on a finding from another
+    rule or of another kind, so an unexpected report cannot read as the defect.
+    """
+    methods = []
+    for finding in _payload(result)["findings"]:
+        if (finding["rule_id"], finding["severity"], finding["violation_kind"]) != (
+            _MAX_RULE,
+            "error",
+            "custom-annotation-absent",
+        ):
+            pytest.fail(f"unexpected finding {finding!r}: {_outcome(result)}")
+        methods.append(finding["location"].rpartition("/")[2])
+    return methods
+
+
+def test_c02_c2_sibling_extension_rule_reports_the_method_without_it_control(
+    tmp_path: Path,
+) -> None:
+    """The rule on ``acme.v1.max`` itself reports ``RulesOnly``, on both backends.
+
+    This is the report the pin's defect reproduces for the sub-field path, so
+    the control also shows what answering from the sibling looks like.
+    """
+    result = _lint_ruled_service(tmp_path, _SIBLING_OPTION)
+
+    assert _reported_methods(result) == ["RulesOnly"], _outcome(result)
+    assert _payload(result)["runtime_warnings"] == [], _outcome(result)
+    assert result.exit_code == 1, _outcome(result)
+
+
+@pytest.mark.xfail(
+    condition=_PURE_PYTHON_BACKEND,
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "C02-C2 lint twin: owned by U24 (0.17.0). The custom annotation rule's "
+        "closure resolves its option with a bare FindExtensionByName, which under "
+        "pure-Python returns the sibling extension acme.v1.max for acme.v1.rules.max, "
+        "so the rule reports the method that sets the named path"
+    ),
+)
+def test_c02_c2_sub_field_option_does_not_answer_from_the_sibling_extension(
+    tmp_path: Path,
+) -> None:
+    """A rule on ``acme.v1.rules.max`` must not report what ``acme.v1.max`` says.
+
+    Three outcomes count as fixed, so the pin flips on whichever remedy U24
+    picks. First, the name does not resolve: no finding and the rule's
+    ``custom_annotation_extension_unresolved`` skip on the report. That is
+    upb's outcome today. Exit 0 and exit 2 are both accepted there, so V36's
+    fix (gating that skip at exit 2) neither flips nor breaks this pin.
+    Second, the rule reads the sub-field: ``MaxOnly`` reported alone, exit 1.
+    Third, the entry is refused at configuration time: exit 2, nothing on
+    stdout, and stderr names the option. Today's pure-Python report is the
+    defect: ``RulesOnly`` alone, no runtime warning, exit 1. That fails the
+    assertion. Any other shape (a ``rule_exception``, a compile failure, a
+    finding from another rule) fails red through ``pytest.fail``, and so does
+    an ``AssertionError`` raised inside lint, which would otherwise match
+    ``raises=`` and read as the defect.
+    """
+    try:
+        result = _lint_ruled_service(tmp_path, _SUB_FIELD_OPTION)
+    except AssertionError as exc:
+        pytest.fail(f"lint itself raised AssertionError, not the C02-C2 outcome: {exc!r}")
+
+    if not result.stdout.strip():
+        if result.exit_code == 2 and _SUB_FIELD_OPTION in result.stderr:
+            return
+        pytest.fail(f"no report, and not a refusal naming the option: {_outcome(result)}")
+    reported = _reported_methods(result)
+    warnings = [(w["category"], w["rule_id"]) for w in _payload(result)["runtime_warnings"]]
+    unresolved = [("custom_annotation_extension_unresolved", _MAX_RULE)]
+    skipped = warnings == unresolved and reported == [] and result.exit_code in (0, 2)
+    reads_the_sub_field = warnings == [] and reported == ["MaxOnly"] and result.exit_code == 1
+    from_the_sibling = warnings == [] and reported == ["RulesOnly"] and result.exit_code == 1
+    if not (skipped or reads_the_sub_field or from_the_sibling):
+        pytest.fail(f"C02-C2 lint twin moved: not the defect, not a fix: {_outcome(result)}")
+    assert skipped or reads_the_sub_field, (
+        f"the rule on {_SUB_FIELD_OPTION} answered from the sibling extension "
+        f"{_SIBLING_OPTION} and reported {reported}: {_outcome(result)}"
+    )

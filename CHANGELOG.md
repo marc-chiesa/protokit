@@ -171,6 +171,16 @@ entry.
   `tests/schema/lint/test_audit_v_lint_pins.py::test_rule_pack_exiting_while_rules_are_read_exits_2_naming_the_pack`
   and
   `tests/formatters/test_audit_v_formatter_pins.py::test_formatter_twin_a_pack_exception_cannot_decide_the_exit_while_it_is_formatted`.
+- **Under pure-Python, a custom annotation rule on a sub-field path can
+  check the wrong option** (the lint side of C02-C2). When a
+  `custom_annotation_rules` entry's `option` is a path into a message-typed
+  option, such as `pkg.rules.max`, and the schema also declares an option
+  named `pkg.max`, pure-Python `lint` checks `(pkg.max)` instead: it reports
+  the elements that lack `(pkg.max)` and exits by those findings. upb does
+  not resolve the path and skips the rule. 0.15.1 behaved the same way.
+  `get_option_value` reads such a path correctly on both runtimes. Scheduled
+  for 0.17.0. Test:
+  `tests/schema/lint/test_audit_v_lint_pins.py::test_c02_c2_sub_field_option_does_not_answer_from_the_sibling_extension`.
 - **Under upb, a closed-enum extension holding a number its enum does not
   declare reads as set, with the value 0.** `diff` reports it as
   `UNKNOWN_0(0)` and exits 1 where pure-Python exits 0 (a *known gap* row in
