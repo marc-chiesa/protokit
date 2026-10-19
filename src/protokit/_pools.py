@@ -158,15 +158,15 @@ def add_and_resolve(
       its own shape again: ``DescriptorDatabaseConflictingDefinitionError``
       from ``Add`` itself, where upb raises ``TypeError``.
 
-    ``FindFileByName`` forces it here on both. Pure-Python's own descriptor checks
-    add more shapes (``ValueError``, ``IndexError``, ``AttributeError``), so any
-    exception from the two calls is re-raised as :class:`DescriptorPoolError`.
+    ``FindFileByName`` forces dependency and symbol resolution here on both, not every later
+    check: on 5.27.5 pure-Python loads a file whose edition it does not implement, which raises
+    ``TypeError`` at first use. Pure-Python's own checks add more shapes (``ValueError``,
+    ``IndexError``, ``AttributeError``): any exception from the two calls is re-raised as
+    :class:`DescriptorPoolError`.
 
-    One product site does not use this helper on purpose: the lint
-    descriptor-set loader (``schema/lint/_cli_utils.py``) repeats the
-    Add-then-probe sequence inline because it must route on the raw exception
-    to choose a stable ``error[lint-...]`` code, and collapsing both shapes
-    here would hide that. The comment at that site names the U17 follow-up.
+    One product site repeats the Add-then-probe sequence inline on purpose: the lint descriptor-set
+    loader (``schema/lint/_cli_utils.py``) must route on the raw exception to pick a stable
+    ``error[lint-...]`` code, which collapsing the shapes here would hide; its comment names U17.
 
     Args:
         pool: The pool to populate.

@@ -619,10 +619,10 @@ def options_changed(
 ) -> list[Finding]:
     """Detect any change to a field's serialized options.
 
-    Severity POLICY, direction BOTH. Backend-agnostic: each side's options
-    are read from its schema (:func:`_option_bytes`) and compared byte-for-byte. A
-    plugin rule can provide finer-grained interpretation; this
-    built-in only flags that *something* changed.
+    Severity POLICY, direction BOTH. Backend-agnostic: each side's options are
+    read from its schema (:func:`_option_bytes`) and compared byte-for-byte; ``features``
+    count only where ``GetOptions()`` keeps them, so a ``features``-only change is not
+    flagged (C05-C1). A plugin rule can interpret more; this flags that *something* changed.
 
     Args:
         old_fd: Old-side ``FieldDescriptor`` (must be present).

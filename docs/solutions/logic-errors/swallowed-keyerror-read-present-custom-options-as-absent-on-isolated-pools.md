@@ -483,11 +483,16 @@ refuses it or, where the bytes decode as the other type, rewrites the value
 before any pool sees it (an `int32` 7 is stored as 1). `options_of` cannot
 recover that, because the file it reads is already changed; the loader is a
 separate defect, not fixed here. It is one instance of a wider one: every
-`CopyToProto` and every `FileDescriptorProto.FromString(file.serialized_pb)`
-in `src/` fills a `descriptor_pb2` class, which decodes options through the
-same registry, so `check_compatibility` raises `DecodeError` on a schema
-loaded before the registration wherever the other type cannot decode the
-bytes. `tests/core/test_audit_default_pool_reparse_pins.py` pins the loaders
+`CopyToProto` in `src/` fills a `descriptor_pb2` class, which decodes options
+through the same registry, so `check_compatibility` raises `DecodeError` on a
+schema loaded before the registration wherever the other type cannot decode
+the bytes. (Current state: when this was written two
+`FileDescriptorProto.FromString(file.serialized_pb)` calls in `_fieldview`'s
+string walk did the same, and made a storage scan, `diff`'s parse and a
+one-candidate `forensics match` raise `DecodeError` on a valid record of such a
+schema. The walk now asks each field and re-reads no file, so those three read
+the record (audit finding C01-C1, on both backends). Its one read left that
+depends on the default pool is `is_map_field`'s `GetOptions()`.) `tests/core/test_audit_default_pool_reparse_pins.py` pins the loaders
 and that call as strict xfails. And a test
 suite's own default pool is not empty (some test in this one registers
 `FieldOptions` extensions), so a test whose premise is "nothing is declared"
@@ -537,7 +542,11 @@ $ grep -rn "HasExtension(\|\.Extensions\[" src/protokit | grep -v '``'
 
 At the U5 tree every hit reads through `rebind_options` or through
 `_fieldview`'s declared-extension accessors (`src/protokit/_fieldview.py:71`,
-`:83`), and none sits under a `KeyError` handler. A legitimate absent case gets
+`:83`), and none sits under a `KeyError` handler. (Current state: those two
+accessors now read through `_extensions_of(msg)[fd]` and
+`_unshadowed(type(msg), "HasExtension")`, which the grep above does not
+match; `grep -rnE '_extensions_of\(|"HasExtension"' src/protokit` lists them.
+Neither sits under a `KeyError` handler.) A legitimate absent case gets
 a predicate, like `extends` here. The exception protobuf raises for "wrong
 reader" cannot be told apart from "not there".
 

@@ -274,7 +274,9 @@ pack modules must not call `sys.exit()` at import time.
 The "Symmetric surface" prediction named two analogous load-time
 surfaces. **One** of them — the formatter loader, `load_formatter_packs`
 — was confirmed and closed in the 2026-05-09 protokit-lint D3 work
-recorded below. The other, `_load_rule_packs` in
+recorded below, for a pack that raises `SystemExit` or `KeyboardInterrupt`
+(not for one whose exception exits while it is formatted; see the
+current-state note at the end of the `_load_rule_packs` list). The other, `_load_rule_packs` in
 `src/protokit/schema/cli.py` — *the surface the callout named first* —
 was **not** closed until **PR #76** (2026-09-20). What the D3 work also
 closed was the same *class* of bug on a **third** surface the callout
@@ -343,6 +345,18 @@ callout named *first*):
   `except KeyboardInterrupt` arm and an `except (Exception,
   SystemExit)` arm at *each* of the two boundaries, which also widened
   the second guard from `(AttributeError, TypeError)`.
+- (Current state: both halves were closed, and one path stayed open past
+  them. Each handler put the caught exception's text in its `Error:` line,
+  and that text came from the pack's own `__str__`, run after the catch with
+  nothing guarding it. An exception whose `__str__` called `sys.exit(0)`,
+  raised from the module body, still made a breaking `compat check` exit 0
+  with no output (audit finding C12-C1; the same on released 0.15.1).
+  `_pack_exception_text`, at the end of `src/protokit/schema/cli.py`, now
+  formats that text inside a guard of its own for `_load_rule_packs`. The
+  formatter loader, `load_formatter_packs`, has the same shape and is not
+  closed for it: a `--formatter-module` whose exception exits while it is
+  formatted still makes `compat check` and `diff` exit 0, pinned as a strict
+  xfail in `tests/formatters/test_audit_v_formatter_pins.py`.)
 - The cheapest check that this surface really had been untouched all
   along: `git log -S'KeyboardInterrupt' -- src/protokit/schema/cli.py`
   returns exactly one commit, PR #76's. None of the D3 commits this

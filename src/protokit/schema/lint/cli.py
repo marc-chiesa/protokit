@@ -971,15 +971,15 @@ def _main_impl(
                 "source compile produced error-level diagnostics; "
                 "see stderr for details.",
             )
-        # Every named root must reach the engine (R8). The compile helpers
-        # keep a root only if the backend emitted the ``fd.name`` predicted
-        # for it, so a root the compiler named another way (protoc's
-        # ``-I VIRTUAL=DIR`` mapping, or any future naming skew) used to drop
-        # out and the run exited 0 without linting it. The check sits here,
-        # not in the shared helpers: compat, diff, git and storage use only
-        # the pool. Its include order is theirs (``-I`` first, then each
-        # input's parent); later includes never decide a name, because every
-        # file resolves against its own parent.
+        # A named root missing from the compile fails the run (R8). The compile
+        # helpers keep a root only if the backend emitted the ``fd.name``
+        # predicted for it. This counts roots, not whose name each is: if another
+        # named file's compile emits a file under a dropped root's predicted
+        # name, that file is linted in its place and the named one is not
+        # (C06-X1: a ``//`` spelling, or protoc's ``-I VIRTUAL=DIR``). Not in the
+        # shared helpers: compat, diff, git and storage use only the pool. Include
+        # order is theirs (``-I`` first, then each input's parent); later includes
+        # never decide a name, because every file resolves against its own parent.
         missing = len(inputs) - len(result.root_files)
         if missing > 0:
             parents = dict.fromkeys(str(p.parent) for p in inputs)

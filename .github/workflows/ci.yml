@@ -362,9 +362,9 @@ jobs:
   # PR2 (`protokit storage --fields` / `--explicit-defaults`) fills
   # no-presence fields via a json_format kwarg that was RENAMED across
   # the supported `protobuf>=4.25.0,<6` range:
-  # `including_default_value_fields` (4.21–5.26) became
-  # `always_print_fields_with_no_presence` (5.27+), and the old name
-  # raises TypeError on 5.27+. The storage shim (`no_presence_kwarg` in
+  # `including_default_value_fields` (protobuf 4.25) became
+  # `always_print_fields_with_no_presence` (5.26.0+), and the old name
+  # raises TypeError on 5.26+. The storage shim (`no_presence_kwarg` in
   # src/protokit/storage/_fields.py) detects the supported name at
   # import. The `test` job above always resolves the latest in-range
   # protobuf (5.x → new name), so without this job the old-name path
@@ -373,9 +373,9 @@ jobs:
   # in tests/meta/test_doc_claims.py holds the two together) and runs the
   # whole suite, under upb and then under the pure-Python backend — so
   # the old-kwarg path stays verified, and so does everything else the
-  # floor is claimed for. (Verified locally before landing: 4.25's
-  # old kwarg produces fill output identical to 5.27's new kwarg for
-  # every presence class — no-presence filled, presence-bearing omitted.)
+  # floor is claimed for. (Measured on 4.25.9, 5.26.0 and 5.27.5: for
+  # proto3 the two kwargs fill alike; for proto2, 4.25's old kwarg also
+  # fills unset optional int32/string fields at their defaults; 5.26+ does not.)
   #
   # It ran tests/storage alone until 0.16.0, on the premise that PR2 was
   # the only version-sensitive surface. It was not: protobuf 4.25 loads
