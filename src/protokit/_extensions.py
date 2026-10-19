@@ -366,9 +366,9 @@ def _bare_file_class() -> Any:
     return _options_class(pool.FindMessageTypeByName("google.protobuf.FileDescriptorProto"))
 
 
-def _named(protos: Any, name: str) -> Any:
+def _named(declared: Any, name: str) -> Any:
     """The declaration called ``name``: how a message or an enum, which carry no index, is found."""
-    found = [proto for proto in protos if proto.name == name]
+    found = declared.get(name, ())
     if len(found) > 1:
         raise _AmbiguousNameError(f"{name!r} is declared {len(found)} times in one scope")
     if not found:
@@ -390,16 +390,16 @@ def _indexed(protos: Any, desc: Any) -> Any:
 
 
 def _message_proto(file_proto: Any, desc: Any) -> Any:
-    parent = desc.containing_type
-    if parent is None:
-        return _named(file_proto.message_type, desc.name)
-    return _named(_message_proto(file_proto, parent).nested_type, desc.name)
+    """The declaration of the message ``desc``, by name among those of its scope."""
+    # Looked up in an index of the file (:func:`_declarations`), not scanned for: a scan
+    # per descriptor read made reading a whole schema's options quadratic in its size.
+    return _named(_declared_in(file_proto, desc, "messages"), desc.name)
 
 
 def _enum_proto(file_proto: Any, desc: Any) -> Any:
-    parent = desc.containing_type
-    scope = file_proto if parent is None else _message_proto(file_proto, parent)
-    return _named(scope.enum_type, desc.name)
+    """The declaration of the enum ``desc``, by name among those of its scope."""
+    # Looked up as :func:`_message_proto` looks up a message.
+    return _named(_declared_in(file_proto, desc, "enums"), desc.name)
 
 
 def _field_proto(file_proto: Any, desc: Any) -> Any:
@@ -568,3 +568,71 @@ def _repeated_value(options: Any, ext_desc: Any) -> Any:
     if len(extensions) and any(held.number == ext_desc.number for held in extensions):
         return extensions[ext_desc]
     return ()
+
+
+def _declared_in(file_proto: Any, desc: Any, kind: str) -> Any:
+    """The ``kind`` declarations of the scope declaring ``desc``, a message or an enum, by name.
+
+    A scope is reached through its enclosing messages, so one of them not declared where
+    its descriptor says, or declared twice, raises as :func:`_message_proto` raises for
+    it, outermost first, before anything inside it is looked up. The declarations come
+    from :func:`_declarations`, which indexes the parse of ``desc``'s file that
+    :func:`_file_proto` caches: ``file_proto``, when it is that parse, as it is for
+    :func:`options_of`. No lookup recurses or scans: a scope every enclosing message
+    reaches by a unique name is known when the file is indexed.
+    """
+    declared, reachable = _declarations(desc.file)
+    path = _path(desc.containing_type)
+    if path not in reachable:
+        scope: tuple[str, ...] = ()
+        for name in path:  # raises at the first enclosing message that is not unique
+            _named(declared.get(("messages", scope), {}), name)
+            scope = (*scope, name)
+    return declared.get((kind, path), {})
+
+
+def _path(message: Any) -> tuple[str, ...]:
+    """The names of ``message`` and of the messages enclosing it, outermost first."""
+    names: list[str] = []
+    while message is not None:
+        names.append(message.name)
+        message = message.containing_type
+    return tuple(reversed(names))
+
+
+# One pass per file, so each lookup is a dict access. Sized like _file_proto's cache;
+# the two are touched by different reads (file, service and method options never come
+# here), so between them up to 64 files, and two parses of one file, can stay alive.
+@functools.lru_cache(maxsize=32)
+def _declarations(
+    file_desc: Any,
+) -> tuple[dict[tuple[str, tuple[str, ...]], dict[str, list[Any]]], frozenset[tuple[str, ...]]]:
+    """Every message and enum ``file_desc`` declares, by kind, enclosing path and name.
+
+    A path is the names of the enclosing messages, ``()`` for the file's own scope. A
+    name declared twice in one scope keeps both declarations, for :func:`_named` to
+    refuse; the two messages' own declarations then share a path no lookup reaches.
+    Returned with the paths every enclosing message reaches by a name declared once.
+    """
+    file_proto = _file_proto(file_desc)
+    declared: dict[tuple[str, tuple[str, ...]], dict[str, list[Any]]] = {}
+    pending: list[tuple[tuple[str, ...], Any, Any]] = [
+        ((), file_proto.message_type, file_proto.enum_type),
+    ]
+    while pending:  # not recursive: a file may nest deeper than the stack left here
+        path, messages, enums = pending.pop()
+        for proto in messages:
+            declared.setdefault(("messages", path), {}).setdefault(proto.name, []).append(proto)
+            pending.append(((*path, proto.name), proto.nested_type, proto.enum_type))
+        for proto in enums:
+            declared.setdefault(("enums", path), {}).setdefault(proto.name, []).append(proto)
+    reachable: set[tuple[str, ...]] = {()}
+    frontier: list[tuple[str, ...]] = [()]
+    while frontier:
+        path = frontier.pop()
+        for name, protos in declared.get(("messages", path), {}).items():
+            if len(protos) == 1:
+                child = (*path, name)
+                reachable.add(child)
+                frontier.append(child)
+    return declared, frozenset(reachable)
