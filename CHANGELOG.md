@@ -99,6 +99,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(API)* `get_option_value` on a custom option whose extension is typed as a map entry, in a pool you built yourself (protokit's loaders now refuse such a schema, as a row above says) | for a repeated extension, raises `DecodeError` naming the option instead of returning `None`, and an element that does not carry the option still reads `None`. A singular one is not checked (Known issues): under upb an element carrying it returns the entry message, and under pure-Python every element raises protobuf's own `ValueError` (`map_entry set on non-repeated field`), where 0.15.1 returned `None` |
 > | `lint` custom annotation rules and option-reading rules (`field_behavior`) on an element where another option's bytes do not parse, or hold a string the runtime rejects as not UTF-8 (a proto3 one, or any one under pure-Python) | the rule runs, and the run exits 0 or 1 by its findings, instead of failing with `rule_exception` and exit 2 |
 > | *(pure-Python)* `lint` custom annotation rules and `options/field-behavior-consistent` on an element that carries a repeated message-typed option (the shape of `(google.api.resource_definition)`), every byte well formed | the rule runs, and the run exits 0 or 1 by its findings, instead of failing with `rule_exception` and exit 2; `options/field-behavior-consistent` on an element carrying a message-set valued option exits by its findings instead of a `NameError` traceback and 1 |
+> | `lint` (its `options/field-behavior-consistent` rule, in the `default` profile) over a descriptor set that declares `google.api.field_behavior` as an extension of a message other than `google.protobuf.FieldOptions` (only a hand-written set does; googleapis declares it on `FieldOptions`) | the rule fails with `rule_exception` naming the message the extension extends, and the run is `INCOMPLETE` (exit 2), instead of passing with exit 0, on both backends |
 > | `lint` custom annotation rules on a proto2 string option (or a message option holding one) that is not UTF-8, under upb | the rule fails with `rule_exception` and the run is `INCOMPLETE` (exit 2), instead of passing or comparing the bytes; pure-Python already did this |
 > | `lint` custom annotation rules on a closed-enum option holding a number its enum does not declare, under upb | the option reads as absent (`custom-annotation-absent`, exit 1 at error severity), as under pure-Python, instead of reading as the value `0`: no finding when `allowed_values` names that value, `custom-annotation-value-mismatch` otherwise |
 > | `lint` with a custom annotation rule whose `option` names an extension of an ordinary message, not of an options type, over a descriptor set that does not include `google/protobuf/descriptor.proto` | exits 2 (a `rule_exception` warning naming the extension and the type it extends, then `error[lint-analysis-incomplete]`) instead of 0 with no finding and no warning. With `descriptor.proto` in the set it already exited 2 |
@@ -249,6 +250,17 @@ entry.
   `check --since` over the same range exits 2 naming the value. The same on
   both runtimes, and in 0.15.1. Scheduled for 0.18.0. Test:
   `tests/schema/test_audit_u15_cli_exit_pins.py::test_u15_1_residual_empty_range_still_validates_type_and_rule_pack`.
+- **`check_compatibility` alternating among more than four schema pairs
+  re-reads a schema file on every switch.** It reads messages through a
+  cache of whole-file indexes that holds the eight most recent descriptor
+  pools; a process that compares five or more old/new pairs in turn misses
+  it each time, and each check then costs about as much as a first one:
+  about 9 ms instead of under 0.1 ms on a 2,000-message file under upb, and
+  about 0.5 s under pure-Python. Comparing the same pair again, or walking
+  `compat history` and `bisect`, is unaffected. The bound also caps what a
+  history walk keeps alive, and upb's pools cannot be referenced weakly, so
+  a cache that holds no pool alive is scheduled for 0.17.0. No test: this is
+  a cost, not a wrong answer.
 - **Other open defects, each pinned by a strict expected failure.** Each ID
   below has one in `tests/` named after it (the ones with no ID, after what
   they test), so the fix that closes one must also update this note.
@@ -980,8 +992,10 @@ now reports a
 0 (a row in the upgrade table). With `descriptor.proto` in the set, such a rule
 already reported the warning, and only its text changes: it is now the same on
 both protobuf backends instead of each backend's own wording. No other built-in
-command's verdict or findings change: no built-in check calls the helper, and
-the lint rules already re-read options through the schema's pool. Where the
+command's verdict or findings change, apart from one hand-written schema with its
+own upgrade row (a `google.api.field_behavior` declared on a message other than
+`FieldOptions`): no built-in check calls the helper, and the lint rules already
+re-read options through the schema's pool. Where the
 default pool does overlap, under upb, a `custom/<suffix>` or
 `options/field-behavior-consistent` rule now reports on options it read as
 absent in 0.15.1, and `compat` reports `options_changed` for an option change
