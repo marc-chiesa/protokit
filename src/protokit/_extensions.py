@@ -88,7 +88,7 @@ def rebind_options(options: Any, ext_desc: Any) -> Any:
         google.protobuf.message.DecodeError: the bytes ``options`` holds for ``ext_desc`` do
             not parse as its type or hold a string that is not UTF-8 (under upb a singular
             proto2 string written twice is checked on its last copy only), or it or an extension
-            in its value is typed as a map entry. Another option's bad bytes do not raise.
+            in its value is repeated and typed as a map entry. Another option's bad bytes do not.
     """
     target = ext_desc.containing_type
     if options.DESCRIPTOR is target:

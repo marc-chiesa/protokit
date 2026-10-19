@@ -899,12 +899,16 @@ something. This covers the reasons a run records, such as a rule
 that raised, a depth limit that cut a comparison short or a
 record that did not parse. It is not a check that every input was
 analysed: where protokit skips something without recording it,
-the exit code is unchanged. Three cases known in 0.16.0 are `diff`,
+the exit code is unchanged. Cases known in 0.16.0 are `diff`,
 which does not compare unknown fields; `lint`, which does not
-count the `extension_unresolved` warning as an incomplete run; and
+count the `extension_unresolved` warning as an incomplete run;
 `lint --proto`, which can lint another file in place of one it was
 given (the 0.16.0 entry in `CHANGELOG.md` lists it under Known
-issues).
+issues); and three `lint` cases scheduled for 0.17.0: a
+descriptor set holding no file lints clean, a misspelled name in a
+config `profile` list is dropped without a word, and a configured
+`custom_annotation_rules` entry turns off the unknown-profile
+error.
 Every command's exit gate, and every built-in
 `--format` renderer of `diff`, `compat` and `lint` that states a
 success verdict, now ask the same predicate whether the run
@@ -982,14 +986,15 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    and a descriptor set the runtime refuses while loading it or
    cannot parse (for `lint`, `forensics` and `storage --desc`: an
    unreadable field default, an out-of-range `public_dependency`,
-   a `oneof_index` past the last oneof, a non-UTF-8 string, very
+   a `oneof_index` past the last oneof or a negative one that,
+   counted from the end, names no oneof, a non-UTF-8 string, very
    deep nesting). Under that runtime `compat` and `forensics` no
    longer crash with `Descriptor does not contain serialization`
    on a schema loaded from a descriptor set or `.proto`. Not every
    pure-Python crash is gone: a set whose edition is later than the
    runtime implements (edition 2024 on protobuf 5.27), a field named
-   `DESCRIPTOR` and a very long chain of
-   nested message types still end in a traceback and exit 1, as in
+   `DESCRIPTOR` (which also ends `diff` this way under upb) and a
+   very long chain of nested message types still end in a traceback and exit 1, as in
    0.15.1 (the CHANGELOG lists them under Known issues). A gate that
    read these exits as findings was misreading a crash.
 8. **`forensics match`.** A candidate it cannot measure (a proto2
@@ -1010,7 +1015,9 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    there and refused under pure-Python. Under the
    pure-Python runtime, a set with a type reference that resolves
    nowhere, even in a file the command does not use, is now
-   refused as upb always did. A set with a missing import was
+   refused by every command, as upb always did; before, only a
+   reference in the file holding the requested type was refused,
+   and never by `lint`. A set with a missing import was
    already refused there by every command but `lint`, which now
    refuses it too. The runtimes
    still differ on other malformed sets: pure-Python accepts some
@@ -1916,8 +1923,11 @@ scan that dropped any record under `--on-error skip` or `warn` also exits `2`:
 the records that parsed still reach stdout, but the scan did not read the whole
 file. `count --quiet`
 adds the grep-like signal — `1` when zero records match, `0` otherwise
-(mirroring `diff --quiet`); a bare `count` always prints the number (including
-`0`) and exits `0`, unless the scan dropped records (above).
+(mirroring `diff --quiet`); a bare `count` prints the number (including `0`)
+and exits `0`. Either form exits `2` instead when the scan did not finish: it
+dropped records (above), or reading or closing the data file failed, which
+exits `2` under every `--on-error` mode. A bare `count` still prints what it
+counted then, except after a data fault under `--on-error raise`.
 
 Cross-channel correlation (one `scan` over multiple related streams) is a
 library capability — register several streams and read `record.stream_id` — and

@@ -376,10 +376,10 @@ def _message_api() -> frozenset[str]:
     )
 
 
-# Field names that collide with a generated class's attributes, ``_Modified``
-# and ``__str__`` among them. Such a field hides the attribute on upb and is
-# hidden by it on pure-Python (the attribute wins), so the walk reads a type
-# holding one through ListFields.
+# Field names that collide with a generated class's attributes, ``__str__``
+# among them (and ``_Modified``, on pure-Python only). Such a field hides the
+# attribute on upb and is hidden by it on pure-Python (the attribute wins), so
+# the walk reads a type holding one through ListFields.
 _SHADOWING = _message_api()
 
 

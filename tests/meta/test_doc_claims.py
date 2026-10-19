@@ -55,7 +55,8 @@ fixed, which is the signal to drop that part of the prose. The last class
 checks that the release has its own ``### Known issues`` section, between the
 upgrade table and Security, naming the entries the release committed to.
 CHANGELOG checks there are scoped to the release section; README checks to
-the upgrade note they concern.
+the upgrade note they concern, except two that keep a wrong claim out of the
+whole README.
 
 KTD3 proof: a doc-shaped fix has no guarded branch to mutate. Each prose
 check was proven instead by using ``scripts/mutation_check.py`` to rewrite the
@@ -1298,6 +1299,8 @@ class TestLintProtoNamedFileNote:
         [
             "lints that file in place of the named one",
             "`lint --proto` can lint another file in place of one it was given",
+            # The upgrade-table row's own qualification; the entry body words it otherwise.
+            "This holds when nothing else in the compile takes the name lint predicted",
         ],
     )
     def test_changelog_states_the_gap(self, phrase: str) -> None:
@@ -1487,6 +1490,8 @@ class TestReleaseBeforeStates:
             "so it never raised either error",
             "A missing import: only `lint` moves",
             "whose element type the message reaches through no declared field",
+            # N2 again, in the entry body: the row above is the only other place it is said.
+            "unless a field the message declares has the extension's element type",
         ],
     )
     def test_changelog_states_the_measured_before_states(self, phrase: str) -> None:
