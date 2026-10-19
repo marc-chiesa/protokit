@@ -266,7 +266,11 @@ entry.
   declared message field is. This holds also when the two messages come
   from different descriptor pools that both declare it, and `treat_as_map`
   accepts the parenthesised selector with the same global-name /
-  scoped-path rule as `--ignore`.
+  scoped-path rule as `--ignore`. Comparing changes neither message (audit
+  finding E06-C1): as first written, under upb, reading a repeated extension
+  that only the other side held gave the message an empty one, so it no
+  longer equalled an untouched copy, and a later comparison of it could miss
+  an added element or an empty but present message.
 
   *Upgrade impact:* a pipeline gating on `protokit diff` over proto2 messages
   that carry extensions may start reporting differences it previously passed
