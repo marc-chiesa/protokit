@@ -147,8 +147,10 @@ entry.
   `storage count`; and a valid chain of several hundred nested message types,
   on both runtimes, the first time a command builds its class. The field
   name is scheduled for 0.19.0, the other two after it. Tests:
-  `tests/core/test_audit_c_pools_pins.py::test_c02_c1_an_edition_later_than_the_runtime_implements_is_refused_at_load`
-  and `::test_c02_c3_get_message_class_on_a_valid_deep_chain_builds_or_refuses_typed`.
+  `tests/core/test_audit_c_pools_pins.py::test_c02_c1_an_edition_later_than_the_runtime_implements_is_refused_at_load`,
+  `::test_c02_c3_get_message_class_on_a_valid_deep_chain_builds_or_refuses_typed`
+  and
+  `tests/core/test_audit_c_field_name_pins.py::test_c02_c3_a_type_with_a_field_named_descriptor_runs_or_is_refused`.
 - **Two descriptor sets still end the process under upb.** A set holding a
   repeated `string` field with a default: a `get_option_value` call on it
   ends the interpreter (exit 139) once protobuf's default pool declares an
