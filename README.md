@@ -913,9 +913,12 @@ Every command's exit gate, and every built-in
 `--format` renderer of `diff`, `compat` and `lint` that states a
 success verdict, now ask the same predicate whether the run
 completed, so for those commands the exit code and the rendered
-verdict agree. `forensics match` is the exception: its ranking
-verdict can read `clean match` on a run that exits 2 because
-another candidate could not be measured.
+verdict agree on that question. `forensics match` is the
+exception: its ranking verdict can read `clean match` on a run
+that exits 2 because another candidate could not be measured.
+Agreeing on completion is not agreeing on a pass: a `lint` run
+whose findings are all warnings exits 0, while its JUnit report
+counts each warning as a failure (`type="warning"`), as in 0.15.1.
 
 **There is no opt-out.** No flag, environment variable or config
 key restores the old exit codes. A switch that brought back a
@@ -967,7 +970,8 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    `sys.exit()` now exits 2 instead of passing its own code
    through, and so does one whose exception calls `sys.exit()`
    while protokit formats it into the error line. One whose
-   `RULES` raises while being read, that raises
+   `RULES` raises while being read (anything but `AttributeError`
+   or `TypeError`, which already exited 2), that raises
    `KeyboardInterrupt` at import, or whose exception cannot be
    formatted, exits 2 instead of 1. That covers
    `--compat-rule-pack`: a lint `--rule-pack` whose `RULES` calls
@@ -1040,7 +1044,11 @@ the exit code see the same correction:
   per such rule instead of a passing `clean` testcase.
 - Human output prints `INCOMPLETE` and its reasons, not
   `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`, for
-  a run that did not complete.
+  a run that did not complete. Two runs that found something print
+  no `INCOMPLETE`, and exit 2: `compat check` prints
+  `INCOMPATIBLE`, with the reasons listed above it, and `diff` lists
+  the differences it found, then the reasons under
+  `Not trustworthy — there may be more differences:`.
 
 **Python API.** A public frozen record now owns its collections:
 a `str`, `bytes` or mapping where a collection belongs raises

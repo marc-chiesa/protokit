@@ -62,9 +62,11 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | *(API)* `MessageDifferencer`, `diff_messages`, `proto_match` / `expect_proto`, the hamcrest `equals_proto` matcher and the pytest `proto_matcher` fixture over the same messages | the same verdicts as `diff`, so a matcher that raised `AssertionError` on identical groups from two descriptor pools now passes; field hooks (`register_validate_hook`, `register_compare_hook`, `register_report_hook`) run on each field inside the group instead of once at the group, and `register_message_validate_hook` hooks also run for the group |
 > | *(API)* `proto_match(actual, expected, presence=MessageFieldComparison.EQUAL, as_set="g")`, or `MessageDifferencer` with `MessageFieldComparison.EQUAL` and `treat_as_set("g")`, where `g` is a repeated proto2 group (or editions DELIMITED field) whose elements differ only in presence: a field unset in one, set to its default in the other | *known gap:* passes, where it failed (`- g[0]` and `+ g[0]`). Set pairing compares elements without the caller's presence mode, as it already did for message elements, and groups now reach it. Scheduled for 0.17.0 |
 > | *(API)* an extension path, `(pkg.ext)` or `parent.(pkg.ext)`, given to `ignore_fields`, `treat_as_map`, `treat_as_set`, a float overlay (`set_float_comparison(selector=…)`, `.approximately(selector=…)`) or `proto_match(as_set=…)` | is accepted instead of raising `ValueError` (`Expected field name …`); a lone `(pkg.ext)` applies to that extension at any depth. Registrations that conflict through an extension path (a `treat_as_set` and a `treat_as_map` on one extension, two `treat_as_map` keys for it, an ignore of its key) still raise `ValueError`, now naming the conflict |
+> | *(API)* `MessageDifferencer.ignore_fields` given a selector the path grammar rejects beside valid ones (`ignore_fields("x", "bad..path")`), the `ValueError` caught and the differencer used again | the rejected call registers none of its selectors, so `x` is still compared. 0.15.1 had already applied the string selectors before the rejected one (`x` was ignored), and kept every string selector of the call, the rejected one included, for its later conflict checks, so a later `treat_as_map("x", key=…)` raised `already ignored`. The call's other rejections (bracket syntax, a conflict with `treat_as_map`, a value that is not a selector) registered nothing in 0.15.1 either, and neither did a rejected `treat_as_map`, `treat_as_set` or float overlay (`set_float_comparison(selector=…)`), each of which takes one selector |
 > | `diff --ignore`, `--treat-as-map` or `--filter` given an extension path such as `'(pkg.ext)'` | is accepted, and the comparison decides the exit code (0 or 1), instead of a traceback and 1. `--treat-as-map '(pkg.ext)' KEY` with an `--ignore` path that names the key (`'(pkg.ext).KEY'`, `'parent.(pkg.ext).KEY'`) exits 2 (usage error) instead of that traceback. |
 > | `compat` where a declared proto2 extension changes (type, number, removal or addition), or a field inside a proto2 group or an editions DELIMITED field changes | exits 1 (INCOMPATIBLE) instead of 0 at each level that reports the same change to a declared field; a group retargeted to another message type is reported at STRICT. `--ignore '(pkg.ext)'` is accepted, where it exited 2 as an invalid path |
 > | `compat` with a rule pack whose field plugin reports on, or raises on, a declared extension or a field inside a group | the plugin is now called for those fields, so with the schema unchanged a run can exit 1 (the plugin's finding) or 2 (its error) instead of 0 |
+> | `compat check` and `check_compatibility` under upb, over a schema with both proto3 `optional` fields and oneofs of a single field (measured on a chain of 200 message types; it did not occur on 50) | report `oneof_membership_changed` only where a field's oneof changed. 0.15.1 could read one message's proto3 `optional` fields as another's, so it reported the rule for fields whose oneof had not changed and missed some whose oneof had: such a schema checked against itself could exit 1 (INCOMPATIBLE) instead of 0. How many findings 0.15.1 reported varied from run to run |
 > | `compat check --since`, `ci --base`, `bisect` with no `git` on `PATH` | exits 2 instead of 1 (INCOMPATIBLE) |
 > | `compat history --range` with an endpoint that starts with `-`, such as `--output=X..HEAD` | exits 2 naming the flag and the value, which never reaches git, instead of 0 with `no commits touch …` |
 > | `compat check --against-base` or `compat ci` with no base given, where the branch's upstream has a name that starts with `-`, such as `--fork-point` | exits 2 naming the upstream, instead of letting `git merge-base` read the name as an option and answer HEAD, which compared a breaking change as COMPATIBLE and exited 0 |
@@ -85,7 +87,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > | `lint --format junit` for a run where a rule raised or was never loaded | one `analysis-incomplete` `<error>` testcase per rule instead of a passing `clean` testcase |
 > | `compat history --format junit` for a walk error no commit entry carries | a trailing `…-walk` suite with an `<error>` testcase, instead of dropping the error. The exit code was already 2 |
 > | `diff --format junit` for a truncated comparison | an `<error>` testcase, and no `messages-equal` testcase, instead of a passing suite |
-> | human output of `compat`, `history`, `bisect`, `diff` and `lint` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`; `lint`, which printed nothing, prints an `INCOMPLETE:` block. The exit codes were already 2, except for the `diff --max-depth` cases in the rows above |
+> | human output of `compat`, `history`, `bisect`, `diff` and `lint` on a run that did not complete | `INCOMPLETE` and its reasons instead of `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`; `lint`, which printed nothing, prints an `INCOMPLETE:` block. The exit codes were already 2, except for the `diff --max-depth` cases in the rows above. Two runs that found something print no `INCOMPLETE`: `compat check` still prints `INCOMPATIBLE`, with the reasons listed above it, and `diff` lists the differences it found, then the reasons under `Not trustworthy — there may be more differences:` |
 > | *(API)* a `str`, `bytes`, `bytearray` or mapping passed to a collection field of a public frozen record, or a value that is not a collection at all (`None`, a number) | raises `TypeError` naming the field, instead of being split into characters or keys, or, in most records, stored as given |
 > | *(API)* a list of key/value pairs for `LintFinding.params`, `LintProfile.rule_severity_overrides`, or the multi-kind `LintRuleSpec.severity` / `message_template` | raises `TypeError`; pass a dict |
 > | *(API)* `Diagnostic`, `CommitDiagnostic` or `LintCompileDiagnostic` with a `level` other than `"info"`, `"warning"` or `"error"`; a `BisectReport` with only one of `breaking_commit` / `breaking_findings` | raises `ValueError` |
@@ -629,7 +631,10 @@ success verdict, human or machine, asks it first.
   a reason other than cleanliness. The runtime warnings themselves are where
   they were (stderr, `<system-out>`, `runs[].properties.runtime_warnings`), and
   the exit-2 `analysis-incomplete` gate is unchanged; it and every renderer now
-  read `protokit._trust`, so the report and the exit code cannot disagree.
+  read `protokit._trust`, so the report and the exit code cannot disagree
+  about whether the run completed. (A run whose findings are all warnings
+  still exits 0 while its JUnit report counts each one as a failure, as in
+  0.15.1.)
   `--format json` is unchanged: it states no verdict, and carries every runtime
   warning with its category.
 - **BREAKING — `protokit lint` wire version `"0.6"` → `"0.7"`** (`lint --format
@@ -990,7 +995,10 @@ keep it that way.
   `CompatibilityPolicy`, `CompileResult`, `LintCompileDiagnostic`,
   `LintFinding`, `LintReport`, `LintProfile`, `LintRuleSpec`, `CycleEdge`, the
   lint contexts, `DriftReport`, `MatchReport`, `FidelityReport` and
-  `CompiledSelection`.
+  `CompiledSelection`. `MatchReport` and `DriftReport` also gain a
+  `diagnostics` field, a tuple that defaults to `()`: a positional
+  construction is unaffected, and `dataclasses.asdict()` of either record
+  now carries a `diagnostics` key.
 - **A string where a collection belongs is refused, not split** (V11).
   `HistoryReport(entries="abc")` was accepted as three one-character entries
   and crashed later, in `history_report_to_dict`; `MatchPolicy`'s
@@ -1056,7 +1064,13 @@ backend-neutral rather than merely fixed (KTD6).
   ranges, reserved names and proto3-`optional` flags are read from the owning
   file's serialized `FileDescriptorProto`, which both runtimes retain, instead
   of from `Descriptor.CopyToProto`, which only upb implements for pool-built
-  descriptors (V34).
+  descriptors (V34). Under upb, the per-check cache of those `optional`
+  flags was keyed by the `id()` of a descriptor object that upb creates on
+  demand and frees, so on a large schema a later message could be answered
+  with an earlier one's flags: `compat` reported `oneof_membership_changed`
+  for fields whose oneof had not changed and missed some whose oneof had.
+  Each entry now holds its descriptor and answers only for it (the upgrade
+  table has the row).
 - **`protokit lint` no longer exits 0 over a descriptor set with missing
   imports.** The pure-Python pool resolves lazily, so a missing import that
   upb rejects at `pool.Add` was never observed; resolution is now forced with
@@ -1199,6 +1213,11 @@ later. Nothing else changes for an environment already on 4.25 or later.
   extras on Python 3.10 and runs every command's `--help`; before, every CI
   job that installed protokit installed the dev extras, which pull in
   `typing_extensions` through mypy.
+- **The `dev` extra now requires `packaging>=23`.** A maintenance script
+  that compares version numbers imports it directly, so it is declared
+  rather than assumed. An environment that installs `protokit[dev]` with
+  `packaging` pinned below 23 has to move that pin; `pip install protokit`
+  without the extra is unaffected.
 
 ### Fixed — documentation
 
