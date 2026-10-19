@@ -324,3 +324,35 @@ def test_map_typed_extension_on_one_side_leaves_the_other_unchanged(side: str) -
         ('(m.tags)["k"]', change),
     ]
     assert [field.full_name for field, _ in bare.ListFields()] == ["m.Msg.name"]
+
+
+def test_a_repeated_extension_of_another_pool_is_refused_not_read_as_empty() -> None:
+    """An extension from another pool is refused, as the read refused it before.
+
+    ``field_value`` reads an unheld repeated extension as empty only for an
+    extension of the message's own type. One resolved in another pool, even
+    with the same full name, still raises ``KeyError`` on both backends, so a
+    caller that borrowed the other side's descriptor is told, not answered.
+    """
+    from protokit._fieldview import field_value
+
+    def pool() -> descriptor_pool.DescriptorPool:
+        f = descriptor_pb2.FileDescriptorProto(name="c.proto", package="c", syntax="proto2")
+        m = f.message_type.add(name="Msg")
+        m.extension_range.add(start=100, end=200)
+        f.extension.add(
+            name="tags", number=100, type=d.FieldDescriptor.TYPE_INT32,
+            label=d.FieldDescriptor.LABEL_REPEATED, extendee=".c.Msg",
+        )
+        p = descriptor_pool.DescriptorPool()
+        p.AddSerializedFile(f.SerializeToString())
+        return p
+
+    own, other = pool(), pool()
+    msg = message_factory.GetMessageClass(own.FindMessageTypeByName("c.Msg"))()
+
+    with pytest.raises(KeyError):
+        field_value(msg, other.FindExtensionByName("c.tags"))
+    assert msg.ListFields() == []
+    assert len(field_value(msg, own.FindExtensionByName("c.tags"))) == 0
+    assert msg.ListFields() == []
