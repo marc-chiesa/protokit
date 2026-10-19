@@ -129,14 +129,14 @@ def is_map_field(field_desc: proto_descriptor.FieldDescriptor) -> bool:
 # (measured 9x slower than uncached), and 256 files let a walk over ten-file
 # schemas pin 26 old pools (3x the memory of the cap it replaced). So the
 # live pool is always fully cached whatever its size — no thrash — and only
-# the newest ``_FILE_PROTO_CACHE_MAX_POOLS`` pools stay alive; a whole pool's
+# the newest ``_FILE_PROTO_CACHE_MAX_POOLS`` pools (four schema pairs) stay alive; a whole pool's
 # entries go when it ages out. The file backstop guards the cache's own size
 # against one pathological pool and is never the operative bound in practice.
 #
 # One lock: entries are evicted while another caller may be between its
 # ``get`` and ``move_to_end`` (two ``SchemaChecker`` runs on different threads
 # raised ``KeyError`` there under contention).
-_FILE_PROTO_CACHE_MAX_POOLS = 4
+_FILE_PROTO_CACHE_MAX_POOLS = 8
 _FILE_PROTO_CACHE_MAX_FILES = 2048
 _FILE_PROTO_CACHE: OrderedDict[
     int,
