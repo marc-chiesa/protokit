@@ -356,3 +356,127 @@ def test_a_repeated_extension_of_another_pool_is_refused_not_read_as_empty() -> 
     assert msg.ListFields() == []
     assert len(field_value(msg, own.FindExtensionByName("c.tags"))) == 0
     assert msg.ListFields() == []
+
+
+def _paths(result: object) -> list[tuple[str, str]]:
+    return sorted((str(x.path), x.change_type.name) for x in result)  # type: ignore[attr-defined]
+
+
+def test_an_unheld_singular_extension_still_reads_its_default() -> None:
+    """Only a repeated extension reads as empty: a singular one reads its default, as before."""
+    from protokit._fieldview import field_value
+
+    fdp = descriptor_pb2.FileDescriptorProto(name="s.proto", package="s", syntax="proto2")
+    fdp.message_type.add(name="Msg").extension_range.add(start=100, end=200)
+    fdp.extension.add(
+        name="level", number=100, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+        extendee=".s.Msg", default_value="7",
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    msg = message_factory.GetMessageClass(pool.FindMessageTypeByName("s.Msg"))()
+
+    assert field_value(msg, pool.FindExtensionByName("s.level")) == 7
+    assert msg.ListFields() == []
+
+
+def test_the_check_is_right_when_the_runtime_probe_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A probe that cannot run answers yes; the walk then runs and changes no result.
+
+    The probe falls back to "reads create an extension" when anything in it
+    raises, so the walk also runs where it is not needed (pure-Python). Forced
+    on, it must leave both inputs unchanged and report what it reported before.
+    """
+    from protokit import _fieldview
+
+    def _fails() -> None:
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(descriptor_pool, "DescriptorPool", _fails)
+    assert _fieldview._read_creates_extension.__wrapped__() is True
+    monkeypatch.undo()
+
+    monkeypatch.setattr(_fieldview, "_read_creates_extension", lambda: True)
+    schema = _schema()
+    left, right = schema.outer(), schema.outer()
+    left.items.add().Extensions[schema.tags].append(1)  # type: ignore[index]
+    right.items.add()
+    before, pristine = _snapshot(right), _pristine(right)
+
+    assert _paths(MessageDifferencer().compare(left, right)) == [
+        ("items[0].(c.tags)[0]", "REMOVED"),
+    ]
+    assert _paths(MessageDifferencer().compare(schema.outer(), right)) == [("items[0]", "ADDED")]
+    _assert_unchanged(right, pristine, before)
+
+
+@pytest.mark.parametrize("kind", ["scalar", "message"])
+def test_a_holder_parsed_from_bytes_is_found(kind: str) -> None:
+    """A message that arrives on the wire holding the extension is read as holding it."""
+    schema = _schema()
+    built = schema.msg()
+    _set_extension(built, schema, kind)
+    parsed = schema.msg.FromString(built.SerializeToString())
+    bare = schema.msg()
+
+    removed = _paths(MessageDifferencer().compare(parsed, bare))
+    added = _paths(MessageDifferencer().compare(bare, parsed))
+    assert removed == _paths(MessageDifferencer().compare(built, bare))
+    assert added == _paths(MessageDifferencer().compare(bare, built))
+    assert removed and added
+
+
+@pytest.mark.parametrize("kind", ["scalar", "message"])
+def test_a_container_the_caller_created_compares_as_empty(kind: str) -> None:
+    """An empty container the caller's own read left behind compares like no extension.
+
+    Under upb the caller's ``msg.Extensions[ext]`` read gives the message an
+    empty container before the comparison; pure-Python's gives it nothing.
+    Either way it equals a bare message, and a holder is reported against it
+    as against a bare one.
+    """
+    schema = _schema()
+    ext = schema.tags if kind == "scalar" else schema.subs
+    touched = schema.msg()
+    len(touched.Extensions[ext])  # type: ignore[index]
+    holder = schema.msg()
+    _set_extension(holder, schema, kind)
+
+    assert _paths(MessageDifferencer().compare(touched, schema.msg())) == []
+    assert _paths(MessageDifferencer().compare(schema.msg(), touched)) == []
+    assert _paths(MessageDifferencer().compare(touched, holder)) == _paths(
+        MessageDifferencer().compare(schema.msg(), holder)
+    )
+
+
+def test_a_custom_option_read_leaves_the_callers_options_unchanged() -> None:
+    """``rebind_options`` on options of the extension's own type reads them in place, unchanged.
+
+    ``get_option_value`` accepts any object with ``GetOptions()``, and when
+    those options are already of the extension's options type they are read
+    where they are: under upb a repeated option they do not hold was given an
+    empty container there.
+    """
+    from protokit._extensions import rebind_options
+
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(descriptor_pb2.DESCRIPTOR.serialized_pb)
+    fdp = descriptor_pb2.FileDescriptorProto(
+        name="o.proto", package="o", syntax="proto2",
+        dependency=["google/protobuf/descriptor.proto"],
+    )
+    fdp.extension.add(
+        name="labels", number=50000, type=_FD.TYPE_STRING, label=_FD.LABEL_REPEATED,
+        extendee=".google.protobuf.FieldOptions",
+    )
+    pool.AddSerializedFile(fdp.SerializeToString())
+    options_cls = message_factory.GetMessageClass(
+        pool.FindMessageTypeByName("google.protobuf.FieldOptions"),
+    )
+    options = options_cls()
+
+    read = rebind_options(options, pool.FindExtensionByName("o.labels"))
+
+    assert read is options
+    assert options.ListFields() == []
+    assert options == options_cls()
