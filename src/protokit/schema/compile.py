@@ -88,9 +88,9 @@ class LintCompileDiagnostic:
       ``exception_type="FileNotFoundError"`` populated.
     - **#4 infrastructure error** (``category="infrastructure"``,
       ``level="error"``): ``message``, ``exception_type`` populated.
-    - **#5 unexpected backend exception** (``category="unexpected"``,
-      ``level="error"``): ``message`` (with ``repr`` of the
-      exception), ``exception_type`` populated.
+    - **#5 unexpected** (``category="unexpected"``, ``level="error"``): an
+      unexpected backend exception (``message`` its ``repr``), or a schema the
+      loaders refuse (``message`` the refusal); ``exception_type`` populated.
     - **Pre-flight same-basename collision**
       (``category="same_basename_collision"``, ``level="error"``):
       ``message`` (lists the colliding paths),
@@ -566,10 +566,10 @@ def compile_protos_to_result(
        diagnostic (FIRST in the tuple, per the A2-2 ordering
        invariant) and fall back to ``protoc``. Without ``protoxy``,
        call ``protoc`` directly.
-    4. **Failure categorization:** five distinct ``except`` clauses
-       map to categories #1–#5 in :class:`LintCompileDiagnostic`.
-       Both-backend failure produces TWO diagnostics — the info
-       fallback and the protoc-failure error.
+    4. **Failure categorization:** the ``except`` clauses map each failure to
+       categories #1–#5 in :class:`LintCompileDiagnostic`; both-backend failure
+       gives TWO (the fallback, the protoc error). A ``MapTypedExtensionError``
+       is not retried under ``protoc``: it is one #5 diagnostic, the refusal.
 
     Args:
         paths: Input ``.proto`` file paths. Empty sequence returns
@@ -664,7 +664,7 @@ def compile_protos_to_result(
                 protoxy.ProtoxyError, ValueError, TypeError, DescriptorPoolError,
             ) as exc:
                 if isinstance(exc, MapTypedExtensionError):
-                    raise  # the schema's own fault: protoc would build the same file
+                    raise  # the schema's own fault, so protoc fails on it too: no fallback
                 # ProtoxyError/ValueError: parse-time failures from
                 # protoxy.compile itself.
                 # DescriptorPoolError: the pool rejecting a FileDescriptorProto

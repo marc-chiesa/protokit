@@ -1,4 +1,4 @@
-"""Regression pins for deferred cycle-2 audit findings in descriptor-set loading (family C, pools).
+"""Regression pins for deferred re-audit findings in descriptor-set loading (family C, pools).
 
 Every ``xfail`` in this module pins a LIVE defect that a later release owns.
 Each pin is ``@pytest.mark.xfail(strict=True, raises=...)`` on the test
@@ -42,6 +42,18 @@ Pinned here:
   (after 0.19.0), group (a). The finding's other half, a field named
   ``DESCRIPTOR``, is a different defect with a different owner (U17a, with
   the field-name family) and is not pinned here.
+* **E03-C1** (re-audit cycle 3) — a field that is neither repeated nor an
+  extension, whose type is a ``map_entry`` message, passes the loader. Under
+  upb ``get_message_class`` builds the class and the parse drops the field
+  (not set, not unknown), so payloads that differ in it compare equal. Under
+  pure-Python ``get_message_class`` raises protobuf's raw ``ValueError``
+  (``map_entry set on non-repeated field``). The pin restates that
+  ``ValueError`` as its failed assertion on purpose: ``raises=AssertionError``
+  then covers both backends, while any other error (a different
+  ``ValueError`` included) goes through ``pytest.fail`` and is red. The fixed
+  outcome is not settled: a typed ``DescriptorPoolError`` from the load or the
+  class build, or the field read as a message, and the pin accepts either on
+  each backend. Owner: U26 (after 0.19.0), group (a).
 """
 
 from __future__ import annotations
@@ -167,3 +179,80 @@ def test_c02_c3_get_message_class_one_hundred_links_from_the_end_control() -> No
     pool = load_pool_from_bytes(_chain_set(_LINKS))
     name = f"{_PKG}.M{_LINKS - 100}"
     assert get_message_class(pool, name).DESCRIPTOR.full_name == name  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# E03-C1 — a singular field typed as a map entry passes the loader
+# ---------------------------------------------------------------------------
+
+# id = 1, labels = {key: "k", value: <last byte>}: field 20, length 6.
+_LABELS_V = bytes.fromhex("0801a201060a016b120176")
+_LABELS_W = bytes.fromhex("0801a201060a016b120177")
+
+
+def _map_entry_field_set(label: int) -> bytes:
+    """A serialized proto2 set: ``Holder.labels = 20`` with ``label``, typed as a map entry."""
+    file = descriptor_pb2.FileDescriptorProto(
+        name="auditcpools/m.proto", package=_PKG, syntax="proto2"
+    )
+    holder = file.message_type.add(name="Holder")
+    holder.field.add(name="id", number=1, type=_F.TYPE_INT32, label=_F.LABEL_OPTIONAL)
+    entry = holder.nested_type.add(name="LabelsEntry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+    entry.field.add(name="value", number=2, type=_F.TYPE_STRING, label=_F.LABEL_OPTIONAL)
+    holder.field.add(
+        name="labels",
+        number=20,
+        type=_F.TYPE_MESSAGE,
+        label=label,
+        type_name=f".{_PKG}.Holder.LabelsEntry",
+    )
+    return descriptor_pb2.FileDescriptorSet(file=[file]).SerializeToString()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "E03-C1: owned by U26 (after 0.19.0). A singular field (not an extension) "
+        "typed as a map entry passes the loader. Under upb the parse drops the "
+        "field, so payloads that differ in it compare equal; under pure-Python "
+        "get_message_class raises protobuf's raw ValueError ('map_entry set on "
+        "non-repeated field'), which the pin restates as its assertion. Either "
+        "outcome counts as fixed: a typed DescriptorPoolError at load or class "
+        "build, or the field read as a message."
+    ),
+)
+def test_e03_c1_a_singular_field_typed_as_a_map_entry_is_refused_or_read() -> None:
+    raw_value_error: ValueError | None = None
+    try:
+        pool = load_pool_from_bytes(_map_entry_field_set(_F.LABEL_OPTIONAL))
+        message_class = get_message_class(pool, f"{_PKG}.Holder")
+    except MessageTypeNotFoundError as exc:
+        pytest.fail(f"the set did not hold the type, neither fixed outcome: {exc}")
+    except DescriptorPoolError:
+        return  # a typed refusal is one of the two fixed outcomes
+    except ValueError as exc:
+        if "map_entry set on non-repeated field" not in str(exc):
+            pytest.fail(f"a ValueError other than the pinned one: {exc!r}")
+        raw_value_error = exc
+    assert raw_value_error is None, (
+        f"pure-Python: get_message_class raised protobuf's raw {raw_value_error!r}"
+    )
+    left = message_class.FromString(_LABELS_V)  # type: ignore[attr-defined]
+    right = message_class.FromString(_LABELS_W)  # type: ignore[attr-defined]
+    assert (left.labels.key, left.labels.value) == ("k", "v"), (
+        f"upb: the parse dropped the field, re-serialized {left.SerializeToString().hex()}"
+    )
+    assert left != right
+
+
+def test_e03_c1_the_same_field_repeated_is_a_map_and_reads_control() -> None:
+    # The same set with ``labels`` repeated is an ordinary map field: it loads,
+    # builds and reads the pin's payloads, which differ.
+    pool = load_pool_from_bytes(_map_entry_field_set(_F.LABEL_REPEATED))
+    message_class = get_message_class(pool, f"{_PKG}.Holder")
+    left = message_class.FromString(_LABELS_V)  # type: ignore[attr-defined]
+    assert dict(left.labels) == {"k": "v"}
+    assert left != message_class.FromString(_LABELS_W)  # type: ignore[attr-defined]

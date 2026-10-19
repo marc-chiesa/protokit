@@ -1028,7 +1028,7 @@ def head_cmd(
     "--quiet",
     "-q",
     is_flag=True,
-    help="Suppress the count; exit 1 if zero matches, 0 otherwise (grep-like).",
+    help="Suppress the count; exit 1 if zero matches, 0 otherwise (grep-like), 2 if incomplete.",
 )
 def count_cmd(
     data_file: Path,
@@ -1043,8 +1043,8 @@ def count_cmd(
     """Count the (matching) records.
 
     Bare: prints the count (0 included) and exits 0. With --quiet: prints nothing
-    and exits 1 on zero matches, 0 otherwise (grep-like; zero matches is a valid
-    result, not an error — that stays exit 2).
+    and exits 1 on zero matches, 0 otherwise (grep-like). Either form exits 2 on an
+    error or an incomplete scan (records not read, or a read or close error).
     """
     setup = _prepare(data_file, desc, proto, proto_paths, type_name, where_expr)
     matched = 0

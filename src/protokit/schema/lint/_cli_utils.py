@@ -314,9 +314,9 @@ def _load_descriptor_sets_to_result(
 
     Raises:
         SystemExit: Via :func:`error_exit_with_code` for any of:
-            ``bad-input`` (read or parse failure),
-            ``missing-imports`` (TypeError matching missing-import
-            markers), ``pool-conflict`` (an import cycle, a TypeError
+            ``bad-input`` (read or parse failure, or an extension typed
+            as a map entry), ``missing-imports`` (TypeError matching
+            missing-import markers), ``pool-conflict`` (an import cycle, a TypeError
             matching the duplicate-symbol marker, or unmatched).
     """
     pool = descriptor_pool.DescriptorPool()
