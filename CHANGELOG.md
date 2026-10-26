@@ -652,7 +652,8 @@ success verdict, human or machine, asks it first.
   the exit-2 `analysis-incomplete` gate is unchanged; it and every renderer now
   read `protokit._trust`, so the report and the exit code cannot disagree
   about whether the run completed. (A run whose findings are all warnings
-  still exits 0, or 1 once they exceed `--max-warnings`, while its JUnit
+  still exits 0, or 1 once they exceed a `--max-warnings` flag or
+  `max_warnings` config limit, while its JUnit
   report counts each one as a failure, as in 0.15.1.)
   `--format json` is unchanged: it states no verdict, and carries every runtime
   warning with its category.
@@ -934,11 +935,12 @@ re-read by hand.
   the container the descriptor itself holds, so changing it
   (`value.append(2)`, setting a field of the message, also one reached by a
   sub-field path) changed what every later read of that option returned;
-  each read now returns its own copy, except under pure-Python for one of
-  two messages, or two enums, that a file declares under one name, and the
-  fields of such a message (upb refuses that file), and, also under
-  pure-Python, a read made with too little stack left to parse the
-  descriptor's file, which falls back to the container the descriptor holds.
+  each read now returns its own copy, with two exceptions that return the
+  container the descriptor holds. Under pure-Python, a read of one of two
+  messages, or two enums, that a file declares under one name, or of
+  anything declared inside such a message or enum (upb refuses that file).
+  On either backend, a read made with too little stack left to parse the
+  descriptor's file.
 
 - **A custom-option read answers for the option its path names** (audit
   findings C02-C2, C01-C2). Under pure-Python, a sub-field path such as
