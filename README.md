@@ -389,12 +389,16 @@ Plugin exceptions (and misuse like returning an awaitable) are caught — the en
 A rule pack is any Python module exposing a `RULES` list of `(rule_id, plugin_fn)` pairs:
 
 ```python
-# myorg/proto_rules.py
+# myorg/proto_rules.py — field rules defined in this module
 RULES = [
     ("no_newly_deprecated", no_newly_deprecated_fields),
-    ("require_docs", require_docs_on_messages),
+    ("require_field_docs", require_field_docs),
 ]
 ```
+
+Every entry is registered as a field rule, as if by `register_field_rule`.
+A pack cannot carry a message-level rule; register one with
+`register_message_rule`.
 
 Load via CLI:
 
@@ -913,9 +917,13 @@ Every command's exit gate, and every built-in
 `--format` renderer of `diff`, `compat` and `lint` that states a
 success verdict, now ask the same predicate whether the run
 completed, so for those commands the exit code and the rendered
-verdict agree. `forensics match` is the exception: its ranking
-verdict can read `clean match` on a run that exits 2 because
-another candidate could not be measured.
+verdict agree on that question. `forensics match` is the
+exception: its ranking verdict can read `clean match` on a run
+that exits 2 because another candidate could not be measured.
+Agreeing on completion is not agreeing on a pass: a `lint` run
+whose findings are all warnings exits 0 (1 once they exceed a
+`--max-warnings` flag or `max_warnings` config limit), while its JUnit
+report counts each warning as a failure (`type="warning"`), as in 0.15.1.
 
 **There is no opt-out.** No flag, environment variable or config
 key restores the old exit codes. A switch that brought back a
@@ -967,7 +975,8 @@ at the top of the 0.16.0 entry in `CHANGELOG.md`.
    `sys.exit()` now exits 2 instead of passing its own code
    through, and so does one whose exception calls `sys.exit()`
    while protokit formats it into the error line. One whose
-   `RULES` raises while being read, that raises
+   `RULES` raises while being read (anything but `AttributeError`
+   or `TypeError`, which already exited 2), that raises
    `KeyboardInterrupt` at import, or whose exception cannot be
    formatted, exits 2 instead of 1. That covers
    `--compat-rule-pack`: a lint `--rule-pack` whose `RULES` calls
@@ -1040,7 +1049,17 @@ the exit code see the same correction:
   per such rule instead of a passing `clean` testcase.
 - Human output prints `INCOMPLETE` and its reasons, not
   `COMPATIBLE`, `OK`, `no break found` or `Messages are equal.`, for
-  a run that did not complete.
+  a run that did not complete. Two runs that found something print
+  no `INCOMPLETE`, and exit 2: `compat check` prints
+  `INCOMPATIBLE`, with the reasons listed above it, and `diff` lists
+  the differences it found, then the reasons under
+  `Not trustworthy — there may be more differences:`. A diff result
+  with no differences but an error diagnostic (the differ adds one
+  only for a hook registered through the Python API; the `diff`
+  command registers none) prints no `INCOMPLETE` either: it prints
+  `No differences found, but the comparison is not trustworthy:`,
+  as in 0.15.1. `diff` prints `INCOMPLETE` only when nothing above
+  a `--max-depth` cut differs and there is no error diagnostic.
 
 **Python API.** A public frozen record now owns its collections:
 a `str`, `bytes` or mapping where a collection belongs raises
@@ -1298,7 +1317,7 @@ and agents. Top-level keys:
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
 | `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"` / `"contradictory_disable_config"` (0.7.0+) / `"unknown_rule_id"` (0.7.0+)), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`, `contradictory_disable_config`, `unknown_rule_id` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
-| `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty for `--input` descriptor-set mode. |
+| `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). When the inputs are descriptor sets (no `--proto`), holds only `info` entries (category `same_basename_collision`): one for each repeat of a file name already loaded, in the same input or another. |
 | `summary` | object | Aggregate counts. Keys: `errors`, `warnings`, `info`, `total`, `filtered_count`, `runtime_warning_count`. |
 
 A non-JSON-serializable rule param (e.g., a `pathlib.Path`) renders via
