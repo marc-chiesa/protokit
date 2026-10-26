@@ -389,12 +389,16 @@ Plugin exceptions (and misuse like returning an awaitable) are caught — the en
 A rule pack is any Python module exposing a `RULES` list of `(rule_id, plugin_fn)` pairs:
 
 ```python
-# myorg/proto_rules.py
+# myorg/proto_rules.py — field rules defined in this module
 RULES = [
     ("no_newly_deprecated", no_newly_deprecated_fields),
-    ("require_docs", require_docs_on_messages),
+    ("require_field_docs", require_field_docs),
 ]
 ```
+
+Every entry is registered as a field rule, as if by `register_field_rule`.
+A pack cannot carry a message-level rule; register one with
+`register_message_rule`.
 
 Load via CLI:
 
@@ -917,8 +921,9 @@ verdict agree on that question. `forensics match` is the
 exception: its ranking verdict can read `clean match` on a run
 that exits 2 because another candidate could not be measured.
 Agreeing on completion is not agreeing on a pass: a `lint` run
-whose findings are all warnings exits 0, while its JUnit report
-counts each warning as a failure (`type="warning"`), as in 0.15.1.
+whose findings are all warnings exits 0 (1 once they exceed
+`--max-warnings`), while its JUnit report counts each warning as a
+failure (`type="warning"`), as in 0.15.1.
 
 **There is no opt-out.** No flag, environment variable or config
 key restores the old exit codes. A switch that brought back a
@@ -1312,7 +1317,7 @@ and agents. Top-level keys:
 | `findings` | list of objects | One per emitted finding. Per-finding keys: `rule_id`, `severity` (`"error"` / `"warning"` / `"info"`), `location` (rendered string), `location_file`, `location_kind` (lowercased `LintLocation` variant — `"field"`, `"message"`, `"enum"`, etc.), `violation_kind`, `message`. |
 | `filtered_count` | int | Findings dropped by `--min-severity` filtering. Mirrored in `summary.filtered_count` for convenience. |
 | `runtime_warnings` | list of objects | One per `LintRuntimeWarning`. Per-warning keys: `category` (`"rule_exception"` / `"unloaded_rule"` / `"severities_unloaded_rule"` / `"min_severity_relaxed"` / `"all_files_excluded"` / `"custom_annotation_extension_unresolved"` / `"extension_unresolved"` / `"contradictory_disable_config"` (0.7.0+) / `"unknown_rule_id"` (0.7.0+)), `rule_id` (populated for rule-scoped categories — `rule_exception`, `unloaded_rule`, `severities_unloaded_rule`, `custom_annotation_extension_unresolved`, `extension_unresolved`, `contradictory_disable_config`, `unknown_rule_id` — and `null` for non-rule-scoped categories — `min_severity_relaxed`, `all_files_excluded`), `message`, `exception_type` (string or `null`), `descriptor_path` (string or `null`). |
-| `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty for `--input` descriptor-set mode. |
+| `diagnostics` | list of objects | Compile-time diagnostics surfaced by `--proto` mode (level, category, message). Empty when the inputs are descriptor sets (no `--proto`). |
 | `summary` | object | Aggregate counts. Keys: `errors`, `warnings`, `info`, `total`, `filtered_count`, `runtime_warning_count`. |
 
 A non-JSON-serializable rule param (e.g., a `pathlib.Path`) renders via

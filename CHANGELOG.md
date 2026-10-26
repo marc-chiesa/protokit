@@ -13,7 +13,7 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
-## 0.16.0 — 2026-10-19
+## 0.16.0 — 2026-10-25
 
 > **Upgrade note (0.15.x → 0.16.0).** This release stops a run that recorded
 > it could not finish from exiting green. The table lists every change that
@@ -652,8 +652,8 @@ success verdict, human or machine, asks it first.
   the exit-2 `analysis-incomplete` gate is unchanged; it and every renderer now
   read `protokit._trust`, so the report and the exit code cannot disagree
   about whether the run completed. (A run whose findings are all warnings
-  still exits 0 while its JUnit report counts each one as a failure, as in
-  0.15.1.)
+  still exits 0, or 1 once they exceed `--max-warnings`, while its JUnit
+  report counts each one as a failure, as in 0.15.1.)
   `--format json` is unchanged: it states no verdict, and carries every runtime
   warning with its category.
 - **BREAKING — `protokit lint` wire version `"0.6"` → `"0.7"`** (`lint --format
@@ -936,7 +936,9 @@ re-read by hand.
   sub-field path) changed what every later read of that option returned;
   each read now returns its own copy, except under pure-Python for one of
   two messages, or two enums, that a file declares under one name, and the
-  fields of such a message (upb refuses that file).
+  fields of such a message (upb refuses that file), and, also under
+  pure-Python, a read made with too little stack left to parse the
+  descriptor's file, which falls back to the container the descriptor holds.
 
 - **A custom-option read answers for the option its path names** (audit
   findings C02-C2, C01-C2). Under pure-Python, a sub-field path such as
