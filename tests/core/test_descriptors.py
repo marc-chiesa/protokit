@@ -352,3 +352,42 @@ class TestFileProtoCache:
         assert len(_descriptors._FILE_PROTO_CACHE) <= cap
         for i, desc in enumerate(descs[:8]):
             assert message_proto(desc).name == f"M{i}"
+
+
+class TestAlternatingSchemaPairs:
+    """Checks alternating among four schema pairs in one process reuse each file's index."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self) -> Iterator[None]:
+        _descriptors._clear_file_proto_cache()
+        yield
+        _descriptors._clear_file_proto_cache()
+
+    def test_four_pairs_in_turn_read_each_file_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Eight pools visited in turn, three rounds: only the first round reads files.
+
+        A caller comparing several old/new schemas holds every pool alive anyway,
+        so caching them costs no memory it was not already spending; evicting one
+        on every switch re-serialized and re-indexed its whole file per check.
+        """
+        builders = []
+        descs = []
+        for _ in range(8):
+            builder = ProtoBuilder()
+            builder.message("p.M", {"x": (T.TYPE_INT32, 1)})
+            builders.append(builder)
+            descs.append(builder.pool.FindMessageTypeByName("p.M"))
+        reads: list[str] = []
+        real_index = _descriptors._index_messages
+
+        def counting_index(proto: descriptor_pb2.FileDescriptorProto) -> dict[
+            str, descriptor_pb2.DescriptorProto,
+        ]:
+            reads.append(proto.name)
+            return real_index(proto)
+
+        monkeypatch.setattr(_descriptors, "_index_messages", counting_index)
+        for _round in range(3):
+            for desc in descs:
+                assert message_proto(desc).name == "M"
+        assert len(reads) == 8, f"{len(reads)} whole-file reads for 8 files over 3 rounds"

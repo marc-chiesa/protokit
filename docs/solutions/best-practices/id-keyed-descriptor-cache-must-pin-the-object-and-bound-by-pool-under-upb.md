@@ -79,7 +79,7 @@ if cache is not None:
 The file-proto cache pins the same way, and bounds eviction by distinct pools rather than by file count, with a file-count backstop against one pathological pool (`src/protokit/_descriptors.py:139-219`):
 
 ```python
-_FILE_PROTO_CACHE_MAX_POOLS = 4
+_FILE_PROTO_CACHE_MAX_POOLS = 8
 _FILE_PROTO_CACHE_MAX_FILES = 2048
 ...
 while len(_FILE_PROTO_POOLS) > _FILE_PROTO_CACHE_MAX_POOLS:
@@ -113,7 +113,7 @@ That same strong reference has a cost: holding a descriptor holds the pool that 
 
 A minimal reproduction of the aliasing, on upb only: build one proto3 file with a chain of messages `M0 -> M1 -> ... -> M199` linked through a `next` field, alternate a proto3 `optional` field (a synthetic oneof, which must not count as oneof membership) with a plain field moved into a real oneof between the old and new schemas (which must count), and run `check_compatibility` from `M0`. Exactly half the messages should report `oneof_membership_changed`; an `id()`-keyed cache with no pin reports more. `tests/schema/test_proto3_optional_cache.py` is that test, parametrised at 40 and 200 messages, and it passes on both backends only with the pin.
 
-A minimal reproduction of pool pinning: build one small pool per "commit" in a loop (ten files each), read every message through `message_proto`, and count `{id(fd.pool) for fd, *_ in _FILE_PROTO_CACHE.values()}` after each commit. A file-count cap leaves as many pools alive as the cap divided by the files per pool; the pool bound leaves exactly the bound. the `TestFileProtoCache` class in `tests/core/test_descriptors.py` pins both the no-thrash property (64 files serialized once across two passes) and the pool bound (a walk of ten pools pins only the newest four).
+A minimal reproduction of pool pinning: build one small pool per "commit" in a loop (ten files each), read every message through `message_proto`, and count `{id(fd.pool) for fd, *_ in _FILE_PROTO_CACHE.values()}` after each commit. A file-count cap leaves as many pools alive as the cap divided by the files per pool; the pool bound leaves exactly the bound. the `TestFileProtoCache` class in `tests/core/test_descriptors.py` pins both the no-thrash property (64 files serialized once across two passes) and the pool bound (a walk of fourteen pools pins only the newest eight). The bound was 4 until 0.16.0's release review measured `check_compatibility` alternating among three schema pairs in one process rebuilding a whole-file index on every switch (about 100x slower than 0.15.1 under upb on a 2,000-message file); 8 holds four pairs, and doubles what a history walk can pin. upb pools cannot be weakly referenced, so a bound that pins nothing is not available.
 
 ## Related
 
