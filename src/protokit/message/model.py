@@ -165,25 +165,25 @@ class MissingKeyError(ValueError):
 # FieldPath: unified path grammar for all protobuf field paths
 # ---------------------------------------------------------------------------
 
-# Grammar:
+# Grammar (``_check_bracket``, at the end of this file, reads the bracket part):
 #   path     := segment ('.' segment)*
 #   segment  := name bracket?
-#   name     := ident | '(' ident ('.' ident)* ')'
+#   name     := ident | '(' ident ('.' ident)* ')' | '#' [1-9] [0-9]*
 #   ident    := [a-zA-Z_][a-zA-Z0-9_]*
-#   bracket  := '[' key ']'
-#   key      := signed_int | bool_lit | quoted_string | key_eq
-#   signed_int := '-'? [0-9]+
-#   bool_lit := 'true' | 'false'
-#   quoted_string := '"' escaped_chars '"'
-#   key_eq   := name '=' (signed_int | bool_lit | quoted_string)
-
+#   bracket  := '[' (value | name '=' value) ']'
+#   value    := '-'? [0-9]+ | float | 'true' | 'false' | string | 'b' bytes
+#   float    := '-'? ([0-9]+ '.' [0-9]+ exp? | [0-9]+ exp | 'inf') | 'nan'   (repr's spelling)
+#   exp      := 'e' ('+' | '-') [0-9]+
+#   string   := '"' (char other than '"', '\', a control character or a line break | esc)* '"'
+#   esc      := '\\' | '\"' | '\n' | '\r' | '\t' | '\x' hex hex | '\u' hex{4} | '\U' hex{8}
+# ``bytes`` is a string of printable ASCII with \\ \" and \xHH. ``#N`` names an unknown field.
 # A parenthesised name is a proto2 extension, written the way proto text format
 # writes it: its fully-qualified name in parentheses, ``(pkg.ext)``. The differ
 # emits that form, so the grammar must read it back or ``--ignore`` / ``--filter``
 # cannot target an extension the differ just reported. The dots inside the
 # parentheses belong to the name, not to the path: ``(pkg.ext)`` is ONE segment.
 _IDENT = r"[a-zA-Z_][a-zA-Z0-9_]*"
-_NAME_RE = re.compile(rf"\({_IDENT}(?:\.{_IDENT})*\)|{_IDENT}")
+_NAME_RE = re.compile(rf"\({_IDENT}(?:\.{_IDENT})*\)|{_IDENT}|#[1-9][0-9]*")
 
 
 @dataclass(frozen=True)
@@ -197,7 +197,7 @@ class PathSegment:
     Attributes:
         name: The field's identifier (``[a-zA-Z_][a-zA-Z0-9_]*``), or a
             proto2 extension's parenthesised fully-qualified name
-            (``(pkg.ext)``), which is a single segment despite its dots.
+            (``(pkg.ext)``), one segment despite its dots, or ``#N`` (unknown field).
         bracket: Raw bracket content as it appeared in the source
             string. Examples: ``"2"`` (repeated index), ``'"env"'``
             (quoted string map key), ``"true"`` (bool map key),
@@ -283,7 +283,7 @@ class FieldPath:
 
         Raises:
             ValueError: If the path string is malformed (e.g. trailing dot,
-                unclosed bracket, unexpected character).
+                unclosed bracket, a bracket key outside the grammar).
 
         Examples:
             "user.name" -> FieldPath([PathSegment("user"), PathSegment("name")])
@@ -312,7 +312,7 @@ class FieldPath:
                 bracket_start = pos + 1
                 # Find matching ]
                 bracket_end = _find_closing_bracket(path_str, pos)
-                bracket = path_str[bracket_start:bracket_end]
+                bracket = _check_bracket(path_str[bracket_start:bracket_end], path_str)
                 pos = bracket_end + 1
 
             segments.append(PathSegment(name=name, bracket=bracket))
@@ -334,15 +334,15 @@ class FieldPath:
         """Create a new path with an additional segment appended.
 
         Args:
-            name: Field name for the new segment.
+            name: One name: a field name, ``(pkg.ext)`` or ``#N``. A dot outside
+                parentheses would print as two segments, so it raises ``ValueError``.
             bracket: Optional bracket content (e.g. ``"2"`` or ``'"key"'``).
 
         Returns:
             A new FieldPath with the extra segment at the end.
         """
-        return FieldPath(
-            segments=self.segments + (PathSegment(name=name, bracket=bracket),)
-        )
+        _check_child_name(name)
+        return _append_segment(self, name, bracket)
 
     def is_prefix_of(self, other: FieldPath) -> bool:
         """Check if this path is a prefix of another (segment-aware).
@@ -381,9 +381,9 @@ class FieldPath:
     def matches_selector(self, other: FieldPath) -> bool:
         """Check if this path matches another as a selector (bracket-blind, exact-length).
 
-        This is the matching semantics the differ's selective policies use
-        (``ignore_fields``, ``treat_as_map``): a selector matches a concrete
-        field path iff the two paths have the SAME number of segments AND each
+        The differ's policies match a DOTTED selector this way (a one-segment
+        selector applies at any depth: ``_selector.selects``): it matches a
+        concrete field path iff the paths have the SAME number of segments AND each
         selector segment's *name* equals the corresponding path segment's name.
         Brackets and indices are ignored entirely on both sides.
 
@@ -731,14 +731,14 @@ class DiffResult:
                 diagnostics = tuple(
                     d
                     for d in diagnostics
-                    if d.path is None or filter_path.matches_exact(FieldPath.parse(d.path))
+                    if d.path is None or _diagnostic_matches(filter_path, d.path, exact=True)
                 )
             else:
                 diffs = tuple(d for d in diffs if filter_path.is_prefix_of(d.path))
                 diagnostics = tuple(
                     d
                     for d in diagnostics
-                    if d.path is None or filter_path.is_prefix_of(FieldPath.parse(d.path))
+                    if d.path is None or _diagnostic_matches(filter_path, d.path, exact=False)
                 )
 
         if change_type is not None:
@@ -1065,3 +1065,129 @@ class MessageHookContext:
 # Type aliases for registration.
 FieldHook = Callable[[FieldHookContext], None]
 MessageValidateHook = Callable[[MessageHookContext], None]
+
+
+# ---------------------------------------------------------------------------
+# Path grammar helpers (appended here: published docs cite lines above)
+# ---------------------------------------------------------------------------
+
+import unicodedata  # noqa: E402
+
+_SCALAR_KEY_RE = re.compile(
+    r"-?[0-9]+"
+    r"|-?(?:[0-9]+\.[0-9]+(?:e[+-][0-9]+)?|[0-9]+e[+-][0-9]+|inf)|nan"
+    r"|true|false"
+)
+_KEY_NAME_RE = re.compile(rf"(?:\({_IDENT}(?:\.{_IDENT})*\)|{_IDENT})=")
+_STRING_ESCAPE_RE = re.compile(r'\\(?:["\\nrt]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})')
+_BYTES_ESCAPE_RE = re.compile(r'\\(?:["\\]|x[0-9a-fA-F]{2})')
+# Characters a string key may not hold raw: they would break the path over
+# lines (or, for ESC, rewrite a terminal). ``format_key`` escapes these and
+# every other character ``str.isprintable`` rejects.
+_RAW_REFUSED = frozenset({"Cc", "Zl", "Zp"})
+
+
+def _is_quoted(text: str, *, is_bytes: bool) -> bool:
+    """Whether ``text`` is one ``"…"`` string (or the body of ``b"…"``) in the grammar."""
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return False
+    body = text[1:-1]
+    escape = _BYTES_ESCAPE_RE if is_bytes else _STRING_ESCAPE_RE
+    pos = 0
+    while pos < len(body):
+        char = body[pos]
+        if char == "\\":
+            match = escape.match(body, pos)
+            if match is None:
+                return False
+            pos = match.end()
+            continue
+        if char == '"':
+            return False
+        if is_bytes:
+            if not " " <= char <= "~":
+                return False
+        elif unicodedata.category(char) in _RAW_REFUSED:
+            return False
+        pos += 1
+    return True
+
+
+def _check_bracket(content: str, path_str: str) -> str:
+    """Return ``content`` if it is a bracket key the grammar declares, else raise.
+
+    Args:
+        content: The text between ``[`` and ``]``.
+        path_str: The whole path, for the error message.
+
+    Returns:
+        ``content`` unchanged.
+
+    Raises:
+        ValueError: If ``content`` is none of the key forms: an integer, a
+            float as ``repr`` spells it (``nan``, ``inf``, ``1e+300``),
+            ``true`` / ``false``, a quoted string, ``b`` and a quoted byte
+            string, or ``name=`` followed by one of those.
+    """
+    name = _KEY_NAME_RE.match(content)
+    value = content[name.end():] if name is not None else content
+    if (
+        _SCALAR_KEY_RE.fullmatch(value)
+        or _is_quoted(value, is_bytes=False)
+        or (value[:1] == "b" and _is_quoted(value[1:], is_bytes=True))
+    ):
+        return content
+    raise ValueError(
+        f"Bracket '[{content}]' in '{path_str}' is not a key the path grammar "
+        "accepts (an integer, a float, true/false, a quoted string, b\"bytes\", "
+        "or name=<one of those>)"
+    )
+
+
+def _check_child_name(name: str) -> None:
+    """Refuse a name that would print as more than one segment.
+
+    Raises:
+        ValueError: If ``name`` holds a ``.`` outside parentheses.
+    """
+    depth = 0
+    for char in name:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "." and depth <= 0:
+            raise ValueError(
+                f"FieldPath.child takes one name; {name!r} holds a '.' outside "
+                "parentheses and would print as two segments"
+            )
+
+
+def _append_segment(path: FieldPath, name: str, bracket: str | None = None) -> FieldPath:
+    """``path`` with one more segment, built without checking ``name``.
+
+    The differ and the schema checker build paths from descriptor names, which
+    the user does not control. A hand-built descriptor set can hold a name the
+    grammar cannot read (pure-Python accepts ``a.b``; upb refuses it), and
+    refusing it mid-walk would turn a comparison into a crash. Such a name is
+    written as it is, and ``DiffResult.filter`` matches it by string prefix.
+    """
+    return FieldPath(segments=path.segments + (PathSegment(name=name, bracket=bracket),))
+
+
+def _diagnostic_matches(filter_path: FieldPath, text: str, *, exact: bool) -> bool:
+    """Whether a diagnostic's path string passes ``DiffResult.filter``.
+
+    A path the differ wrote from a name outside the identifier grammar cannot
+    be parsed. It is matched by its string instead: equal for ``exact``, or
+    starting with the filter path followed by ``.`` or ``[``, so the filter
+    never raises on the differ's own output.
+    """
+    try:
+        path = FieldPath.parse(text)
+    except ValueError:
+        prefix = str(filter_path)
+        if exact:
+            return text == prefix
+        return not prefix or text == prefix or text.startswith((prefix + ".", prefix + "["))
+    return filter_path.matches_exact(path) if exact else filter_path.is_prefix_of(path)

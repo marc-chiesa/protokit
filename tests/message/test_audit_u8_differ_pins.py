@@ -37,9 +37,10 @@ Pinned here:
   Its sibling one-sided route ``_emit_all_fields`` *does* key the same list, and
   says so in a comment: the errors "must not depend on whether the other side
   happened to carry this subtree".
-* **U8-5** — ``ignore_fields``' ``treat_as_map`` key-conflict check only
-  recognises the exact ``f"{map_sel}.{key_name}"`` spelling, so a more deeply
-  qualified path naming the same key field is accepted and then erases the key.
+* **U8-5** (closed in 0.17.0; its tests are now ordinary regression tests) —
+  ``ignore_fields``' ``treat_as_map`` key-conflict check only recognised the
+  exact ``f"{map_sel}.{key_name}"`` spelling, so a more deeply qualified path
+  naming the same key field was accepted and then erased the key.
 
 Three V-series findings a later release owns are pinned at the end of this
 module, in the same shape: **V28** (``treat_as_set`` drops ``ignore_fields``),
@@ -577,14 +578,6 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
     @pytest.mark.parametrize(
         "ignore_first", [False, True], ids=["map-then-ignore", "ignore-then-map"],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="U8-5: the treat_as_map key-conflict guard compares only the exact "
-               "f'{map_sel}.{key_name}' spelling, so the fully qualified "
-               "'container.items.id' — the same key field of the same in-force map — is "
-               "accepted in either registration order instead of raising ValueError",
-    )
     def test_fully_qualified_key_selector_must_be_rejected(self, ignore_first: bool) -> None:
         """A deeper dotted path naming the map key must be rejected like the short forms.
 
@@ -609,13 +602,6 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
                 d.treat_as_map("items", key="id")
                 d.ignore_fields("container.items.id")
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="U8-5: once the evaded ignore erases the element's only populated field, "
-               "two messages differing in exactly that field compare EQUAL — "
-               "has_changes() is False with an empty diff list",
-    )
     def test_evaded_ignore_must_not_report_different_messages_as_equal(self) -> None:
         """The consequence of the evasion: a silent false EQUAL.
 
@@ -640,7 +626,7 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
 
         result = d.compare(_outer_with_item(b, "a"), _outer_with_item(b, "b"))
 
-        # Today: has_changes() is False and the diff list is empty.
+        # 0.16.0: has_changes() was False and the diff list empty.
         assert result.has_changes()
 
 

@@ -6,11 +6,17 @@ selective comparison policy in the differ — ignore, keyless-set, partial
 overrides, per-field tolerance — consumes one of these, so there is a single
 selection concept rather than one parser per policy (KTD-1, R9).
 
-Path-form matching is :func:`selects`: the bracket-blind, exact-length name
-comparison the engine's ``_is_ignored`` and ``_get_treat_as_map_key`` gates use,
-where a lone ``(pkg.ext)`` matches at any depth as those gates' name tables do.
-The regression test in ``tests/message/test_field_selector.py``
-pins that equivalence.
+Path-form matching is :func:`selects`, the rule every engine gate applies: a
+selector of one segment (a bare name such as ``"name"``, or ``(pkg.ext)``)
+selects that field at any depth, and a dotted path selects one location from
+the root, bracket-blind. The regression tests in
+``tests/message/test_field_selector.py`` pin that equivalence.
+
+Every entry point that takes selector text goes through :func:`parse_selector`,
+and every path-form :class:`FieldSelector` is checked when it is built, so an
+empty selector (which parses to the root and would select every field) and
+bracket syntax (which matching ignores, so ``items[0]`` would select every
+element) are refused wherever a selector is given.
 
 This module is strict-typed (``mypy --strict``) and gated by
 ``tests/meta/test_static_analysis.py``.
@@ -46,15 +52,12 @@ class FieldSelector:
     existing selector. The two forms share one public surface,
     :meth:`matches`:
 
-    * **Path form** holds a parsed :class:`FieldPath` and delegates to
-      :meth:`FieldPath.matches_selector` — bracket-blind, exact-length
-      segment-name matching. A bare name (``"name"``) is one segment, so it
-      matches only a top-level ``name`` (unlike a bare name given to
-      ``ignore_fields`` as a string, which applies at any depth); a dotted path
-      (``"items.name"``) matches that scoped location and matches
-      ``"items[0].name"`` but NOT ``"a.items.name"``. A lone extension name
-      (``"(pkg.ext)"``) matches that extension at any depth, as
-      :func:`selects` describes.
+    * **Path form** holds a parsed :class:`FieldPath` and applies
+      :func:`selects`. A bare name (``"name"``) or a lone extension name
+      (``"(pkg.ext)"``) selects that field at any depth, exactly as the same
+      string does under every policy; a dotted path (``"items.name"``)
+      matches that location from the root, bracket-blind, so it matches
+      ``"items[0].name"`` but NOT ``"a.items.name"``.
     * **Predicate form** calls a ``(FieldDescriptor, FieldPath) -> bool``
       callable with the descriptor and path as explicit arguments. Exceptions
       raised by the predicate PROPAGATE — they are author bugs, not engine
@@ -84,12 +87,16 @@ class FieldSelector:
                 (predicate form).
 
         Raises:
-            ValueError: If neither or both of ``path``/``predicate`` are given.
+            ValueError: If neither or both of ``path``/``predicate`` are given,
+                or if ``path`` is empty or has a bracket (see
+                :func:`check_selector_path`).
         """
         if (path is None) == (predicate is None):
             raise ValueError(
                 "FieldSelector requires exactly one of 'path' or 'predicate'"
             )
+        if path is not None:
+            check_selector_path(path)
         self._path = path
         self._predicate = predicate
 
@@ -108,9 +115,8 @@ class FieldSelector:
         Raises:
             TypeError: If ``spec`` is neither a string, a callable, nor a
                 :class:`FieldSelector`.
-            ValueError: If a string spec is not a valid dotted path (e.g.
-                contains bracket syntax or is malformed — propagated from
-                :meth:`FieldPath.parse`).
+            ValueError: If a string spec is empty, contains bracket syntax or
+                is malformed (from :func:`parse_selector`).
         """
         if isinstance(spec, FieldSelector):
             return spec
@@ -137,10 +143,10 @@ class FieldSelector:
             A path-form :class:`FieldSelector`.
 
         Raises:
-            ValueError: If ``spec`` is malformed (propagated from
-                :meth:`FieldPath.parse`).
+            ValueError: If ``spec`` is empty, contains bracket syntax or is
+                malformed (from :func:`parse_selector`).
         """
-        return cls(path=FieldPath.parse(spec))
+        return cls(path=parse_selector(spec))
 
     @classmethod
     def from_predicate(cls, predicate: FieldPredicate) -> FieldSelector:
@@ -178,10 +184,9 @@ class FieldSelector:
     ) -> bool:
         """Return whether this selector matches the given field.
 
-        Path form ignores ``fd`` and applies :func:`selects`: the shared
-        bracket-blind, exact-length comparison the engine gates use, except
-        that a lone extension name ``(pkg.ext)`` matches that extension at any
-        depth, as ``ignore_fields`` and ``treat_as_map`` always applied it.
+        Path form ignores ``fd`` and applies :func:`selects`, the rule the
+        engine gates use: one segment selects at any depth, a dotted path from
+        the root, bracket-blind.
         Predicate form calls the predicate with ``(fd, path)`` as explicit
         arguments; any exception it raises propagates unchanged.
 
@@ -201,11 +206,11 @@ class FieldSelector:
 def selects(selector: FieldPath, path: FieldPath) -> bool:
     """Whether a path-form ``selector`` selects the concrete ``path``.
 
-    Bracket-blind, exact-length segment-name matching
-    (:meth:`FieldPath.matches_selector`), with one exception: a selector that
-    is a lone extension name ``(pkg.ext)`` names the extension, not a location,
-    so it selects the path's last segment at any depth. A plain bare name
-    keeps exact-length matching here.
+    A selector of one segment (a bare name ``name`` or an extension name
+    ``(pkg.ext)``) names a field, not a location, so it selects the path's
+    last segment at any depth. A dotted selector selects one location from
+    the root: bracket-blind, exact-length segment-name matching
+    (:meth:`FieldPath.matches_selector`).
 
     Args:
         selector: The parsed selector path.
@@ -214,32 +219,18 @@ def selects(selector: FieldPath, path: FieldPath) -> bool:
     Returns:
         True if ``selector`` selects ``path``.
     """
-    if is_extension_name(selector):
+    if len(selector.segments) == 1:
         return bool(path.segments) and path.segments[-1].name == selector.segments[0].name
     return selector.matches_selector(path)
-
-
-def is_extension_name(selector: FieldPath) -> bool:
-    """Whether ``selector`` is a lone extension name ``(pkg.ext)``.
-
-    Such a selector names an extension rather than a location, so it applies
-    at any depth.
-
-    Args:
-        selector: The parsed selector path.
-
-    Returns:
-        True if the selector is one parenthesised segment.
-    """
-    return len(selector.segments) == 1 and selector.segments[0].name.startswith("(")
 
 
 def overlaps(first: FieldPath, second: FieldPath) -> bool:
     """Whether two path-form selectors can select the same field.
 
-    The registration conflict checks use this, so a set/map or ignore/map
-    overlap through the extension spelling is caught. For two plain selectors
-    it is the same exact-length comparison as before.
+    The registration conflict checks use this, so two policies on one field
+    are caught however each selector is spelled: ``items`` (any depth)
+    overlaps ``outer.items``, and two dotted paths overlap when they name the
+    same location.
 
     Args:
         first: One parsed selector path.
@@ -249,3 +240,68 @@ def overlaps(first: FieldPath, second: FieldPath) -> bool:
         True if either selector selects the other's path.
     """
     return selects(first, second) or selects(second, first)
+
+
+_EMPTY_SELECTOR = (
+    "An empty selector selects every field (it parses to the root path); "
+    "omit it instead"
+)
+
+
+def check_selector_path(path: FieldPath, text: str | None = None) -> None:
+    """Refuse a selector path that is empty, has a bracket, or does not print as itself.
+
+    Args:
+        path: The parsed selector.
+        text: The text it was parsed from (``None`` for a path built directly).
+
+    Raises:
+        ValueError: If ``path`` has no segments, or any segment a bracket.
+            Matching ignores brackets, so ``items[0]`` would select every
+            element of ``items``; there is no per-element selector. Also if a
+            path built directly from segments does not parse back to itself
+            (a segment named ``a.b`` prints as two): a path-form selector
+            registers as its text, so the text must mean the same path.
+    """
+    if len(path.segments) == 0:
+        raise ValueError(_EMPTY_SELECTOR)
+    if any(segment.bracket is not None for segment in path.segments):
+        raise _bracket_error(str(path) if text is None else text)
+    if text is None:
+        try:
+            reparsed = FieldPath.parse(str(path))
+        except ValueError:
+            reparsed = None
+        if reparsed != path:
+            raise ValueError(
+                f"Selector path {str(path)!r} does not parse back to its own segments "
+                f"{[segment.name for segment in path.segments]!r}; each segment must "
+                "be one field name, (pkg.ext) or #N"
+            )
+
+
+def _bracket_error(text: str) -> ValueError:
+    return ValueError(
+        f"Bracket syntax is not supported in selectors: '{text}'. "
+        "Use bare field names or dotted paths (e.g. 'field' or 'parent.field')."
+    )
+
+
+def parse_selector(text: str) -> FieldPath:
+    """Parse selector text: the one coercion every string entry point uses (KTD1).
+
+    Args:
+        text: A bare name, ``(pkg.ext)``, or a dotted path.
+
+    Returns:
+        The parsed selector path.
+
+    Raises:
+        ValueError: If ``text`` is empty, contains bracket syntax, or is
+            malformed.
+    """
+    if "[" in text:
+        raise _bracket_error(text)
+    path = FieldPath.parse(text)
+    check_selector_path(path, text)
+    return path

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from protokit._records import as_tuple, own_tuples_of_tuples
-from protokit.message._selector import FieldSelector, SelectorSpec
+from protokit.message._selector import FieldSelector, SelectorSpec, parse_selector
 from protokit.message.comparators import FloatComparison, MessageFieldComparison
 from protokit.message.differ import MessageDifferencer
 from protokit.message.pytest_plugin import render_diff_lines
@@ -191,6 +191,11 @@ class MatchPolicy:
                 "MatchPolicy.presence must be a MessageFieldComparison "
                 f"(EQUAL or EQUIVALENT); got {self.presence!r}"
             )
+
+        overlay_selectors = (pair[0] for pair in self.approx_overlays if pair)
+        for spec in (*self.as_set, *self.ignore, *overlay_selectors):
+            if isinstance(spec, str):
+                parse_selector(spec)
 
 
 def _build_differ(policy: MatchPolicy) -> MessageDifferencer:

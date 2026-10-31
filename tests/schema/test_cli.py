@@ -792,6 +792,52 @@ class TestErrors:
         assert result.exit_code == 2
         assert "--ignore" in result.output
 
+    @pytest.mark.parametrize("path", ["x[TRUE]", "x[+1]", "x[]", "x[env]"])
+    def test_ignore_with_a_bracket_outside_the_grammar_exits_2(
+        self, tmp_path: Path, path: str,
+    ) -> None:
+        """A bracket the path grammar refuses is a usage error, not a silent no-match."""
+        old, new = _simple_pair(
+            [{"name": "x", "number": 1, "type": T.TYPE_STRING}],
+            [],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+            "--ignore", path,
+        ])
+        assert result.exit_code == 2, result.output
+        assert "--ignore" in result.output
+
+    @pytest.mark.skipif(
+        __import__("google.protobuf.internal.api_implementation", fromlist=["Type"]).Type()
+        == "upb",
+        reason="upb refuses a field name outside the identifier grammar when the file is added",
+    )
+    def test_field_names_outside_the_identifier_grammar_still_check(
+        self, tmp_path: Path,
+    ) -> None:
+        """A hand-built schema whose names the path grammar cannot read checks without raising.
+
+        Paths are built from schema data the user does not control, so the
+        walk writes such a name as it is instead of refusing it mid-check.
+        """
+        old, new = _simple_pair(
+            [
+                {"name": "a.b", "number": 1, "type": T.TYPE_STRING},
+                {"name": "foo-bar", "number": 2, "type": T.TYPE_STRING},
+            ],
+            [{"name": "a.b", "number": 1, "type": T.TYPE_STRING}],
+        )
+        old_path = _write_desc(tmp_path, "old", old, ["t.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["t.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "t.M",
+        ], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        assert "foo-bar" in result.output
+
     def test_empty_ignore_value_exits_2(self, tmp_path: Path) -> None:
         """V31: ``--ignore=`` must be a usage error, not a silent
         suppress-everything switch.

@@ -9,12 +9,15 @@ same selector/path pair.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 from google.protobuf import descriptor as proto_descriptor
 from google.protobuf import descriptor_pb2
 
-from protokit.message import MessageDifferencer
+from protokit.message import FloatComparison, MessageDifferencer
 from protokit.message._selector import FieldSelector
+from protokit.message.matchers import Approx, MatchPolicy
 from protokit.message.model import FieldPath
 from tests.proto_builder import ProtoBuilder
 
@@ -43,13 +46,15 @@ def _field(full_name: str, field_name: str) -> proto_descriptor.FieldDescriptor:
 
 class TestPathForm:
     def test_bare_name_matches_at_any_depth(self) -> None:
+        """A bare name selects the field wherever it sits, as ``ignore_fields("name")`` does."""
         sel = FieldSelector.of("name")
         fd = _field("test.Msg", "name")
         assert sel.matches(fd, FieldPath.parse("name"))
-        assert sel.matches(fd, FieldPath.parse("inner.name")) is False  # length differs
-        # Bare name matches the single-segment path at any concrete location,
-        # bracket-blind: a repeated element's own segment still matches.
-        assert sel.matches(fd, FieldPath.parse("name"))
+        assert sel.matches(fd, FieldPath.parse("inner.name"))
+        assert sel.matches(fd, FieldPath.parse("a[0].inner.name"))
+        # It names the LAST segment: a path that only passes through ``name``
+        # selects a field below it, not ``name``.
+        assert sel.matches(fd, FieldPath.parse("name.inner")) is False
 
     def test_bare_name_is_bracket_blind(self) -> None:
         sel = FieldSelector.of("items")
@@ -78,32 +83,6 @@ class TestPathForm:
         sel = FieldSelector.of("name")
         fd = _field("test.Msg", "name")
         assert sel.matches(fd, FieldPath.parse("id")) is False
-
-    def test_bracketed_selector_is_accepted_and_bracket_blind_current_behaviour(self) -> None:
-        """Documents CURRENT behaviour that audit finding V13 records as a defect.
-
-        ``FieldPath.parse`` accepts bracket syntax (bracket rejection lives in
-        the engine's ``ignore_fields`` string boundary, not the parser), so
-        ``FieldSelector.of("items[0].name")`` is accepted. Because the shared
-        matcher is bracket-blind, it then behaves identically to its
-        bracket-free form and selects ``items[N].name`` for every ``N``.
-
-        This test does not say that is right. The correct behaviour — a
-        bracket selector is refused at construction, as the ``of`` and
-        ``from_path`` docstrings already state — is pinned strict-xfail in
-        ``tests/message/test_audit_v_selector_pins.py``
-        (``TestV13BracketSelectorsAcceptedAndWidened``), owned by U9 (0.17.0).
-        The fix that flips those pins turns this test red: delete it in the
-        same change.
-        """
-        fd = _field("test.Msg", "name")
-        bracketed = FieldSelector.of("items[0].name")
-        plain = FieldSelector.of("items.name")
-        for path_str in ("items[3].name", "items.name"):
-            path = FieldPath.parse(path_str)
-            assert bracketed.matches(fd, path) == plain.matches(fd, path) is True
-        no_match = FieldPath.parse("a.items.name")
-        assert bracketed.matches(fd, no_match) == plain.matches(fd, no_match) is False
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +177,14 @@ class TestConstruction:
                 predicate=lambda fd, path: True,
             )
 
+    @pytest.mark.parametrize("name", ["a.b", "", "foo-bar"])
+    def test_a_path_whose_text_means_another_path_is_refused(self, name: str) -> None:
+        """A path-form selector registers as its text, so the text must parse to the same path."""
+        from protokit.message.model import PathSegment
+
+        with pytest.raises(ValueError, match="does not parse back"):
+            FieldSelector(path=FieldPath(segments=(PathSegment(name=name),)))
+
     def test_path_and_predicate_select_same_target(self) -> None:
         """AE4: the same target is selected by a path and an equivalent predicate."""
         fd = _field("test.Msg", "name")
@@ -248,7 +235,10 @@ class TestSemanticsEquivalence:
             ("items.note", "other.note", False),
             ("items", "items[2]", True),
             ("items", "items", True),
-            ("items", "a.items", False),
+            # A bare name selects the field at any depth.
+            ("items", "a.items", True),
+            ("items", "a[1].items[0]", True),
+            ("items", "items.a", False),
             # A lone extension name selects that extension at any depth,
             # bracket-blind, and nothing else.
             ("(e.ival)", "(e.ival)", True),
@@ -268,13 +258,10 @@ class TestSemanticsEquivalence:
         assert selector_match is expected
 
         # The engine's string ignore gate, configured with the same selector,
-        # agrees for dotted paths and extension names. A plain bare name is the
-        # exception: the engine applies it at any depth (audit finding V12,
-        # deferred to 0.17.0), so those rows are not cross-checked.
-        if "." in selector_str:
-            d = MessageDifferencer()
-            d.ignore_fields(selector_str)
-            assert d._is_ignored(path.segments[-1].name, path) is expected
+        # agrees on every row, bare names included (audit finding V12).
+        d = MessageDifferencer()
+        d.ignore_fields(selector_str)
+        assert d._is_ignored(path.segments[-1].name, path) is expected
 
     @pytest.mark.parametrize(
         ("path_str", "is_map_field"),
@@ -300,3 +287,143 @@ class TestSemanticsEquivalence:
         engine_match = engine_key is not None
         assert selector_match == engine_match
         assert selector_match is is_map_field
+
+
+# ---------------------------------------------------------------------------
+# One selector meaning across spellings and policies (R1, KTD1, KTD2)
+# ---------------------------------------------------------------------------
+
+
+def _depths_builder() -> ProtoBuilder:
+    """``A { name, B b }``, ``B { name, C c }``, ``C { name }``: ``name`` at depths 0, 1, 2."""
+    b = ProtoBuilder()
+    b.message("test.C", {"name": (T.TYPE_STRING, 1)})
+    b.message("test.B", {"name": (T.TYPE_STRING, 1), "c": (T.TYPE_MESSAGE, 2, ".test.C")})
+    b.message("test.A", {"name": (T.TYPE_STRING, 1), "b": (T.TYPE_MESSAGE, 2, ".test.B")})
+    return b
+
+
+class TestBareNameMeansTheSameInEverySpelling:
+    """R1: a bare name selects the same fields as a string and as a ``FieldSelector``."""
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            pytest.param(("a", "b", "c"), id="every-depth-differs"),
+            pytest.param(("a", None, None), id="depth-0-only"),
+            pytest.param((None, "b", None), id="depth-1-only"),
+            pytest.param((None, None, "c"), id="depth-2-only"),
+        ],
+    )
+    def test_string_and_field_selector_ignore_give_identical_results(
+        self, names: tuple[str | None, str | None, str | None]
+    ) -> None:
+        b = _depths_builder()
+        c_cls, b_cls = b.get_message_class("test.C"), b.get_message_class("test.B")
+
+        def build(suffix: str) -> object:
+            top, mid, low = (None if n is None else n + suffix for n in names)
+            inner = b_cls(name=mid or "", c=c_cls(name=low or ""))
+            return b.build("test.A", name=top or "", b=inner)
+
+        left, right = build("1"), build("2")
+        by_string, by_object = MessageDifferencer(), MessageDifferencer()
+        by_string.ignore_fields("name")
+        by_object.ignore_fields(FieldSelector.of("name"))
+
+        assert MessageDifferencer().compare(left, right).has_changes()
+        assert by_object.compare(left, right) == by_string.compare(left, right)
+        assert not by_string.compare(left, right).has_changes()
+
+
+class TestEmptySelectorIsRefused:
+    """An empty selector parses to the root path, which selects everything: refused."""
+
+    @pytest.mark.parametrize(
+        "register",
+        [
+            pytest.param(lambda: FieldSelector.of(""), id="FieldSelector.of"),
+            pytest.param(lambda: FieldSelector(path=FieldPath(segments=())), id="path-keyword"),
+            pytest.param(lambda: MessageDifferencer().ignore_fields(""), id="ignore_fields"),
+            pytest.param(lambda: MessageDifferencer().treat_as_set(""), id="treat_as_set"),
+            pytest.param(
+                lambda: MessageDifferencer().treat_as_map("", key="id"), id="treat_as_map",
+            ),
+            pytest.param(
+                lambda: MessageDifferencer().set_float_comparison(
+                    FloatComparison.APPROXIMATE, fraction=1e-3, selector="",
+                ),
+                id="float-overlay",
+            ),
+        ],
+    )
+    def test_every_entry_point_refuses_it(self, register: Callable[[], object]) -> None:
+        with pytest.raises(ValueError, match="empty"):
+            register()
+
+    def test_an_empty_str_subclass_whose_bool_lies_is_refused(self) -> None:
+        """The check counts the parsed path's segments, not the text's truthiness."""
+
+        class TruthyEmpty(str):
+            def __bool__(self) -> bool:
+                return True
+
+        with pytest.raises(ValueError, match="empty"):
+            FieldSelector.of(TruthyEmpty(""))
+
+    def test_a_bracket_is_reported_as_one_even_when_its_key_is_malformed(self) -> None:
+        with pytest.raises(ValueError, match="Bracket syntax is not supported"):
+            MessageDifferencer().treat_as_map("items[env]", key="id")
+
+
+class TestMatchPolicyValidatesItsSelectors:
+    """``MatchPolicy`` refuses a selector at construction, not at the first match."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"as_set": ("items[0]",)}, id="as_set-bracket"),
+            pytest.param({"ignore": ("items[0].name",)}, id="ignore-bracket"),
+            pytest.param({"ignore": ("",)}, id="ignore-empty"),
+            pytest.param(
+                {"approx_overlays": (("ratios[0]", Approx(fraction=1e-3)),)}, id="overlay",
+            ),
+        ],
+    )
+    def test_construction_raises(self, kwargs: dict[str, object]) -> None:
+        with pytest.raises(ValueError):
+            MatchPolicy(**kwargs)  # type: ignore[arg-type]
+
+    def test_valid_selectors_construct(self) -> None:
+        policy = MatchPolicy(as_set=("items",), ignore=(FieldSelector.of("a.b"),))
+
+        assert policy.as_set == ("items",)
+
+
+class TestIgnoreBesideASetPolicy:
+    """KTD2: an ignore beside another policy on the same field keeps "ignore wins".
+
+    The map-against-map and ignore-against-map conflicts follow the same path
+    rule and live with their extension siblings in ``test_extensions.py``.
+    """
+
+    @pytest.mark.parametrize("ignore_first", [True, False], ids=["ignore-first", "set-first"])
+    def test_ignore_and_set_on_one_field_register_and_the_ignore_wins(
+        self, ignore_first: bool
+    ) -> None:
+        b = ProtoBuilder()
+        b.message("test.Inner", {"items": (T.TYPE_STRING, 1)}, repeated_fields={"items"})
+        b.message("test.Outer", {"outer": (T.TYPE_MESSAGE, 1, ".test.Inner")})
+        inner = b.get_message_class("test.Inner")
+        left = b.build("test.Outer", outer=inner(items=["a", "b"]))
+        right = b.build("test.Outer", outer=inner(items=["c"]))
+
+        d = MessageDifferencer()
+        if ignore_first:
+            d.ignore_fields("items")
+            d.treat_as_set("outer.items")
+        else:
+            d.treat_as_set("outer.items")
+            d.ignore_fields("items")
+
+        assert not d.compare(left, right).has_changes()
