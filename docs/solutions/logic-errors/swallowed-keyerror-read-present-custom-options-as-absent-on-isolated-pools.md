@@ -240,7 +240,14 @@ ext_desc)`):
 ```
 
 The presence guard is unchanged: `HasExtension` for singular extensions,
-emptiness for repeated ones. The `except` is gone.
+emptiness for repeated ones. The `except` is gone. (Current state since #130:
+the emptiness test reads the extension to count it, and under upb reading a
+repeated extension a message does not hold gives that message an empty one.
+So the test is safe only on a message protokit made, which is what
+`rebind_options` returns for real descriptors. `rebind_options`' own check,
+`_checked`, counts through `_repeated_value` instead, which reads only an
+extension the message holds. See
+[the upb read side effect](upb-reading-an-unheld-repeated-extension-gives-the-message-one.md).)
 
 **The re-read**, `src/protokit/_extensions.py:65-108` (anchor `def
 rebind_options`):
@@ -543,7 +550,8 @@ $ grep -rn "HasExtension(\|\.Extensions\[" src/protokit | grep -v '``'
 At the U5 tree every hit reads through `rebind_options` or through
 `_fieldview`'s declared-extension accessors (`src/protokit/_fieldview.py:71`,
 `:83`), and none sits under a `KeyError` handler. (Current state: those two
-accessors now read through `_extensions_of(msg)[fd]` and
+accessors now read through `_extensions_of(msg)[fd]` (since #130, only for a
+repeated extension the message holds; otherwise a read-only empty value) and
 `_unshadowed(type(msg), "HasExtension")`, which the grep above does not
 match; `grep -rnE '_extensions_of\(|"HasExtension"' src/protokit` lists them.
 Neither sits under a `KeyError` handler.) A legitimate absent case gets
@@ -603,3 +611,6 @@ cell pins, and the call exists there.
   another upb-specific descriptor fact where what matters is the pool.
 - [docs-code-drift-defense-convention-2026-06-13](../best-practices/docs-code-drift-defense-convention-2026-06-13.md):
   Rule 3, which governs the plan citation above.
+- [upb-reading-an-unheld-repeated-extension-gives-the-message-one](upb-reading-an-unheld-repeated-extension-gives-the-message-one.md):
+  why the repeated-extension emptiness test above must not read a message the
+  caller owns, and the iterate-then-read rule `_repeated_value` follows.

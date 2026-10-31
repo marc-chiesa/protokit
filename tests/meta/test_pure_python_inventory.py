@@ -322,7 +322,7 @@ def _outcomes(stdout: str) -> dict[str, str]:
     for line in stdout.splitlines():
         word, _, rest = line.partition(" ")
         if word in {"PASSED", "FAILED", "XFAIL", "XPASS", "ERROR", "SKIPPED"}:
-            nodeid = rest.split(" ")[0]
+            nodeid = rest.removeprefix("at setup of ").removeprefix("at teardown of ").split(" ")[0]
             if "::" in nodeid:
                 name = nodeid.split("::", 1)[1]
                 # a test that passed and then errored in teardown lists twice
@@ -526,3 +526,21 @@ def test_committed_inventory_parses_under_every_backend() -> None:
     if result.entries:
         assert result.protobuf_version is not None
         assert result.python_version is not None
+
+
+# --- reading the child session's summary ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "XFAIL test_scenario.py::test_listed_setup_error - reason",
+        # pytest 9.2 names the phase of an xfail outside the call
+        "XFAIL at setup of test_scenario.py::test_listed_setup_error - reason",
+        "XFAIL at teardown of test_scenario.py::test_listed_setup_error - reason",
+    ],
+)
+def test_summary_lines_are_read_with_or_without_a_phase(line: str) -> None:
+    """``_outcomes`` reads a summary line in the shape every supported pytest
+    writes, so the scenario tests above check the plugin, not pytest's wording."""
+    assert _outcomes(line) == {"test_listed_setup_error": "XFAIL"}
