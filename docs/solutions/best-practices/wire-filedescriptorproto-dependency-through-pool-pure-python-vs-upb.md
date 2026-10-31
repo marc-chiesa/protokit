@@ -159,6 +159,16 @@ result = subprocess.run([sys.executable, "-c", script], cwd=_REPO_ROOT, env=env,
 assert result.returncode == 0, result.stderr
 ```
 
+(Current state, 2026-10-26: `PYTHONPATH=str(_REPO_ROOT)` replaces any
+`PYTHONPATH` the caller set, and the repository root holds no importable
+`protokit` in the src layout, so the child finds `protokit` through the venv's
+editable install. Run from a worktree with `PYTHONPATH=<worktree>/src`, the
+parent tests the worktree while this child tests the main checkout. Deriving the
+child's `PYTHONPATH` from the imported package
+(`Path(protokit.__file__).parents[1]`) follows whichever tree the parent
+imported. See
+[worktree runs with the shared editable venv](../test-failures/worktree-run-with-shared-editable-venv-tests-the-main-checkout.md).)
+
 The child's `api_implementation.Type()` assertion makes a runtime that cannot be
 forced fail loudly instead of silently testing upb again.
 

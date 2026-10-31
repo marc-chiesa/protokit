@@ -190,7 +190,11 @@ counterexample for each:
 - traceback shape, if anything inspects frames.
 
 Reproduce every counterexample against a worktree at the base revision before
-you accept it, then add a test that fails on the rewrite.
+you accept it, then add a test that fails on the rewrite. Run that worktree with
+`PYTHONPATH=<worktree>/src`: the shared `.venv` installs protokit editable from
+the main checkout, so without it the "base revision" run imports the main
+checkout's code
+([worktree runs with the shared editable venv](../test-failures/worktree-run-with-shared-editable-venv-tests-the-main-checkout.md)).
 
 ## Why This Matters
 
