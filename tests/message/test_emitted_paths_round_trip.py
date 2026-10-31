@@ -305,10 +305,22 @@ def _odd_names_class() -> type[Message]:
     message_type { name: "Inner"
       field { name: "foo-bar" number: 1 type: TYPE_STRING label: LABEL_OPTIONAL }
       field { name: "a.b" number: 2 type: TYPE_STRING label: LABEL_OPTIONAL } }
+    message_type { name: "Holder"
+      field { name: "inner" number: 1 type: TYPE_MESSAGE type_name: ".odd.Inner"
+              label: LABEL_OPTIONAL } }
     message_type { name: "Root"
       field { name: "inner" number: 1 type: TYPE_MESSAGE type_name: ".odd.Inner"
               label: LABEL_OPTIONAL }
-      field { name: "other" number: 2 type: TYPE_INT32 label: LABEL_OPTIONAL } }"""
+      field { name: "other" number: 2 type: TYPE_INT32 label: LABEL_OPTIONAL }
+      field { name: "holders" number: 3 type: TYPE_MESSAGE type_name: ".odd.Holder"
+              label: LABEL_REPEATED }
+      field { name: "by_name" number: 4 type: TYPE_MESSAGE type_name: ".odd.Root.ByNameEntry"
+              label: LABEL_REPEATED }
+      nested_type { name: "ByNameEntry"
+        field { name: "key" number: 1 type: TYPE_STRING label: LABEL_OPTIONAL }
+        field { name: "value" number: 2 type: TYPE_MESSAGE type_name: ".odd.Holder"
+                label: LABEL_OPTIONAL }
+        options { map_entry: true } } }"""
     pool = descriptor_pool.DescriptorPool()
     pool.Add(text_format.Parse(text, descriptor_pb2.FileDescriptorProto()))
     return message_factory.GetMessageClass(pool.FindMessageTypeByName("odd.Root"))
@@ -350,3 +362,35 @@ class TestFieldNamesOutsideTheGrammar:
         else:
             assert {"inner.foo-bar", "inner.a.b"} <= inner_paths
         assert {diagnostic.path for diagnostic in other.diagnostics} == {"other"}
+
+    @pytest.mark.parametrize(
+        ("filter_path", "expected"),
+        [
+            pytest.param("holders.inner", "holders[0].inner.foo-bar", id="repeated-ancestor"),
+            pytest.param("by_name.inner", 'by_name["k"].inner.foo-bar', id="map-ancestor"),
+        ],
+    )
+    def test_an_error_below_a_keyed_ancestor_survives_a_bracketless_filter(
+        self, filter_path: str, expected: str
+    ) -> None:
+        """A bracketless filter segment matches any element, whether or not the rest parses.
+
+        Two equal messages carry one validation error each; filtering the
+        subtree that holds it must keep it, or the filtered result reads as
+        clean.
+        """
+        cls = _odd_names_class()
+        message = cls()
+        setattr(message.holders.add().inner, "foo-bar", "x")
+        setattr(message.by_name["k"].inner, "foo-bar", "x")
+
+        def error_on_odd_name(ctx: FieldHookContext) -> None:
+            if ctx.path.segments[-1].name == "foo-bar":
+                ctx.error("invalid value")
+
+        d = MessageDifferencer()
+        d.register_validate_hook(error_on_odd_name)
+        result = d.compare(message, message)
+
+        assert expected in {diagnostic.path for diagnostic in result.errors}
+        assert [d.path for d in result.filter(path=filter_path).errors] == [expected]

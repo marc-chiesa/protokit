@@ -120,6 +120,12 @@ class TestV8FieldPathBracketGrammar:
             pytest.param("items[id=]", id="key-without-value"),
             pytest.param("labels[env]", id="unquoted-string"),
             pytest.param("labels[[0]", id="stray-open-bracket"),
+            pytest.param('a["x\\q"]', id="unknown-escape"),
+            pytest.param('a["\x01"]', id="raw-control-character"),
+            pytest.param('a["\u2028"]', id="raw-line-separator"),
+            pytest.param('a[b"\xe9"]', id="non-ascii-in-bytes"),
+            pytest.param('a[b"\\x4"]', id="truncated-hex-escape"),
+            pytest.param('a["x"y"]', id="unescaped-inner-quote"),
         ],
     )
     def test_bracket_content_outside_the_grammar_must_be_rejected(self, path_str: str) -> None:

@@ -1179,15 +1179,48 @@ def _diagnostic_matches(filter_path: FieldPath, text: str, *, exact: bool) -> bo
     """Whether a diagnostic's path string passes ``DiffResult.filter``.
 
     A path the differ wrote from a name outside the identifier grammar cannot
-    be parsed. It is matched by its string instead: equal for ``exact``, or
-    starting with the filter path followed by ``.`` or ``[``, so the filter
-    never raises on the differ's own output.
+    be parsed whole, so the filter never raises on the differ's own output:
+    an exact filter cannot equal it, and a prefix filter is matched against
+    as many leading segments as it has, parsed one by one, so a bracketless
+    filter segment still matches any element (``holders.inner`` keeps
+    ``holders[0].inner.foo-bar``) however the rest of the path is spelled.
     """
     try:
         path = FieldPath.parse(text)
     except ValueError:
-        prefix = str(filter_path)
         if exact:
-            return text == prefix
-        return not prefix or text == prefix or text.startswith((prefix + ".", prefix + "["))
+            return False
+        leading = _leading_segments(text, len(filter_path.segments))
+        return leading is not None and filter_path.is_prefix_of(leading)
     return filter_path.matches_exact(path) if exact else filter_path.is_prefix_of(path)
+
+
+def _leading_segments(text: str, count: int) -> FieldPath | None:
+    """The first ``count`` segments of ``text``, or ``None`` if they do not all parse.
+
+    Each of them must be a grammar name with an optional valid bracket, ended
+    by ``.`` or by the end of the text; whatever follows is not read.
+    """
+    segments: list[PathSegment] = []
+    pos = 0
+    while len(segments) < count:
+        name = _NAME_RE.match(text, pos)
+        if name is None:
+            return None
+        pos = name.end()
+        bracket = None
+        if text[pos:pos + 1] == "[":
+            try:
+                end = _find_closing_bracket(text, pos)
+                bracket = _check_bracket(text[pos + 1:end], text)
+            except ValueError:
+                return None
+            pos = end + 1
+        segments.append(PathSegment(name=name.group(), bracket=bracket))
+        if pos < len(text):
+            if text[pos] != ".":
+                return None
+            pos += 1
+        elif len(segments) < count:
+            return None
+    return FieldPath(segments=tuple(segments))

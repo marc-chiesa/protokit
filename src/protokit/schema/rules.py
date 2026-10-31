@@ -1115,7 +1115,7 @@ def reserved_field_reused(
     for ext in _fieldview.data_extensions(new_desc):
         if _is_reserved(ext.number, old_res_ranges):
             findings.append(Finding(
-                path=path.child(_fieldview.extension_key(ext)),
+                path=_append_segment(path, _fieldview.extension_key(ext)),
                 rule_id="reserved_field_reused",
                 severity=Severity.WIRE,
                 direction=Direction.BOTH,

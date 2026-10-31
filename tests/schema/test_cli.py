@@ -838,6 +838,41 @@ class TestErrors:
         assert result.exit_code == 1, result.output
         assert "foo-bar" in result.output
 
+    @pytest.mark.skipif(
+        __import__("google.protobuf.internal.api_implementation", fromlist=["Type"]).Type()
+        == "upb",
+        reason="upb refuses an extension name outside the identifier grammar",
+    )
+    def test_an_odd_extension_name_on_a_reserved_number_still_checks(
+        self, tmp_path: Path,
+    ) -> None:
+        """The reserved-number rule reports an extension named ``a).b`` instead of raising.
+
+        Its path segment ``(pkg.a).b)`` has a dot outside balanced
+        parentheses, so the public ``FieldPath.child`` would refuse it.
+        """
+        from google.protobuf import text_format
+
+        def pool(text: str) -> descriptor_pool.DescriptorPool:
+            built = descriptor_pool.DescriptorPool()
+            built.Add(text_format.Parse(text, descriptor_pb2.FileDescriptorProto()))
+            return built
+
+        old = pool('''name: "r.proto" package: "pkg" syntax: "proto2"
+            message_type { name: "M" reserved_range { start: 100 end: 101 }
+                           extension_range { start: 101 end: 200 } }''')
+        new = pool('''name: "r.proto" package: "pkg" syntax: "proto2"
+            message_type { name: "M" extension_range { start: 100 end: 200 } }
+            extension { name: "a).b" number: 100 extendee: ".pkg.M" type: TYPE_INT32
+                        label: LABEL_OPTIONAL }''')
+        old_path = _write_desc(tmp_path, "old", old, ["pkg.M"])
+        new_path = _write_desc(tmp_path, "new", new, ["pkg.M"])
+        result = CliRunner().invoke(main, ["check",
+            str(old_path), str(new_path), "--type", "pkg.M",
+        ], catch_exceptions=False)
+        assert result.exit_code == 1, result.output
+        assert "reserved" in result.output
+
     def test_empty_ignore_value_exits_2(self, tmp_path: Path) -> None:
         """V31: ``--ignore=`` must be a usage error, not a silent
         suppress-everything switch.
