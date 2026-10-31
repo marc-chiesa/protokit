@@ -66,7 +66,8 @@ All notable changes to `protokit` are documented here. Format loosely follows
   form back, so `--filter` works on every path the differ reports. A field
   name outside the identifier rules, which only a hand-built descriptor set
   under pure-Python can hold, is written as it is, and `DiffResult.filter`
-  matches it by its text instead of raising.
+  matches such a diagnostic by the leading segments that do parse instead
+  of raising. A `--filter` the user types still has to follow the grammar.
 
 ### Changed
 
