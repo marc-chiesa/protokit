@@ -98,7 +98,9 @@ All notable changes to `protokit` are documented here. Format loosely follows
   pairing is what decides the index, so a predicate selector that tests the
   index applies to the chosen pair and not to the choice of partner. A
   `DuplicateKeyError` or `MissingKeyError` from a nested `treat_as_map` names
-  the element that holds the bad key.
+  the element that holds the bad key. Applying the nested policies while
+  pairing brings a depth limit for sets nested in their own elements (Known
+  issues).
 - **Cross-pool enum values compare by number** (audit findings U8-2 and V14).
   0.16.0 called two values equal when their names or their numbers matched,
   which is not an equivalence relation, so `treat_as_set` over cross-pool
@@ -122,6 +124,20 @@ All notable changes to `protokit` are documented here. Format loosely follows
   grammar error before any conflict with an ignore.
 - The path grammar gains an `#N` segment, the name an unknown field will be
   reported under.
+
+### Known issues
+
+- **`treat_as_set` nested more than about 150 levels deep raises
+  `RecursionError`.** A message that holds itself through a set field, such
+  as `Node { repeated Node children }` with `treat_as_set("children")`, is
+  paired one level at a time, and each level's pairing calls the next, so a
+  chain about 150 levels deep exceeds Python's default recursion limit, on
+  both backends. 0.16.0 compared such chains at any depth, because it
+  ignored the nested set policy while pairing. Comparing the same messages
+  without `treat_as_set` is not affected, and `sys.setrecursionlimit` raises
+  the depth. Scheduled for the differ restructuring release that follows
+  0.19.0. Test:
+  `tests/message/test_set_comparison.py::TestPairingCarriesConfiguration::test_nested_set_fields_compare_at_any_depth`.
 
 ## 0.16.0 — 2026-10-25
 

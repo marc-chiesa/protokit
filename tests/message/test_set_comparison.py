@@ -429,6 +429,33 @@ def _observed(result: object) -> list[tuple[str, str]]:
     return sorted((str(d.path), d.change_type.name) for d in result)  # type: ignore[attr-defined]
 
 
+_NODE_CLASS: list[type] = []
+
+
+def _node_class() -> type:
+    """``Node { id; repeated Node children }``, built once so every chain shares a pool."""
+    if _NODE_CLASS:
+        return _NODE_CLASS[0]
+    fdp = descriptor_pb2.FileDescriptorProto(name="n.proto", package="t", syntax="proto3")
+    node = fdp.message_type.add(name="Node")
+    node.field.add(name="id", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
+    node.field.add(
+        name="children", number=2, type=T.TYPE_MESSAGE, type_name=".t.Node",
+        label=T.LABEL_REPEATED,
+    )
+    _NODE_CLASS.append(_messages(fdp)["Node"])
+    return _NODE_CLASS[0]
+
+
+def _node_chain(depth: int) -> object:
+    """A ``Node`` nested ``depth`` levels, one child each."""
+    root = _node_class()(id=0)
+    cur = root
+    for n in range(1, depth + 1):
+        cur = cur.children.add(id=n)
+    return root
+
+
 class TestPairingCarriesConfiguration:
     """Set pairing uses the caller's configuration, not a default differ's."""
 
@@ -777,26 +804,24 @@ class TestPairingCarriesConfiguration:
         A trial does not walk the pairs it chooses, so nested trials are not
         repeated at every level (each level used to double the cost).
         """
-        fdp = descriptor_pb2.FileDescriptorProto(name="n.proto", package="t", syntax="proto3")
-        node = fdp.message_type.add(name="Node")
-        node.field.add(name="id", number=1, type=T.TYPE_INT32, label=T.LABEL_OPTIONAL)
-        node.field.add(
-            name="children", number=2, type=T.TYPE_MESSAGE, type_name=".t.Node",
-            label=T.LABEL_REPEATED,
-        )
-        cls = _messages(fdp)["Node"]
-
-        def chain() -> object:
-            root = cls(id=0)
-            cur = root
-            for n in range(1, 101):
-                cur = cur.children.add(id=n)
-            return root
-
         d = MessageDifferencer()
         d.treat_as_set("children")
 
-        assert _observed(d.compare(chain(), chain())) == []
+        assert _observed(d.compare(_node_chain(100), _node_chain(100))) == []
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=RecursionError,
+        reason="Known issue (0.17.0): each nested treat_as_set level's pairing trial is a "
+               "recursive walk, so nesting past about 150 levels raises RecursionError; "
+               "0.16.0 did not apply the nested policy while pairing and had no such limit",
+    )
+    def test_nested_set_fields_compare_at_any_depth(self) -> None:
+        """A 200-level tree with ``treat_as_set`` on its children compares equal."""
+        d = MessageDifferencer()
+        d.treat_as_set("children")
+
+        assert _observed(d.compare(_node_chain(200), _node_chain(200))) == []
 
     def test_paired_scalar_elements_run_hooks_and_report_enum_renames(self) -> None:
         """Chosen scalar pairs are walked at the left index: hooks run, name drift warns."""

@@ -142,7 +142,7 @@ vacuous.** Both tests below were mutation-checked with
 `scripts/mutation_check.py` against the reintroduced rewrite:
 
 ```python
-# tests/message/test_set_comparison.py:361
+# tests/message/test_set_comparison.py:367
 class TestSelectorExceptionsPropagate:
     def test_stop_iteration_from_a_predicate_is_not_rewrapped(self) -> None:
         ...
