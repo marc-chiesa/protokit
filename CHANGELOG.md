@@ -68,6 +68,49 @@ All notable changes to `protokit` are documented here. Format loosely follows
   under pure-Python can hold, is written as it is, and `DiffResult.filter`
   matches such a diagnostic by the leading segments that do parse instead
   of raising. A `--filter` the user types still has to follow the grammar.
+- **`treat_as_set` pairs elements under the caller's configuration** (audit
+  findings V28, C08-C2, C08-C2b, C04-C3 and C04-C4). 0.16.0 decided whether
+  two message elements pair with a default differencer, so pairing dropped
+  `ignore_fields`, `MessageFieldComparison.EQUAL` and nested `treat_as_set` /
+  `treat_as_map` policies: elements that differed only in an ignored field
+  were reported as REMOVED and ADDED under a field that had not changed, and
+  under EQUAL an element whose field was unset paired with one whose field
+  was set to its default (through a proto2 group too). Pairing now applies
+  the ignore rules (bare, dotted, predicate and extension forms), the presence
+  mode and the nested policies. Floats still compare exactly while pairing,
+  so elements a float tolerance would call equal stay unpaired, and the
+  pairing does not depend on element order. Each chosen pair is then
+  compared with the full configuration and reported at the left element's
+  index, so:
+  - hooks run on the elements of chosen pairs, once per field, and never
+    while candidates are tried (0.16.0 ran none on paired elements);
+  - a schema change inside paired elements (`TYPE_CHANGED`,
+    `FIELD_NUMBER_CHANGED`, `CARDINALITY_CHANGED`) no longer stops them
+    pairing and is reported once per pair, where 0.16.0 reported every field
+    of both elements as REMOVED and ADDED;
+  - a `max_depth` cut inside paired elements appears in `truncated_paths`.
+    Elements that differ only below the cut still do not pair;
+  - under `set_partial()` a paired element is still compared in full, as
+    partial does not apply inside a set field, so a schema change in it is
+    reported.
+
+  Candidates are tried at the set field's path with no element index, since
+  pairing is what decides the index, so a predicate selector that tests the
+  index applies to the chosen pair and not to the choice of partner. A
+  `DuplicateKeyError` or `MissingKeyError` from a nested `treat_as_map` names
+  the element that holds the bad key.
+- **Cross-pool enum values compare by number** (audit findings U8-2 and V14).
+  0.16.0 called two values equal when their names or their numbers matched,
+  which is not an equivalence relation, so `treat_as_set` over cross-pool
+  enums (bare or inside message elements) paired the same multiset in one
+  element order and reported REMOVED and ADDED in the other. A value renamed
+  under the same number is still equal, now with a warning naming both
+  names; a name moved to a new number is now MODIFIED (0.16.0: equal, with
+  a warning), since bytes written with one number do not decode to the
+  other.
+- **A `compare()` made from inside a hook on the same differencer** no
+  longer leaves the outer call's later hooks reading `None` pools: each call
+  restores the one it interrupted.
 
 ### Changed
 

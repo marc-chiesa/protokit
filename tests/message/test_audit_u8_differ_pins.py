@@ -16,7 +16,9 @@ a fix rather than of drift.
 
 Pinned here:
 
-* **U8-2** — ``_compare_treat_as_set`` pairs elements with
+* **U8-2** (closed in 0.17.0; its tests are now ordinary regression tests:
+  cross-pool enums compare by number, which is an equivalence relation) —
+  ``_compare_treat_as_set`` pairs elements with
   ``greedy_multiset_pairing``, whose documented load-bearing precondition
   (``_setmatch.py`` module docstring) is that the injected equality is *a true
   equivalence relation*, "so the greedy partition is order-independent". The
@@ -42,10 +44,11 @@ Pinned here:
   exact ``f"{map_sel}.{key_name}"`` spelling, so a more deeply qualified path
   naming the same key field was accepted and then erased the key.
 
-Three V-series findings a later release owns are pinned at the end of this
-module, in the same shape: **V28** (``treat_as_set`` drops ``ignore_fields``),
-**V18** (a difference only in unknown fields is a silent EQUAL) and **V5** (a
-proto2 ``[default = nan]`` never collapses as a default). They are defined in
+Three V-series findings are pinned at the end of this module, in the same
+shape: **V28** (``treat_as_set`` drops ``ignore_fields``; closed in 0.17.0, its
+test is now an ordinary regression test), **V18** (a difference only in
+unknown fields is a silent EQUAL) and **V5** (a proto2 ``[default = nan]``
+never collapses as a default). They are defined in
 ``docs/plans/AUDIT-whole-codebase-2026-08-30.md``; the comment block above
 that section gives each one's mechanism and owner. The float half of cycle-1
 row R05-X1, which is V5's mechanism under pure-Python, follows them.
@@ -53,7 +56,8 @@ row R05-X1, which is V5's mechanism under pure-Python, follows them.
 Two findings of the second 0.16.0 re-audit, both owned by U10 (0.17.0), come
 last:
 
-* **C08-C2**, with **C08-C2b** — V28's presence facet. The same default-config
+* **C08-C2**, with **C08-C2b** (closed in 0.17.0, with V28; its tests are now
+  ordinary regression tests) — V28's presence facet. The same default-config
   differ that drops ``ignore_fields`` inside ``treat_as_set`` pairing also
   drops ``MessageFieldComparison.EQUAL``, so an element whose field is unset
   pairs with one whose field is set to its default. C08-C2b is the same
@@ -194,14 +198,6 @@ class TestU82CrossPoolEnumSetPairing:
 
         assert not result.has_changes()
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="U8-2: treat_as_set's greedy first-fit pairing over the non-transitive "
-               "cross-pool enum relation (same name OR same number) is order-dependent — "
-               "the same multiset reports a spurious REMOVED/ADDED pair in one element "
-               "order and zero differences in the other; needs max-cardinality matching",
-    )
     def test_same_multiset_in_the_other_order_must_still_compare_equal(self) -> None:
         """A reordered but identical multiset must still compare equal under ``treat_as_set``.
 
@@ -224,16 +220,9 @@ class TestU82CrossPoolEnumSetPairing:
         result = d.compare(left, right)
 
         observed = [(str(diff.path), diff.change_type.name) for diff in result]
-        # Today: [('tags[1]', 'REMOVED'), ('tags[1]', 'ADDED')].
+        # 0.16.0: [('tags[1]', 'REMOVED'), ('tags[1]', 'ADDED')].
         assert observed == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="U8-2: the same order-dependent greedy pairing reached through ordinary "
-               "repeated submessages — Elem{status} elements carrying cross-pool enums "
-               "report a spurious elems[1].status REMOVED/ADDED pair in one order only",
-    )
     def test_repeated_submessage_elements_must_pair_order_independently(self) -> None:
         """The defect is not confined to bare repeated enums.
 
@@ -256,7 +245,7 @@ class TestU82CrossPoolEnumSetPairing:
         result = d.compare(left, right)
 
         observed = [(str(diff.path), diff.change_type.name) for diff in result]
-        # Today: [('elems[1].status', 'ADDED'), ('elems[1].status', 'REMOVED')].
+        # 0.16.0: [('elems[1].status', 'ADDED'), ('elems[1].status', 'REMOVED')].
         assert observed == []
 
 
@@ -643,11 +632,12 @@ class TestU85IgnoreEvadesTreatAsMapKeyGuard:
 # (a hard failure) the day its mechanism is fixed. Every control shares its
 # pin's construction and asserts behaviour that stays correct after the fix.
 #
-# * V28 (U10, 0.17.0) — ``_set_elements_equal`` decides message-element
-#   equality with a fresh default-config ``MessageDifferencer()``, so the
-#   caller's ``ignore_fields`` is dropped inside ``treat_as_set`` pairing.
-#   Elements that differ only in an ignored field fail to pair, and the
-#   difference is reported on a field that did not change.
+# * V28 (U10, 0.17.0; closed in 0.17.0) — 0.16.0's ``_set_elements_equal``
+#   decided message-element equality with a fresh default-config
+#   ``MessageDifferencer()``, so the caller's ``ignore_fields`` was dropped
+#   inside ``treat_as_set`` pairing. Elements that differed only in an ignored
+#   field failed to pair, and the difference was reported on a field that did
+#   not change. Its test is now an ordinary regression test.
 # * V18 (U10, 0.17.0) — ``compare()`` walks declared fields only and never
 #   reads either side's unknown-field set. Two messages that differ only in
 #   bytes the reader's schema does not declare give no difference and no
@@ -745,15 +735,6 @@ class TestV28TreatAsSetDropsIgnoreFields:
         assert _observed(d.compare(left, right)) == []
 
     @pytest.mark.parametrize("set_first", [False, True], ids=["ignore-then-set", "set-then-ignore"])
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V28: owned by U10 (0.17.0). _set_elements_equal decides message-element "
-               "equality with a fresh default-config MessageDifferencer(), so the caller's "
-               "ignore_fields is dropped inside treat_as_set pairing: elements that differ "
-               "only in the ignored field fail to pair, and the unchanged items[0].id is "
-               "reported as both ADDED and REMOVED",
-    )
     def test_ignored_field_must_stay_ignored_under_set_pairing(self, set_first: bool) -> None:
         """``ignore_fields`` plus ``treat_as_set`` must equal ``ignore_fields`` alone here.
 
@@ -776,7 +757,7 @@ class TestV28TreatAsSetDropsIgnoreFields:
             d.ignore_fields("noise")
             d.treat_as_set("items")
 
-        # Today: [('items[0].id', 'ADDED'), ('items[0].id', 'REMOVED')].
+        # 0.16.0: [('items[0].id', 'ADDED'), ('items[0].id', 'REMOVED')].
         assert _observed(d.compare(left, right)) == []
 
 
@@ -1208,7 +1189,8 @@ class TestR05X1FloatDefaultNeverCollapsesUnderPurePython:
 # C08-C2, with C08-C2b — V28's presence facet: treat_as_set drops strict presence
 #
 # Reproduced by the second 0.16.0 re-audit and pinned on 2026-10-17, owned by
-# U10 (0.17.0) with V28. It is V28's mechanism with a different dropped
+# U10 (0.17.0) with V28, and closed in 0.17.0 with it: its tests are now
+# ordinary regression tests. It is V28's mechanism with a different dropped
 # policy: the fresh default-config ``MessageDifferencer()`` that decides
 # message-element equality inside ``treat_as_set`` pairing compares presence
 # in EQUIVALENT mode, whatever the caller set with
@@ -1340,17 +1322,6 @@ class TestC08C2TreatAsSetDropsStrictPresence:
         assert _observed(result) == []
 
     @pytest.mark.parametrize("shape", _PRESENCE_SHAPES)
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="C08-C2 (V28's presence facet), with C08-C2b for the group: owned by U10 "
-               "(0.17.0). _set_elements_equal decides message-element equality with a "
-               "fresh default-config MessageDifferencer(), which compares presence in "
-               "EQUIVALENT mode, so the caller's MessageFieldComparison.EQUAL is dropped "
-               "inside treat_as_set pairing: an element whose field is unset pairs with "
-               "one whose field is set to its default, and the result is EQUAL with no "
-               "differences",
-    )
     def test_strict_presence_must_survive_set_pairing(self, shape: str) -> None:
         """EQUAL mode must report a presence-only difference with or without set pairing.
 
@@ -1366,7 +1337,7 @@ class TestC08C2TreatAsSetDropsStrictPresence:
 
         result = _strict_presence_differ(as_set=field_name).compare(expected, actual)
 
-        # Today: [] — has_changes() is False.
+        # 0.16.0: [] — has_changes() is False.
         assert result.has_changes()
 
 

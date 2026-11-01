@@ -19,11 +19,13 @@ is acceptable for test-sized repeated fields, which is the intended use; it is
 NOT a general-purpose large-collection diff.
 
 Correctness contract (load-bearing, KTD-8): ``equal_fn`` MUST implement a true
-equivalence relation — STRICT exact equality, without tolerance/partial/other
-per-element policies. That keeps the matched/unmatched partition
-order-independent: the *counts* paired within each equivalence class are the
-same regardless of element order on either side. Which specific equal instance
-is named as a leftover when duplicates exist is unspecified (fine for v1).
+equivalence relation. The engine's does: it applies the caller's ignore rules,
+presence mode and nested set and map policies, but compares floats exactly,
+with no tolerance, runs no hooks and leaves partial off. That keeps the
+matched/unmatched partition order-independent: the *counts* paired within each
+equivalence class are the same regardless of element order on either side.
+Which specific equal instance is named as a leftover when duplicates exist is
+unspecified.
 
 This module is strict-typed (``mypy --strict``) and gated by
 ``tests/meta/test_static_analysis.py``.

@@ -108,7 +108,7 @@ class TestCrossPoolEnums:
         assert not result.has_changes()
 
     def test_enum_wire_compatible_different_name(self) -> None:
-        """Same number, different name -> wire-compatible, equal."""
+        """Same number, different name -> wire-compatible, equal, with a name-drift warning."""
         b1 = ProtoBuilder()
         b1.message(
             "test.Msg",
@@ -126,6 +126,9 @@ class TestCrossPoolEnums:
         result = diff_messages(msg1, msg2)
         # Wire-compatible: same number -> equal
         assert not result.has_changes()
+        assert [(w.path, w.message) for w in result.warnings] == [
+            ("status", "enum value 1 has different names across schemas (ACTIVE vs ENABLED)"),
+        ]
 
     def test_enum_different_name_different_number(self) -> None:
         """Different name AND different number -> not equal."""
@@ -146,8 +149,8 @@ class TestCrossPoolEnums:
         result = diff_messages(msg1, msg2)
         assert result.has_changes()
 
-    def test_enum_name_match_number_drift_warns(self) -> None:
-        """Same name, different number -> equal with warning."""
+    def test_enum_name_match_number_drift_is_a_change(self) -> None:
+        """Same name, different number -> MODIFIED: values compare by number, as on the wire."""
         b1 = ProtoBuilder()
         b1.message(
             "test.Msg",
@@ -163,7 +166,5 @@ class TestCrossPoolEnums:
         msg1 = b1.build("test.Msg", status=1)  # ACTIVE(1)
         msg2 = b2.build("test.Msg", status=2)  # ACTIVE(2)
         result = diff_messages(msg1, msg2)
-        # Should be considered equal but with a warning
-        assert not result.has_changes()
-        assert len(result.warnings) > 0
-        assert "number" in str(result.warnings[0]).lower()
+        assert [(str(d.path), d.change_type.name) for d in result] == [("status", "MODIFIED")]
+        assert not result.warnings
