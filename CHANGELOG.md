@@ -113,6 +113,38 @@ All notable changes to `protokit` are documented here. Format loosely follows
 - **A `compare()` made from inside a hook on the same differencer** no
   longer leaves the outer call's later hooks reading `None` pools: each call
   restores the one it interrupted.
+- **Keyed and map comparisons across schemas neither crash nor mis-pair**
+  (audit findings U8-3, U8-4, C04-C1, C10-C4 and E06-C5):
+  - A map key that one side's integer key type cannot hold, such as `-1`
+    in a `map<int32, _>` against a `map<uint32, _>`, is reported REMOVED or
+    ADDED like any other unmatched key. 0.16.0 raised `ValueError: Value out
+    of range` out of `compare()`, and `protokit diff` exited 2.
+  - `treat_as_map` on a field only one schema declares keys its elements as
+    the two-sided comparison does: paths read `items[id="a"].value`, and
+    duplicate or missing keys raise `DuplicateKeyError` or `MissingKeyError`.
+    0.16.0 used index paths there and raised nothing, so `protokit diff
+    --treat-as-map items id` reported duplicate keys as differences and
+    exited 1 instead of 2.
+  - A `treat_as_map` key field that is a message or repeated field raises
+    the new `InvalidKeyFieldError`, a `ValueError` that names the field, so
+    `protokit diff` exits 2. 0.16.0 raised `TypeError` (unhashable), and
+    `protokit diff` ended in a traceback with exit 1, even on two identical
+    files. A key field the element type does not have raises
+    `InvalidKeyFieldError` too, with the same message as before, now also
+    for a field only one schema declares or inside a subtree only one side
+    holds, where 0.16.0 fell back to index paths; `compare()`'s `Raises:`
+    lists it. Like the missing field, an unusable key field is refused even
+    when the list is empty, wherever the comparison reads the field. A
+    message held by one side only that is entirely empty is still reported
+    ADDED or REMOVED without its fields being read, so a keyed list inside
+    it is not checked, as in 0.16.0.
+  - A map field on one side against a repeated field on the other is a
+    `CARDINALITY_CHANGED` difference (both labels `LABEL_REPEATED`, which a
+    map is on the wire), still with the warning that the values were not
+    compared. Against a repeated message field, 0.16.0 reported only the
+    warning, so the messages compared equal and `protokit diff` exited 0.
+    Against a repeated scalar field, 0.16.0 already reported `TYPE_CHANGED`,
+    which stays beside the new difference.
 
 ### Changed
 

@@ -941,3 +941,159 @@ class TestProto2StringsThatAreNotUtf8:
             str(good), str(good), "--desc", str(desc), "--message-type", "u.M",
         ], catch_exceptions=False)
         assert result.exit_code == 0, result.output
+
+
+# ---------------------------------------------------------------------------
+# 0.17.0: keyed and map comparisons across schemas exit by their result
+# (U8-3, U8-4, C04-C1)
+# ---------------------------------------------------------------------------
+
+_T = descriptor_pb2.FieldDescriptorProto
+
+
+def _file(*messages: descriptor_pb2.DescriptorProto) -> descriptor_pb2.FileDescriptorProto:
+    return descriptor_pb2.FileDescriptorProto(
+        name="x.proto", package="x", syntax="proto3", message_type=messages,
+    )
+
+
+def _map_entry(owner: descriptor_pb2.DescriptorProto, field: str, key_type: int) -> None:
+    """Give ``owner`` a ``map<key_type, string> field = 1``."""
+    entry = owner.nested_type.add(name=f"{field.capitalize()}Entry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=key_type, label=_T.LABEL_OPTIONAL)
+    entry.field.add(name="value", number=2, type=_T.TYPE_STRING, label=_T.LABEL_OPTIONAL)
+    owner.field.add(
+        name=field, number=1, type=_T.TYPE_MESSAGE,
+        type_name=f".x.{owner.name}.{entry.name}", label=_T.LABEL_REPEATED,
+    )
+
+
+def _class_of(file_proto: descriptor_pb2.FileDescriptorProto) -> type:
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(file_proto)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("x.M"))
+
+
+def _diff_across(
+    tmp_path: Path,
+    left: tuple[descriptor_pb2.FileDescriptorProto, Any],
+    right: tuple[descriptor_pb2.FileDescriptorProto, Any],
+    *flags: str,
+) -> tuple[int, str, str]:
+    """``protokit diff`` of two payloads, each under its own schema."""
+    args = []
+    for side, (file_proto, payload) in (("left", left), ("right", right)):
+        desc = tmp_path / f"{side}.desc"
+        desc.write_bytes(descriptor_pb2.FileDescriptorSet(file=[file_proto]).SerializeToString())
+        data = tmp_path / f"{side}.bin"
+        data.write_bytes(payload.SerializeToString())
+        args.append((data, desc))
+    (left_data, left_desc), (right_data, right_desc) = args
+    result = CliRunner().invoke(
+        main,
+        [
+            str(left_data), str(right_data), "--left-desc", str(left_desc),
+            "--right-desc", str(right_desc), "--left-type", "x.M", "--right-type", "x.M",
+            *flags,
+        ],
+        catch_exceptions=False,
+    )
+    return result.exit_code, result.stdout, result.stderr
+
+
+class TestKeyedAndMapComparisonsAcrossSchemas:
+    def test_a_map_key_the_other_key_type_cannot_hold_exits_1(self, tmp_path: Path) -> None:
+        """0.16.0 exited 2 with ``Error: Value out of range: -1``."""
+        files = []
+        for key_type in (_T.TYPE_INT32, _T.TYPE_UINT32):
+            m = descriptor_pb2.DescriptorProto(name="M")
+            _map_entry(m, "m", key_type)
+            files.append(_file(m))
+        left, right = _class_of(files[0])(), _class_of(files[1])()
+        left.m[-1] = "x"
+        right.m[1] = "x"
+
+        exit_code, stdout, _ = _diff_across(tmp_path, (files[0], left), (files[1], right))
+
+        assert exit_code == 1
+        assert "m[-1]" in stdout and "m[1]" in stdout
+
+    @staticmethod
+    def _items_files() -> tuple[
+        descriptor_pb2.FileDescriptorProto, descriptor_pb2.FileDescriptorProto,
+    ]:
+        """``items`` keyed on ``id`` in the left schema; the right schema dropped it."""
+        def item() -> descriptor_pb2.DescriptorProto:
+            msg = descriptor_pb2.DescriptorProto(name="Item")
+            msg.field.add(name="id", number=1, type=_T.TYPE_STRING, label=_T.LABEL_OPTIONAL)
+            msg.field.add(name="value", number=2, type=_T.TYPE_INT32, label=_T.LABEL_OPTIONAL)
+            return msg
+
+        def m(with_items: bool) -> descriptor_pb2.DescriptorProto:
+            msg = descriptor_pb2.DescriptorProto(name="M")
+            msg.field.add(name="note", number=9, type=_T.TYPE_STRING, label=_T.LABEL_OPTIONAL)
+            if with_items:
+                msg.field.add(
+                    name="items", number=1, type=_T.TYPE_MESSAGE, type_name=".x.Item",
+                    label=_T.LABEL_REPEATED,
+                )
+            return msg
+
+        return _file(item(), m(True)), _file(item(), m(False))
+
+    def test_treat_as_map_on_a_field_one_schema_declares_keys_its_elements(
+        self, tmp_path: Path,
+    ) -> None:
+        """0.16.0 reported ``items[0].id`` and ``items[0].value``."""
+        left_file, right_file = self._items_files()
+        left = _class_of(left_file)()
+        left.items.add(id="a", value=1)
+        right = _class_of(right_file)(note="n")
+
+        exit_code, stdout, _ = _diff_across(
+            tmp_path, (left_file, left), (right_file, right), "--treat-as-map", "items", "id",
+        )
+
+        assert exit_code == 1
+        assert 'items[id="a"].value' in stdout
+        assert "items[0]" not in stdout
+
+    def test_duplicate_keys_on_a_field_one_schema_declares_exit_2(self, tmp_path: Path) -> None:
+        """0.16.0 exited 1, reporting both duplicates by index."""
+        left_file, right_file = self._items_files()
+        left = _class_of(left_file)()
+        left.items.add(id="dup", value=1)
+        left.items.add(id="dup", value=2)
+        right = _class_of(right_file)(note="n")
+
+        exit_code, _, stderr = _diff_across(
+            tmp_path, (left_file, left), (right_file, right), "--treat-as-map", "items", "id",
+        )
+
+        assert exit_code == 2
+        assert "Duplicate key 'dup'" in stderr
+
+    def test_a_map_against_a_repeated_message_field_exits_1(self, tmp_path: Path) -> None:
+        """0.16.0 exited 0 with ``Messages are equal.``."""
+        as_map = descriptor_pb2.DescriptorProto(name="M")
+        _map_entry(as_map, "labels", _T.TYPE_STRING)
+        kv = descriptor_pb2.DescriptorProto(name="KV")
+        kv.field.add(name="key", number=1, type=_T.TYPE_STRING, label=_T.LABEL_OPTIONAL)
+        kv.field.add(name="value", number=2, type=_T.TYPE_STRING, label=_T.LABEL_OPTIONAL)
+        as_repeated = descriptor_pb2.DescriptorProto(name="M")
+        as_repeated.field.add(
+            name="labels", number=1, type=_T.TYPE_MESSAGE, type_name=".x.KV",
+            label=_T.LABEL_REPEATED,
+        )
+        left_file, right_file = _file(kv, as_repeated), _file(as_map)
+        left = _class_of(left_file)()
+        left.labels.add(key="env", value="prod")
+        right = _class_of(right_file)()
+        right.labels["env"] = "OTHER"
+
+        exit_code, stdout, _ = _diff_across(tmp_path, (left_file, left), (right_file, right))
+
+        assert exit_code == 1
+        assert "labels" in stdout
+        assert "field changed from repeated to map" in stdout

@@ -528,3 +528,52 @@ def test_set_pairing_leaves_inputs_unchanged(config: str, pools: str, side: str,
         _assert_unchanged(msg, copy, before)
     for element, before in elements:
         assert _snapshot(element) == before
+
+
+def _message_valued_map_class() -> type[Message]:
+    """``mv.M { map<string, V> m = 1; }`` with ``V { int32 x = 1; }``, in its own pool."""
+    fdp = descriptor_pb2.FileDescriptorProto(name="mv.proto", package="mv", syntax="proto3")
+    fdp.message_type.add(name="V").field.add(
+        name="x", number=1, type=_FD.TYPE_INT32, label=_FD.LABEL_OPTIONAL,
+    )
+    m = fdp.message_type.add(name="M")
+    entry = m.nested_type.add(name="MEntry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=_FD.TYPE_STRING, label=_FD.LABEL_OPTIONAL)
+    entry.field.add(
+        name="value", number=2, type=_FD.TYPE_MESSAGE, type_name=".mv.V",
+        label=_FD.LABEL_OPTIONAL,
+    )
+    m.field.add(
+        name="m", number=1, type=_FD.TYPE_MESSAGE, type_name=".mv.M.MEntry",
+        label=_FD.LABEL_REPEATED,
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fdp)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("mv.M"))
+
+
+@pytest.mark.parametrize("pools", ["same-pool", "cross-pool"])
+@pytest.mark.parametrize("missing_on", ["left", "right"])
+def test_a_message_valued_map_missing_a_key_is_left_unchanged(pools: str, missing_on: str) -> None:
+    """Under upb, indexing a message-valued map by a key it lacks inserts that key.
+
+    The side without ``b`` must still lack it after the comparison, and the
+    comparison must report ``b`` once, as one-sided.
+    """
+    left_cls = _message_valued_map_class()
+    right_cls = left_cls if pools == "same-pool" else _message_valued_map_class()
+    full, short = (left_cls(), right_cls()) if missing_on == "right" else (right_cls(), left_cls())
+    full.m["a"].x = 1  # type: ignore[attr-defined]
+    full.m["b"].x = 2  # type: ignore[attr-defined]
+    short.m["a"].x = 1  # type: ignore[attr-defined]
+    left, right = (full, short) if missing_on == "right" else (short, full)
+    pristine = [(msg, _pristine(msg), _snapshot(msg)) for msg in (left, right)]
+
+    result = MessageDifferencer().compare(left, right)
+
+    expected = "REMOVED" if missing_on == "right" else "ADDED"
+    assert [(str(diff.path), diff.change_type.name) for diff in result] == [('m["b"].x', expected)]
+    for msg, copy, before in pristine:
+        _assert_unchanged(msg, copy, before)
+    assert sorted(short.m) == ["a"]  # type: ignore[attr-defined]

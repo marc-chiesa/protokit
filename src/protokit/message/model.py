@@ -41,9 +41,9 @@ class ChangeType(Enum):
         FIELD_NUMBER_CHANGED: Same field name on both sides but
             different field numbers. ``left_field_number`` and
             ``right_field_number`` are populated.
-        CARDINALITY_CHANGED: Same field name on both sides but the
-            label flipped (e.g. ``LABEL_OPTIONAL`` -> ``LABEL_REPEATED``).
-            ``left_label`` and ``right_label`` are populated.
+        CARDINALITY_CHANGED: Same field name on both sides but the label
+            flipped (e.g. ``LABEL_OPTIONAL`` -> ``LABEL_REPEATED``), or a map
+            became a repeated field or back. Both labels are populated.
     """
 
     ADDED = "ADDED"
@@ -522,8 +522,8 @@ class Difference:
             ``CARDINALITY_CHANGED``. One of the descriptor's own
             ``"LABEL_OPTIONAL"`` / ``"LABEL_REPEATED"`` /
             ``"LABEL_REQUIRED"`` (see ``protokit._descriptors.label_name``)
-            — a map field reports ``"LABEL_REPEATED"``, which is what it
-            is on the wire.
+            — a map field reports ``"LABEL_REPEATED"``, as on the wire, so a
+            map against a repeated field has it on both sides.
         right_label: New-side cardinality label, same values, set for
             ``CARDINALITY_CHANGED``.
     """
@@ -1224,3 +1224,14 @@ def _leading_segments(text: str, count: int) -> FieldPath | None:
         elif len(segments) < count:
             return None
     return FieldPath(segments=tuple(segments))
+
+
+class InvalidKeyFieldError(ValueError):
+    """Raised when a ``treat_as_map`` key field cannot key the elements.
+
+    The element type has no field of that name, or the field is a message or
+    repeated field, whose values cannot be used as keys. It is a configuration
+    error, so it is raised wherever the comparison reads the keyed field,
+    whatever the elements hold, an empty list included. The exception message
+    names the key field and the element type.
+    """

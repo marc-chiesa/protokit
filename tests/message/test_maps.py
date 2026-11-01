@@ -1,5 +1,6 @@
 """Tests for native protobuf map field comparison."""
 
+import pytest
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.message import ChangeType, MessageDifferencer, diff_messages
@@ -639,4 +640,162 @@ class TestMapValueTypeChange:
         assert "map value" in str(result.warnings[0]).lower()
         assert [d.change_type for d in result.differences] == [
             ChangeType.TYPE_CHANGED,
+        ]
+
+
+# ---------------------------------------------------------------------------
+# 0.17.0: a key the other side's key type cannot hold (U8-3), and a map
+# against a repeated message field (C04-C1)
+# ---------------------------------------------------------------------------
+
+
+def _int_keyed_map_class(key_type: int) -> type:
+    """``k.M { map<key_type, string> m = 1; }``, built in its own pool."""
+    fp = descriptor_pb2.FileDescriptorProto(name="k.proto", package="k", syntax="proto3")
+    m = fp.message_type.add(name="M")
+    entry = m.nested_type.add(name="MEntry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=key_type, label=T.LABEL_OPTIONAL)
+    entry.field.add(name="value", number=2, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    m.field.add(
+        name="m", number=1, type=T.TYPE_MESSAGE, type_name=".k.M.MEntry",
+        label=T.LABEL_REPEATED,
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fp)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("k.M"))
+
+
+def _labels_class(*, as_map: bool) -> type:
+    """``l.M { labels }`` in its own pool: ``map<string, string>`` or ``repeated KV``."""
+    fp = descriptor_pb2.FileDescriptorProto(name="l.proto", package="l", syntax="proto3")
+    m = fp.message_type.add(name="M")
+    if as_map:
+        entry = m.nested_type.add(name="LabelsEntry")
+        entry.options.map_entry = True
+        type_name = ".l.M.LabelsEntry"
+        holder = entry
+    else:
+        holder = fp.message_type.add(name="KV")
+        type_name = ".l.KV"
+    holder.field.add(name="key", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    holder.field.add(name="value", number=2, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    m.field.add(
+        name="labels", number=1, type=T.TYPE_MESSAGE, type_name=type_name,
+        label=T.LABEL_REPEATED,
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fp)
+    return message_factory.GetMessageClass(pool.FindMessageTypeByName("l.M"))
+
+
+def _observed(result: object) -> list[tuple[str, str]]:
+    return sorted((str(d.path), d.change_type.name) for d in result)  # type: ignore[attr-defined]
+
+
+class TestMapKeyTheOtherKeyTypeCannotHold:
+    """A key one side's integer type cannot hold is absent there, not a crash (U8-3)."""
+
+    @pytest.mark.parametrize(
+        ("left_type", "left_key", "right_type", "right_key", "expected"),
+        [
+            pytest.param(
+                T.TYPE_INT32, -1, T.TYPE_UINT32, 1,
+                [("m[-1]", "REMOVED"), ("m[1]", "ADDED")], id="int32-neg-vs-uint32",
+            ),
+            pytest.param(
+                T.TYPE_UINT32, 2**32 - 1, T.TYPE_INT32, 1,
+                [("m[1]", "ADDED"), ("m[4294967295]", "REMOVED")], id="uint32-max-vs-int32",
+            ),
+            pytest.param(
+                T.TYPE_INT64, 2**40, T.TYPE_INT32, 1,
+                [("m[1099511627776]", "REMOVED"), ("m[1]", "ADDED")], id="int64-wide-vs-int32",
+            ),
+        ],
+    )
+    def test_the_key_is_removed_and_added(
+        self,
+        left_type: int,
+        left_key: int,
+        right_type: int,
+        right_key: int,
+        expected: list[tuple[str, str]],
+    ) -> None:
+        left = _int_keyed_map_class(left_type)()
+        left.m[left_key] = "x"
+        right = _int_keyed_map_class(right_type)()
+        right.m[right_key] = "x"
+
+        assert _observed(MessageDifferencer().compare(left, right)) == expected
+
+    def test_a_key_both_types_hold_still_pairs(self) -> None:
+        """The same number under two integer types is one key, compared by value."""
+        left = _int_keyed_map_class(T.TYPE_INT32)()
+        left.m[-1] = "a"
+        left.m[5] = "a"
+        right = _int_keyed_map_class(T.TYPE_INT64)()
+        right.m[-1] = "a"
+        right.m[5] = "b"
+
+        assert _observed(MessageDifferencer().compare(left, right)) == [("m[5]", "MODIFIED")]
+
+
+class TestMapAgainstRepeatedMessages:
+    """A map on one side and a repeated message field on the other (C04-C1).
+
+    Both fields are repeated messages on the wire, so no label differs. The
+    change is still a schema change, reported as ``CARDINALITY_CHANGED`` with a
+    warning, and the values are not compared, whatever they hold.
+    """
+
+    @pytest.mark.parametrize(
+        "left_is_map", [False, True], ids=["repeated-to-map", "map-to-repeated"],
+    )
+    @pytest.mark.parametrize("populated", [True, False], ids=["populated", "empty"])
+    def test_the_change_is_a_cardinality_difference(
+        self, left_is_map: bool, populated: bool,
+    ) -> None:
+        def _build(as_map: bool, value: str) -> object:
+            msg = _labels_class(as_map=as_map)()
+            if populated and as_map:
+                msg.labels["env"] = value
+            elif populated:
+                msg.labels.add(key="env", value=value)
+            return msg
+
+        left = _build(left_is_map, "prod")
+        right = _build(not left_is_map, "OTHER")
+
+        result = MessageDifferencer().compare(left, right)
+
+        assert result.has_changes()
+        [diff] = result.differences
+        assert (str(diff.path), diff.change_type) == ("labels", ChangeType.CARDINALITY_CHANGED)
+        assert (diff.field_type, diff.left_label, diff.right_label) == (
+            "TYPE_MESSAGE", "LABEL_REPEATED", "LABEL_REPEATED",
+        )
+        kinds = ("map", "repeated") if left_is_map else ("repeated", "map")
+        assert [w.message for w in result.diagnostics] == [
+            f"field changed from {kinds[0]} to {kinds[1]}; values not compared",
+        ]
+
+    def test_a_map_against_a_repeated_scalar_field_also_reports_its_type(self) -> None:
+        """The repeated side need not be a message: the value type change is reported as well."""
+        fp = descriptor_pb2.FileDescriptorProto(name="l.proto", package="l", syntax="proto3")
+        fp.message_type.add(name="M").field.add(
+            name="labels", number=1, type=T.TYPE_STRING, label=T.LABEL_REPEATED,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(fp)
+        scalar_cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("l.M"))
+        left = _labels_class(as_map=True)()
+        left.labels["env"] = "prod"
+
+        result = MessageDifferencer().compare(left, scalar_cls(labels=["prod"]))
+
+        assert [(str(d.path), d.change_type) for d in result.differences] == [
+            ("labels", ChangeType.TYPE_CHANGED), ("labels", ChangeType.CARDINALITY_CHANGED),
+        ]
+        assert [w.message for w in result.diagnostics] == [
+            "field changed from map to repeated; values not compared",
         ]

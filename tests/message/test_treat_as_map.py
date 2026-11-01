@@ -1,11 +1,12 @@
 """Tests for treat_as_map key-based repeated field matching."""
 
 import pytest
-from google.protobuf import descriptor_pb2
+from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from protokit.message import (
     ChangeType,
     DuplicateKeyError,
+    InvalidKeyFieldError,
     MessageDifferencer,
     MissingKeyError,
 )
@@ -398,3 +399,205 @@ class TestTreatAsMapPath:
         result = d.compare(msg1, msg2)
         path_str = str(result.differences[0].path)
         assert 'id="x"' in path_str
+
+
+# ---------------------------------------------------------------------------
+# 0.17.0: a key field that cannot key the elements (C10-C4, E06-C5)
+# ---------------------------------------------------------------------------
+
+
+def _rows_classes(*, with_rows: bool = True) -> dict[str, type]:
+    """``r.Outer { M m }``, ``r.M { repeated Row rows }``, ``Row { s; Inner k; repeated r }``.
+
+    Without ``rows`` the same names are declared but ``M`` holds a ``note``
+    instead, so ``rows`` is a field only the other schema has. Built in its own
+    pool.
+    """
+    fp = descriptor_pb2.FileDescriptorProto(name="r.proto", package="r", syntax="proto3")
+    inner = fp.message_type.add(name="Inner")
+    inner.field.add(name="id", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    row = fp.message_type.add(name="Row")
+    row.field.add(name="s", number=1, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    row.field.add(
+        name="k", number=2, type=T.TYPE_MESSAGE, type_name=".r.Inner", label=T.LABEL_OPTIONAL,
+    )
+    row.field.add(name="r", number=3, type=T.TYPE_INT32, label=T.LABEL_REPEATED)
+    m = fp.message_type.add(name="M")
+    m.field.add(name="note", number=9, type=T.TYPE_STRING, label=T.LABEL_OPTIONAL)
+    if with_rows:
+        m.field.add(
+            name="rows", number=1, type=T.TYPE_MESSAGE, type_name=".r.Row",
+            label=T.LABEL_REPEATED,
+        )
+    fp.message_type.add(name="Outer").field.add(
+        name="m", number=1, type=T.TYPE_MESSAGE, type_name=".r.M", label=T.LABEL_OPTIONAL,
+    )
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(fp)
+    return {
+        name: message_factory.GetMessageClass(pool.FindMessageTypeByName(f"r.{name}"))
+        for name in ("M", "Outer")
+    }
+
+
+def _with_one_row(cls: type) -> object:
+    msg = cls()
+    row = msg.rows.add(s="x", r=[1])  # type: ignore[attr-defined]
+    row.k.id = "a"
+    return msg
+
+
+_UNUSABLE_KEYS = pytest.mark.parametrize(
+    ("key", "reason"),
+    [
+        ("k", "is a message field"),
+        ("r", "is a repeated field"),
+        ("nope", "not found"),
+    ],
+    ids=["message-typed", "repeated", "not-found"],
+)
+
+
+class TestKeyFieldThatCannotKey:
+    """A key field that cannot key the elements raises ``InvalidKeyFieldError``.
+
+    The error is a ``ValueError`` naming the field, so ``protokit diff`` exits 2.
+    It is raised whatever the elements hold, as a configuration error, and on
+    every route a ``treat_as_map`` field takes.
+    """
+
+    @_UNUSABLE_KEYS
+    @pytest.mark.parametrize("populated", [True, False], ids=["populated", "empty"])
+    def test_both_sides_declare_the_field(self, key: str, reason: str, populated: bool) -> None:
+        cls = _rows_classes()["M"]
+        msg = _with_one_row(cls) if populated else cls()
+        d = MessageDifferencer()
+        d.treat_as_map("rows", key=key)
+
+        with pytest.raises(InvalidKeyFieldError, match=f"key field '{key}'.*{reason}"):
+            d.compare(msg, msg)
+
+    @_UNUSABLE_KEYS
+    def test_one_schema_declares_the_field(self, key: str, reason: str) -> None:
+        """The field only the left schema has is emitted one-sided, and keyed there too."""
+        left = _with_one_row(_rows_classes()["M"])
+        right = _rows_classes(with_rows=False)["M"](note="n")
+        d = MessageDifferencer()
+        d.treat_as_map("rows", key=key)
+
+        with pytest.raises(InvalidKeyFieldError, match=f"key field '{key}'.*{reason}"):
+            d.compare(left, right)
+
+    @_UNUSABLE_KEYS
+    def test_an_added_subtree_holds_the_field(self, key: str, reason: str) -> None:
+        """A whole subtree on one side only: its keyed list is checked as well."""
+        outer = _rows_classes()["Outer"]
+        right = outer()
+        row = right.m.rows.add(s="x", r=[1])  # type: ignore[attr-defined]
+        row.k.id = "a"
+        d = MessageDifferencer()
+        d.treat_as_map("rows", key=key)
+
+        with pytest.raises(InvalidKeyFieldError, match=f"key field '{key}'.*{reason}"):
+            d.compare(outer(), right)
+
+    @_UNUSABLE_KEYS
+    def test_an_added_subtree_with_an_empty_list_is_checked_too(
+        self, key: str, reason: str,
+    ) -> None:
+        """The one-sided walk sees only populated fields; an empty keyed list is still checked.
+
+        With both parents present, the same empty ``rows`` raises, so the error must not
+        depend on whether the other side holds the subtree.
+        """
+        outer = _rows_classes()["Outer"]
+        right = outer()
+        right.m.note = "n"  # type: ignore[attr-defined]
+        d = MessageDifferencer()
+        d.treat_as_map("rows", key=key)
+
+        with pytest.raises(InvalidKeyFieldError, match=f"key field '{key}'.*{reason}"):
+            d.compare(outer(), right)
+
+    def test_an_ignored_empty_list_in_an_added_subtree_is_not_checked(self) -> None:
+        """An ignored field is not checked, as on the two-sided walk (a predicate can ignore it)."""
+        outer = _rows_classes()["Outer"]
+        right = outer()
+        right.m.note = "n"  # type: ignore[attr-defined]
+        d = MessageDifferencer()
+        d.treat_as_map("rows", key="k")
+        d.ignore_fields(lambda fd, path: fd.name == "rows")
+
+        assert [str(diff.path) for diff in d.compare(outer(), right)] == ["m.note"]
+
+    def test_a_set_pairing_trial_below_the_depth_cut_does_not_raise(self) -> None:
+        """Pairing trials have no depth limit; an unusable key below the cut stays unread.
+
+        ``DescriptorProto.field`` keyed on its message-typed ``options`` is unusable, but
+        ``max_depth=0`` keeps the walk from reaching it, so the comparison returns. Trying
+        ``treat_as_set`` partners for ``message_type`` must not change that.
+        """
+        msg = descriptor_pb2.FileDescriptorProto(
+            message_type=[descriptor_pb2.DescriptorProto(name="A")],
+        )
+        results = []
+        for with_set in (False, True):
+            d = MessageDifferencer()
+            d.treat_as_map("field", key="options")
+            d.max_depth = 0
+            if with_set:
+                d.treat_as_set("message_type")
+            result = d.compare(msg, msg)
+            results.append((list(result.differences), {str(p) for p in result.truncated_paths}))
+
+        assert results[0] == results[1] == ([], {"message_type[0]"})
+
+    def test_under_partial_an_empty_list_in_a_removed_subtree_is_not_checked(self) -> None:
+        """Partial compares only what the expected side holds, so its empty list is skipped.
+
+        The two-sided walk skips the same empty field under partial.
+        """
+        outer = _rows_classes()["Outer"]
+        left = outer()
+        left.m.note = "n"  # type: ignore[attr-defined]
+        both = outer()
+        both.m.note = "n"  # type: ignore[attr-defined]
+        for right in (outer(), both):
+            d = MessageDifferencer()
+            d.treat_as_map("rows", key="k")
+            d.set_partial()
+            d.compare(left, right)
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=pytest.fail.Exception,
+        reason="U14 review (owned by U4, 0.17.0): a message held by one side only that is "
+               "entirely empty is reported ADDED or REMOVED without its fields being read, "
+               "so an unusable treat_as_map key on a list inside it is not refused, while the "
+               "same message on both sides raises InvalidKeyFieldError (0.16.0 behaved the same)",
+    )
+    def test_an_empty_element_held_by_one_side_still_has_its_key_field_checked(self) -> None:
+        file_proto = descriptor_pb2.FileDescriptorProto(
+            name="e.proto", package="e", syntax="proto3",
+        )
+        file_proto.message_type.add(name="E")
+        c = file_proto.message_type.add(name="C")
+        c.field.add(
+            name="items", number=1, type=T.TYPE_MESSAGE, type_name=".e.E", label=T.LABEL_REPEATED,
+        )
+        file_proto.message_type.add(name="M").field.add(
+            name="children", number=1, type=T.TYPE_MESSAGE, type_name=".e.C",
+            label=T.LABEL_REPEATED,
+        )
+        pool = descriptor_pool.DescriptorPool()
+        pool.Add(file_proto)
+        cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("e.M"))
+        left = cls()
+        left.children.add()
+        d = MessageDifferencer()
+        d.treat_as_map("items", key="id")
+
+        with pytest.raises(InvalidKeyFieldError):
+            d.compare(left, left)
+        with pytest.raises(InvalidKeyFieldError):
+            d.compare(left, cls())
