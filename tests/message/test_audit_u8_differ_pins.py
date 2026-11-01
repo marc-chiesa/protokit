@@ -29,11 +29,15 @@ Pinned here:
   makes order-independence the unit's stated correctness pin and rules the
   opposite "explicitly out for v1" — while requiring, three sentences later,
   the cross-pool enum equality that breaks it.
-* **U8-3** — ``_compare_map``'s key-type gate accepts any two integer key types
+* **U8-3** (closed in 0.17.0; its tests are now ordinary regression tests:
+  each map is read into a plain dict before its keys are compared) —
+  ``_compare_map``'s key-type gate accepts any two integer key types
   as compatible, then the per-key membership test (``key not in right_map``)
   raises ``ValueError`` for a key not representable in the other side's key
   type. ``compare()`` documents only ``DuplicateKeyError`` / ``MissingKeyError``.
-* **U8-4** — ``_emit_one_sided``'s repeated branch never calls
+* **U8-4** (closed in 0.17.0; its tests are now ordinary regression tests:
+  both one-sided routes key the list through one helper) —
+  ``_emit_one_sided``'s repeated branch never calls
   ``_extract_keys``, so a ``treat_as_map`` field present on only one schema is
   emitted with index paths and without the documented ``DuplicateKeyError``.
   Its sibling one-sided route ``_emit_all_fields`` *does* key the same list, and
@@ -62,7 +66,9 @@ last:
   drops ``MessageFieldComparison.EQUAL``, so an element whose field is unset
   pairs with one whose field is set to its default. C08-C2b is the same
   through a repeated proto2 group, new in 0.16.0.
-* **C10-C4** — ``protokit diff --treat-as-map FIELD KEY`` with a message-typed
+* **C10-C4** (closed in 0.17.0; its tests are now ordinary regression tests:
+  such a key raises ``InvalidKeyFieldError``) —
+  ``protokit diff --treat-as-map FIELD KEY`` with a message-typed
   or repeated KEY: ``_extract_keys`` uses an unhashable value as a dict key,
   and the ``TypeError`` ends the run in a traceback with exit 1.
 
@@ -308,14 +314,6 @@ class TestU83MapKeyOutOfRangeAcrossPools:
             pytest.param(T.TYPE_INT64, 2**40, T.TYPE_INT32, 1, id="int64-wide-vs-int32"),
         ],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        raises=ValueError,
-        reason="U8-3: a map key not representable in the other side's key type escapes "
-               "_compare_map's key gate (_types_compatible calls all integer types "
-               "compatible) and then raises ValueError: Value out of range out of the "
-               "membership test — an undocumented CRASH on schema-compatible input",
-    )
     def test_out_of_range_key_must_not_crash_compare(
         self,
         left_key_type: int,
@@ -340,7 +338,7 @@ class TestU83MapKeyOutOfRangeAcrossPools:
         left = _map_with_key(left_key_type, left_key)
         right = _map_with_key(right_key_type, right_key)
 
-        # Today this raises ValueError("Value out of range: ...") out of compare().
+        # 0.16.0 raised ValueError("Value out of range: ...") out of compare().
         result = MessageDifferencer().compare(left, right)
 
         assert result.has_changes()
@@ -434,14 +432,6 @@ class TestU84TreatAsMapOnSchemaOnlyField:
         with pytest.raises(DuplicateKeyError):
             d2.compare(duplicated, right)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="U8-4: a treat_as_map field present on only one schema takes "
-               "_emit_one_sided's plain repeated branch, which never calls "
-               "_extract_keys, so duplicate keys are emitted silently instead of "
-               "raising the DuplicateKeyError compare() documents unconditionally",
-    )
     def test_duplicate_keys_on_a_deleted_field_must_raise(self) -> None:
         """Duplicate keys must be reported whichever side declares the field.
 
@@ -468,17 +458,10 @@ class TestU84TreatAsMapOnSchemaOnlyField:
         d = MessageDifferencer()
         d.treat_as_map("items", key="id")
 
-        # Today: no error; emits items[0].* and items[1].* REMOVED leaves.
+        # 0.16.0: no error; emitted items[0].* and items[1].* REMOVED leaves.
         with pytest.raises(DuplicateKeyError):
             d.compare(left, right)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="U8-4: the same _extract_keys bypass in _emit_one_sided also emits index "
-               "paths (items[0].value) for a deleted treat_as_map field where every other "
-               "route emits key paths (items[id=\"a\"].value)",
-    )
     def test_deleted_field_elements_must_keep_their_key_paths(self) -> None:
         """A ``treat_as_map`` field must keep its key paths when the field is deleted.
 
@@ -499,7 +482,7 @@ class TestU84TreatAsMapOnSchemaOnlyField:
         d.treat_as_map("items", key="id")
         paths = [str(diff.path) for diff in d.compare(left, right)]
 
-        # Today: ['items[0].id', 'items[0].value', 'note'].
+        # 0.16.0: ['items[0].id', 'items[0].value', 'note'].
         assert paths == ['items[id="a"].id', 'items[id="a"].value', "note"]
 
 
@@ -1354,6 +1337,10 @@ class TestC08C2TreatAsSetDropsStrictPresence:
 # (exit 2, "key field 'nope' not found ..."); the pin asks the same of a key
 # field that cannot be a key. Supporting such keys instead would turn the pin
 # red too, as an assertion rather than as the expected ``TypeError``.
+#
+# Closed in 0.17.0: ``_extract_keys`` refuses such a key field with
+# ``InvalidKeyFieldError`` (a ``ValueError``), which names it, and the CLI
+# exits 2.
 # ---------------------------------------------------------------------------
 
 
@@ -1425,16 +1412,6 @@ class TestC10C4TreatAsMapWithAnUnhashableKey:
         assert "'nope'" in stderr
 
     @pytest.mark.parametrize("key", ["k", "r"], ids=["message-typed-key", "repeated-key"])
-    @pytest.mark.xfail(
-        strict=True,
-        raises=TypeError,
-        reason="C10-C4: owned by U10 (0.17.0). _extract_keys checks only that the key "
-               "field exists and is present, then uses the element's value of it as a "
-               "dict key; a message-typed key is a message and a repeated key is a "
-               "container, neither is hashable, so compare() raises TypeError "
-               "('unhashable ...') and protokit diff --treat-as-map rows k (or r) ends "
-               "in a traceback with exit 1 on two identical files",
-    )
     def test_unhashable_key_field_must_be_a_usage_error(
         self, tmp_path: Path, key: str
     ) -> None:
@@ -1446,7 +1423,7 @@ class TestC10C4TreatAsMapWithAnUnhashableKey:
         mistake as a real difference between two identical files. ``--quiet``
         does not help: the traceback comes from the comparison itself.
         """
-        # Today: TypeError out of compare(), uncaught by the CLI.
+        # 0.16.0: TypeError out of compare(), uncaught by the CLI.
         exit_code, _, stderr = _run_treat_as_map_cli(tmp_path, key)
 
         assert exit_code == 2

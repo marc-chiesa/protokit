@@ -70,6 +70,7 @@ class TestPublicImports:
             "MessageFieldComparison",
             "equals_proto",
             "HamcrestExtraNotInstalledError",
+            "InvalidKeyFieldError",
         ):
             assert hasattr(message, name), name
             assert name in message.__all__, name
@@ -126,6 +127,7 @@ class TestNoTopLevelReExport:
             "Approx",
             "equals_proto",
             "HamcrestExtraNotInstalledError",
+            "InvalidKeyFieldError",
             "MatcherError",
         ):
             assert not hasattr(protokit, name), f"protokit.{name} leaked to top level"

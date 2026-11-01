@@ -831,8 +831,9 @@ class TestCrossPoolExtensions:
         right.Extensions[xitems].add(id="a", v=1)
         differ = MessageDifferencer()
         differ.treat_as_map("(x.xitems)", key="id")
+        # Keyed as on the two-sided path (0.16.0 used index paths here, U8-4).
         assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
-            ("(x.xitems)[0].id", "ADDED"), ("(x.xitems)[0].v", "ADDED"),
+            ('(x.xitems)[id="a"].id', "ADDED"), ('(x.xitems)[id="a"].v', "ADDED"),
         ]
 
     def test_extension_declared_on_another_message_stays_one_sided(self) -> None:
@@ -843,8 +844,9 @@ class TestCrossPoolExtensions:
         right.Extensions[xitems].add(id="a", v=1)
         differ = MessageDifferencer()
         differ.treat_as_map("(x.xitems)", key="id")
+        # Keyed as on the two-sided path (0.16.0 used index paths here, U8-4).
         assert [(str(x.path), x.change_type.name) for x in differ.compare(left, right)] == [
-            ("(x.xitems)[0].id", "ADDED"), ("(x.xitems)[0].v", "ADDED"),
+            ('(x.xitems)[id="a"].id', "ADDED"), ('(x.xitems)[id="a"].v', "ADDED"),
         ]
 
     def test_extension_the_other_pool_cannot_build_stays_one_sided(self) -> None:

@@ -675,8 +675,8 @@ class MessageDifferencer:
                 applies at any depth, or dotted path (``"parent.items"``)
                 for one location. The field must be a repeated message
                 field on both sides.
-            key: Name of the scalar sub-field to use as the map key.
-                Must be a scalar type (string, int, bool, enum).
+            key: Name of the scalar sub-field (string, int, bool, enum) to
+                use as the map key; any other raises ``InvalidKeyFieldError``.
 
         Raises:
             ValueError: If ``field_selector`` is empty or uses bracket
@@ -962,30 +962,30 @@ class MessageDifferencer:
     def compare(self, left: Message, right: Message) -> DiffResult:
         """Compare two protobuf messages and return a structured diff.
 
-        The traversal uses an explicit stack, so recursion depth is
-        bounded by ``max_depth`` (unlimited by default), not by the
-        Python call stack. Name-based field matching lets ``left``
-        and ``right`` come from different descriptor pools.
+        The walk uses an explicit stack, so its depth is bounded by
+        ``max_depth`` (unlimited by default), not by the Python call stack,
+        except for a ``treat_as_set`` field nested in its own elements.
+        Name-based field matching lets ``left`` and ``right`` come from
+        different descriptor pools.
 
         Args:
-            left: The left-side protobuf ``Message``. Treated as the
-                "old" or "expected" side for directional semantics
-                like ``ChangeType.REMOVED``.
-            right: The right-side protobuf ``Message``. Treated as
-                the "new" or "actual" side.
+            left: The left-side ``Message``, the "old" or "expected" side
+                for directional semantics like ``ChangeType.REMOVED``.
+            right: The right-side ``Message``, the "new" or "actual" side.
 
         Returns:
-            A ``DiffResult`` with every detected ``Difference``,
-            any ``Diagnostic`` diagnostics (schema drift, cardinality
-            change, ``treat_as_map`` fallbacks), and the set of
-            paths where ``max_depth`` cut off traversal. Differences
-            are sorted by path for deterministic output.
+            A ``DiffResult`` with every ``Difference``, any ``Diagnostic``
+            (schema drift, cardinality change, ``treat_as_map`` fallbacks)
+            and the paths where ``max_depth`` cut off traversal, with the
+            differences sorted by path.
 
         Raises:
-            DuplicateKeyError: A ``treat_as_map``-configured field
-                had duplicate keys in one side's elements.
-            MissingKeyError: A ``treat_as_map``-configured field had
-                an element with the key sub-field unset.
+            DuplicateKeyError: A ``treat_as_map`` field had duplicate keys
+                in one side's elements.
+            MissingKeyError: A ``treat_as_map`` field had an element with the
+                key sub-field unset.
+            InvalidKeyFieldError: A ``treat_as_map`` key field is not on the
+                element type, or is a message or repeated field.
         """
         call = CallContext(left.DESCRIPTOR.file.pool, right.DESCRIPTOR.file.pool, _config_of(self))
         return self._walk(call, left, right, FieldPath(()), 0)
@@ -1210,13 +1210,13 @@ class MessageDifferencer:
                     left_is_map = is_map_field(left_fd)
                     right_is_map = is_map_field(right_fd)
                     if left_is_map != right_is_map:
-                        left_kind = "map" if left_is_map else "repeated"
-                        right_kind = "map" if right_is_map else "repeated"
-                        warnings.append(Diagnostic(
-                            path=str(field_path),
-                            message=f"field changed from {left_kind} to {right_kind}; "
-                                    "values not compared",
-                        ))
+                        # Map against repeated: both are repeated on the
+                        # wire, so the check above saw no cardinality
+                        # change. Record one, with a warning, and compare no
+                        # values (C04-C1).
+                        _record_map_kind_change(
+                            left_fd, right_fd, field_path, differences, warnings,
+                        )
                         continue
 
                     # Type compatibility
@@ -2223,9 +2223,9 @@ class MessageDifferencer:
         #
         # Same disposition as the map<->repeated cardinality change: a
         # Difference for the schema change, and no value comparison. That
-        # sibling gets its Difference from ``_check_schema_evolution``, which
-        # runs before the skip — but that check is as blind to a map's key and
-        # value types as the outer gate is, so this branch has to record them.
+        # sibling records its Difference at the dispatch, since
+        # ``_check_schema_evolution`` cannot see it — and that check is as blind
+        # to a map's key and value types as the outer gate, so this records them.
         # Diagnosing alone would be worse than the crash it replaced:
         # ``has_changes()`` ignores diagnostics, so the comparison would report
         # EQUAL for two maps with incompatible schemas — silently on empty
@@ -2252,8 +2252,8 @@ class MessageDifferencer:
         if incompatible:
             return
 
-        # Safe only after the key gate above: a mismatched key type makes the
-        # membership tests in this loop raise.
+        # Plain dicts, so a key one side's integer type cannot hold is absent (U8-3).
+        left_map, right_map = dict(left_map.items()), dict(right_map.items())
         all_keys = left_map.keys() | right_map.keys()
         left_value_fd = entry_fds["value"]
         right_value_fd = right_entry_fds["value"]
@@ -2561,17 +2561,17 @@ class MessageDifferencer:
             A dict mapping each key value to its message element.
 
         Raises:
-            ValueError: If the key field is not found in the descriptor.
+            InvalidKeyFieldError: If the key field is not on the element type,
+                or is a message or repeated field.
             MissingKeyError: If an element is missing the key field.
             DuplicateKeyError: If two elements share the same key value.
         """
         result: dict[Any, Message] = {}
-        key_fd = fd.message_type.fields_by_name.get(key_field_name)
-        if key_fd is None:
-            raise ValueError(
-                f"key field '{key_field_name}' not found in descriptor "
-                f"for {fd.message_type.full_name}"
-            )
+        # Checked before any element is read, so an empty list is refused
+        # too: a key field that cannot key the elements (missing, or a
+        # message or repeated field, whose values cannot be dict keys) is a
+        # configuration error, not a property of the data (C10-C4).
+        key_fd = _key_field(fd, key_field_name)
 
         for elem in elements:
             # Check presence for proto2/proto3 optional
@@ -2684,6 +2684,7 @@ class MessageDifferencer:
                 continue
 
             populated = cur_msg.ListFields()
+            _check_empty_keyed_fields(self, cur_msg, populated, cur_path)
             if not populated:
                 # Empty-but-present message exception
                 diffs.append(Difference(path=cur_path, change_type=change_type))
@@ -2703,71 +2704,25 @@ class MessageDifferencer:
                 if self._is_ignored(field_name, field_path, fd):
                     continue
 
-                if is_map_field(fd):
-                    # Native map field: iterate entries
-                    value_fd = fd.message_type.fields_by_name["value"]
-                    for k, v in value.items():
-                        key_str = format_key(k)
-                        key_path = _replace_bracket(field_path, key_str)
-                        if is_message_like(value_fd):
-                            if _has_populated_fields(v):
-                                emit_stack.append((v, key_path, cur_depth + 1))
-                            else:
-                                diffs.append(Difference(
-                                    path=key_path, change_type=change_type,
-                                    field_type=type_name(value_fd.type),
-                                ))
-                        else:
-                            self._emit_one_sided_leaf_with_hooks(
-                                key_path, change_type, v, value_fd, cur_msg,
-                                is_new=is_new, diffs=diffs, warnings=warnings,
-                            )
-                elif is_message_like(fd) and not is_repeated(fd):
-                    # Singular sub-message: push for full recursion
-                    emit_stack.append((value, field_path, cur_depth + 1))
-                elif is_repeated(fd):
-                    # Check treat_as_map for key-based path formatting
-                    tam_key = (
-                        self._get_treat_as_map_key(field_name, field_path)
-                        if is_message_like(fd)
-                        else None
-                    )
-                    # Look up the key field descriptor once for the whole list
-                    tam_key_fd = (
-                        fd.message_type.fields_by_name.get(tam_key)
-                        if tam_key
-                        else None
-                    )
-                    if tam_key_fd is not None and tam_key is not None:
-                        # Derive the keys through the same validator the
-                        # two-sided path uses: ``compare()`` documents
-                        # DuplicateKeyError / MissingKeyError unconditionally,
-                        # so they must not depend on whether the other side
-                        # happened to carry this subtree. Silently keying here
-                        # collapsed duplicate-keyed elements onto one path and
-                        # demoted a missing key to an index bracket.
-                        keyed = self._extract_keys(value, tam_key, fd, field_path)
-                        bracketed = [
-                            (f"{tam_key}={format_key(key_val)}", elem)
-                            for key_val, elem in keyed.items()
-                        ]
-                    else:
-                        bracketed = [(str(i), elem) for i, elem in enumerate(value)]
-                    for key_bracket, elem in bracketed:
-                        elem_path = _replace_bracket(field_path, key_bracket)
-                        if is_message_like(fd):
+                if is_repeated(fd):
+                    elements, elem_fd = _one_sided_elements(self, value, fd, field_path)
+                    for elem_path, elem in elements:
+                        if is_message_like(elem_fd):
                             if _has_populated_fields(elem):
                                 emit_stack.append((elem, elem_path, cur_depth + 1))
                             else:
                                 diffs.append(Difference(
                                     path=elem_path, change_type=change_type,
-                                    field_type=type_name(fd.type),
+                                    field_type=type_name(elem_fd.type),
                                 ))
                         else:
                             self._emit_one_sided_leaf_with_hooks(
-                                elem_path, change_type, elem, fd, cur_msg,
+                                elem_path, change_type, elem, elem_fd, cur_msg,
                                 is_new=is_new, diffs=diffs, warnings=warnings,
                             )
+                elif is_message_like(fd):
+                    # Singular sub-message: push for full recursion
+                    emit_stack.append((value, field_path, cur_depth + 1))
                 else:
                     self._emit_one_sided_leaf_with_hooks(
                         field_path, change_type, value, fd, cur_msg,
@@ -2817,40 +2772,20 @@ class MessageDifferencer:
                         path=path, change_type=change_type,
                         field_type=type_name(fd.type),
                     ))
-        elif is_map_field(fd):
-            map_val = _field_value(msg, fd)
-            value_fd = fd.message_type.fields_by_name["value"]
-            for k, v in map_val.items():
-                key_str = format_key(k)
-                key_path = _replace_bracket(path, key_str) if path.segments else path
-                if is_message_like(value_fd):
-                    if _has_populated_fields(v):
-                        stack.append(_work_item(v, key_path))
-                    else:
-                        diffs.append(Difference(
-                            path=key_path, change_type=change_type,
-                            field_type=type_name(value_fd.type),
-                        ))
-                else:
-                    self._emit_one_sided_leaf_with_hooks(
-                        key_path, change_type, v, value_fd, msg,
-                        is_new=is_new, diffs=diffs, warnings=warnings,
-                    )
         elif is_repeated(fd):
-            vals = _field_value(msg, fd)
-            for i, elem in enumerate(vals):
-                idx_path = _replace_bracket(path, str(i)) if path.segments else path
-                if is_message_like(fd):
+            elements, elem_fd = _one_sided_elements(self, _field_value(msg, fd), fd, path)
+            for elem_path, elem in elements:
+                if is_message_like(elem_fd):
                     if _has_populated_fields(elem):
-                        stack.append(_work_item(elem, idx_path))
+                        stack.append(_work_item(elem, elem_path))
                     else:
                         diffs.append(Difference(
-                            path=idx_path, change_type=change_type,
-                            field_type=type_name(fd.type),
+                            path=elem_path, change_type=change_type,
+                            field_type=type_name(elem_fd.type),
                         ))
                 else:
                     self._emit_one_sided_leaf_with_hooks(
-                        idx_path, change_type, elem, fd, msg,
+                        elem_path, change_type, elem, elem_fd, msg,
                         is_new=is_new, diffs=diffs, warnings=warnings,
                     )
         else:
@@ -3063,10 +2998,12 @@ def _trial_pairs(
     engine, trial_call = call.trial
     try:
         result: DiffResult = engine._walk(trial_call, left, right, path, depth)
-    except (DuplicateKeyError, MissingKeyError):
+    except (DuplicateKeyError, MissingKeyError, InvalidKeyFieldError):
         # The trial walks a right element at the field's path, so its key error
         # would name the wrong element. Unpaired, the element is walked at its
-        # own index, where the same check raises again with the right path.
+        # own index, where the same check raises again with the right path. A
+        # trial has no depth limit, so a key field below the cut raises only
+        # there, and the walk the cut stops never reaches it.
         return False
     return all(diff.change_type in _SCHEMA_CHANGES for diff in result.differences)
 
@@ -3098,7 +3035,113 @@ def _walk_chosen_pair(
     warnings.extend(result.diagnostics)
 
 
+def _record_map_kind_change(
+    left_fd: proto_descriptor.FieldDescriptor, right_fd: proto_descriptor.FieldDescriptor,
+    path: FieldPath, diffs: list[Difference], warnings: list[Diagnostic],
+) -> None:
+    """Record a map field compared against a repeated field (C04-C1).
+
+    Both are repeated on the wire, so both labels read ``LABEL_REPEATED`` and
+    the warning names the two kinds. The values are not compared, so against a
+    repeated message field the difference is what keeps the change from reading
+    equal; against a repeated scalar one it joins the ``TYPE_CHANGED`` already
+    reported.
+    """
+    left_kind, right_kind = ("map" if is_map_field(f) else "repeated" for f in (left_fd, right_fd))
+    diffs.append(Difference(
+        path=path,
+        change_type=ChangeType.CARDINALITY_CHANGED,
+        field_type=type_name(left_fd.type),
+        left_label=label_name(left_fd),
+        right_label=label_name(right_fd),
+    ))
+    warnings.append(Diagnostic(
+        path=str(path),
+        message=f"field changed from {left_kind} to {right_kind}; values not compared",
+    ))
+
+
+def _key_field(
+    fd: proto_descriptor.FieldDescriptor, key_field_name: str,
+) -> proto_descriptor.FieldDescriptor:
+    """The element field of ``fd`` named ``key_field_name``, if it can key the elements.
+
+    Raises:
+        InvalidKeyFieldError: The element type has no such field, or it is a
+            repeated or message field: neither value can be a dict key (C10-C4).
+    """
+    element = fd.message_type
+    key_fd = element.fields_by_name.get(key_field_name)
+    if key_fd is None:
+        raise InvalidKeyFieldError(
+            f"key field '{key_field_name}' not found in descriptor for {element.full_name}"
+        )
+    if is_repeated(key_fd):
+        kind = "a repeated field"
+    elif is_message_like(key_fd):
+        kind = "a message field"
+    else:
+        return key_fd
+    raise InvalidKeyFieldError(
+        f"key field '{key_field_name}' of {element.full_name} is {kind}, "
+        "so it cannot key the elements; use a scalar field"
+    )
+
+
+def _one_sided_elements(
+    differ: MessageDifferencer, value: Any, fd: proto_descriptor.FieldDescriptor,
+    path: FieldPath,
+) -> tuple[list[tuple[FieldPath, Any]], proto_descriptor.FieldDescriptor]:
+    """Each element of a map or repeated field held on one side only, with its path.
+
+    Also returns the descriptor the elements are values of: the map's
+    ``value`` field for a map, ``fd`` itself otherwise. Map entries are
+    addressed by key. A ``treat_as_map`` field's elements are keyed through
+    ``_extract_keys``, as on the two-sided path, so its errors and its key
+    paths do not depend on whether the other side carries the field (U8-4).
+    Other elements are addressed by index.
+    """
+    def at(bracket: str) -> FieldPath:
+        return _replace_bracket(path, bracket) if path.segments else path
+
+    if is_map_field(fd):
+        entries = [(at(format_key(key)), entry) for key, entry in value.items()]
+        return entries, fd.message_type.fields_by_name["value"]
+    field_name = _extension_key(fd) if fd.is_extension else fd.name
+    key_field = differ._get_treat_as_map_key(field_name, path) if is_message_like(fd) else None
+    if key_field:
+        keyed = differ._extract_keys(value, key_field, fd, path)
+        return [(at(f"{key_field}={format_key(key)}"), e) for key, e in keyed.items()], fd
+    return [(at(str(i)), element) for i, element in enumerate(value)], fd
+
+
+def _check_empty_keyed_fields(
+    differ: MessageDifferencer, msg: Message, populated: list[Any], path: FieldPath,
+) -> None:
+    """Refuse an unusable ``treat_as_map`` key on a keyed list ``msg`` holds empty.
+
+    The one-sided walk visits only the fields ``ListFields()`` returns, and an
+    empty list is not among them. The two-sided walk checks every declared
+    field it compares, so without this an unusable key field would raise or not
+    depending on whether the other side holds the subtree (U8-4). Fields the
+    two-sided walk skips are skipped here: ignored ones, and every unset one
+    under partial.
+    """
+    if differ._partial or not (differ._treat_as_map or differ._treat_as_map_paths):
+        return
+    held = {fd.number for fd, _ in populated if not fd.is_extension}
+    for number, fd in FieldView.of(msg.DESCRIPTOR).by_number.items():
+        if number in held or is_map_field(fd) or not is_repeated(fd) or not is_message_like(fd):
+            continue
+        field_path = _append_segment(path, fd.name)
+        if differ._is_ignored(fd.name, field_path, fd):
+            continue
+        key_field = differ._get_treat_as_map_key(fd.name, field_path)
+        if key_field:
+            _key_field(fd, key_field)
+
+
 # Imported here, not at the top: published docs cite line numbers in this file.
 from protokit._fieldview import _unshadowed  # noqa: E402
 from protokit.message._differ_config import IDLE, CallContext, DifferConfig  # noqa: E402
-from protokit.message.model import _append_segment  # noqa: E402
+from protokit.message.model import InvalidKeyFieldError, _append_segment  # noqa: E402
