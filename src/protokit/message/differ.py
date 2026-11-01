@@ -245,12 +245,12 @@ class MessageDifferencer:
     calling :meth:`compare`.
 
     Thread safety: an instance is **not** thread-safe. :meth:`compare`
-    stores descriptor pools on ``self`` during the call
-    (``self._left_pool`` / ``self._right_pool``) so hooks can read
-    them, and clears them in a ``finally``. Two concurrent
-    :meth:`compare` calls on the same instance will race on those
-    attributes and hooks may see the wrong pools. Use a distinct
-    ``MessageDifferencer`` per thread, or serialize calls
+    keeps the call's descriptor pools on ``self`` (``self._call``) so
+    hooks can read them, and restores the previous context when it
+    returns, so a hook may call :meth:`compare` on the same instance.
+    Two :meth:`compare` calls on one instance from different threads
+    race on that attribute, and hooks may see the wrong pools. Use a
+    distinct ``MessageDifferencer`` per thread, or serialize calls
     externally.
 
     Attributes:
@@ -313,9 +313,9 @@ class MessageDifferencer:
         self._compare_hooks: list[FieldHook] = []
         self._report_hooks: list[FieldHook] = []
         self._message_validate_hooks: list[MessageValidateHook] = []
-        # Pools captured at ``compare()`` entry and cleared on exit.
-        self._left_pool: Any = None
-        self._right_pool: Any = None
+        # The running ``compare()`` call's pools and configuration snapshot;
+        # ``IDLE`` between calls. A nested call restores the outer one on exit.
+        self._call: CallContext = IDLE
 
     # ------------------------------------------------------------------
     # Phase 1.5 hook registration
@@ -531,8 +531,8 @@ class MessageDifferencer:
             path=item.path,
             left_msg=item.left_msg,
             right_msg=item.right_msg,
-            left_pool=self._left_pool,
-            right_pool=self._right_pool,
+            left_pool=self._call.left_pool,
+            right_pool=self._call.right_pool,
             _state=state,
         )
         for hook in self._message_validate_hooks:
@@ -745,13 +745,13 @@ class MessageDifferencer:
         elements, using the same element ``Difference`` shape as the default
         index path.
 
-        Applies to scalar/enum and message repeated fields. Set-membership
-        equality is STRICT exact equality — it deliberately does NOT apply
-        float tolerance or other per-element policies inside element
-        comparison, so equality stays a true equivalence relation and the
-        partition is order-independent. Cost is ``O(n * m)`` element-equality
-        evaluations; for message elements each is a full sub-comparison, so it
-        is intended for test-sized repeated fields.
+        Applies to scalar/enum and message repeated fields. Two elements pair
+        when a trial comparison under this differ's ignore rules, presence mode
+        and nested set and map policies finds no difference; floats compare
+        exactly there, so equality stays an equivalence relation and pairing is
+        order-independent. Hooks run only on the chosen pairs, which are then
+        compared and reported at the left element's index. Cost is ``O(n * m)``
+        trials; for message elements each is a full sub-comparison.
 
         A selector that matches a non-repeated field silently has no effect: set
         comparison is consulted only at the repeated-field site, so a selector
@@ -819,11 +819,11 @@ class MessageDifferencer:
         differing expected nested fields still report.
 
         **``treat_as_set`` carve-out (KTD-8):** partial does NOT descend into a
-        repeated field marked :meth:`treat_as_set`. Set-element equality stays
-        STRICT exact equality so the multiset partition remains an equivalence
-        relation; so — unlike the index-paired collection case above — a set
-        element present only on the actual side IS still reported even under
-        partial. Partial relaxes the *field-shape*, never set membership.
+        repeated field marked :meth:`treat_as_set`. Elements pair as they do
+        without partial, and each chosen pair is compared in full, so a set
+        element present only on the actual side IS still reported, and so is
+        a schema change inside a paired element. Partial relaxes the
+        *field-shape*, never set membership.
 
         Default is full comparison (``partial=False``); the default behavior is
         unchanged and every existing comparison is unaffected (R12).
@@ -987,25 +987,25 @@ class MessageDifferencer:
             MissingKeyError: A ``treat_as_map``-configured field had
                 an element with the key sub-field unset.
         """
+        call = CallContext(left.DESCRIPTOR.file.pool, right.DESCRIPTOR.file.pool, _config_of(self))
+        return self._walk(call, left, right, FieldPath(()), 0)
+
+    def _walk(
+        self, call: CallContext, left: Message, right: Message, root: FieldPath, depth: int,
+    ) -> DiffResult:
+        """Compare ``left`` and ``right`` as the subtree at ``root``, ``depth`` deep.
+
+        ``call`` is installed for the walk, so hooks read its pools; the
+        context in place before is restored when the walk ends or raises.
+        """
         differences: list[Difference] = []
         warnings: list[Diagnostic] = []
-        truncated_paths: list[FieldPath] = []
+        truncated_paths: list[FieldPath] = call.truncated_paths
         same_pool = _same_pool(left, right)
-
-        # Capture pools for the duration of this call so hooks can
-        # use them for custom-option lookups via
-        # ``protokit.options.get_option_value``. Cleared in the
-        # ``finally`` below so the differ is safe to re-use.
-        self._left_pool = left.DESCRIPTOR.file.pool
-        self._right_pool = right.DESCRIPTOR.file.pool
-
-        stack: list[_WorkItem] = [_WorkItem(left, right, FieldPath(segments=()), 0)]
-
-        # Strict-schema type-name findings already emitted on this call, so the
-        # per-field declared check and the per-work-item instance check never
-        # say the same thing twice. See ``_check_message_type_names``.
+        stack: list[_WorkItem] = [_WorkItem(left, right, root, depth)]
+        # Strict-schema type names already reported (``_check_message_type_names``).
         reported_type_names: set[tuple[tuple[str, ...], str, str]] = set()
-
+        outer_call, self._call = self._call, call
         try:
             while stack:
                 item = stack.pop()
@@ -1248,9 +1248,9 @@ class MessageDifferencer:
                             field_path, differences, warnings, same_pool,
                         )
         finally:
-            # Clear pool refs so the differ is safe to re-use.
-            self._left_pool = None
-            self._right_pool = None
+            # Restore the caller's context: ``IDLE`` after a top-level call,
+            # the enclosing call's own after a ``compare()`` made from a hook.
+            self._call = outer_call
 
         # Sort results by path for deterministic output
         differences.sort(key=lambda d: str(d.path))
@@ -1534,8 +1534,8 @@ class MessageDifferencer:
             right_value=right_val if right_present else None,
             left_msg=left_msg,
             right_msg=right_msg,
-            left_pool=self._left_pool,
-            right_pool=self._right_pool,
+            left_pool=self._call.left_pool,
+            right_pool=self._call.right_pool,
             _state=ctx_state,
         )
 
@@ -1668,8 +1668,8 @@ class MessageDifferencer:
             right_value=ctx_right_value,
             left_msg=left_msg,
             right_msg=right_msg,
-            left_pool=self._left_pool,
-            right_pool=self._right_pool,
+            left_pool=self._call.left_pool,
+            right_pool=self._call.right_pool,
             _state=ctx_state,
         )
         self._fire_field_stage(
@@ -1724,8 +1724,8 @@ class MessageDifferencer:
             right_value=value if is_new else None,
             left_msg=None if is_new else parent_msg,
             right_msg=parent_msg if is_new else None,
-            left_pool=self._left_pool,
-            right_pool=self._right_pool,
+            left_pool=self._call.left_pool,
+            right_pool=self._call.right_pool,
             _state=ctx_state,
         )
         self._fire_field_stage(
@@ -1784,8 +1784,8 @@ class MessageDifferencer:
             right_value=right_val,
             left_msg=left_msg,
             right_msg=right_msg,
-            left_pool=self._left_pool,
-            right_pool=self._right_pool,
+            left_pool=self._call.left_pool,
+            right_pool=self._call.right_pool,
             _state=ctx_state,
         )
         equal = self._run_validate_compare(
@@ -2322,29 +2322,26 @@ class MessageDifferencer:
         left_fd: proto_descriptor.FieldDescriptor,
         right_fd: proto_descriptor.FieldDescriptor,
         same_pool: bool,
+        path: FieldPath,
+        depth: int,
     ) -> bool:
-        """Decide STRICT element equality for keyless set pairing (KTD-8).
+        """Decide element equality for keyless set pairing (KTD4).
 
-        This is the equality callable injected into
-        :func:`greedy_multiset_pairing`. It is backed by the engine so set
-        membership matches :meth:`compare` semantics exactly — NOT a private
-        reimplementation:
+        This is the equality :func:`greedy_multiset_pairing` pairs by. It must
+        be an equivalence relation, or the pairing would depend on element
+        order, so it never applies float tolerance:
 
-        * **Message elements** run a fresh, default-config sub-comparison
-          (``MessageDifferencer().compare(...)``) and count "zero differences"
-          as equal. The fresh differ carries default config (exact floats, no
-          ignore/map/set/tolerance), so the comparison is strict yet still
-          descriptor-aware: cross-pool name-matching, enum wire-compatibility,
-          and presence all come from the engine. A one-field-different element
-          therefore has differences and is NOT equal — it surfaces later as a
-          remove + add pair, not a modify (documented v1 behavior).
+        * **Message elements** pair when a trial comparison finds no
+          difference but a schema change (``TYPE_CHANGED``,
+          ``FIELD_NUMBER_CHANGED``, ``CARDINALITY_CHANGED``). The trial runs
+          under :meth:`DifferConfig.for_trial` (the caller's ignore rules,
+          presence mode and nested policies, with exact floats, no depth
+          limit, no hooks and partial off) at the set field's path with no
+          index, since pairing decides the index; dotted selectors match.
+          Elements that differ below ``max_depth`` do not pair.
 
-        * **Scalar/enum/bytes elements** reuse the engine's value-equality path
-          (:meth:`_values_equal` — same enum wire-compat / cross-pool logic),
-          but under a STRICT float config so per-instance float tolerance never
-          leaks into set-membership equality. Keeping equality strict makes it
-          a true equivalence relation, so the greedy partition is
-          order-independent (KTD-8).
+        * **Scalar/enum/bytes elements** compare by :meth:`_values_equal`'s
+          rules (enums by number across pools), with exact floats.
 
         Args:
             left_elem: An element from the expected (left) list.
@@ -2352,22 +2349,17 @@ class MessageDifferencer:
             left_fd: The repeated field's left descriptor.
             right_fd: The repeated field's right descriptor.
             same_pool: True if the parent messages share a descriptor pool.
+            path: The set field's path, where a trial places each element.
+            depth: The depth of the elements in the comparison.
 
         Returns:
-            True if the two elements are strictly engine-equal.
+            True if the two elements pair.
         """
         if is_message_like(left_fd):
-            # Engine equality for message elements: a fresh default-config
-            # differ gives strict comparison with full descriptor awareness.
-            sub_result = MessageDifferencer().compare(left_elem, right_elem)
-            return not sub_result.has_changes()
+            return _trial_pairs(self, left_elem, right_elem, path, depth)
 
-        # Scalar/enum/bytes: engine value equality under a STRICT float config.
         if left_fd.type in (TYPE_FLOAT, TYPE_DOUBLE):
-            return compare_float(
-                float(left_elem), float(right_elem),
-                _EXACT_FLOAT_CONFIG,
-            )
+            return compare_float(float(left_elem), float(right_elem), _EXACT_FLOAT_CONFIG)
         if left_fd.type == TYPE_ENUM:
             if same_pool:
                 return compare_enum_same_pool(left_elem, right_elem)
@@ -2392,14 +2384,13 @@ class MessageDifferencer:
         warnings: list[Diagnostic],
         same_pool: bool,
     ) -> None:
-        """Compare a repeated field order-independently as a multiset (KTD-8).
+        """Compare a repeated field order-independently as a multiset (KTD4).
 
-        Pairs elements via :func:`greedy_multiset_pairing` with an engine-backed
-        strict-equality callable (:meth:`_set_elements_equal`). Matched pairs
-        emit nothing (they are strictly equal); leftovers reuse the existing
-        element ``Difference`` shape — expected-side leftovers are REMOVED,
-        actual-side leftovers are ADDED, each keyed by its original index in
-        its own list (``field[i]``).
+        Pairs elements via :func:`greedy_multiset_pairing` with
+        :meth:`_set_elements_equal`, then compares each chosen pair with the
+        full configuration, hooks included, at the left element's index.
+        Leftovers are REMOVED (expected side) or ADDED (actual side), each at
+        its index in its own list.
 
         Args:
             left_msg: The left parent message.
@@ -2415,19 +2406,29 @@ class MessageDifferencer:
         """
         left_list = list(_field_value(left_msg, left_fd))
         right_list = list(_field_value(right_msg, right_fd))
+        left_paths = [_replace_bracket(path, str(i)) for i in range(len(left_list))]
 
-        def _equal(left_elem: Any, right_elem: Any) -> bool:
-            return self._set_elements_equal(
-                left_elem, right_elem, left_fd, right_fd, same_pool,
-            )
-
-        _matched, expected_unmatched, actual_unmatched = greedy_multiset_pairing(
-            left_list, right_list, _equal,
+        matched, expected_unmatched, actual_unmatched = greedy_multiset_pairing(
+            range(len(left_list)), range(len(right_list)),
+            lambda i, j: self._set_elements_equal(
+                left_list[i], right_list[j], left_fd, right_fd, same_pool,
+                path, depth + 1,
+            ),
         )
+
+        # Chosen pairs go back onto the walk; inside a trial they already pair.
+        for i, j in () if self._call.in_trial else matched:
+            if is_message_like(left_fd):
+                pair = _WorkItem(left_list[i], right_list[j], left_paths[i], depth + 1)
+                _walk_chosen_pair(self, pair, stack, diffs, warnings)
+            else:
+                self._compare_scalar_pair_with_hooks(
+                    left_list[i], right_list[j], left_fd, right_fd, left_paths[i],
+                    left_msg, right_msg, same_pool, diffs, warnings)
 
         # Expected-side leftovers -> REMOVED, keyed by original left index.
         for i in expected_unmatched:
-            idx_path = _replace_bracket(path, str(i)) if path.segments else path
+            idx_path = left_paths[i]
             if is_message_like(left_fd):
                 if _has_populated_fields(left_list[i]):
                     stack.append(_WorkItem(left_list[i], None, idx_path, depth + 1))
@@ -2445,12 +2446,11 @@ class MessageDifferencer:
 
         # Actual-side leftovers -> ADDED, keyed by original right index.
         for i in actual_unmatched:
-            idx_path = _replace_bracket(path, str(i)) if path.segments else path
+            idx_path = _replace_bracket(path, str(i))
             if is_message_like(right_fd):
                 if _has_populated_fields(right_list[i]):
-                    # force_emit: partial does NOT descend into set fields
-                    # (KTD-8 carve-out), so an actual-only set message element
-                    # must still report as ADDED even under partial scope.
+                    # force_emit: partial does not descend into set fields (the
+                    # KTD-8 carve-out), so an actual-only element still reports.
                     stack.append(_WorkItem(
                         None, right_list[i], idx_path, depth + 1, force_emit=True,
                     ))
@@ -2987,6 +2987,118 @@ def _conflicting_map_key(maps: dict[str, str], selector: str, key: str) -> str |
     return None
 
 
+# ---------------------------------------------------------------------------
+# Configuration snapshot and set-pairing trials (KTD3, KTD4)
+# ---------------------------------------------------------------------------
+
+# Schema changes a trial does not hold against a pair: the walk of the chosen
+# pair reports each one once (audit finding C04-C4).
+_SCHEMA_CHANGES = frozenset({
+    ChangeType.TYPE_CHANGED, ChangeType.FIELD_NUMBER_CHANGED, ChangeType.CARDINALITY_CHANGED,
+})
+
+
+def _config_of(differ: MessageDifferencer) -> DifferConfig:
+    """``differ``'s settings as a :meth:`MessageDifferencer.compare` call starts."""
+    return DifferConfig(
+        ignore_names=frozenset(differ._ignore_names),
+        ignore_paths=tuple(differ._ignore_paths),
+        ignore_selectors=tuple(differ._ignore_selectors),
+        treat_as_map=tuple(differ._treat_as_map.items()),
+        treat_as_map_paths=tuple(differ._treat_as_map_paths),
+        treat_as_set_selectors=tuple(differ._treat_as_set_selectors),
+        partial=differ._partial,
+        presence_mode=differ._presence_mode,
+        float_config=differ._float_config,
+        float_overlays=tuple(differ._float_overlays),
+        max_depth=differ.max_depth,
+        strict_schema=differ.strict_schema,
+        validate_hooks=tuple(differ._validate_hooks),
+        compare_hooks=tuple(differ._compare_hooks),
+        report_hooks=tuple(differ._report_hooks),
+        message_validate_hooks=tuple(differ._message_validate_hooks),
+    )
+
+
+def _engine(config: DifferConfig) -> MessageDifferencer:
+    """A differencer set up exactly as ``config``: set pairing's trial differ."""
+    engine = MessageDifferencer()
+    engine._ignore_names = set(config.ignore_names)
+    engine._ignore_paths = list(config.ignore_paths)
+    engine._ignore_selectors = list(config.ignore_selectors)
+    engine._treat_as_map = dict(config.treat_as_map)
+    engine._treat_as_map_paths = list(config.treat_as_map_paths)
+    engine._treat_as_set_selectors = list(config.treat_as_set_selectors)
+    engine._partial = config.partial
+    engine._presence_mode = config.presence_mode
+    engine._float_config = config.float_config
+    engine._float_overlays = list(config.float_overlays)
+    engine.max_depth = config.max_depth
+    engine.strict_schema = config.strict_schema
+    engine._validate_hooks = list(config.validate_hooks)
+    engine._compare_hooks = list(config.compare_hooks)
+    engine._report_hooks = list(config.report_hooks)
+    engine._message_validate_hooks = list(config.message_validate_hooks)
+    return engine
+
+
+def _trial_pairs(
+    differ: MessageDifferencer, left: Message, right: Message, path: FieldPath, depth: int,
+) -> bool:
+    """Whether set pairing pairs the message elements ``left`` and ``right`` (KTD4).
+
+    The trial walks the elements from ``path`` at ``depth`` under the running
+    call's configuration as :meth:`DifferConfig.for_trial` gives it. Its
+    differencer is built the first time a call needs one and reused for every
+    trial in that call, nested set fields included, since a trial
+    configuration is its own ``for_trial()``. It has no depth limit, so it
+    never truncates.
+    """
+    call = differ._call
+    if call.trial is None:
+        assert call.config is not None, "set pairing runs only inside compare()"
+        config = call.config.for_trial()
+        trial_call = CallContext(call.left_pool, call.right_pool, config, in_trial=True)
+        trial_call.trial = call.trial = (_engine(config), trial_call)
+    engine, trial_call = call.trial
+    try:
+        result: DiffResult = engine._walk(trial_call, left, right, path, depth)
+    except (DuplicateKeyError, MissingKeyError):
+        # The trial walks a right element at the field's path, so its key error
+        # would name the wrong element. Unpaired, the element is walked at its
+        # own index, where the same check raises again with the right path.
+        return False
+    return all(diff.change_type in _SCHEMA_CHANGES for diff in result.differences)
+
+
+def _walk_chosen_pair(
+    differ: MessageDifferencer, pair: _WorkItem, stack: list[_WorkItem],
+    diffs: list[Difference], warnings: list[Diagnostic],
+) -> None:
+    """Compare a pair set pairing chose, with the full configuration.
+
+    Without partial the pair goes onto the walk's stack. Partial does not
+    apply inside a set field (KTD-8), so under partial the pair is walked by a
+    differencer with partial off, which still runs the hooks, and its results
+    join this walk's. Otherwise a schema change on a field the expected
+    element leaves unset would go unreported.
+    """
+    if not differ._partial:
+        stack.append(pair)
+        return
+    call = differ._call
+    assert call.config is not None, "set pairing runs only inside compare()"
+    config = dataclasses.replace(call.config, partial=False)
+    whole = CallContext(
+        call.left_pool, call.right_pool, config, trial=call.trial,
+        truncated_paths=call.truncated_paths,
+    )
+    result = _engine(config)._walk(whole, pair.left_msg, pair.right_msg, pair.path, pair.depth)
+    diffs.extend(result.differences)
+    warnings.extend(result.diagnostics)
+
+
 # Imported here, not at the top: published docs cite line numbers in this file.
 from protokit._fieldview import _unshadowed  # noqa: E402
+from protokit.message._differ_config import IDLE, CallContext, DifferConfig  # noqa: E402
 from protokit.message.model import _append_segment  # noqa: E402

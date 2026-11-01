@@ -85,7 +85,7 @@ class TestInternalsNotExported:
     def test_helper_modules_not_exported(self) -> None:
         # The selector / set-match / presence helpers are strict-gated internals;
         # only the matcher/adapter facade is public surface.
-        for name in ("_selector", "_setmatch", "_presence"):
+        for name in ("_selector", "_setmatch", "_presence", "_differ_config"):
             assert name not in message.__all__, name
 
     def test_internal_symbols_not_exported(self) -> None:
@@ -98,6 +98,7 @@ class TestInternalsNotExported:
             "greedy_multiset_pairing",
             "PresenceVerdict",
             "presence_verdict",
+            "DifferConfig",
             "_build_differ",
             "ProtoMatcher",
         ):

@@ -962,8 +962,8 @@ class TestZeroHooksFastPath:
 
         differ = MessageDifferencer()
         differ.compare(left, right)
-        assert differ._left_pool is None
-        assert differ._right_pool is None
+        assert differ._call.left_pool is None
+        assert differ._call.right_pool is None
 
     def test_pool_refs_cleared_after_exception(self) -> None:
         """try/finally in ``compare()`` clears pool refs even when
@@ -990,8 +990,8 @@ class TestZeroHooksFastPath:
         differ.treat_as_map("items", key="id")
         with pytest.raises(DuplicateKeyError):
             differ.compare(left, right)
-        assert differ._left_pool is None
-        assert differ._right_pool is None
+        assert differ._call.left_pool is None
+        assert differ._call.right_pool is None
 
 
 # ---------------------------------------------------------------------------

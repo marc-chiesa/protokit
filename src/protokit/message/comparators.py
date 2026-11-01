@@ -151,13 +151,16 @@ def compare_enum_cross_pool(
     right_value: int,
     right_name: str,
 ) -> tuple[bool, str | None]:
-    """Compare enum values across descriptor pools.
+    """Compare enum values across descriptor pools, by number as on the wire.
 
     Rules:
-    - Name match + number match -> SAME, no warning
-    - Name match + number mismatch -> SAME, warning about number drift
-    - Name mismatch + number match -> SAME (wire-compatible)
-    - Name mismatch + number mismatch -> DIFFERENT
+    - Number match + name match -> SAME, no warning
+    - Number match + name mismatch -> SAME, warning about name drift
+    - Number mismatch -> DIFFERENT, whatever the names: bytes written with one
+      number do not decode to the other
+
+    Equality is the number's alone, so it is an equivalence relation, which
+    ``treat_as_set`` pairing needs to be order-independent.
 
     Args:
         left_value: Numeric enum value from the left message.
@@ -167,18 +170,16 @@ def compare_enum_cross_pool(
 
     Returns:
         A ``(is_equal, warning_message)`` tuple. ``warning_message`` is
-        ``None`` unless the names match but numbers differ.
+        ``None`` unless the numbers match but the names differ.
     """
-    if left_name == right_name:
-        if left_value == right_value:
-            return True, None
+    if left_value != right_value:
+        return False, None
+    if left_name != right_name:
         return True, (
-            f"enum value '{left_name}' has different numbers "
-            f"across schemas ({left_value} vs {right_value})"
+            f"enum value {left_value} has different names "
+            f"across schemas ({left_name} vs {right_name})"
         )
-    if left_value == right_value:
-        return True, None  # wire-compatible
-    return False, None
+    return True, None
 
 
 def to_enum_value(value: int, enum_descriptor: proto_descriptor.EnumDescriptor) -> EnumValue:

@@ -480,3 +480,51 @@ def test_a_custom_option_read_leaves_the_callers_options_unchanged() -> None:
     assert read is options
     assert options.ListFields() == []
     assert options == options_cls()
+
+
+_SET_PAIRING_CONFIGS: dict[str, Callable[[MessageDifferencer], None]] = {
+    "set-alone": lambda differ: None,
+    "set-and-ignore": lambda differ: differ.ignore_fields("items.name"),
+    "set-and-ignored-extension": lambda differ: differ.ignore_fields("(c.tags)"),
+    "set-and-equal-presence": lambda differ: differ.set_message_field_comparison(
+        MessageFieldComparison.EQUAL,
+    ),
+    "set-and-hook": lambda differ: differ.register_validate_hook(lambda ctx: None),
+}
+
+
+@pytest.mark.parametrize("config", sorted(_SET_PAIRING_CONFIGS))
+@pytest.mark.parametrize("pools", ["same-pool", "cross-pool"])
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("kind", ["scalar", "message"])
+def test_set_pairing_leaves_inputs_unchanged(config: str, pools: str, side: str, kind: str) -> None:
+    """Trial comparisons and the walk of chosen pairs read the inputs only.
+
+    Each side holds two elements in opposite orders, and one element on
+    ``side`` carries a repeated extension the other side's element lacks.
+    """
+    left_schema = _schema()
+    right_schema = left_schema if pools == "same-pool" else _schema()
+
+    def _build(schema: _Schema, carries: bool, names: tuple[str, str]) -> Message:
+        msg = schema.outer()
+        for name in names:
+            element = msg.items.add(name=name)  # type: ignore[attr-defined]
+            if carries and name == "a":
+                _set_extension(element, schema, kind)
+        return msg
+
+    left = _build(left_schema, side == "left", ("a", "b"))
+    right = _build(right_schema, side == "right", ("b", "a"))
+    pristine = [(msg, _pristine(msg), _snapshot(msg)) for msg in (left, right)]
+    elements = [(e, _snapshot(e)) for msg in (left, right) for e in msg.items]  # type: ignore[attr-defined]
+
+    differ = MessageDifferencer()
+    _SET_PAIRING_CONFIGS[config](differ)
+    differ.treat_as_set("items")
+    differ.compare(left, right)
+
+    for msg, copy, before in pristine:
+        _assert_unchanged(msg, copy, before)
+    for element, before in elements:
+        assert _snapshot(element) == before
