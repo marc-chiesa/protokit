@@ -33,7 +33,7 @@ from protokit._descriptors import (
     is_required,
     type_name,
 )
-from protokit.message.model import FieldPath
+from protokit.message.model import FieldPath, _append_segment
 from protokit.schema.model import Direction, Finding, Severity
 
 FD = proto_descriptor.FieldDescriptor
@@ -1087,7 +1087,7 @@ def reserved_field_reused(
             continue
         if _is_reserved(fd.number, old_res_ranges):
             findings.append(Finding(
-                path=path.child(fd.name),
+                path=_append_segment(path, fd.name),
                 rule_id="reserved_field_reused",
                 severity=Severity.WIRE,
                 direction=Direction.BOTH,
@@ -1099,7 +1099,7 @@ def reserved_field_reused(
             ))
         if fd.name in old_res_names:
             findings.append(Finding(
-                path=path.child(fd.name),
+                path=_append_segment(path, fd.name),
                 rule_id="reserved_field_reused",
                 severity=Severity.SEMANTIC,
                 direction=Direction.BOTH,
@@ -1115,7 +1115,7 @@ def reserved_field_reused(
     for ext in _fieldview.data_extensions(new_desc):
         if _is_reserved(ext.number, old_res_ranges):
             findings.append(Finding(
-                path=path.child(_fieldview.extension_key(ext)),
+                path=_append_segment(path, _fieldview.extension_key(ext)),
                 rule_id="reserved_field_reused",
                 severity=Severity.WIRE,
                 direction=Direction.BOTH,

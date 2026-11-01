@@ -60,7 +60,7 @@ from google.protobuf import descriptor_pool
 
 from protokit._descriptors import is_map_field
 from protokit._fieldview import FieldView, data_extensions, extension_key, same_message_kind
-from protokit.message.model import Diagnostic, FieldPath
+from protokit.message.model import Diagnostic, FieldPath, _append_segment
 from protokit.schema.model import (
     CompatibilityLevel,
     CompatibilityReport,
@@ -658,7 +658,7 @@ class SchemaChecker:
         for name in names:
             old_fd = old_fields.get(name)
             new_fd = new_fields.get(name)
-            field_path = path.child(name)
+            field_path = _append_segment(path, name)
 
             for _, rule_fn in self._field_rules:
                 findings.extend(rule_fn(old_fd, new_fd, field_path))

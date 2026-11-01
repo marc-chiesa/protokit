@@ -718,6 +718,34 @@ class TestSelectorGrammarExitCode:
         assert "Error:" in result.output
         assert "Bracket syntax is not supported" in result.output
 
+    def test_empty_ignore_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        """An empty ``--ignore`` (an unset shell variable) is refused, not a no-op.
+
+        An empty selector parses to the root path, which selects every field,
+        so it is refused at every entry point rather than at this flag only.
+        """
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--ignore", "",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "empty" in result.output
+
+    def test_filter_with_a_key_outside_the_grammar_exits_2(
+        self, runner: CliRunner, simple_setup: dict[str, Path],
+    ) -> None:
+        """A mistyped key (``env`` for ``"env"``) is refused instead of matching nothing."""
+        result = runner.invoke(main, [
+            str(simple_setup["left"]), str(simple_setup["right_diff"]),
+            "--desc", str(simple_setup["desc"]), "--message-type", "test.Msg",
+            "--filter", "labels[env]",
+        ], catch_exceptions=False)
+        assert result.exit_code == 2, result.output
+        assert "Error:" in result.output
+
     def test_ignore_trailing_dot_exits_2(
         self, runner: CliRunner, simple_setup: dict[str, Path],
     ) -> None:

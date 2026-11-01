@@ -13,6 +13,73 @@ All notable changes to `protokit` are documented here. Format loosely follows
 > the stable public surface** and commit to semver compatibility for
 > that surface.
 
+## Unreleased (0.17.0)
+
+### Fixed
+
+- **A selector means one thing in every spelling and policy** (audit findings
+  V12, V13 and U8-5). A bare name such as `"name"` now selects that field at
+  any depth under `ignore_fields`, `treat_as_map`, `treat_as_set`,
+  `set_float_comparison(selector=)`, the matchers' `ignore` / `as_set` /
+  `approximately(selector=)`, and `FieldSelector.of`, and a dotted path
+  selects one location from the root. In 0.16.0 the string form of
+  `ignore_fields` and `treat_as_map` applied a bare name at any depth while
+  every other form matched only the top level, so a nested field a caller
+  meant to ignore, relax or compare as a set was compared as if no policy
+  applied. A path-form `FieldSelector` given to `ignore_fields` now registers
+  exactly as its string. The registration checks use the same rule, so each
+  of these now raises `ValueError` (and `protokit diff` exits 2) where 0.16.0
+  accepted it and then ignored one of the two policies:
+  - `treat_as_map("items", key="id")` beside `treat_as_set("outer.items")`;
+  - `treat_as_map("items", key="id")` beside `treat_as_map("outer.items", key="other")`
+    (the same key is accepted);
+  - ignoring a map field at another depth (`ignore_fields("items")` beside
+    `treat_as_map("container.items", ...)`), or its key at a deeper path
+    (`container.items.id` under `treat_as_map("items", key="id")`, which
+    made two messages differing only in that key compare equal).
+
+  An ignore beside a `treat_as_set` or a float overlay on the same field is
+  still accepted, and the ignore wins.
+- **Empty and bracketed selectors are refused at every entry point** (audit
+  finding V13, including `treat_as_map`). An empty selector parses to the
+  root path, which would select every field; a bracketed one (`ratios[0]`)
+  named one element, but matching ignores brackets, so 0.16.0 applied it to
+  every element (`treat_as_map("items[0]", ...)` matched nothing and kept
+  positional pairing). `FieldSelector` construction, `ignore_fields`,
+  `treat_as_set`, `treat_as_map`, `set_float_comparison(selector=)` and
+  `MatchPolicy` construction now raise `ValueError` for both, and
+  `protokit diff --ignore ''` exits 2.
+- **`FieldPath` enforces its grammar** (audit finding V8). `FieldPath.parse`
+  stored whatever sat between `[` and `]`, so `items[+1]`, `items[TRUE]` or
+  `labels[env]` (for `labels["env"]`) parsed, and a `--filter` with a
+  mistyped key matched nothing. It now raises `ValueError`, so `protokit diff
+  --filter` and `protokit compat --ignore` exit 2. `FieldPath.child` refuses a
+  name with a dot outside parentheses, which printed as two segments.
+- **Every path the differ writes parses back** (audit findings C19-C1 and
+  C19-C1b). A string map key's control characters (newline, carriage return,
+  ESC and every other character `str.isprintable` rejects) are escaped in the
+  path (`labels["a\nb"]`), so one difference prints as one line in the human
+  and JUnit reports and a key cannot write to the terminal. A `treat_as_map`
+  key of type `bytes` renders as `b"\x00a"` (0.16.0 printed Python's
+  `b'\x00a'`, which the grammar could not read), and float keys, NaN and
+  infinities included, render as `1.5`, `nan`, `inf`. The grammar reads each
+  form back, so `--filter` works on every path the differ reports. A field
+  name outside the identifier rules, which only a hand-built descriptor set
+  under pure-Python can hold, is written as it is, and `DiffResult.filter`
+  matches such a diagnostic by the leading segments that do parse instead
+  of raising. A `--filter` the user types still has to follow the grammar.
+
+### Changed
+
+- Selector text is parsed when it is registered, so a name outside the path
+  grammar (`ignore_fields("foo-bar")`) raises `ValueError`; use a predicate
+  selector for a hand-built field name the grammar cannot spell. The bracket
+  error now reads "Bracket syntax is not supported in selectors" (it named
+  "ignore selectors"), and a malformed `treat_as_map` selector reports the
+  grammar error before any conflict with an ignore.
+- The path grammar gains an `#N` segment, the name an unknown field will be
+  reported under.
+
 ## 0.16.0 — 2026-10-25
 
 > **Upgrade note (0.15.x → 0.16.0).** This release stops a run that recorded

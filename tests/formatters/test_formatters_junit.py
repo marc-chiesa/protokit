@@ -223,12 +223,13 @@ class TestDiffJunit:
         label: str,
         bad_char: str,
     ) -> None:
-        # A map key lands RAW inside the rendered FieldPath
-        # (``labels["k￿"]``), which becomes the <failure>
-        # body. U+FFFE / U+FFFF are valid UTF-8 and legal protobuf
-        # string content but are NOT XML 1.0 Chars, so before the
-        # sanitizer covered them ``protokit diff --format junit``
-        # emitted a document every XML consumer rejects.
+        # A map key is rendered into the FieldPath, which becomes the
+        # <failure> body. U+FFFE / U+FFFF are valid UTF-8 and legal
+        # protobuf string content but are NOT XML 1.0 Chars, so before
+        # the sanitizer covered them ``protokit diff --format junit``
+        # emitted a document every XML consumer rejects. ``format_key``
+        # escapes them (``\ufffe``), so the key reaches the body whole
+        # and the sanitizer has nothing to drop.
         del label
         pool = descriptor_pool.DescriptorPool()
         cls = _build_map_msg_class(pool)
@@ -242,9 +243,7 @@ class TestDiffJunit:
         _validate(junit_validator, out)
         body = ET.fromstring(out).find(".//failure").text or ""
         assert bad_char not in body
-        # The surrounding path detail survives — only the
-        # ill-formed code point is dropped.
-        assert 'labels["k"]' in body
+        assert f'labels["k\\u{ord(bad_char):04x}"]' in body
 
 
 # ---------------------------------------------------------------------------

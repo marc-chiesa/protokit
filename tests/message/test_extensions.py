@@ -1104,41 +1104,6 @@ class TestExtensionSelectorAtAnyDepth:
         differ.ignore_fields(FieldSelector.of("other.(e.ival)"))
         assert [str(x.path) for x in differ.compare(left, right)] == ["inner.(e.ival)"]
 
-    def test_a_bracketed_selector_form_is_still_accepted(self) -> None:
-        """Only the string grammar rejects brackets; a bracketed FieldSelector keeps working.
-
-        Documents CURRENT behaviour that audit finding V13 records as a defect:
-        the selector names element 0 and is applied to every element. Refusing
-        it at construction is pinned strict-xfail in
-        ``tests/message/test_audit_v_selector_pins.py``
-        (``TestV13BracketSelectorsAcceptedAndWidened``), owned by U9 (0.17.0).
-        The fix that flips those pins turns this test red: delete it then.
-        """
-        from protokit.message._selector import FieldSelector
-
-        left, right = _sel_pair(itags=(["a"], ["b"]))
-        differ = MessageDifferencer()
-        differ.ignore_fields(FieldSelector.of("inner.(e.itags)[0]"))
-        assert list(differ.compare(left, right)) == []
-
-    def test_a_plain_selector_form_name_stays_top_level(self) -> None:
-        """Only extension names widen; a plain FieldSelector name keeps exact-length matching.
-
-        Documents CURRENT behaviour that audit finding V12 records as a defect:
-        the same plain name given as a string applies at every depth. One
-        meaning for both forms is pinned strict-xfail in
-        ``tests/message/test_audit_v_selector_pins.py``
-        (``TestV12BareNameReachDiffersByPolicy``), owned by U9 (0.17.0). The fix
-        that flips those pins decides what this test should assert.
-        """
-        from protokit.message._selector import FieldSelector
-
-        left, right = _sel_pair()
-        right.inner.name = "changed"
-        differ = MessageDifferencer()
-        differ.ignore_fields(FieldSelector.of("name"))
-        assert [str(x.path) for x in differ.compare(left, right)] == ["inner.name"]
-
     def test_a_matcher_tolerance_overlay_applies_to_a_nested_extension(self) -> None:
         from protokit.message import expect_proto
 
@@ -1202,7 +1167,8 @@ class TestExtensionSelectorConflicts:
             ("container.(e.items).id", "selector"),
             ("(e.items).id", "string"),
             ("(e.items).id", "selector"),
-            ("id", "string"),  # a plain FieldSelector "id" is top-level only
+            ("id", "string"),
+            ("id", "selector"),
         ],
     )
     @pytest.mark.parametrize("map_first", [True, False])
@@ -1224,6 +1190,9 @@ class TestExtensionSelectorConflicts:
             [("map", "(e.items)", "id"), ("ignore", "container.(e.other).id")],
             # A set on one scoped location and a map on another do not overlap.
             [("set", "a.(e.items)"), ("map", "b.(e.items)", "id")],
+            # Plain names at different locations do not overlap either.
+            [("map", "a.items", "id"), ("ignore", "b.items")],
+            [("map", "a.items", "id"), ("map", "b.items", "other")],
         ],
     )
     def test_non_overlapping_registrations_are_accepted(self, calls) -> None:  # type: ignore[no-untyped-def]
@@ -1235,58 +1204,35 @@ class TestExtensionSelectorConflicts:
     @pytest.mark.parametrize(
         "calls",
         [
-            [("map", "parent.items[0]", "id"), ("ignore", "parent.items")],
+            [("map", "parent.items", "id"), ("ignore", "parent.items")],
             [("map", "items", "id"), ("ignore", "container.items")],
+            [("map", "container.items", "id"), ("ignore", "items")],
         ],
     )
-    def test_plain_selectors_keep_the_equal_string_check(self, calls) -> None:  # type: ignore[no-untyped-def]
-        """Without an extension name, only equal selector strings conflict, as before.
-
-        Widening the check for plain names (audit finding U8-5 and its
-        relatives) is scheduled for 0.17.0; this wave widens it only for the
-        extension spelling.
-        """
+    def test_plain_selectors_conflict_by_the_same_path_rule(self, calls) -> None:  # type: ignore[no-untyped-def]
         for ordered in (calls, calls[::-1]):
             differ = MessageDifferencer()
-            for call in ordered:
-                _register(differ, call)
+            _register(differ, ordered[0])
+            with pytest.raises(ValueError, match="treat_as_map"):
+                _register(differ, ordered[1])
 
-    def test_a_malformed_map_selector_reports_the_existing_conflict_first(self) -> None:
-        """The widened key check must not change which error a bad map selector gets."""
+    def test_a_malformed_map_selector_is_refused_before_any_conflict_check(self) -> None:
+        """A map selector the grammar refuses gets the grammar's error, whatever else is set."""
         differ = MessageDifferencer()
         differ.ignore_fields("parent.id", "id")
-        with pytest.raises(ValueError, match="'id' is globally ignored"):
+        with pytest.raises(ValueError, match="Trailing '.'"):
             differ.treat_as_map("bad.", key="id")
-
-    @pytest.mark.parametrize("ignore", ["container.(e.items)[0].id", "(e.items)[0]"])
-    @pytest.mark.parametrize("map_first", [True, False])
-    def test_a_bracketed_selector_form_is_checked_too(self, ignore: str, map_first: bool) -> None:
-        """Path-form matching ignores brackets, so the conflict check must too.
-
-        It can only be asked because a bracketed ``FieldSelector`` is accepted,
-        which audit finding V13 records as a defect (pinned strict-xfail in
-        ``tests/message/test_audit_v_selector_pins.py``,
-        ``TestV13BracketSelectorsAcceptedAndWidened``, owned by U9, 0.17.0).
-        Once construction refuses the selector, this test has no input: delete it.
-        """
-        from protokit.message._selector import FieldSelector
-
-        calls = [("map", "(e.items)", "id"), ("ignore", FieldSelector.of(ignore))]
-        differ = MessageDifferencer()
-        _register(differ, calls[0] if map_first else calls[1])
-        with pytest.raises(ValueError, match="treat_as_map"):
-            _register(differ, calls[1] if map_first else calls[0])
 
     @pytest.mark.parametrize(
         ("first", "second"),
         [
             ("(e.items)", "inner.(e.items)"),
             ("inner.(e.items)", "(e.items)"),
-            ("inner.(e.items)", "inner.(e.items)[0]"),
-            ("inner.(e.items)[0]", "inner.(e.items)"),
+            ("items", "inner.items"),
+            ("inner.items", "items"),
         ],
     )
-    def test_two_maps_on_one_extension_must_share_a_key(self, first: str, second: str) -> None:
+    def test_two_maps_on_one_field_must_share_a_key(self, first: str, second: str) -> None:
         differ = MessageDifferencer()
         differ.treat_as_map(first, key="id")
         with pytest.raises(ValueError, match="already configured with key 'id'"):
@@ -1303,12 +1249,6 @@ class TestExtensionSelectorConflicts:
         differ.treat_as_map("(x.xitems)", key="id")
         left, right = _reordered_pair(msg_cls, lambda m: m.Extensions[xitems])
         assert list(differ.compare(left, right)) == []
-
-    def test_two_maps_on_plain_names_keep_the_equal_string_check(self) -> None:
-        """Plain names conflict only when equal, as before (widening them is 0.17.0)."""
-        differ = MessageDifferencer()
-        differ.treat_as_map("items", key="id")
-        differ.treat_as_map("inner.items", key="other")
 
 
 # --- a field named after the method that finds set extensions ------------------

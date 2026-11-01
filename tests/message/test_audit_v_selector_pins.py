@@ -1,26 +1,19 @@
-"""Regression pins for DEFERRED message-selector audit findings (family V).
+"""Regression tests for the message-selector audit findings (family V), closed in 0.17.0.
 
-Every ``xfail`` in this module pins a LIVE defect a later release owns. The
+Each test below began as a strict ``xfail`` pinning a live defect. The
 findings are defined in ``docs/plans/AUDIT-whole-codebase-2026-08-30.md`` and
-were reproduced again, unpinned, by the cycle-1 re-audit
-(``docs/plans/AUDIT-cycle-1-2026-09-27.md``, rows R05-C2, R10-C1 and R10-C2).
-All three are owned by unit U9 ("Selector unification") of the stability
-release plan, which lands in 0.17.0.
+were reproduced again by the cycle-1 re-audit
+(``docs/plans/AUDIT-cycle-1-2026-09-27.md``, rows R05-C2, R10-C1 and R10-C2),
+and all were owned by unit U9 ("Selector unification") of the stability
+release plan. 0.17.0 fixed them, so the markers are gone and the node IDs are
+unchanged: each test asserts the correct outcome and fails if it regresses.
+The ``# 0.16.0:`` comments record what each one observed before the fix.
 
-The pins are strict. Each is ``@pytest.mark.xfail(strict=True, raises=...)``
-with a ``reason`` that leads with the finding ID and names the owning unit and
-release, so the suite stays green while the defect exists and each pin flips to
-a hard failure (XPASS) the day the mechanism is fixed. ``raises=`` is the
-exception the pin was observed to fail with under ``--runxfail --tb=line`` on
-both protobuf backends, so a failure for any other reason is a plain FAILED.
+Each test asserts the correct outcome, not "something changed". Green control
+tests sit beside them and share their construction: they show the harness
+reaches the comparison and that the outcome is specific to the mechanism.
 
-Each pin asserts the correct outcome, not "something changed". Green control
-tests sit beside the pins and share their construction: they show the harness
-reaches the comparison and that the wrong outcome is specific to the pinned
-mechanism. The controls assert behaviour that is correct today and stays
-correct after the fix.
-
-Pinned here:
+Covered here:
 
 * **V8** — ``FieldPath.parse`` stores whatever sits between ``[`` and ``]`` as
   the segment's bracket without checking it against the bracket grammar
@@ -127,16 +120,13 @@ class TestV8FieldPathBracketGrammar:
             pytest.param("items[id=]", id="key-without-value"),
             pytest.param("labels[env]", id="unquoted-string"),
             pytest.param("labels[[0]", id="stray-open-bracket"),
+            pytest.param('a["x\\q"]', id="unknown-escape"),
+            pytest.param('a["\x01"]', id="raw-control-character"),
+            pytest.param('a["\u2028"]', id="raw-line-separator"),
+            pytest.param('a[b"\xe9"]', id="non-ascii-in-bytes"),
+            pytest.param('a[b"\\x4"]', id="truncated-hex-escape"),
+            pytest.param('a["x"y"]', id="unescaped-inner-quote"),
         ],
-    )
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="V8: owned by U9 (0.17.0). FieldPath.parse stores whatever sits between "
-               "'[' and ']' as PathSegment.bracket without checking it against the bracket "
-               "grammar model.py declares (signed int, true/false, quoted string, "
-               "name=value), so a malformed key parses instead of raising the ValueError "
-               "parse() documents for a malformed path",
     )
     def test_bracket_content_outside_the_grammar_must_be_rejected(self, path_str: str) -> None:
         """A bracket that is none of the declared key forms must raise ``ValueError``.
@@ -147,7 +137,7 @@ class TestV8FieldPathBracketGrammar:
         ``"env"`` a real path carries. The caller reads an empty result as "no
         differences there" when the filter was malformed.
         """
-        # Today each of these parses; the bracket is stored verbatim.
+        # 0.16.0: each of these parsed; the bracket is stored verbatim.
         with pytest.raises(ValueError):
             FieldPath.parse(path_str)
 
@@ -165,14 +155,6 @@ class TestV8FieldPathBracketGrammar:
         assert (str(extension), len(extension.segments)) == ("inner.(pkg.ext)[0]", 2)
         assert FieldPath.parse(str(extension)) == extension
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V8: owned by U9 (0.17.0). FieldPath.child (through PathSegment) accepts a "
-               "name that is not one grammar name, so child('a.b') builds ONE segment that "
-               "renders as 'a.b' and parses back as TWO — parse(str(path)) != path, and "
-               "selector matching counts segments",
-    )
     def test_child_with_a_dotted_name_must_reject_or_round_trip(self) -> None:
         """A path built with ``child`` must survive ``parse(str(path))`` unchanged.
 
@@ -190,7 +172,7 @@ class TestV8FieldPathBracketGrammar:
             # Construction now rejects a name that is not one grammar name.
             return
 
-        # Today: one segment named "a.b"; the reparse yields two segments.
+        # 0.16.0: one segment named "a.b"; the reparse yields two segments.
         assert FieldPath.parse(str(path)) == path
 
 
@@ -294,15 +276,6 @@ class TestV12BareNameReachDiffersByPolicy:
 
         assert _observed(d.compare(left, right)) == [("name", "MODIFIED")]
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V12: owned by U9 (0.17.0). ignore_fields routes a bare-name STRING to "
-               "_ignore_names (matched at any depth) and a FieldSelector to "
-               "_ignore_selectors (exact segment count, so top level only): "
-               "FieldSelector.of('name') leaves inner.name reported where the string "
-               "'name' ignores it",
-    )
     def test_field_selector_spelling_of_a_bare_name_must_ignore_the_same_fields(self) -> None:
         """``ignore_fields(FieldSelector.of(s))`` must equal ``ignore_fields(s)``.
 
@@ -317,7 +290,7 @@ class TestV12BareNameReachDiffersByPolicy:
         d = MessageDifferencer()
         d.ignore_fields(FieldSelector.of("name"))
 
-        # Today: [('inner.name', 'MODIFIED')].
+        # 0.16.0: [('inner.name', 'MODIFIED')].
         assert _observed(d.compare(left, right)) == []
 
     @pytest.mark.parametrize(
@@ -341,14 +314,6 @@ class TestV12BareNameReachDiffersByPolicy:
 
         assert _observed(result) == [(expected_path, "MODIFIED")]
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V12: owned by U9 (0.17.0). A set_float_comparison overlay selector is a "
-               "FieldSelector, so the bare name 'value' matches only a top-level field: "
-               "inner.value falls back to the global APPROXIMATE config and 1.0 vs "
-               "1.0000001 compares EQUAL although the caller asked for EXACT on 'value'",
-    )
     def test_bare_name_exact_overlay_must_apply_one_level_down(self) -> None:
         """A bare-name float overlay must reach the field wherever it sits.
 
@@ -361,7 +326,7 @@ class TestV12BareNameReachDiffersByPolicy:
 
         result = _exact_overlay_differ("value").compare(left, right)
 
-        # Today: [] — has_changes() is False.
+        # 0.16.0: [] — has_changes() is False.
         assert _observed(result) == [("inner.value", "MODIFIED")]
 
     @pytest.mark.parametrize(
@@ -382,14 +347,6 @@ class TestV12BareNameReachDiffersByPolicy:
 
         assert _observed(d.compare(left, right)) == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V12: owned by U9 (0.17.0). treat_as_set stores a FieldSelector, so the bare "
-               "name 'tags' selects only a top-level field, while the same bare name given "
-               "to treat_as_map applies at any depth: a reordered inner.tags is compared by "
-               "index and reported as two MODIFIED elements",
-    )
     def test_bare_name_treat_as_set_must_apply_one_level_down(self) -> None:
         """A bare-name set selector must reach the field wherever it sits.
 
@@ -404,7 +361,7 @@ class TestV12BareNameReachDiffersByPolicy:
         d = MessageDifferencer()
         d.treat_as_set("tags")
 
-        # Today: [('inner.tags[0]', 'MODIFIED'), ('inner.tags[1]', 'MODIFIED')].
+        # 0.16.0: [('inner.tags[0]', 'MODIFIED'), ('inner.tags[1]', 'MODIFIED')].
         assert _observed(d.compare(left, right)) == []
 
     @pytest.mark.parametrize("map_first", [True, False], ids=["map-then-set", "set-then-map"])
@@ -421,15 +378,6 @@ class TestV12BareNameReachDiffersByPolicy:
                 d.treat_as_map("items", key="id")
 
     @pytest.mark.parametrize("map_first", [True, False], ids=["map-then-set", "set-then-map"])
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="V12: owned by U9 (0.17.0). The keyed/keyless conflict guard compares the "
-               "two selectors by exact segment count, so it does not see that the bare "
-               "name 'items' — which treat_as_map applies at any depth — also selects "
-               "'outer.items': registering both is accepted and the set selector is then "
-               "silently ignored",
-    )
     def test_bare_name_map_must_conflict_with_a_set_on_the_same_nested_field(
         self, map_first: bool
     ) -> None:
@@ -444,7 +392,7 @@ class TestV12BareNameReachDiffersByPolicy:
         """
         d = MessageDifferencer()
 
-        # Today both orders are accepted.
+        # 0.16.0: both orders were accepted.
         with pytest.raises(ValueError, match="treat_as_"):
             if map_first:
                 d.treat_as_map("items", key="id")
@@ -530,14 +478,6 @@ class TestV13BracketSelectorsAcceptedAndWidened:
             pytest.param(lambda s: FieldSelector(path=FieldPath.parse(s)), id="path-keyword"),
         ],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="V13: owned by U9 (0.17.0). FieldSelector construction never checks its "
-               "path for brackets (from_path is FieldPath.parse and nothing else), so "
-               "'items[0].name' is accepted although of() documents ValueError for a "
-               "string that contains bracket syntax",
-    )
     def test_field_selector_construction_must_reject_a_bracket_selector(
         self, build: Callable[[str], FieldSelector]
     ) -> None:
@@ -549,7 +489,7 @@ class TestV13BracketSelectorsAcceptedAndWidened:
         ``from_path`` says "Brackets are not permitted in selector strings";
         neither refuses one.
         """
-        # Today all three return a selector whose path is items[0].name.
+        # 0.16.0: all three return a selector whose path is items[0].name.
         with pytest.raises(ValueError):
             build("items[0].name")
 
@@ -569,14 +509,6 @@ class TestV13BracketSelectorsAcceptedAndWidened:
             ),
         ],
     )
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="V13: owned by U9 (0.17.0). treat_as_set, set_float_comparison(selector=) "
-               "and the FieldSelector form of ignore_fields normalise through "
-               "FieldSelector.of, which accepts brackets, so 'ratios[0]' registers where "
-               "the string form of ignore_fields raises ValueError for the same text",
-    )
     def test_policy_registration_must_reject_a_bracket_selector(
         self, register: Callable[[MessageDifferencer], None]
     ) -> None:
@@ -588,17 +520,10 @@ class TestV13BracketSelectorsAcceptedAndWidened:
         """
         d = MessageDifferencer()
 
-        # Today all three registrations succeed.
+        # 0.16.0: all three registrations succeed.
         with pytest.raises(ValueError):
             register(d)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V13: owned by U9 (0.17.0). Path-form matching ignores brackets, so an "
-               "accepted overlay selector 'ratios[0]' selects every element: ratios[1] "
-               "2.0 vs 2.0005 is compared with the relaxed tolerance and reported EQUAL",
-    )
     def test_bracket_overlay_must_not_relax_the_other_elements(self) -> None:
         """A tolerance asked for element 0 must not hide a difference in element 1.
 
@@ -618,16 +543,9 @@ class TestV13BracketSelectorsAcceptedAndWidened:
             # Registration now rejects the bracket selector: nothing can widen.
             return
 
-        # Today: [] — has_changes() is False.
+        # 0.16.0: [] — has_changes() is False.
         assert _observed(d.compare(left, right)) == [("ratios[1]", "MODIFIED")]
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V13: owned by U9 (0.17.0). The same bracket-blind matching applied to an "
-               "accepted ignore selector: FieldSelector.of('items[0].name') suppresses "
-               "items[N].name for every N, so a difference in items[1].name disappears",
-    )
     def test_bracket_object_ignore_must_not_suppress_the_other_elements(self) -> None:
         """Ignoring ``items[0].name`` must not ignore ``items[1].name``.
 
@@ -644,7 +562,7 @@ class TestV13BracketSelectorsAcceptedAndWidened:
             # Construction now rejects the bracket selector: nothing can widen.
             return
 
-        # Today: [] — has_changes() is False.
+        # 0.16.0: [] — has_changes() is False.
         assert _observed(d.compare(left, right)) == [("items[1].name", "MODIFIED")]
 
 
@@ -701,14 +619,6 @@ class TestV13TreatAsMapAcceptsABracketSelector:
         assert _observed(d.compare(left, right)) == []
 
     @pytest.mark.parametrize("selector", ["items[0]", "items[1]", "outer.items[0]"])
-    @pytest.mark.xfail(
-        strict=True,
-        raises=pytest.fail.Exception,
-        reason="V13 (treat_as_map): owned by U9 (0.17.0). treat_as_map checks its "
-               "selector against the ignore and treat_as_set configuration and never "
-               "for brackets, so 'items[0]' registers where the string form of "
-               "ignore_fields raises ValueError for the same text",
-    )
     def test_treat_as_map_must_reject_a_bracket_selector(self, selector: str) -> None:
         """``treat_as_map`` must refuse a bracket selector as ``ignore_fields`` does.
 
@@ -717,18 +627,10 @@ class TestV13TreatAsMapAcceptsABracketSelector:
         """
         d = MessageDifferencer()
 
-        # Today the registration succeeds.
+        # 0.16.0: the registration succeeded.
         with pytest.raises(ValueError):
             d.treat_as_map(selector, key="id")
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="V13 (treat_as_map): owned by U9 (0.17.0). An accepted 'items[0]' map "
-               "selector matches no field: a one-segment selector is stored under its "
-               "literal text and looked up by bare field name, so the field keeps "
-               "positional pairing and a pure reorder is reported as four MODIFIED leaves",
-    )
     def test_bracket_map_selector_must_not_fall_back_to_positional_pairing(self) -> None:
         """A caller who asked for keyed matching must not get positional matching unannounced.
 
@@ -749,7 +651,7 @@ class TestV13TreatAsMapAcceptsABracketSelector:
             # Registration now rejects the bracket selector: nothing is silently dropped.
             return
 
-        # Today: the four positional MODIFIED leaves of the control above.
+        # 0.16.0: the four positional MODIFIED leaves of the control above.
         assert _observed(d.compare(left, right)) == []
 
 
@@ -936,17 +838,6 @@ class TestC19C1MapKeyLandsRawInTheDiffPath:
 
     @pytest.mark.parametrize("output_format", ["human", "junit"])
     @pytest.mark.parametrize("location", _LOCATIONS)
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="C19-C1 (= R12-C1), with C19-C1b: owned by U9 (0.17.0). format_key "
-               "escapes only backslash and double quote when it writes a string map key "
-               "into the path bracket, so a newline, a carriage return or an ESC in the "
-               "key reaches the rendered path raw, in a declared map, under a message "
-               "extension and under a group alike: one difference prints over three lines "
-               "in the human report and the JUnit failure body, and the human report "
-               "carries the key's ESC sequence to the terminal",
-    )
     def test_a_control_character_key_must_render_as_one_difference_on_one_line(
         self, location: str, output_format: str
     ) -> None:
@@ -965,7 +856,7 @@ class TestC19C1MapKeyLandsRawInTheDiffPath:
         """
         result = _added_key(location, _CONTROL_CHAR_KEY)
 
-        # Today: two more lines than the plain key (the newline and the
+        # 0.16.0: two more lines than the plain key (the newline and the
         # carriage return), and in the human report one more ESC.
         assert _rendered_shape(output_format, result) == _rendered_shape(
             output_format, _added_key(location, "k")

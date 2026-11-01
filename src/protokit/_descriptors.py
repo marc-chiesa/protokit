@@ -279,21 +279,71 @@ def has_presence(fd: proto_descriptor.FieldDescriptor) -> bool:
 
 
 def format_key(key: Any) -> str:
-    """Format a map key value for path bracket display.
+    r"""Format a key value as path bracket text the ``FieldPath`` grammar reads back.
+
+    Each value has one spelling, so a path the differ writes parses back to
+    itself and ``--filter`` can target it. Map keys are integers, booleans
+    and strings; a ``treat_as_map`` key can also be a float, bytes or an enum
+    number.
 
     Args:
-        key: The key value (bool, int, or str).
+        key: The key value.
 
     Returns:
-        A string suitable for bracket notation in a FieldPath, e.g.
-        ``'"foo"'`` for strings, ``"42"`` for ints, ``"true"``/``"false"``
-        for bools.
+        ``true`` / ``false`` for a bool; the decimal digits for an int (an
+        enum number included); ``repr`` for a float (``1.5``, ``1e+300``,
+        ``nan``, ``inf``, ``-inf``); a double-quoted string, with ``\\``,
+        ``\"``, ``\n``, ``\r``, ``\t`` and ``\xHH`` / ``\uHHHH`` /
+        ``\UHHHHHHHH`` for every other character ``str.isprintable`` rejects,
+        so the key stays on one line and carries no terminal escape; and
+        ``b"…"`` for bytes, with printable ASCII as it is and ``\\``,
+        ``\"`` or ``\xHH`` for the rest. Any other value is quoted as its
+        ``str``.
     """
     if isinstance(key, bool):
         return "true" if key else "false"
     if isinstance(key, int):
-        return str(key)
-    if isinstance(key, str):
-        escaped = key.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
-    return str(key)
+        return str(int(key))
+    if isinstance(key, float):
+        return repr(float(key))
+    if isinstance(key, (bytes, bytearray)):
+        return "b" + _quote_bytes(bytes(key))
+    return _quote_text(key if isinstance(key, str) else str(key))
+
+
+_TEXT_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _quote_text(text: str) -> str:
+    """``text`` double-quoted with the path grammar's string escapes."""
+    if text.isprintable() and '"' not in text and "\\" not in text:
+        return f'"{text}"'
+    parts: list[str] = []
+    for char in text:
+        escaped = _TEXT_ESCAPES.get(char)
+        if escaped is not None:
+            parts.append(escaped)
+        elif char.isprintable():
+            parts.append(char)
+        elif (code := ord(char)) <= 0xFF:
+            parts.append(f"\\x{code:02x}")
+        elif code <= 0xFFFF:
+            parts.append(f"\\u{code:04x}")
+        else:
+            parts.append(f"\\U{code:08x}")
+    return '"' + "".join(parts) + '"'
+
+
+def _quote_bytes(data: bytes) -> str:
+    r"""``data`` double-quoted: printable ASCII as it is, ``\\``, ``\"`` and ``\xHH``."""
+    parts: list[str] = []
+    for byte in data:
+        if byte == 0x5C:
+            parts.append("\\\\")
+        elif byte == 0x22:
+            parts.append('\\"')
+        elif 0x20 <= byte <= 0x7E:
+            parts.append(chr(byte))
+        else:
+            parts.append(f"\\x{byte:02x}")
+    return '"' + "".join(parts) + '"'
